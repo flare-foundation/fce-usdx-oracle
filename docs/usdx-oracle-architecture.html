@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>USDX Oracle — Architecture</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 10.5pt; line-height: 1.45;
+         color: #202124; max-width: 48em; margin: 2.5em auto; padding: 0 1.5em; }
+  h1 { font-size: 18pt; font-weight: 400; margin: 0 0 .1em; }
+  h2 { font-size: 13.5pt; font-weight: 400; margin: 1.7em 0 .3em;
+       border-bottom: 1px solid #dadce0; padding-bottom: .2em; }
+  h3 { font-size: 11pt; font-weight: 700; margin: 1.1em 0 .2em; }
+  p { margin: .45em 0; }
+  ul, ol { margin: .4em 0; padding-left: 1.4em; }
+  li { margin: .2em 0; }
+  code { font-family: "Courier New", monospace; font-size: 9.5pt; background: #f1f3f4; padding: 0 .2em; }
+  pre { font-family: "Courier New", monospace; font-size: 8.5pt; line-height: 1.3;
+        background: #f8f9fa; border: 1px solid #dadce0; padding: .7em; overflow-x: auto; margin: .5em 0; }
+  table { border-collapse: collapse; width: 100%; margin: .5em 0; font-size: 9.5pt; }
+  th, td { border: 1px solid #b0b3b8; padding: .3em .5em; text-align: left; vertical-align: top; }
+  th { background: #f1f3f4; font-weight: 700; }
+  .sub { color: #5f6368; font-style: italic; margin-bottom: 1.5em; font-size: 9.5pt; }
+  .r { color: #c5221f; font-weight: 700; }
+  .verdict { border-left: 3px solid #1a73e8; background: #f4f8fe; padding: .5em .9em; margin: .7em 0; }
+  .verdict.warn { border-left-color: #c5221f; background: #fdf3f2; }
+  .nav { background: #f8f9fa; border: 1px solid #dadce0; padding: .5em .9em; margin-bottom: 1.5em; font-size: 9.5pt; }
+</style>
+</head>
+<body>
+
+<h1>USDX Oracle — Architecture</h1>
+<p class="sub">How the pieces fit, what each one is trusted for, and where it can fail.</p>
+<div class="nav">📎 <a href="usdx-oracle-index.html">Index</a> ·
+<a href="usdx-oracle-plan.html">Plan</a> · <a href="usdx-oracle-reference.html">Findings</a> ·
+<a href="usdx-oracle-extension.html">Extension</a> · <a href="usdx-oracle-contracts.html">Contracts</a> ·
+<a href="usdx-oracle-operations.html">Operations</a></div>
+
+<h2>1. The whole system</h2>
+
+<pre>            ┌────────── off-chain, ours ──────────┐         ┌───── on-chain, Flare ─────┐
+
+  keeper ──(1) requestPriceUpdate() ─────────────────────────► UsdxInstructionSender
+                                                                       │
+                                                                (2) sendInstructions()
+                                                                       ▼
+                                                              TeeExtensionRegistry
+                                                                       │ emits event
+            data providers' relay clients ◄────────────────────────────┘
+                     │ (3) cosign + deliver
+                     ▼
+              TEE proxy ──► TEE machine (GCP Confidential Space)
+                                 │  tee-node        : attestation, keys, /sign, /decrypt
+                                 │  usdx-oracle ext : /action, /state
+                                 │
+                                 │ (4) reads, inside the enclave:
+                                 │      • 3 chains × N RPC providers → totalSupply
+                                 │      • Hex public API  → bond reserves
+                                 │      • Hex private API → cash reserves   (key + IP allowlist)
+                                 │
+                                 │ (5) price = min(1, backing/supply), signed with the TEE key
+                                 ▼
+              TEE proxy result store
+                     │
+  keeper ──(6) GET /action/result/&lt;id&gt; ──┘
+     │
+     └──(7) submitPrice(payload, sig) ──────────────────────► UsdxPriceStore
+                                                                       │ verified, stored
+                                                                       ▼
+                                                              UsdxCustomFeed
+                                                                       │ IICustomFeed
+                                                                       ▼
+                                                              FtsoV2 ──► consumers</pre>
+
+<h3>Why this shape</h3>
+<table>
+  <thead><tr><th style="width:13em">Choice</th><th>Reasoning</th></tr></thead>
+  <tbody>
+    <tr><td>Keeper relays the result; the TEE broadcasts nothing</td>
+        <td>Signing a transaction inside the enclave would mean managing gas price, nonces, stuck-transaction
+            replacement and a funded wallet there. The store verifies the TEE signature, so a keeper cannot
+            forge or alter a price — it can only fail to deliver one, which is a liveness problem we solve by
+            running more than one. Submission is permissionless.</td></tr>
+    <tr><td>Direct RPC rather than FDC attestation</td>
+        <td>FDC would add a round trip and considerable complexity to obtain data we can read directly, and
+            the TEE is already the trust anchor for everything else in the pipeline. We buy robustness with
+            provider redundancy instead.</td></tr>
+    <tr><td>Price computed inside the enclave, not by the keeper</td>
+        <td>The whole value proposition is that the computation is pinned by a registered code hash. A keeper
+            computing the price would make the TEE decorative.</td></tr>
+    <tr><td>A store contract separate from the feed contract</td>
+        <td><code>replaceCustomFeeds</code> lets governance repoint a feed ID at a new contract. Keeping the
+            feed a thin read adapter means most fixes land in the store or the extension and never need a
+            governance action.</td></tr>
+  </tbody>
+</table>
+
+<h2>2. Trust model</h2>
+
+<h3>What the TEE actually gives us</h3>
+<ul>
+  <li><b>Code integrity.</b> The container's code hash is registered on-chain via
+      <code>addTeeVersion</code>. Attestation proves the machine is running that image, so anyone can verify
+      <i>which program</i> produced a price.</li>
+  <li><b>Secret confidentiality.</b> The Hex API key and RPC credentials are injected encrypted to the TEE's
+      public key and decrypted inside the enclave via <code>POST /decrypt</code>. The operator never sees them
+      in plaintext.</li>
+  <li><b>Authenticity of the result.</b> The result is signed with the TEE identity key; the store checks the
+      recovered address is a registered, active machine for our extension.</li>
+</ul>
+
+<h3>What it does <i>not</i> give us</h3>
+<div class="verdict warn">
+<b>The TEE cannot make bad input good.</b> If Hex's API reports a wrong reserve figure, the enclave will
+faithfully compute and sign a wrong price. Attestation proves provenance and integrity, never truthfulness
+of external data. This is the entire reason the §1 blocker in the Findings matters: no amount of TEE
+engineering compensates for a source that cannot express the condition we are trying to detect.
+</div>
+<ul>
+  <li><b>No protection against source compromise.</b> Mitigated only by bounds checks, alerting and a
+      governance pause.</li>
+  <li><b>No ordering guarantee.</b> FCC is explicitly "fire and forget". Two price updates can arrive out of
+      order, which is why the store enforces strictly increasing <code>observedAt</code> rather than assuming
+      sequence.</li>
+  <li><b>No availability guarantee.</b> A machine can be down, an instruction can be lost. The design must
+      degrade to "stale but honest", never to "fresh but wrong".</li>
+</ul>
+
+<h3>Who can do what</h3>
+<table>
+  <thead><tr><th>Party</th><th>Can</th><th>Cannot</th></tr></thead>
+  <tbody>
+    <tr><td>Keeper</td><td>trigger updates, relay results, choose <i>when</i></td><td>alter a price, forge a result, submit a stale one past the monotonicity check</td></tr>
+    <tr><td>TEE operator</td><td>run/stop the machine</td><td>read secrets, change the computation without changing the code hash</td></tr>
+    <tr><td>Data providers</td><td>cosign and deliver instructions</td><td>change the payload — the TEE validates what it receives</td></tr>
+    <tr><td>Hex</td><td>determine the reserve inputs entirely</td><td>—  <span class="r">this is the weak link</span></td></tr>
+    <tr><td>Governance</td><td>pause the feed, replace the feed contract, set bounds</td><td>set a price directly</td></tr>
+    <tr><td>Anyone</td><td>submit a valid signed result</td><td>submit an invalid one</td></tr>
+  </tbody>
+</table>
+
+<h2>3. What is public</h2>
+<p>This caught us out once and is worth stating plainly. <b>The extension's <code>GET /state</code> is not a
+private channel.</b> tee-node polls it, folds the response into <code>TEEState.state</code>, and the TEE proxy
+publishes that — attested — at <code>GET /info</code>. Anything placed in <code>/state</code> is world-readable
+with a signature attached, arguably <i>more</i> exposed than the on-chain payload since it updates
+continuously rather than once per instruction.</p>
+
+<table>
+  <thead><tr><th>Surface</th><th>Visibility</th><th>May carry reserve components?</th></tr></thead>
+  <tbody>
+    <tr><td><code>ActionResult.data</code> → store</td><td>public, on-chain, permanent</td><td>No — decided</td></tr>
+    <tr><td><code>GET /state</code> → <code>TEEState</code> → proxy <code>/info</code></td><td>public, attested</td><td><b>No</b> — same exposure</td></tr>
+    <tr><td>Extension logs</td><td>unresolved — depends where Confidential Space logs land</td><td>Not until that's answered</td></tr>
+  </tbody>
+</table>
+<p>Consequence: if Hex treats reserve figures as confidential, they can live in <i>none</i> of these. The
+practical cost is that consumers cannot independently recompute <code>min(1, B/S)</code> from public data —
+they can verify which code ran, but not what it saw. A lagged disclosure (say T+24h) would restore
+auditability without revealing live positions; worth proposing to Hex.</p>
+
+<h2>4. Failure modes by hop</h2>
+<table>
+  <thead><tr><th style="width:11em">Hop</th><th>Failure</th><th>Behaviour we want</th></tr></thead>
+  <tbody>
+    <tr><td>Keeper → sender</td><td>keeper down, unfunded, tx stuck</td><td>Second keeper covers it. Feed goes stale, timestamp ages, consumers see it.</td></tr>
+    <tr><td>Registry → TEE</td><td>instruction lost, machine down</td><td>No result appears; keeper times out and retries next cycle. Never a partial write.</td></tr>
+    <tr><td>TEE → Hex API</td><td>timeout, 5xx, malformed, stale <code>last_update</code></td><td>Fail closed — <code>status = 0</code>, no price published.</td></tr>
+    <tr><td>TEE → RPC</td><td>provider down, disagreement, block too old for state</td><td>Quorum fails → abort the whole update. Never compute from a partial chain set.</td></tr>
+    <tr><td>TEE internal</td><td>arithmetic guard trips (supply = 0, implausible ratio)</td><td>Fail closed with a distinct error class so monitoring can tell it apart.</td></tr>
+    <tr><td>TEE → store</td><td>out-of-order arrival, replay</td><td>Rejected by the <code>observedAt</code> monotonicity rule.</td></tr>
+    <tr><td>Store → feed</td><td>data older than any sane freshness bound</td><td><b>Still returns</b> the last value with its true timestamp — never reverts. See below.</td></tr>
+  </tbody>
+</table>
+
+<div class="verdict">
+<b>The one rule that ties these together:</b> every failure degrades toward <i>stale but honest</i>. The
+feed's timestamp is the honest signal, and consumers must check it. A revert would convert our outage into
+theirs, simultaneously, across every protocol reading the feed.
+</div>
+
+<h2>5. Deployment topology</h2>
+<p>The extension runs as a single container on a GCP Confidential Space VM alongside tee-node. Go extensions
+can use the single-process shape — the scaffold's <code>go/cmd/docker/main.go</code> starts
+<code>teeServer.StartServerExtension(configPort, signPort, extensionPort)</code> in a goroutine next to the
+extension's own HTTP server, producing one static distroless binary. That is the most reproducible option
+and we should keep it.</p>
+
+<table>
+  <tbody>
+    <tr><td style="width:12em"><b>Ports</b></td><td><code>5501</code> config · <code>7701</code> sign (extension → tee-node) · <code>7702</code> extension (<code>/action</code>, <code>/state</code>)</td></tr>
+    <tr><td><b>Egress</b></td><td>Hex API + RPC providers, via Cloud NAT with a <b>reserved static IP per machine</b> — Hex allowlists by IP</td></tr>
+    <tr><td><b>Ingress</b></td><td>None from the internet. The proxy polls; the machine sits behind the firewall.</td></tr>
+    <tr><td><b>Scaling</b></td><td>Each additional machine is another IP for Hex to allowlist. Decide the count before asking them.</td></tr>
+  </tbody>
+</table>
+
+<p><b>Machine count is a real trade-off.</b> More machines mean better liveness and no single point of
+failure, but every one needs its own allowlist entry, and adding one later is a coordination step with Hex
+rather than something we can do ourselves. Since results are individually signed and the store accepts any
+valid one, machines do not need to agree with each other — they are redundant, not a quorum. Two is
+probably the right starting point; that should be a decision rather than a default.</p>
+
+</body>
+</html>

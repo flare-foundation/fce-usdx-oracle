@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>USDX Oracle — Extension</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 10.5pt; line-height: 1.45;
+         color: #202124; max-width: 48em; margin: 2.5em auto; padding: 0 1.5em; }
+  h1 { font-size: 18pt; font-weight: 400; margin: 0 0 .1em; }
+  h2 { font-size: 13.5pt; font-weight: 400; margin: 1.7em 0 .3em;
+       border-bottom: 1px solid #dadce0; padding-bottom: .2em; }
+  h3 { font-size: 11pt; font-weight: 700; margin: 1.1em 0 .2em; }
+  p { margin: .45em 0; }
+  ul, ol { margin: .4em 0; padding-left: 1.4em; }
+  li { margin: .2em 0; }
+  code { font-family: "Courier New", monospace; font-size: 9.5pt; background: #f1f3f4; padding: 0 .2em; }
+  pre { font-family: "Courier New", monospace; font-size: 8.5pt; line-height: 1.32;
+        background: #f8f9fa; border: 1px solid #dadce0; padding: .7em; overflow-x: auto; margin: .5em 0; }
+  table { border-collapse: collapse; width: 100%; margin: .5em 0; font-size: 9.5pt; }
+  th, td { border: 1px solid #b0b3b8; padding: .3em .5em; text-align: left; vertical-align: top; }
+  th { background: #f1f3f4; font-weight: 700; }
+  .sub { color: #5f6368; font-style: italic; margin-bottom: 1.5em; font-size: 9.5pt; }
+  .r { color: #c5221f; font-weight: 700; }
+  .verdict { border-left: 3px solid #1a73e8; background: #f4f8fe; padding: .5em .9em; margin: .7em 0; }
+  .verdict.warn { border-left-color: #c5221f; background: #fdf3f2; }
+  .nav { background: #f8f9fa; border: 1px solid #dadce0; padding: .5em .9em; margin-bottom: 1.5em; font-size: 9.5pt; }
+</style>
+</head>
+<body>
+
+<h1>USDX Oracle — Extension</h1>
+<p class="sub">The Go service inside the enclave: what it must serve, what it reads, how it computes, and how it fails.</p>
+<div class="nav">📎 <a href="usdx-oracle-index.html">Index</a> ·
+<a href="usdx-oracle-plan.html">Plan</a> · <a href="usdx-oracle-reference.html">Findings</a> ·
+<a href="usdx-oracle-architecture.html">Architecture</a> · <a href="usdx-oracle-contracts.html">Contracts</a> ·
+<a href="usdx-oracle-operations.html">Operations</a></div>
+
+<h2>1. The container contract we must satisfy</h2>
+<p>Normative source: <code>docs/extension-contract.md</code>. It is not ours to change — any conforming
+container is a valid extension, and <code>./scripts/test-conformance.sh</code> enforces it mechanically.</p>
+<table>
+  <thead><tr><th style="width:11em">Surface</th><th>Requirement</th></tr></thead>
+  <tbody>
+    <tr><td><code>POST /action</code></td><td>Returns <code>ActionResult</code> JSON with HTTP <b>200 whenever a handler ran — including when it failed</b>. Handler failure is signalled by <code>ActionResult.status</code>, never by HTTP status. 400 for unparseable input, 501 for an unrouted <code>(opType, opCommand)</code>.</td></tr>
+    <tr><td><code>GET /state</code></td><td>Returns <code>StateResponse</code> (200). Serialised against handlers, so a state read never sees a half-applied mutation.</td></tr>
+    <tr><td>Routing</td><td><code>GET /action</code> → 405 · <code>POST /state</code> → 405 · anything else → 404</td></tr>
+    <tr><td>Concurrency</td><td>Handler invocations are serialised; at most one runs at a time.</td></tr>
+    <tr><td>Calls out</td><td><code>POST /sign</code> and <code>POST /decrypt</code> on <code>$SIGN_PORT</code>. <b>Wire encoding there is base64, not hex</b> — the single most common porting mistake.</td></tr>
+  </tbody>
+</table>
+<div class="verdict warn">
+<b>Two encoding traps from the contract doc.</b> <code>ActionResult.version</code> is a plain string
+(<code>"0.1.0"</code>) while <code>StateResponse.stateVersion</code> is bytes32 — genuinely asymmetric, and other
+repos have got it wrong. And <code>ActionResult.data</code> must be byte-exact: <code>Hash()</code> computes
+<code>keccak256(data)</code> and that hash is signed, so emit compact JSON with no whitespace in declaration order.
+</div>
+
+<h2>2. What changes from the scaffold</h2>
+<p>The scaffold ships a GREETING/SAY_HELLO example. The shape stays; the content is replaced.</p>
+<table>
+  <thead><tr><th style="width:17em">File</th><th>Change</th></tr></thead>
+  <tbody>
+    <tr><td><code>internal/config/config.go</code></td><td>Replace <code>OPTypeGreeting</code> / <code>OPCommandSayHello</code> / <code>OPCommandSayGoodbye</code> with <code>OPTypeUsdxOracle = "USDX_ORACLE"</code> and <code>OPCommandGetPrice = "GET_PRICE"</code>. Add source config: RPC endpoint lists, token addresses, quorum, margins, timeouts.</td></tr>
+    <tr><td><code>pkg/types/types.go</code></td><td>Replace the greeting request/response types. Redefine <code>State</code> — <b>operational fields only</b> (see §7).</td></tr>
+    <tr><td><code>internal/extension/extension.go</code></td><td><code>New()</code> and <code>actionHandler()</code> are boilerplate: leave them. Replace <code>processGreeting</code> with <code>processUsdxOracle</code>, and the two handlers with one <code>processGetPrice</code>.</td></tr>
+    <tr><td><i>new</i> <code>internal/sources/</code></td><td>Hex API clients, multi-provider RPC client, block selection.</td></tr>
+    <tr><td><i>new</i> <code>internal/pricing/</code></td><td>Decimal arithmetic and the price rule. Pure, no I/O — this is the part that must be exhaustively unit-tested.</td></tr>
+    <tr><td><code>testdata/conformance/</code></td><td>New fixtures for USDX op types; delete the greeting ones.</td></tr>
+  </tbody>
+</table>
+
+<h2>3. Acquiring the sources</h2>
+<p>Five reads per update: three chains and two API endpoints. Fetch them concurrently under one global
+deadline — total time matters because it bounds the inconsistency window (§5).</p>
+
+<h3>3a. Supply, per chain</h3>
+<p>The block-selection rule is the subtle part. Providers disagree on <code>latest</code>, and — measured —
+also on <code>finalized</code>, so <b>never send a tag in the query</b>.</p>
+<pre>for each chain:
+    # 1. resolve every provider's view of the finality reference to a NUMBER
+    for p in providers:
+        h[p] = (chain == ethereum)
+                 ? eth_getBlockByNumber("finalized").number
+                 : eth_blockNumber()
+
+    # 2. the lowest common view — everyone can serve at or below this
+    H = min(h)
+
+    # 3. back off by the per-chain margin
+    B = H - margin[chain]
+
+    # 4. refuse if B is outside the shallowest provider's state window
+    if (H - B) > min_state_window[chain]:
+        fail("margin exceeds provider state retention")
+
+    # 5. every provider answers the SAME explicit block
+    for p in providers:
+        s[p] = eth_call(token[chain], totalSupply(), at=B)
+
+    # 6. quorum on identical values — not a median
+    require count(most_common(s)) >= quorum[chain]
+    raw = most_common(s)
+
+    # 7. normalise with per-chain decimals
+    supply[chain] = raw / 10 ** decimals[chain]</pre>
+
+<table>
+  <tbody>
+    <tr><td style="width:14em"><b>Identical, not median</b></td><td>At a fixed block these reads are deterministic. Disagreement means something is wrong — a median would paper over it.</td></tr>
+    <tr><td><b>Per-chain margins</b></td><td>Measured block times: Flare 1.11 s, Songbird 1.07 s, Ethereum 12.01 s. 60 s of margin is ~54 blocks on Flare but ~5 on Ethereum.</td></tr>
+    <tr><td><b>State windows</b></td><td>Provider retention ranges from <i>latest only</i> to full archive. Two Ethereum endpoints keep 64 blocks; Ethereum <code>finalized</code> already sits ~83 behind head, so a naive margin on top of that will fall outside their window.</td></tr>
+    <tr><td><b>Decimals</b></td><td>Read them; never hard-code. Ethereum is 18, Flare and Songbird are 6. Caching per deploy is fine — but read at least once and assert.</td></tr>
+    <tr><td><b class="r">Songbird</b></td><td>Only one public RPC exists. Quorum there is currently 1-of-1 unless we buy coverage or self-host — a decision, not a default.</td></tr>
+  </tbody>
+</table>
+
+<h3>3b. Reserves, from Hex</h3>
+<p>The two endpoints do <b>not</b> return the same shape. Give them separate types and separate validation;
+a shared struct with a uniform <code>currency == "USD"</code> assertion fails closed on the public endpoint
+forever, because that endpoint has no <code>currency</code> field.</p>
+<table>
+  <thead><tr><th>Check</th><th>Public (bonds)</th><th>Private (cash)</th></tr></thead>
+  <tbody>
+    <tr><td>Thousand separators in <code>value</code></td><td><b>present</b> — must strip</td><td>absent in the sample</td></tr>
+    <tr><td><code>currency</code></td><td>absent — do not require</td><td>require <code>"USD"</code></td></tr>
+    <tr><td><code>last_update</code> freshness</td><td>reject if older than <code>maxReserveAge</code></td><td>same</td></tr>
+    <tr><td>Parse</td><td colspan="2">arbitrary-precision decimal, <b>never float64</b></td></tr>
+    <tr><td>Bounds</td><td colspan="2">non-negative, finite, within a plausible order of magnitude</td></tr>
+  </tbody>
+</table>
+<div class="verdict warn">
+<b>Strip separators carefully.</b> Blindly deleting commas is how you mis-parse a comma-as-decimal-point
+locale: <code>"1,50"</code> silently becomes <code>150</code>. Validate the shape — digits, grouped in threes,
+one dot, two decimal places — and reject anything else rather than "cleaning" it.
+</div>
+
+<h2>4. Computing the price</h2>
+<pre>S = Σ supply[chain] − exclusions          # decimal, not float
+B = R_cash + (1 − haircut) · R_bonds      # haircut defaults to 0
+
+guard S &gt; 0                               # else fail closed
+guard B ≥ 0
+
+ratio = B / S
+price = min(1, ratio)
+
+value = truncate(price · 10^decimals)     # round DOWN, never up</pre>
+<ul>
+  <li><b>Decimal arithmetic throughout.</b> <code>big.Rat</code> or <code>shopspring/decimal</code>. A float64
+      cannot represent these magnitudes exactly and the whole point is cent-level fidelity.</li>
+  <li><b>Truncate rather than round</b> so we never over-report backing.</li>
+  <li><b>Cap at 1.</b> USDX redeems at par; over-collateralisation does not make it worth more.</li>
+  <li><b>The haircut parameter exists but defaults to 0.</b> Wire it now so applying one later is a config
+      change, not a code-hash change — but do not apply one until Hex tells us how bonds are valued.</li>
+</ul>
+<div class="verdict warn">
+<b>Reality check.</b> With today's inputs this computes exactly 1.000000, and — per Findings §1 — it may be
+structurally incapable of computing anything else. Build the arithmetic correctly regardless, but do not
+mistake a passing test suite for a working oracle.
+</div>
+
+<h2>5. The timing problem</h2>
+<p>Supply reads and reserve reads are not atomic. A redemption landing between them changes both sides:</p>
+<ul>
+  <li>Reserves read <i>before</i> the redeem (high) + supply read <i>after</i> the burn (low) → price <b>over-stated</b>.</li>
+  <li>Supply read <i>before</i> the burn (high) + reserves <i>after</i> (low) → price <b>under-stated</b>.</li>
+</ul>
+<p>This is not hypothetical. A single burn of <b>1,000,000 USDX — 4.8% of supply — landed at 07:10:58Z on
+31 Jul 2026</b>, and supply has fallen 54% in six months. A redemption that size landing mid-update moves the
+naive ratio far more than any sane deviation threshold.</p>
+
+<h3>Mitigation: conservative double-read</h3>
+<pre>S₁ = read_all_supplies()
+R  = read_reserves()
+S₂ = read_all_supplies()
+
+if elapsed(S₁ … S₂) &gt; consistency_window:  fail closed
+S = max(S₁, S₂)        # bias every skew downward, never upward</pre>
+<p>Taking the larger supply against the observed reserves means any timing skew can only understate the
+price. Combined with the cap at 1, the error is one-directional and safe: we may briefly under-report
+backing, never over-report it. Cost is one extra round of RPC reads.</p>
+<p><b>But note the source cadence.</b> The public endpoint refreshes on a ~10-minute tick, so a consistency
+window measured in seconds is theatre against <i>that</i> input — it only constrains our own read spread.
+The real fix is a reserve figure with an <code>as_of</code> we can align to a block. Worth asking Hex for.</p>
+
+<h2>6. The on-chain message — canonical definition</h2>
+<div class="verdict">
+<b>This section is normative.</b> The Contracts doc consumes exactly this; if the two ever disagree,
+this one wins. Any change here is a wire-format break requiring a new <code>domain</code> tag.
+</div>
+
+<h3>6a. Two different signatures — don't confuse them</h3>
+<table>
+  <thead><tr><th style="width:11em">Signature</th><th>Over</th><th>For</th></tr></thead>
+  <tbody>
+    <tr><td>Result signature</td><td><code>hash(hash(data), id, hash(submissionTag), status)</code></td><td>The <b>proxy</b>, to confirm the result came from the right machine. Per the FCC spec it is "not intended to be shared externally". <b>Not what the store verifies.</b></td></tr>
+    <tr><td><b>Our embedded signature</b></td><td>the price report body, below</td><td>The <b>store</b>. The FCC spec expects <code>data</code> to be "self-contained in terms of actual result and proofs by provided signatures" — this is that proof.</td></tr>
+  </tbody>
+</table>
+
+<h3>6b. The signed body</h3>
+<p>Price only — no supply or reserve components (Findings §1; <code>/state</code> is public too, so they
+have nowhere to go).</p>
+<pre>struct PriceReport {
+    bytes32 domain;         // keccak256("USDX_ORACLE_PRICE_V1")  — purpose + format version
+    uint256 chainId;        // target chain (Flare mainnet = 14)
+    address store;          // the UsdxPriceStore this is valid for
+    bytes21 feedId;         // scopes the signature to one feed
+    uint256 price;          // truncate(price · 10^decimals)
+    int8    decimals;       // 8
+    uint64  observedAt;     // measurement time — the store's monotonicity key
+    bytes32 instructionId;  // the instruction that triggered this update
+}
+
+body      = abi.encode(report)          // NOT encodePacked
+data      = abi.encode(body, signature) // ActionResult.data — bytes, bytes</pre>
+
+<p><b>Carry <code>body</code> as raw bytes, not as a re-encodable struct.</b> The store then hashes the exact
+bytes that were signed instead of re-encoding a decoded struct and hoping the encoding round-trips
+identically. It also decodes those same bytes to read the fields — one source, no ambiguity.</p>
+
+<h3>6c. Why each field is in the signature</h3>
+<table>
+  <thead><tr><th style="width:9em">Field</th><th>Attack it prevents</th></tr></thead>
+  <tbody>
+    <tr><td><code>domain</code></td><td>A signature produced for some other <code>USDX_ORACLE</code> message being reinterpreted as a price. Also versions the format — changing the layout means changing this tag.</td></tr>
+    <tr><td><code>chainId</code></td><td><b class="r">Coston2 → mainnet replay.</b> We will test on Coston2, quite possibly with the same TEE machine and therefore the same signing key. Without this field a testnet price is a valid mainnet price. This is the least obvious and most likely of the replay risks.</td></tr>
+    <tr><td><code>store</code></td><td>Replay onto a redeployed or attacker-deployed store expecting the same format.</td></tr>
+    <tr><td><code>feedId</code></td><td>Cross-feed reuse if we ever run more than one feed from this extension.</td></tr>
+    <tr><td><code>price</code>, <code>decimals</code></td><td>Reinterpreting a value at the wrong scale — 1.0 at 8 decimals is 0.00000001 at 18.</td></tr>
+    <tr><td><code>observedAt</code></td><td>Re-timing an old price under a fresh timestamp. It is the store's ordering key, so it <b>must</b> be signed.</td></tr>
+    <tr><td><code>instructionId</code></td><td>Not security-critical — an audit trail linking the price to its triggering event.</td></tr>
+  </tbody>
+</table>
+
+<h3>6d. How <code>POST /sign</code> actually signs <span class="r">— read this before writing the verifier</span></h3>
+<p>Traced through tee-node (<code>internal/extension/server/server.go</code> →
+<code>internal/node/node.go</code> → <code>pkg/utils/crypto.go</code>):</p>
+<pre>// we send:      { "message": base64(body) }
+msgHash  := crypto.Keccak256(request.Message)                    // 1. hash our bytes
+sig, _   := crypto.Sign(accounts.TextHash(msgHash), privateKey)  // 2. EIP-191 prefix, then sign
+// we receive:  { "message": base64(...), "signature": base64(65 bytes) }</pre>
+<div class="verdict warn">
+<b>Two traps, both silent.</b>
+<ol style="margin-bottom:0">
+  <li><b>tee-node applies EIP-191 prefixing.</b> <code>accounts.TextHash</code> prepends
+      <code>"\x19Ethereum Signed Message:\n32"</code> to the hash and re-hashes. So the store must recover
+      against <code>toEthSignedMessageHash(keccak256(body))</code>, <b>not</b> against
+      <code>keccak256(body)</code>. Verifying the unprefixed hash simply recovers a different address, and
+      it will look like a registry problem rather than a hashing one.</li>
+  <li><b><code>v</code> comes back as 0 or 1</b>, because go-ethereum's <code>crypto.Sign</code> returns it
+      that way. Solidity's <code>ecrecover</code> and OpenZeppelin's <code>ECDSA.recover</code> expect 27 or
+      28. Somebody must add 27 — decide whether it is the extension or the contract, and write a test that
+      would fail if both or neither did it.</li>
+</ol>
+</div>
+<p>Also note the request/response encoding is <b>base64</b>, not hex — <code>SignRequest.Message</code> is a
+Go <code>[]byte</code> and Go marshals those as base64 in JSON. Same trap as <code>/decrypt</code>.</p>
+
+<h2>7. <code>GET /state</code> — public, so keep it operational</h2>
+<p><code>/state</code> is folded into the attested <code>TEEState</code> and republished by the proxy. It is a
+monitoring surface, not a private log.</p>
+<table>
+  <thead><tr><th>Include</th><th>Exclude</th></tr></thead>
+  <tbody>
+    <tr><td>last published price + its timestamp</td><td rowspan="4" style="vertical-align:top"><b>Raw supply figures</b><br><b>Raw reserve figures</b><br>Anything derived closely enough to reconstruct them<br>Any secret, obviously</td></tr>
+    <tr><td>success / failure counters</td></tr>
+    <tr><td>last error <i>class</i> (not the message — messages leak values)</td></tr>
+    <tr><td>per-source health: last-success time, consecutive failures</td></tr>
+  </tbody>
+</table>
+<p><i>Open question in the plan:</i> whether to expose a short price history. It is useful for monitoring and
+harmless on its own — a series of published prices reveals nothing the feed doesn't already — so probably
+yes, bounded to a fixed ring.</p>
+
+<h2>8. Error taxonomy</h2>
+<p>The contract gives us <code>status</code> and <code>log</code>. Status 1 is success, 0 is failure, anything
+else is "in progress" — we have no in-progress state, so we only use 0 and 1.</p>
+<table>
+  <thead><tr><th style="width:12em">Class</th><th>Cause</th><th>Monitoring should</th></tr></thead>
+  <tbody>
+    <tr><td><code>source_unavailable</code></td><td>Hex API or RPC timeout / 5xx</td><td>warn; page if sustained past 2 cycles</td></tr>
+    <tr><td><code>source_malformed</code></td><td>unparseable value, missing field, bad shape</td><td><b>page</b> — this means the contract changed</td></tr>
+    <tr><td><code>source_stale</code></td><td><code>last_update</code> older than the bound</td><td>warn, page if sustained</td></tr>
+    <tr><td><code>quorum_failed</code></td><td>providers disagreed at a fixed block</td><td><b>page</b> — should be near-impossible</td></tr>
+    <tr><td><code>block_unavailable</code></td><td>chosen block outside provider state window</td><td>page — margin is misconfigured</td></tr>
+    <tr><td><code>consistency_window</code></td><td>read spread exceeded the bound</td><td>warn; frequent means the deadline is too tight</td></tr>
+    <tr><td><code>implausible</code></td><td>supply = 0, ratio outside sane bounds</td><td><b>page</b></td></tr>
+  </tbody>
+</table>
+<p>Emit <code>log = "error: &lt;class&gt;: &lt;detail&gt;"</code> and keep only the class in <code>/state</code>. The
+detail may contain values we have agreed not to publish, and <code>log</code> travels with the result.</p>
+
+<h2>9. Configuration</h2>
+<p>Only <code>EXTENSION_PORT</code> and <code>SIGN_PORT</code> come from the environment per the container
+contract; everything else is ours to place. The dividing line matters for the code hash:</p>
+<table>
+  <thead><tr><th style="width:13em">Where</th><th>What</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td><b>Baked into the image</b></td><td>token addresses, chain IDs, the price rule, quorum policy, bounds</td><td>These <i>are</i> the oracle's semantics. Changing them should change the code hash — that is the guarantee.</td></tr>
+    <tr><td><b>Injected encrypted</b></td><td>Hex API key, RPC provider keys</td><td>Secret, and rotatable without a new code hash.</td></tr>
+    <tr><td><b>Operator-settable</b></td><td>log level, ports, proxy URL</td><td>Must appear in the <code>allow_env_override</code> launch-policy label or Confidential Space rejects the override at attestation time.</td></tr>
+    <tr><td><b class="r">Undecided</b></td><td>exclusion list, RPC endpoint URLs</td><td>Config is operationally flexible; baking them in is auditable. Leaning baked-in for exclusions (they change the answer) and config for endpoint URLs (they don't).</td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>

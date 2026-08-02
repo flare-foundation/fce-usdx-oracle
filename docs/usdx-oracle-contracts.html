@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>USDX Oracle — Contracts</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 10.5pt; line-height: 1.45;
+         color: #202124; max-width: 48em; margin: 2.5em auto; padding: 0 1.5em; }
+  h1 { font-size: 18pt; font-weight: 400; margin: 0 0 .1em; }
+  h2 { font-size: 13.5pt; font-weight: 400; margin: 1.7em 0 .3em;
+       border-bottom: 1px solid #dadce0; padding-bottom: .2em; }
+  h3 { font-size: 11pt; font-weight: 700; margin: 1.1em 0 .2em; }
+  p { margin: .45em 0; }
+  ul, ol { margin: .4em 0; padding-left: 1.4em; }
+  li { margin: .2em 0; }
+  code { font-family: "Courier New", monospace; font-size: 9.5pt; background: #f1f3f4; padding: 0 .2em; }
+  pre { font-family: "Courier New", monospace; font-size: 8.5pt; line-height: 1.32;
+        background: #f8f9fa; border: 1px solid #dadce0; padding: .7em; overflow-x: auto; margin: .5em 0; }
+  table { border-collapse: collapse; width: 100%; margin: .5em 0; font-size: 9.5pt; }
+  th, td { border: 1px solid #b0b3b8; padding: .3em .5em; text-align: left; vertical-align: top; }
+  th { background: #f1f3f4; font-weight: 700; }
+  .sub { color: #5f6368; font-style: italic; margin-bottom: 1.5em; font-size: 9.5pt; }
+  .r { color: #c5221f; font-weight: 700; }
+  .verdict { border-left: 3px solid #1a73e8; background: #f4f8fe; padding: .5em .9em; margin: .7em 0; }
+  .verdict.warn { border-left-color: #c5221f; background: #fdf3f2; }
+  .nav { background: #f8f9fa; border: 1px solid #dadce0; padding: .5em .9em; margin-bottom: 1.5em; font-size: 9.5pt; }
+</style>
+</head>
+<body>
+
+<h1>USDX Oracle — Contracts</h1>
+<p class="sub">Four contracts, the rules that make the store safe, and how the feed reaches FTSO consumers.</p>
+<div class="nav">📎 <a href="usdx-oracle-index.html">Index</a> ·
+<a href="usdx-oracle-plan.html">Plan</a> · <a href="usdx-oracle-reference.html">Findings</a> ·
+<a href="usdx-oracle-architecture.html">Architecture</a> · <a href="usdx-oracle-extension.html">Extension</a> ·
+<a href="usdx-oracle-operations.html">Operations</a></div>
+
+<h2>Overview</h2>
+<table>
+  <thead><tr><th style="width:13em">Contract</th><th>Role</th><th>Trusted for</th></tr></thead>
+  <tbody>
+    <tr><td><code>UsdxInstructionSender</code></td><td>The only address allowed to submit instructions for our extension</td><td>Access control on <i>who can trigger</i> an update</td></tr>
+    <tr><td><code>UsdxStateVerifier</code></td><td>Required by <code>register()</code>; verifies custom extension state</td><td>Nothing in v1 — but it must exist</td></tr>
+    <tr><td><code>UsdxPriceStore</code></td><td>Verifies TEE signatures, enforces ordering and bounds, stores the price</td><td><b>Everything.</b> This is the security boundary.</td></tr>
+    <tr><td><code>UsdxCustomFeed</code></td><td>Thin <code>IICustomFeed</code> adapter over the store</td><td>Not reverting</td></tr>
+  </tbody>
+</table>
+
+<h2>1. UsdxInstructionSender</h2>
+<p>Start from the scaffold's <code>InstructionSender.sol</code>. The constructor,
+<code>setExtensionId()</code> and <code>_getExtensionId()</code> are marked <b>do not modify</b> — leave them.
+Replace the two greeting functions with one:</p>
+<pre>bytes32 public constant OP_TYPE_USDX_ORACLE = bytes32("USDX_ORACLE");
+bytes32 public constant OP_COMMAND_GET_PRICE = bytes32("GET_PRICE");
+
+function requestPriceUpdate() external payable {
+    address[] memory teeIds = TEE_MACHINE_REGISTRY.getRandomTeeIds(_getExtensionId(), 1);
+    address[] memory cosigners = new address[](0);
+
+    ITeeExtensionRegistry.TeeInstructionParams memory params =
+        ITeeExtensionRegistry.TeeInstructionParams({
+            opType:             OP_TYPE_USDX_ORACLE,
+            opCommand:          OP_COMMAND_GET_PRICE,
+            message:            "",            // no caller input; see below
+            cosigners:          cosigners,
+            cosignersThreshold: 0,
+            claimBackAddress:   msg.sender
+        });
+
+    TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(teeIds, params);
+}</pre>
+<p><b>The instruction carries no payload.</b> Everything the extension needs — which chains, which tokens,
+which endpoints — is fixed in the image. Accepting caller-supplied parameters would let whoever triggers an
+update influence what gets measured, which defeats the point. The scaffold's docs note that
+<code>message</code> is "typically non-empty"; empty is fine and is the right choice here.</p>
+
+<h3>Who may call it</h3>
+<table>
+  <thead><tr><th style="width:11em">Option</th><th>Trade-off</th></tr></thead>
+  <tbody>
+    <tr><td><b>Open to anyone</b></td><td>Best liveness — anyone can refresh a stale feed. Each call costs the registry fee, so spam is self-limiting, but a determined griefer could still burn our TEE capacity.</td></tr>
+    <tr><td>Keeper allowlist</td><td>Predictable load, but the feed's freshness now depends on <i>our</i> keepers being alive.</td></tr>
+    <tr><td><b>Open + minimum interval</b> <i>(proposed)</i></td><td>Permissionless, with a per-caller or global cooldown matching the 10-minute source refresh. Rejects the pathological case without centralising liveness.</td></tr>
+  </tbody>
+</table>
+
+<h2>2. UsdxStateVerifier</h2>
+<p><code>TeeExtensionRegistry.register(teeExtensionStateVerifier, teeExtensionInstructionsSender)</code>
+requires a state-verifier address, and <b>the scaffold does not ship one</b> — this is a gap that will bite at
+registration time if nobody notices it first.</p>
+<p>Our extension's state is operational telemetry, not consensus-critical, so a permissive verifier is
+correct for v1. Write it deliberately rather than by accident, and document that it is intentionally
+permissive so a future reviewer does not mistake it for an oversight.</p>
+
+<h2>3. UsdxPriceStore — the security boundary</h2>
+<div class="verdict">
+Everything else can be sloppy and the system still works. If this contract accepts something it
+shouldn't, the feed is wrong and every downstream protocol is wrong with it.
+</div>
+
+<h3>Acceptance rules</h3>
+<p>The message layout is defined normatively in
+<a href="usdx-oracle-extension.html">Extension §6</a>. This must decode exactly that.</p>
+<pre>function submitPrice(bytes calldata body, bytes calldata signature) external {
+    // 1. authenticity — note the EIP-191 prefix: tee-node signs accounts.TextHash(keccak256(body)),
+    //    so recovering against the bare keccak256 silently yields the wrong address.
+    bytes32 digest = MessageHashUtils.toEthSignedMessageHash(keccak256(body));
+    address signer = ECDSA.recover(digest, signature);
+    require(machineRegistry.isActiveFor(EXTENSION_ID, signer), "not a registered TEE");
+
+    PriceReport memory r = abi.decode(body, (PriceReport));
+
+    // 2. domain separation — without these a Coston2 signature is a valid mainnet one
+    require(r.domain  == DOMAIN,          "wrong domain");
+    require(r.chainId == block.chainid,   "wrong chain");
+    require(r.store   == address(this),   "wrong store");
+    require(r.feedId  == FEED_ID,         "wrong feed");
+
+    // 3. ordering + replay, in one rule
+    require(r.observedAt > lastObservedAt, "stale or replayed");
+
+    // 4. clock sanity
+    require(r.observedAt <= block.timestamp + MAX_SKEW, "from the future");
+    require(r.observedAt >= block.timestamp - MAX_AGE,  "too old to matter");
+
+    // 5. plausibility — reject, never clamp
+    require(r.price >= minPrice && r.price <= maxPrice, "out of bounds");
+    require(r.decimals == EXPECTED_DECIMALS,            "unexpected decimals");
+
+    // 6. optional deviation guard — see below
+    ...
+    lastObservedAt = r.observedAt;
+    lastPrice      = r.price;
+    emit PriceUpdated(r.price, r.observedAt, signer, r.instructionId);
+}</pre>
+<div class="verdict warn">
+<b>Hash the bytes you were given, don't re-encode.</b> Taking <code>keccak256(body)</code> on the exact
+calldata — rather than decoding to a struct and re-encoding it — removes any chance of an encoding
+round-trip mismatch between the Go producer and the Solidity verifier. Decode the same bytes separately
+to read the fields.
+</div>
+
+<table>
+  <thead><tr><th style="width:12em">Rule</th><th>Why it is there</th></tr></thead>
+  <tbody>
+    <tr><td>Signer is a <i>registered, active</i> machine</td><td>Checking "is a TEE" is not enough — it must be a TEE for <b>our</b> extension, and still active. A decommissioned machine's key must stop working.</td></tr>
+    <tr><td>Domain, chain, store, feed all bound in the signature</td><td>The <code>chainId</code> check is the one that matters most in practice: we will run this on Coston2 first, plausibly with the same machine and therefore the same key. Without it, every testnet price is a valid mainnet submission.</td></tr>
+    <tr><td>Strictly increasing <code>observedAt</code></td><td>FCC is explicitly fire-and-forget with <b>no ordering guarantee</b>. This single rule covers replays and out-of-order delivery together. Do not reach for a nonce; the timestamp is already the right key.</td></tr>
+    <tr><td>Reject out-of-bounds, don't clamp</td><td>Clamping publishes a number nobody computed and hides the fault. Rejecting keeps the last honest value and raises an alert.</td></tr>
+    <tr><td>Permissionless submission</td><td>The signature is the authority. Restricting submission would add a liveness dependency for no security gain.</td></tr>
+    <tr><td>Governance <code>pause()</code></td><td>Freezes the value. <b>Must not make reads revert</b> — see §4.</td></tr>
+  </tbody>
+</table>
+
+<h3>The deviation guard <span class="r">— unresolved</span></h3>
+<div class="verdict warn">
+<b>This needs a named risk owner and is blocking.</b> A guard that rejects large jumps protects the feed
+from one bad data point, but delays detection of a genuine depeg — the exact scenario the feed exists for.
+These pull in opposite directions and it is not an engineering call.
+<p style="margin-bottom:0"><b>Straw man to react to:</b> upward moves toward 1.0 publish freely; a downward
+move beyond <code>maxDeviationBps</code> requires K≈3 consecutive confirmations (~15 min at a 5-minute cadence)
+but pages on the <i>first</i> observation. Someone must consciously accept that a real depeg reaches consumers
+~15 minutes late.</p>
+</div>
+
+<h2>4. UsdxCustomFeed</h2>
+<p>Interface verified against <code>flare-smart-contracts-v2</code>:</p>
+<pre>interface IICustomFeed {
+    function getCurrentFeed() external payable returns (uint256 _value, int8 _decimals, uint64 _timestamp);
+    function feedId()        external view    returns (bytes21 _feedId);
+    function calculateFee()  external view    returns (uint256 _fee);
+}</pre>
+
+<table>
+  <tbody>
+    <tr><td style="width:13em"><b>Mutability</b></td><td><code>getCurrentFeed()</code> is <b>payable and not <code>view</code></b>. Our implementation must match even though it only reads storage.</td></tr>
+    <tr><td><b>Fee</b></td><td><code>calculateFee()</code> returns <b>0</b>. The shipped sFLR/stXRP feeds charge because their consumer is really paying for an underlying <code>FastUpdater</code> read; we have none.</td></tr>
+    <tr><td><b>We are a primary feed</b></td><td>Both shipped examples are <i>derivative</i> — they read an underlying FTSO feed and rescale it by an exchange rate. We serve a value our own TEE produced. Allowed (the registry checks only category and interface), but their logic is not a template. Only their structure is.</td></tr>
+  </tbody>
+</table>
+
+<div class="verdict warn">
+<b>Never revert.</b> <code>FtsoV2.getFeedById</code> forwards the call, so a revert inside
+<code>getCurrentFeed()</code> propagates to every consumer at once — converting our stale-data problem into
+their liveness outage, simultaneously, across every protocol reading the feed. Return the last stored price
+with its true ageing timestamp and let consumers apply their own freshness policy. The same applies to pause:
+freeze the value, do not throw.
+</div>
+
+<h3>Feed ID</h3>
+<p><code>bytes21</code> = 1 category byte + 20 bytes ASCII name, right-padded with zeros by the
+<code>bytes21</code> cast. Custom feeds must use a category in <b>32–63</b> — <code>_isCustomFeedId</code>
+checks <code>32 &lt;= category &lt; 64</code>. It is a range, not one specific byte.</p>
+<pre>category 0x20 + "USDX/USD"
+0x20  555344582f555344  000000000000000000000000
+feedId = 0x20555344582f555344000000000000000000000000</pre>
+<p><b>Agree the name with Flare before registering.</b> Integrators hard-code the feed ID, so renaming later
+means either a migration or leaning on <code>feedIdChanges</code>. Decimals (proposed 8) are unconstrained by
+the interface — entirely our call.</p>
+
+<h2>5. Registration sequence</h2>
+<p>Several of these have lead times and at least one needs Flare governance. Order matters.</p>
+<table>
+  <thead><tr><th style="width:2em">#</th><th>Step</th><th>Note</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Deploy <code>UsdxStateVerifier</code> + <code>UsdxInstructionSender</code></td><td>Sender address must exist before registration</td></tr>
+    <tr><td>2</td><td><code>TeeExtensionRegistry.register(verifier, sender)</code></td><td>Caller becomes extension owner</td></tr>
+    <tr><td>3</td><td><code>sender.setExtensionId()</code></td><td>Scans the registry for its own address; one-shot</td></tr>
+    <tr><td>4</td><td><code>addTeeVersion(extensionId, version, codeHash, platforms, governanceHash)</code></td><td>Pins the image. Needs a reproducible build first.</td></tr>
+    <tr><td>5</td><td>Deploy the Confidential Space VM; register the machine</td><td>Needs its static egress IP allowlisted by Hex first, or it cannot read the private endpoint</td></tr>
+    <tr><td>6</td><td>Deploy <code>UsdxPriceStore</code>, then <code>UsdxCustomFeed</code></td><td>Feed takes the store's address</td></tr>
+    <tr><td>7</td><td><b>Governance:</b> <code>FtsoV2.addCustomFeeds([feed])</code></td><td><b class="r">A governance proposal with a timelock — start this early.</b> Reverts on category outside 32–63 or a duplicate ID.</td></tr>
+  </tbody>
+</table>
+
+<h2>6. Upgrade paths</h2>
+<table>
+  <thead><tr><th style="width:14em">Change</th><th>Mechanism</th><th>Governance?</th></tr></thead>
+  <tbody>
+    <tr><td>Price logic, sources, bounds inside the enclave</td><td>New image → <code>addTeeVersion</code> → machine upgrade</td><td>No (extension owner)</td></tr>
+    <tr><td>Store parameters (bounds, max age, pause)</td><td>Owner setters on the store</td><td>No</td></tr>
+    <tr><td>Feed contract bug fix</td><td><code>replaceCustomFeeds</code> — same feed ID, new address</td><td><b>Yes</b></td></tr>
+    <tr><td>Store replacement</td><td>Deploy new store + new feed, then <code>replaceCustomFeeds</code></td><td><b>Yes</b></td></tr>
+    <tr><td>Feed ID / name</td><td>Effectively a re-integration for consumers</td><td><b>Yes</b> — avoid</td></tr>
+  </tbody>
+</table>
+<p><b>Design consequence:</b> keep <code>UsdxCustomFeed</code> as thin as possible. Every line of logic in it
+is a line that can only be fixed through governance. Put the rules in the store, and the judgement in the
+enclave.</p>
+
+<h2>7. Testing</h2>
+<ul>
+  <li><b>Fuzz the store's guards.</b> Random <code>observedAt</code> orderings must never leave
+      <code>lastObservedAt</code> going backwards; random prices outside bounds must always revert.</li>
+  <li><b>Signature negative cases:</b> unregistered signer, deactivated machine, signature over a
+      <i>different</i> <code>observedAt</code> than the body carries, replayed body.</li>
+  <li><b>Domain separation, with a real fixture:</b> take a body signed for Coston2 and assert mainnet
+      rejects it. Also wrong <code>domain</code>, wrong <code>store</code>, wrong <code>feedId</code>. These are
+      the checks most likely to be quietly dropped as "obviously fine".</li>
+  <li><b>Cross-language signature fixture:</b> a body produced and signed by the Go extension, committed
+      as a fixture, verified by the Solidity test. This is what catches the EIP-191 prefix and the
+      <code>v = 0/1</code> vs <code>27/28</code> mismatch — neither shows up when both sides are written by
+      the same person assuming the same thing.</li>
+  <li><b>Staleness path:</b> assert <code>getCurrentFeed()</code> returns rather than reverts when the stored
+      price is arbitrarily old, and when paused. This is the test most likely to be forgotten and the most
+      damaging to miss.</li>
+  <li><b>Feed ID:</b> assert the category byte lands in 32–63 and that <code>addCustomFeeds</code> would accept it.</li>
+</ul>
+
+</body>
+</html>

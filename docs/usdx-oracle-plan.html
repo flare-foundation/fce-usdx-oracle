@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>USDX Price Oracle — Plan &amp; TODO</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 10.5pt; line-height: 1.45;
+         color: #202124; max-width: 48em; margin: 2.5em auto; padding: 0 1.5em; }
+  h1 { font-size: 18pt; font-weight: 400; margin: 0 0 .1em; }
+  h2 { font-size: 13.5pt; font-weight: 400; margin: 1.6em 0 .3em;
+       border-bottom: 1px solid #dadce0; padding-bottom: .2em; }
+  h3 { font-size: 11pt; font-weight: 700; margin: 1em 0 .2em; }
+  p  { margin: .45em 0; }
+  ul, ol { margin: .35em 0; padding-left: 1.4em; }
+  li { margin: .2em 0; }
+  code { font-family: "Courier New", monospace; font-size: 9.5pt; background: #f1f3f4; padding: 0 .2em; }
+  pre { font-family: "Courier New", monospace; font-size: 8.5pt; line-height: 1.3;
+        background: #f8f9fa; border: 1px solid #dadce0; padding: .7em; overflow-x: auto; margin: .5em 0; }
+  table { border-collapse: collapse; width: 100%; margin: .5em 0; font-size: 9.5pt; }
+  th, td { border: 1px solid #b0b3b8; padding: .3em .5em; text-align: left; vertical-align: top; }
+  th { background: #f1f3f4; font-weight: 700; }
+  .sub { color: #5f6368; font-style: italic; margin-bottom: 1.2em; font-size: 9.5pt; }
+  .ref { background: #f4f8fe; border: 1px solid #c6dafc; padding: .55em .9em; margin: 1em 0; font-size: 10pt; }
+  .callout { border: 1px solid #e0a3a1; background: #fdf3f2; padding: .7em .9em; margin: .9em 0; }
+  .callout h2 { margin-top: 0; border: none; color: #a50e0e; font-weight: 700; font-size: 12.5pt; }
+  .r { color: #c5221f; font-weight: 700; }
+  .num { text-align: right; font-family: "Courier New", monospace; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<h1>USDX Price Oracle — Plan &amp; TODO</h1>
+<p class="sub">Working plan. Evidence and reference data live in the companion doc.</p>
+
+<div class="ref">
+📎 <b>Detail lives in companion docs:</b>
+<a href="usdx-oracle-reference.html">Research Findings</a> (evidence, addresses, APIs, RPC survey) ·
+<a href="usdx-oracle-architecture.html">Architecture</a> ·
+<a href="usdx-oracle-extension.html">Extension</a> ·
+<a href="usdx-oracle-contracts.html">Contracts</a> ·
+<a href="usdx-oracle-operations.html">Operations</a> ·
+<a href="usdx-oracle-index.html">Index</a>
+<br><span style="color:#5f6368">Replace these with Google Doc URLs once the Docs are created.</span>
+</div>
+
+<h2>What &amp; why</h2>
+<p>USDX's only real market (BitMart) is down, so there's no price for FTSO. We publish a
+<b>backing-based price</b> instead: a TEE extension reads on-chain supply, asks Hex for reserves,
+publishes the ratio as an FTSO custom feed. The TEE holds the API keys and is pinned by a registered
+code hash, so consumers verify <i>what</i> computed the price rather than trusting an operator.</p>
+
+<pre>supply  = USDX totalSupply on Flare + Ethereum + Songbird  (minus exclusions)
+backing = bond reserves (public API) + cash reserves (private API)
+price   = min(1, backing / supply)      capped at 1: USDX redeems at par</pre>
+
+<div class="callout">
+<h2>⚠ Blocker: the reserves figure may be pinned to supply</h2>
+<p>Hex's <code>current_reserves_amount</code> equals total on-chain supply <b>to the cent</b>, and tracks
+it through changes — when Flare burned exactly 1M USDX this morning, the figure followed within hours.
+Whether that's because the metric is derived from chain data, or because Hex is genuinely 1:1
+par-backed, the result is the same: <code>backing/supply</code> = 1.000000 by construction and the feed
+prints $1.00 forever, unable to detect the depeg it exists to detect.</p>
+<p><b>The question that settles it:</b> <i>under what circumstances would
+<code>current_reserves_amount</code> ever be less than total on-chain supply?</i> If the answer is
+"never" or "only on a manual write-down", we need a different data source.</p>
+<p style="margin-bottom:0"><b>Nothing else on this plan is worth building until that's answered.</b>
+Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.</p>
+</div>
+
+<h2>Decisions</h2>
+<table>
+  <thead><tr><th style="width:15em">Decision</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Keeper relays the signed result; TEE sends no transaction</td>
+        <td>Keeps gas/nonces/stuck-tx out of the enclave. The store verifies the signature, so the keeper is liveness, not trust — anyone can submit.</td></tr>
+    <tr><td>RPC, not FDC, for supply reads</td>
+        <td>FDC adds a round trip and complexity; the TEE is already the trust anchor. Redundancy instead: 3 providers/chain, 2-of-3 or all-3 — configurable.</td></tr>
+    <tr><td>Query an explicit block number, never a tag</td>
+        <td>Providers disagree on <code>latest</code> — and, measured, on <code>finalized</code> too. Resolve the tag to a number per provider, take the minimum, query everyone there.</td></tr>
+    <tr><td>Read <code>decimals()</code> per chain</td>
+        <td>They differ: 18 on Ethereum, 6 on Flare/Songbird.</td></tr>
+    <tr><td>On-chain payload carries price only</td>
+        <td>Hex may consider reserve figures sensitive. Note <code>GET /state</code> is public too, so it can't hold them either.</td></tr>
+    <tr><td>Fail closed</td>
+        <td>Source down or value implausible → publish nothing, let the timestamp age. Never guess a price.</td></tr>
+    <tr><td>Feed never reverts on stale data</td>
+        <td><code>FtsoV2</code> forwards calls through, so a revert becomes a liveness outage for every consumer. Return last price + ageing timestamp; pause freezes rather than throws.</td></tr>
+  </tbody>
+</table>
+
+<h2>TODO</h2>
+
+<h3><span class="r">Blocked on Hex 🔴</span></h3>
+<ul>
+  <li>☐ <b>Resolve the reserves-tracks-supply blocker</b> (above)</li>
+  <li>☐ API key for the private endpoint · ☐ whitelist TEE egress IPs (one static IP per machine — decide machine count first)</li>
+  <li>☐ Status of the old Ethereum contract (150,000 USDX, excluded from Hex's figure)</li>
+  <li>☑ <s>Confirm addresses + decimals</s> — done, see findings §2</li>
+</ul>
+
+<h3>Data sources</h3>
+<ul>
+  <li>☐ Clients for both endpoints (private takes an auth header)</li>
+  <li>☐ Validation <b>per endpoint</b> — they return different shapes (findings §3). Strip thousand separators; parse as decimal, never float64.</li>
+  <li>☐ Timeouts, bounded retries, capped response size</li>
+</ul>
+
+<h3>On-chain supply reads</h3>
+<ul>
+  <li>☐ Multi-provider RPC client, 3 endpoints/chain, configurable · ☐ quorum at a fixed block, abort on failure</li>
+  <li>☐ <b>Decide Songbird coverage</b> — only one public endpoint exists (findings §4): buy, self-host, or accept single-provider risk</li>
+  <li>☐ Per-chain finality margin <i>N</i>, kept inside the shallowest provider's state window</li>
+  <li>☐ Decide whether the old Ethereum contract counts toward supply · ☐ exclusion list</li>
+</ul>
+
+<h3>Extension (Go)</h3>
+<ul>
+  <li>☐ Op type / commands (<code>USDX_ORACLE</code> / <code>GET_PRICE</code>) · ☐ decimal arithmetic, no floats</li>
+  <li>☐ Parallel fetch of all 5 sources with a global deadline · ☐ consistency-window check</li>
+  <li>☐ Sign result via <code>POST /sign</code> · ☐ error taxonomy → status/log</li>
+  <li>☐ <code>GET /state</code>: operational only (last price, price history?, counters, error class, source health) — no raw reserve/supply figures</li>
+  <li>☐ Logging that never emits secrets, raw responses, or reserve figures</li>
+</ul>
+
+<h3>Contracts</h3>
+<ul>
+  <li>☐ <code>UsdxInstructionSender.sol</code> — one <code>requestPriceUpdate()</code> · ☐ <code>TeeExtensionStateVerifier</code> (scaffold has none)</li>
+  <li>☐ <code>UsdxPriceStore.sol</code> — verify sig against <code>TeeMachineRegistry</code>, strictly increasing
+      <code>observedAt</code> (FCC has no ordering guarantee → covers replays <i>and</i> out-of-order), price bounds, pause</li>
+  <li>☐ <code>UsdxCustomFeed.sol</code> — <code>IICustomFeed</code>, a thin read adapter over the store (findings §5)</li>
+  <li>☐ Register via governance <code>addCustomFeeds</code> — <b>a proposal with lead time, not a deploy step. Start early.</b></li>
+  <li>☐ Agree feed name + category byte with Flare · ☐ Foundry tests incl. fuzzing the store's guards · ☐ regenerate Go bindings</li>
+</ul>
+
+<h3>Keeper · Secrets &amp; infra</h3>
+<ul>
+  <li>☐ Schedule updates · ☐ poll proxy for results · ☐ submit to store (gas, nonce, resubmission)</li>
+  <li>☐ ≥2 instances (idempotent) · ☐ wallet funding + low-balance alerts</li>
+  <li>☐ Secret inventory (Hex + RPC keys) · ☐ inject encrypted to TEE pubkey, decrypt via <code>POST /decrypt</code></li>
+  <li>☐ Rotation without a new code hash · ☐ static egress IP per machine (Cloud NAT) · ☐ reproducible build + code hash registration</li>
+  <li>☐ Write up what a third party can verify from the attestation</li>
+</ul>
+
+<h3>Monitoring</h3>
+<ul>
+  <li>☐ Feed freshness (&gt; 2× interval) · ☐ Hex API health + <code>last_update</code> staleness · ☐ per-RPC health and disagreement rate</li>
+  <li>☐ <b>Price &lt; 1 alert</b> — a business event, not a metric. Pages someone, and needs an agreed comms path to Hex.</li>
+  <li>☐ TEE liveness, keeper balance, failed-tx rate · ☐ dashboard + on-call routing</li>
+</ul>
+
+<h3>Testing · Deployment</h3>
+<ul>
+  <li>☐ Formula unit tests (over/under-collateralised, supply=0, rounding) · ☐ mock Hex API (malformed, stale, slow, 5xx, <b>comma and plain values</b>)</li>
+  <li>☐ Mock RPC incl. provider disagreement · ☐ conformance suite with USDX fixtures · ☐ E2E on Coston2</li>
+  <li>☐ <b>Shadow run</b> — compute prices for days without publishing before anyone depends on it</li>
+  <li>☐ Failure drills: Hex down, 1 RPC down, 2 RPCs down, TEE down · ☐ backup and restore (just the TEE key, or can we rotate?)</li>
+  <li>☐ Coston2 then mainnet + rollback · ☐ runbook (stale feed, source failure, price drop) · ☐ upgrade path with no feed gap</li>
+  <li>☐ Consumer docs — feed ID, decimals, and that they <b>must</b> check the timestamp</li>
+</ul>
+
+<h2>Questions for Hex</h2>
+<ol>
+  <li><b class="r">Under what circumstances would <code>current_reserves_amount</code> ever be below total on-chain supply?</b> Blocking.</li>
+  <li>Does that number already include cash? <i>(We think not — but it already equals supply on its own, which sharpens this rather than mooting it.)</i></li>
+  <li>Status of the old Ethereum contract (<code>0x7A48…D56c</code>, 150,000 USDX) — a live claim on reserves? Currently excluded from your figure.</li>
+  <li>Bonds at market or par? Liquidity haircut?</li>
+  <li>Auth scheme and rate limits on the private endpoint? Public has no <code>currency</code> field and uses comma separators while your private sample has neither — deliberate and stable?</li>
+  <li>How often are figures recomputed, and does <code>last_update</code> move on every redemption? <i>(We see a 10-min tick.)</i></li>
+  <li>Confirm burn-and-mint OFT on every chain, no lock-and-mint adapter anywhere.</li>
+  <li>Uptime expectations and an escalation contact.</li>
+</ol>
+
+<h2>To decide internally</h2>
+<ol>
+  <li><b>Deviation guard — needs a risk owner.</b> <span class="r">🔴 Blocking.</span> Rejecting large jumps
+      protects against one bad data point but delays real depeg detection. Straw man: upward moves publish
+      freely, a large drop needs ~3 confirmations (~15 min) but pages on the first. Someone must accept that lag.</li>
+  <li><b>Songbird RPC coverage</b> — buy, self-host, or accept one provider for ~4.5% of supply</li>
+  <li>Update frequency and the fee/gas budget — match the 10-min source refresh rather than going faster</li>
+  <li>How many TEE machines — drives the IP whitelist. Any redundancy needed?</li>
+  <li>Does the old Ethereum contract count toward supply? Hex informs it; the policy call is ours.</li>
+  <li>Any logs we need to keep?</li>
+</ol>
+
+<h2>Sequencing</h2>
+<table>
+  <thead><tr><th style="width:2.5em">#</th><th style="width:11em">Milestone</th><th>Done when</th></tr></thead>
+  <tbody>
+    <tr><td><b>0</b></td><td><b>Premise confirmed</b></td><td>Hex explains the reserves figure and we agree it can actually fall below supply</td></tr>
+    <tr><td><b>1</b></td><td>Access secured</td><td>API key issued, IPs whitelisted</td></tr>
+    <tr><td><b>2</b></td><td>Local prototype</td><td>Price computes end-to-end against real APIs; unit + conformance green</td></tr>
+    <tr><td><b>3</b></td><td>Contracts on Coston2</td><td>Sender, store, feed deployed and tested</td></tr>
+    <tr><td><b>4</b></td><td>E2E on Coston2</td><td>Instruction → TEE → store → <code>getCurrentFeed()</code> returns a price</td></tr>
+    <tr><td><b>5</b></td><td>Hardening</td><td>Monitoring live, runbook written, drills passed, security review done</td></tr>
+    <tr><td><b>6</b></td><td>Mainnet</td><td>Feed registered with governance, keepers running, consumers notified</td></tr>
+  </tbody>
+</table>
+<p>Milestone 0 gates the design, not just the schedule. Milestones 1–2 can proceed against mocks meanwhile.</p>
+
+</body>
+</html>
