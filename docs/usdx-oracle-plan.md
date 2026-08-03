@@ -22,20 +22,24 @@ backing = bond reserves (public API) + cash reserves (private API)
 price   = min(1, backing / supply)      capped at 1: USDX redeems at par
 ```
 
-## ⚠ Blocker: the reserves figure may be pinned to supply
+## Resolved: the reserves figure is a bank-reported balance
 
-Hex's `current_reserves_amount` equals total on-chain supply **to the cent**, and tracks it
-through changes — when Flare burned exactly 1M USDX this morning, the figure followed within
-hours. Whether that's because the metric is derived from chain data, or because Hex is
-genuinely 1:1 par-backed, the result is the same: `backing/supply` = 1.000000 by construction
-and the feed prints $1.00 forever, unable to detect the depeg it exists to detect.
+_Resolved 3 Aug 2026. Was: "⚠ Blocker: the reserves figure may be pinned to supply"._
 
-**The question that settles it:** *under what circumstances would `current_reserves_amount`
-ever be less than total on-chain supply?* If the answer is "never" or "only on a manual
-write-down", we need a different data source.
+`current_reserves_amount` is sourced from Hex's banking provider — it reports the actual
+balance of the reserve account, not a metric computed from chain data. That provenance
+resolves the premise question: the figure equals on-chain supply to the cent because Hex
+operates 1:1 — a redemption burns tokens and wires the same amount out of the account —
+which is exactly what the observed behaviour (to-the-cent match; tracking the 1M burn
+within hours) looks like from outside.
 
-**Nothing else on this plan is worth building until that's answered.** Full evidence in the
-findings doc §1 / `usdx-oracle-spec.md` §3.0.
+The detection capability is therefore real: a bank balance **can** fall below supply — any
+outflow with no matching burn (theft, account freeze, operational loss) — and that is
+precisely the depeg event this feed exists to catch.
+
+Remaining, as ordinary diligence rather than a blocker: written confirmation from Hex of
+the provenance and semantics (Questions for Hex, #1) — the same class of check as the OFT
+burn-and-mint confirmation. Evidence and history: findings doc §1 / `usdx-oracle-spec.md` §3.0.
 
 ## Decisions
 
@@ -53,7 +57,8 @@ findings doc §1 / `usdx-oracle-spec.md` §3.0.
 
 ### Blocked on Hex 🔴
 
-- [ ] **Resolve the reserves-tracks-supply blocker** (above)
+- [x] ~~Resolve the reserves-tracks-supply blocker~~ — resolved: bank-reported balance (above).
+      Written confirmation of semantics remains as Q1
 - [ ] API key for the private endpoint · [ ] whitelist TEE egress IPs (one static IP per
       machine — decide machine count first)
 - [ ] Status of the old Ethereum contract (150,000 USDX, excluded from Hex's figure)
@@ -129,7 +134,9 @@ findings doc §1 / `usdx-oracle-spec.md` §3.0.
 
 ## Questions for Hex
 
-1. **Under what circumstances would `current_reserves_amount` ever be below total on-chain supply?** Blocking.
+1. Confirm in writing: `current_reserves_amount` is the bank-provider balance of the reserve
+   account, and an outflow with no matching burn (loss, freeze) shows up in the figure.
+   *(Was the blocking question; resolved 3 Aug — now ordinary diligence.)*
 2. Does that number already include cash? *(We think not — but it already equals supply on its
    own, which sharpens this rather than mooting it.)*
 3. Status of the old Ethereum contract (`0x7A48…D56c`, 150,000 USDX) — a live claim on
@@ -156,7 +163,7 @@ findings doc §1 / `usdx-oracle-spec.md` §3.0.
 
 | # | Milestone | Done when |
 | --- | --- | --- |
-| **0** | **Premise confirmed** | Hex explains the reserves figure and we agree it can actually fall below supply |
+| **0** | **Premise confirmed** | ✅ Resolved 3 Aug — bank-reported balance, falls below supply on any unmirrored outflow. Written confirmation from Hex remains (Q1) |
 | **1** | Access secured | API key issued, IPs whitelisted |
 | **2** | Local prototype | Price computes end-to-end against real APIs; unit + conformance green |
 | **3** | Contracts on Coston2 | Sender, store, feed deployed and tested |
@@ -164,4 +171,4 @@ findings doc §1 / `usdx-oracle-spec.md` §3.0.
 | **5** | Hardening | Monitoring live, runbook written, drills passed, security review done |
 | **6** | Mainnet | Feed registered with governance, keepers running, consumers notified |
 
-Milestone 0 gates the design, not just the schedule. Milestones 1–2 can proceed against mocks meanwhile.
+Milestone 0 is resolved; the design stands. Milestones 1–2 can proceed against mocks meanwhile.

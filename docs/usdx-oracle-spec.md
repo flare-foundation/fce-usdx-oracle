@@ -23,6 +23,7 @@
 | 2026-07-31 | Deviation-guard policy (§6.2) deferred — **needs a named risk owner** | Trades depeg-detection latency against manipulation resistance; not an engineering call. |
 | 2026-07-31 | **`getCurrentFeed()` never reverts on staleness** — returns the last price with an ageing timestamp | `FtsoV2` forwards the call, so a revert becomes a liveness outage for every downstream consumer at once. See WP4. |
 | 2026-07-31 | **`calculateFee()` returns 0** | Unlike the sFLR/stXRP feeds we have no underlying FTSO read to pay for. |
+| 2026-08-03 | **§3.0 premise resolved** — `current_reserves_amount` is the bank-provider balance of the reserve account | Provenance from the team. The observed supply-tracking is 1:1 treasury operation, not derivation from chain data; the figure falls below supply on any unmirrored outflow. Written confirmation from Hex remains as diligence. |
 
 ---
 
@@ -63,7 +64,13 @@ price, not just trust an operator.
 
 ## 3. Price definition
 
-### 3.0 ⚠ Premise check — unresolved, blocking
+### 3.0 Premise check — resolved (was blocking)
+
+**Resolved 3 Aug 2026.** `current_reserves_amount` is sourced from Hex's banking
+provider: it reports the actual balance of the reserve account, not a metric
+computed from chain data. The evidence below is retained as the record of why
+this was in question — and of what disciplined 1:1 treasury operation looks like
+from outside.
 
 `R_bonds` equals total on-chain supply **to the cent**, and tracks it through
 changes.
@@ -75,24 +82,21 @@ changes.
 | Flare burn at 07:10:58Z, block 66310829 | `21,620,459.685024 → 20,620,459.685024` (−1,000,000 exactly) |
 | API value after that burn | matches the **post-burn** sum |
 
-So it is not a static coincidence — the figure moved down by exactly 1M within
-hours of the burn. Two readings, both degenerate:
+Of the two readings we could construct — (1) a metric derived from chain supply,
+(2) genuine 1:1 par-backed operation — the bank-balance provenance selects (2):
+a redemption burns tokens and wires the same amount out of the account, so the
+figure tracks supply exactly while both sides move honestly.
 
-1. The metric is **derived from chain supply** — not a measurement of assets.
-2. Hex is **genuinely 1:1 par-backed**, every mint/redeem moves both sides
-   equally and yield is swept out — real, but structurally unable to fall below
-   supply.
+The consequence for the design is the opposite of what we feared: a real account
+balance **can** fall below supply, on any outflow with no matching burn (theft,
+account freeze, operational loss), and that is exactly the depeg event the feed
+exists to detect.
 
-Either way `R_bonds ≡ S`, so `price = min(1, (S + R_cash)/S) = 1` always and the
-oracle cannot report anything but $1.00.
+**Remaining (ordinary diligence, not blocking):** written confirmation from Hex
+of the provenance and semantics — see the consolidated questions (§7).
 
-**Question to put to Hex:** *under what circumstances would
-`current_reserves_amount` ever be less than total on-chain supply?* If the answer
-is "never" or "only on a manual write-down", this design cannot work and we need
-mark-to-market bond valuations or an independent custody attestation instead.
-
-*Limitation of our evidence: the API exposes no history, so tracking is inferred
-from one observed supply change rather than a time series.*
+*Limitation of our evidence: the API exposes no history, so tracking was
+inferred from one observed supply change rather than a time series.*
 
 ### 3.1 Inputs
 
@@ -750,8 +754,10 @@ which someone must consciously accept.
 
 For Hex:
 
-0. **🔴 Why does `current_reserves_amount` exactly equal on-chain supply?** (§3.0)
-   Blocking — it determines whether this oracle can report anything but $1.00.
+0. ~~Why does `current_reserves_amount` exactly equal on-chain supply?~~ (§3.0)
+   Resolved 3 Aug — it is the bank-provider balance of the reserve account, and Hex
+   operates 1:1. Remaining as diligence: written confirmation of that provenance and
+   that an unmirrored outflow shows up in the figure.
 1. ~~Is USDX natively issued or bridged?~~ Evidence says native burn-and-mint OFT
    (§3.3) — needs confirmation, not investigation. Which addresses are
    non-circulating, and what is the old Ethereum contract's status?

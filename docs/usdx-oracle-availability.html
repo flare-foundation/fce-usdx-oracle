@@ -172,11 +172,11 @@ is that the published price is the one the attested code computed to the publish
 
 <h3>2. Numeric — and this is the decisive one</h3>
 
-<p>Today <code>R_bonds ≡ S</code> (the §3.0 blocker), so dropping cash changes nothing: both paths
-give exactly 1.0 after the par cap. It looks free.</p>
+<p>Under par operations <code>R_bonds ≈ S</code> (observed 31 Jul), so dropping cash changes nothing:
+both paths give exactly 1.0 after the par cap. It looks free.</p>
 
-<p>But in the world this oracle is <b>designed for</b> — where <code>R_bonds</code> is a genuine
-asset measure that can fall below supply — cash is precisely the buffer that decides whether the
+<p>But <code>R_bonds</code> is a genuine asset measure that can fall below supply (§3.0, resolved: it
+is a bank-reported balance) — and when it does, cash is precisely the buffer that decides whether the
 price is below par:</p>
 
 <table>
@@ -192,9 +192,9 @@ would manufacture depegs exactly when the feed matters most.</p>
 
 <h3>Therefore</h3>
 
-<p><b>Whether "drop cash and continue" is safe depends entirely on the unresolved §3.0 question.</b>
-That is a good reason not to build it yet, and a good reason the decision should wait on Hex's answer
-rather than be taken now.</p>
+<p><b>With §3.0 resolved — <code>R_bonds</code> is a real balance that can fall below supply — the
+numeric argument applies today.</b> Dropping cash would suppress exactly the buffer that decides
+whether a depeg prints, which is a strong reason not to degrade.</p>
 
 <h2>Recommendation</h2>
 
@@ -208,9 +208,9 @@ rather than be taken now.</p>
       current position on the list suggests.</li>
   <li><b>Resolve the <code>AsOf</code> / <code>RetrievedAt</code> inconsistency</b> in
       <code>checkWindow</code>, or document that <code>MaxAge</code> is the real bound.</li>
-  <li><b>Do not implement graceful degradation until §3.0 is answered.</b> If Hex's answer makes
-      <code>R_bonds</code> a real asset measure, degradation is actively harmful. If it does not, the
-      whole formula changes anyway.</li>
+  <li><b>Do not implement graceful degradation.</b> §3.0 is resolved: <code>R_bonds</code> is a real
+      asset measure, so degradation is actively harmful — it would drop the cash buffer that decides
+      whether a depeg prints.</li>
 </ol>
 
 <p>Neither (1) nor (2) is a correctness bug in the current code. They are gaps between what the

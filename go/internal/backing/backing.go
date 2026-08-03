@@ -2,14 +2,12 @@
 //
 // # Why this is an interface
 //
-// Spec §3.0 records an unresolved blocker: the public endpoint's
-// current_reserves_amount has been observed to equal total on-chain supply to
-// the cent, and to track it through a 1,000,000 USDX burn. If that is because
-// the figure is derived from chain data rather than measured from assets, then
-// backing/supply is 1.000000 by construction and the feed can never report the
-// depeg it exists to detect.
+// Spec §3.0 recorded a premise concern, since resolved: the public endpoint's
+// current_reserves_amount is the bank-provider balance of the reserve account,
+// and its observed tracking of on-chain supply is 1:1 treasury operation, not
+// derivation from chain data.
 //
-// If Hex's answer forces a different data source — mark-to-market bond
+// If a future change forces a different data source — mark-to-market bond
 // valuations, an independent custody attestation — the fix is a new Source
 // implementation. Everything downstream (supply reads, the price formula,
 // signing, the payload, the contracts) is unaffected. That containment is the

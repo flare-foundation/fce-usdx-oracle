@@ -28,10 +28,11 @@
 Start with the Plan; everything else is depth on one part of it.</p>
 
 <div class="note">
-<b class="r">⚠ Project-level blocker.</b> Hex's <code>current_reserves_amount</code> equals total on-chain
-supply to the cent and tracks it through changes, which would pin the published price at exactly
-$1.00 forever. Until Hex explains under what circumstances that number could fall below supply,
-the oracle may be measuring nothing. Evidence: <b>Research Findings §1</b>.
+<b>✅ Former project-level blocker, resolved 3 Aug 2026.</b> Hex's <code>current_reserves_amount</code>
+is the bank-reported balance of the reserve account, not a metric derived from chain data. It equals
+on-chain supply because Hex operates 1:1, and it can fall below supply on any outflow with no
+matching burn — exactly the depeg event the feed detects. Written confirmation from Hex remains as
+diligence. Evidence and history: <b>Research Findings §1</b>.
 </div>
 
 <h2>The documents</h2>
@@ -42,7 +43,7 @@ the oracle may be measuring nothing. Evidence: <b>Research Findings §1</b>.
         <td>The working document. Decisions with their reasoning, the task list by area, open
             questions for Hex and for us, and milestones. <b>Read this first.</b></td></tr>
     <tr><td class="doc"><a href="usdx-oracle-reference.html">Research Findings</a></td>
-        <td>What we measured and what it means: the reserves blocker, token addresses and supplies,
+        <td>What we measured and what it means: the reserves premise (resolved), token addresses and supplies,
             API response formats, the RPC survey, and the custom-feed interface. Everything here is
             evidence for a decision in the Plan.</td></tr>
     <tr><td class="doc"><a href="usdx-oracle-architecture.html">Architecture</a></td>

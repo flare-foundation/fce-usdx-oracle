@@ -591,12 +591,13 @@ every consumer. A pause freezes the value; it does not blind the feed.
 
 ## Open questions this work did not resolve
 
-- **The §3.0 blocker stands.** `current_reserves_amount` has been observed equal
-  to total on-chain supply to the cent, and tracking it through a 1,000,000 USDX
-  burn. `internal/backing` is an interface precisely so a source swap does not
-  invalidate anything else. `TestCompute` encodes the observed figures as a case
-  asserting the feed prints exactly par — if Hex's answer changes the formula,
-  that test fails and says why.
+- **~~The §3.0 blocker stands~~ — resolved 3 Aug 2026.** `current_reserves_amount`
+  is the bank-provider balance of the reserve account; the observed supply-tracking
+  is 1:1 treasury operation, not derivation from chain data, and the figure can fall
+  below supply on any outflow with no matching burn. `internal/backing` stays an
+  interface for source-swap containment. `TestCompute` still encodes the observed
+  figures as a par case — correct under 1:1 operations. Written confirmation from
+  Hex remains as ordinary diligence.
 - **Deviation guard (§6.2)** — still needs a named risk owner. To be implemented
   on-chain, where it can change without a new code hash.
 - **Where Confidential Space logs land**, and who can read them (§4.1). Gates how

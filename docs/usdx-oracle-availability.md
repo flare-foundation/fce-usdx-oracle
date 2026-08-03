@@ -140,12 +140,12 @@ computed to the published definition.
 
 ### 2. Numeric — and this is the decisive one
 
-Today `R_bonds ≡ S` (the §3.0 blocker), so dropping cash changes nothing: both paths
-give exactly 1.0 after the par cap. It looks free.
+Under par operations `R_bonds ≈ S` (observed 31 Jul), so dropping cash changes nothing:
+both paths give exactly 1.0 after the par cap. It looks free.
 
-But in the world this oracle is **designed for** — where `R_bonds` is a genuine asset
-measure that can fall below supply — cash is precisely the buffer that decides whether
-the price is below par:
+But `R_bonds` is a genuine asset measure that can fall below supply (§3.0, resolved: it
+is a bank-reported balance) — and when it does, cash is precisely the buffer that decides
+whether the price is below par:
 
 | Scenario | With cash | Without cash |
 | --- | --- | --- |
@@ -157,9 +157,9 @@ Degradation would manufacture depegs exactly when the feed matters most.
 
 ### Therefore
 
-**Whether "drop cash and continue" is safe depends entirely on the unresolved §3.0
-question.** That is a good reason not to build it yet, and a good reason the decision
-should wait on Hex's answer rather than be taken now.
+**With §3.0 resolved — `R_bonds` is a real balance that can fall below supply — the
+numeric argument applies today.** Dropping cash would suppress exactly the buffer that
+decides whether a depeg prints, which is a strong reason not to degrade.
 
 ---
 
@@ -176,9 +176,9 @@ The fix for the availability concern is **redundancy, not degradation**.
 2. **Resolve the `AsOf` / `RetrievedAt` inconsistency** in `checkWindow`, or document that
    `MaxAge` is the real bound.
 
-3. **Do not implement graceful degradation until §3.0 is answered.** If Hex's answer makes
-   `R_bonds` a real asset measure, degradation is actively harmful. If it does not, the
-   whole formula changes anyway.
+3. **Do not implement graceful degradation.** §3.0 is resolved: `R_bonds` is a real
+   asset measure, so degradation is actively harmful — it would drop the cash buffer
+   that decides whether a depeg prints.
 
 Neither (1) nor (2) is a correctness bug in the current code. They are gaps between what
 the design claims and what the implementation guarantees.

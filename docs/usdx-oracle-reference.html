@@ -42,7 +42,7 @@ Companion to <b>USDX Price Oracle — Plan &amp; TODO</b>.</p>
 
 <div class="toc">
 <ol>
-  <li>Does Hex's reserves figure actually measure reserves? <span class="r">(blocker)</span></li>
+  <li>Does Hex's reserves figure actually measure reserves? (resolved 3 Aug)</li>
   <li>Where does USDX live, and how much is there?</li>
   <li>What do the two Hex APIs return?</li>
   <li>Which RPC endpoints can we use?</li>
@@ -53,10 +53,13 @@ Companion to <b>USDX Price Oracle — Plan &amp; TODO</b>.</p>
 
 <h2>1. Does Hex's reserves figure actually measure reserves?</h2>
 
-<div class="verdict warn">
-<b>Probably not — and this blocks the design.</b> <code>current_reserves_amount</code> equals total
-on-chain supply to the cent and tracks it through changes. Under every explanation we can
-construct, <code>backing / supply</code> is pinned at 1.000000 and the feed can never report a depeg.
+<div class="verdict">
+<b>Resolved 3 Aug 2026: yes — it is a bank-reported balance.</b> <code>current_reserves_amount</code>
+comes from Hex's banking provider and reports the reserve account's actual balance. It equals
+on-chain supply to the cent because Hex operates 1:1; the balance can fall below supply on any
+outflow with no matching burn, which is exactly the depeg event the feed detects. The evidence below
+is retained as the record of why this was in question. Written confirmation from Hex remains as
+ordinary diligence.
 </div>
 
 <h3>The observation</h3>
@@ -73,7 +76,7 @@ state, and bisecting found one 5.6 hours before the measurement:</p>
 <p>The API's current value equals the <b>post-burn</b> sum — so it moved down by 1M within hours of
 the burn. It is not a frozen coincidence; it tracks.</p>
 
-<h3>Two readings, both fatal</h3>
+<h3>Two readings — settled by provenance</h3>
 <ol>
   <li><b>Derived from chain supply.</b> The metric is computed from token supply, not from custody
       balances — in which case it is not a measurement of assets at all.</li>
@@ -83,18 +86,20 @@ the burn. It is not a frozen coincidence; it tracks.</p>
 </ol>
 <p>We initially assumed only (1) and had to correct: a 1M redemption <i>should</i> reduce both token
 supply and reserves by exactly 1M under perfectly ordinary accounting. The tracking behaviour does
-not distinguish the two. But it does not need to — under either reading
-<code>backing/supply = 1.000000</code> by construction, cash is added on top, and the feed prints
-$1.00 forever.</p>
+not distinguish the two — but the provenance does: the figure is a bank-provider balance, which is
+reading (2) operated in real time, not reading (1). And under (2) with a genuine account, the figure
+is <i>not</i> structurally pinned: it falls below supply the moment money leaves without a matching
+burn.</p>
 
-<h3>The question that settles it</h3>
+<h3>The question that settled it</h3>
 <div class="verdict">
 <i>"Under what circumstances would <code>current_reserves_amount</code> ever be less than total
 on-chain supply?"</i>
 </div>
-<p>If the answer is <i>never</i>, or <i>only if we manually write down a loss</i>, then this oracle
-measures nothing and we need a different source — mark-to-market bond valuations, or an independent
-custody attestation.</p>
+<p>Answered by provenance: whenever money leaves the account without a matching burn. The figure is
+the bank-reported balance of the reserve account, so a loss, freeze or unmirrored outflow shows up in
+it directly. Getting that confirmed in writing by Hex stays on the questions list as ordinary
+diligence.</p>
 
 <p class="asof"><b>Limitation of our evidence:</b> the API exposes no history (we probed for it —
 unknown metric names return 500, there is no docs or OpenAPI endpoint), so "it tracks" is inferred

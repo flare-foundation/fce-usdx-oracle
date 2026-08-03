@@ -103,8 +103,9 @@ the endpoints told the truth — see Architecture §2.</p>
 <div class="verdict">
 <b>A price below $1.00 is a business event, not a metric.</b> It should page a human and there should be an
 agreed comms path to Hex before it ever fires — deciding who to call while it is happening is the wrong time.
-Note the irony: given the §1 blocker, a sub-$1 price may currently be <i>impossible</i> to produce, which
-makes this alert a canary for the oracle working at all.
+Under normal 1:1 operations (§1, resolved: the reserves figure is a bank-reported balance) a sub-$1
+price should never print, which makes this alert both the depeg signal and a canary for the oracle
+working at all.
 </div>
 
 <h2>4. Testing</h2>
