@@ -109,6 +109,10 @@ findings doc §1 / `usdx-oracle-spec.md` §3.0.
       [ ] per-RPC health and disagreement rate
 - [ ] **Price < 1 alert** — a business event, not a metric. Pages someone, and needs an agreed
       comms path to Hex.
+- [ ] **Source-unreachable alert — build it in the keeper, not the extension.** Fail-closed is
+      only safe if someone finds out. Signals are already on the wire (`lastErrorClass`,
+      `sourceHealth`, keeper timeout); the extension can't do it without putting a webhook host
+      in the code-hash-pinned allowlist. Deferred — see `usdx-oracle-availability.md`.
 - [ ] TEE liveness, keeper balance, failed-tx rate · [ ] dashboard + on-call routing
 
 ### Testing · Deployment

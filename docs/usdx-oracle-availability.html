@@ -216,6 +216,100 @@ rather than be taken now.</p>
 <p>Neither (1) nor (2) is a correctness bug in the current code. They are gaps between what the
 design claims and what the implementation guarantees.</p>
 
+<h2>Deferred — source-unreachable alerting, in the keeper</h2>
+
+<div class="open">
+<b>Status: to think about later.</b> Not designed, not scheduled. Recorded here so the placement
+decision is not relitigated.
+</div>
+
+<p>Fail-closed is only a safe default if somebody finds out. Today an unreachable source produces a
+failed observation and a <code>sourceHealth</code> entry, and nothing pages anyone. The
+<code>Price &lt; 1</code> alert is already on the plan as a business event; <b>source-unreachable is
+the missing operational twin</b> — and it is the one that fires first, because a source outage
+precedes the staleness a consumer would eventually notice.</p>
+
+<h3>This belongs in the keeper, not the extension</h3>
+
+<p>The extension is the wrong place, for reasons that are structural rather than stylistic:</p>
+<ul>
+  <li><b>The host allowlist is baked into the image.</b> <code>allowedHosts</code> in the embedded
+      config is code-hash-pinned precisely so configured endpoints can only ever be attested hosts.
+      Adding a webhook or paging endpoint would mean a new code hash — re-attestation and a version
+      registration — for a purely operational concern.</li>
+  <li><b>Alerting credentials would become enclave secrets.</b> A PagerDuty key or Slack webhook
+      would join the secret inventory, the provisioning path, and the disclosure surface, for no
+      security benefit.</li>
+  <li><b><code>ActionResult.Log</code> is public</b>, so the extension is deliberately constrained in
+      what it can say. The keeper is not, and it never sees reserve figures anyway — the payload is
+      price-only.</li>
+  <li><b>The extension cannot report its own absence.</b> If the TEE is down, no
+      <code>ActionResult</code> comes back at all. Only the caller can detect that, and the caller is
+      the keeper.</li>
+</ul>
+
+<p>The keeper already schedules updates, polls the proxy for results, and submits to the store. It is
+the only component that sees the whole round trip.</p>
+
+<h3>Signals already available to it</h3>
+
+<p>No extension change is needed; the data is already on the wire.</p>
+
+<table>
+  <thead><tr><th style="width:15em">Source</th><th>Signal</th></tr></thead>
+  <tbody>
+    <tr><td><code>ActionResult.Log</code></td>
+        <td>A <code>failure.Failure</code> from the closed vocabulary — the error <i>class</i> is the alert key</td></tr>
+    <tr><td>Proxy <code>GET /info</code> → <code>TEEState.state</code></td>
+        <td><code>sourceHealth</code> map, per source: <code>ok</code> / <code>degraded</code> / <code>down</code> / <code>unknown</code></td></tr>
+    <tr><td>Same</td>
+        <td><code>failureCount</code>, <code>lastErrorClass</code>, <code>updateCount</code>, <code>lastObservedAt</code>, <code>readiness</code></td></tr>
+    <tr><td>Keeper's own timeout</td>
+        <td>No result at all → TEE or proxy unreachable, distinct from a source outage</td></tr>
+  </tbody>
+</table>
+
+<p>The classes that matter for this alert:</p>
+
+<pre>ClassSourceDown     BackingUnavailable, BackingTimeout, SupplyUnavailable, SupplyTimeout
+ClassQuorumFailed   SupplyNoQuorum
+ClassSourceInvalid  BackingMalformed, BackingStale, BackingCurrency
+ClassNotConfigured  NotConfigured        (secrets lost to a restart — memory-only by design)</pre>
+
+<p><code>ClassSourceDown</code> and <code>ClassQuorumFailed</code> are the reachability alerts.
+<code>ClassSourceInvalid</code> is a different kind of problem — the source answered but said
+something we refuse to use — and should page differently, because a shape change from Hex needs a
+human reading the response, not a retry.</p>
+
+<h3>Design points to settle when this is picked up</h3>
+
+<ul>
+  <li><b>Alert on sustained failure, not single events.</b> FCC is fire-and-forget with no delivery
+      guarantee, and <code>UsdxPriceStore</code> treats a rejected submission as normal operation. A
+      single failed observation is noise. N consecutive failures, or a time threshold, is signal.</li>
+  <li><b>Distinguish "a machine" from "the sources".</b> <code>getRandomTeeIds</code> picks one
+      machine per instruction, so one failure may be one bad machine. Alerting on a single result
+      cannot tell the difference; correlating across machines can.</li>
+  <li><b>Deduplicate across keeper instances.</b> The plan calls for ≥2 idempotent keepers. Both will
+      observe the same outage and must not both page.</li>
+  <li><b><code>sourceHealth</code> is a snapshot, not a probe.</b> It is written only when an
+      observation runs. If the keeper stops requesting, the last values persist and continue to read
+      <code>ok</code> — the failure mode finding 8 was written about, one level up. Freshness of the
+      health map needs its own check.</li>
+  <li><b>Staleness is the consumer-facing alert and is separate.</b> Source-down is a cause; feed age
+      past 2× the update interval is the effect consumers actually feel. Both are wanted; only the
+      second is a true page.</li>
+  <li><b>Per-source or per-chain granularity</b> is still open (finding 8):
+      <code>rpc_flare: "ok"</code> hides one-of-three providers being down, which is exactly the
+      state worth seeing before the second one goes and quorum fails.</li>
+</ul>
+
+<h3>Related</h3>
+
+<p>This is the mitigation half of the open question at the top of this document. If the answer there
+is "keep failing closed", then alerting is what makes that acceptable, and it should be scheduled
+alongside — not after — the decision.</p>
+
 <h2>To decide</h2>
 
 <table>
