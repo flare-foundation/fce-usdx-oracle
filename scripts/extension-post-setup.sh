@@ -55,7 +55,9 @@ log "INSTRUCTION_SENDER: ${INSTRUCTION_SENDER:-<not set>}"
 log "CHAIN_URL:          ${CHAIN_URL:-<not set>}"
 
 # --- Add your extension-specific post-registration setup below ---
-# The Hello World scaffold has no post-registration setup. Replace this with
-# your own logic if your extension needs the TEE address on-chain.
+# Nothing to do yet. Once UsdxPriceStore exists this is where its registration
+# of the TEE machine address belongs: the store verifies price-report signatures
+# against TeeMachineRegistry, so it needs to know which TEE serves this
+# extension before it will accept a submission.
 
-log "No extension-specific post-setup needed (Hello World scaffold)."
+log "No extension-specific post-setup needed (price store not deployed yet)."

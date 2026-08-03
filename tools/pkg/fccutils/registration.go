@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"os"
 	"strings"
-	"extension-scaffold/tools/pkg/support"
+	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"

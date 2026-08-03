@@ -4,10 +4,10 @@ import (
 	"flag"
 	"fmt"
 
-	"extension-scaffold/tools/pkg/configs"
-	"extension-scaffold/tools/pkg/fccutils"
-	"extension-scaffold/tools/pkg/support"
-	"extension-scaffold/tools/pkg/validate"
+	"fce-usdx-oracle/tools/pkg/configs"
+	"fce-usdx-oracle/tools/pkg/fccutils"
+	"fce-usdx-oracle/tools/pkg/support"
+	"fce-usdx-oracle/tools/pkg/validate"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"

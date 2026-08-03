@@ -15,5 +15,5 @@ services:
 
 networks:
   default:
-    name: ${COMPOSE_NETWORK:-extension-scaffold-coston2}
+    name: ${COMPOSE_NETWORK:-fce-usdx-oracle-coston2}
     external: false

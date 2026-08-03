@@ -8,7 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 
-	"extension-scaffold/tools/pkg/support"
+	"fce-usdx-oracle/tools/pkg/support"
 )
 
 // ErrPolicyOutOfSync indicates the FTDC proxy's latest signing policy does not

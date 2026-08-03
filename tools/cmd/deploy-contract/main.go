@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"extension-scaffold/tools/pkg/configs"
-	"extension-scaffold/tools/pkg/fccutils"
-	"extension-scaffold/tools/pkg/support"
-	instrutils "extension-scaffold/tools/pkg/utils"
-	"extension-scaffold/tools/pkg/validate"
+	"fce-usdx-oracle/tools/pkg/configs"
+	"fce-usdx-oracle/tools/pkg/fccutils"
+	"fce-usdx-oracle/tools/pkg/support"
+	instrutils "fce-usdx-oracle/tools/pkg/utils"
+	"fce-usdx-oracle/tools/pkg/validate"
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"

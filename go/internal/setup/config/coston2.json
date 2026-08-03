@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 2,
+  "network": "coston2",
+
+  "price": {
+    "decimals": 8,
+    "haircutBps": 0
+  },
+
+  "target": {
+    "chainId": 114,
+    "store": "0x0000000000000000000000000000000000000001",
+    "feedCategory": 32,
+    "feedName": "USDX/USD"
+  },
+
+  "observation": {
+    "deadlineMs": 20000,
+    "windowMs": 30000
+  },
+
+  "allowedHosts": [
+    "api.htdigitalassets.com",
+
+    "flare-api.flare.network",
+    "songbird-api.flare.network",
+
+    "rpc.ankr.com",
+    "lb.drpc.org",
+    "ethereum-rpc.publicnode.com",
+    "flare.rpc.thirdweb.com"
+  ]
+}

@@ -1,4 +1,4 @@
-module extension-scaffold/tools
+module fce-usdx-oracle/tools
 
 go 1.25.1
 

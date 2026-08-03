@@ -38,18 +38,18 @@ RUN \
     rm -rf /var/log/* /var/cache/ldconfig/aux-cache; \
   fi
 
-# bring in both modules; tee-node sits next to extension-scaffold so the replace directive resolves
+# bring in both modules; tee-node sits next to fce-usdx-oracle so the replace directive resolves
 # explicit chmod/chown on COPY so file metadata does not depend on host umask or ownership
 COPY --chmod=644 --chown=0:0 tee-node/ ./tee-node/
-COPY --chmod=644 --chown=0:0 extension-examples/extension-scaffold/ ./extension-examples/extension-scaffold/
+COPY --chmod=644 --chown=0:0 extension-examples/fce-usdx-oracle/ ./extension-examples/fce-usdx-oracle/
 
 # The Go module lives in go/ within the scaffold; language directories are siblings of it.
-WORKDIR /build/extension-examples/extension-scaffold/go
+WORKDIR /build/extension-examples/fce-usdx-oracle/go
 
 # The committed go.mod pins tee-node to a released version (see ./Dockerfile); point it at the
 # on-disk sibling for this dev build. -mod=mod lets go reconcile go.sum against the sibling's
 # dependency tree in-layer without mutating the committed go.sum on the host.
-# Path is relative to the module dir: go/ -> extension-scaffold -> extension-examples -> /build.
+# Path is relative to the module dir: go/ -> fce-usdx-oracle -> extension-examples -> /build.
 RUN go mod edit -replace github.com/flare-foundation/tee-node=../../../tee-node
 
 RUN GOFLAGS=-mod=mod go mod download

@@ -1,23 +1,44 @@
 package extension
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
-	"extension-scaffold/internal/config"
-	"extension-scaffold/pkg/types"
+	"fce-usdx-oracle/internal/config"
+	"fce-usdx-oracle/internal/failure"
+	"fce-usdx-oracle/internal/oracle"
+	"fce-usdx-oracle/pkg/types"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
 )
 
+const testTimestamp uint64 = 1700000000
+
+var testInstructionID = common.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111")
+
 // toHash mirrors teeutils.ToHash for clarity: left-pads a string into a 32-byte hash.
 func toHash(s string) common.Hash { return teeutils.ToHash(s) }
+
+// newTestExtension builds an Extension the way New() does, without binding a
+// listener. Constructing &Extension{} directly leaves sourceHealth nil, which
+// hides map-initialisation bugs that only surface via GET /state.
+func newTestExtension() *Extension {
+	return &Extension{
+		lastErrorClass: failure.ClassNone,
+		sourceHealth:   map[string]string{},
+	}
+}
 
 // buildTestAction constructs a teetypes.Action whose Data.Message is the
 // JSON-encoded DataFixed payload. This is what processAction expects to parse.
@@ -36,6 +57,10 @@ func buildTestAction(opType, opCommand common.Hash, originalMessage []byte) teet
 	}
 
 	df := dataFixed{
+		// The instruction id is bound into the signed report, so it must be
+		// present here or the observer test asserts nothing.
+		InstructionID:   testInstructionID,
+		Timestamp:       testTimestamp,
 		OPType:          opType,
 		OPCommand:       opCommand,
 		OriginalMessage: originalMessage,
@@ -51,27 +76,31 @@ func buildTestAction(opType, opCommand common.Hash, originalMessage []byte) teet
 	}
 }
 
-// abiEncodeSayGoodbye produces the ABI-encoded tuple (string name, string reason)
-// matching the Solidity SayGoodbyeMessage struct.
-func abiEncodeSayGoodbye(name, reason string) []byte {
-	args := abi.Arguments{types.SayGoodbyeMessageArg}
-	type goodbye struct {
-		Name   string
-		Reason string
-	}
-	encoded, _ := args.Pack(goodbye{Name: name, Reason: reason})
-	return encoded
+// getPriceAction builds a well-formed GET_PRICE action with an empty payload,
+// exactly as requestPriceUpdate() emits it.
+func getPriceAction() teetypes.Action {
+	return buildTestAction(toHash(config.OPTypeUsdxOracle), toHash(config.OPCommandGetPrice), nil)
 }
 
-// --- 4.1: OPType/OPCommand Hash Debug Info ---
+// mustResult unwraps an ActionResult from a handler body, failing the test if it
+// does not decode or the HTTP status is unexpected.
+func mustResult(t *testing.T, status int, body []byte, wantStatus int) teetypes.ActionResult {
+	t.Helper()
+	if status != wantStatus {
+		t.Fatalf("expected HTTP status %d, got %d: %s", wantStatus, status, body)
+	}
+	var result teetypes.ActionResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("failed to unmarshal ActionResult: %v", err)
+	}
+	return result
+}
+
+// --- Dispatch: OPType/OPCommand debug info ---
 
 func TestProcessAction_UnknownOPType(t *testing.T) {
-	e := &Extension{}
-	action := buildTestAction(
-		toHash("UNKNOWN_TYPE"),
-		toHash(config.OPCommandSayHello),
-		nil,
-	)
+	e := newTestExtension()
+	action := buildTestAction(toHash("UNKNOWN_TYPE"), toHash(config.OPCommandGetPrice), nil)
 
 	status, body := e.processAction(action)
 
@@ -80,38 +109,23 @@ func TestProcessAction_UnknownOPType(t *testing.T) {
 	}
 
 	bodyStr := string(body)
-	t.Logf("501 body: %s", bodyStr)
-
-	// Should contain "unsupported op type"
 	if !contains(bodyStr, "unsupported op type") {
 		t.Error("expected body to contain 'unsupported op type'")
 	}
-
-	// Should include the received hash
-	receivedHash := toHash("UNKNOWN_TYPE").Hex()
-	if !contains(bodyStr, receivedHash) {
+	if receivedHash := toHash("UNKNOWN_TYPE").Hex(); !contains(bodyStr, receivedHash) {
 		t.Errorf("expected body to contain received hash %s", receivedHash)
 	}
-
-	// Should include the expected hash
-	expectedHash := toHash(config.OPTypeGreeting).Hex()
-	if !contains(bodyStr, expectedHash) {
+	if expectedHash := toHash(config.OPTypeUsdxOracle).Hex(); !contains(bodyStr, expectedHash) {
 		t.Errorf("expected body to contain expected hash %s", expectedHash)
 	}
-
-	// Should include the human-readable name
-	if !contains(bodyStr, config.OPTypeGreeting) {
-		t.Errorf("expected body to contain %q", config.OPTypeGreeting)
+	if !contains(bodyStr, config.OPTypeUsdxOracle) {
+		t.Errorf("expected body to contain %q", config.OPTypeUsdxOracle)
 	}
 }
 
 func TestProcessAction_UnknownOPCommand(t *testing.T) {
-	e := &Extension{}
-	action := buildTestAction(
-		toHash(config.OPTypeGreeting),
-		toHash("UNKNOWN_COMMAND"),
-		nil,
-	)
+	e := newTestExtension()
+	action := buildTestAction(toHash(config.OPTypeUsdxOracle), toHash("UNKNOWN_COMMAND"), nil)
 
 	status, body := e.processAction(action)
 
@@ -120,276 +134,118 @@ func TestProcessAction_UnknownOPCommand(t *testing.T) {
 	}
 
 	bodyStr := string(body)
-	t.Logf("501 body: %s", bodyStr)
-
-	// Should contain "unsupported op command"
 	if !contains(bodyStr, "unsupported op command") {
 		t.Error("expected body to contain 'unsupported op command'")
 	}
-
-	// Should include the received hash
-	receivedHash := toHash("UNKNOWN_COMMAND").Hex()
-	if !contains(bodyStr, receivedHash) {
+	if receivedHash := toHash("UNKNOWN_COMMAND").Hex(); !contains(bodyStr, receivedHash) {
 		t.Errorf("expected body to contain received hash %s", receivedHash)
 	}
-
-	// Should include both expected command hashes and names
-	for _, cmd := range []string{config.OPCommandSayHello, config.OPCommandSayGoodbye} {
-		cmdHash := toHash(cmd).Hex()
-		if !contains(bodyStr, cmdHash) {
-			t.Errorf("expected body to contain hash for %s: %s", cmd, cmdHash)
-		}
-		if !contains(bodyStr, cmd) {
-			t.Errorf("expected body to contain command name %q", cmd)
-		}
+	if cmdHash := toHash(config.OPCommandGetPrice).Hex(); !contains(bodyStr, cmdHash) {
+		t.Errorf("expected body to contain hash for %s: %s", config.OPCommandGetPrice, cmdHash)
+	}
+	if !contains(bodyStr, config.OPCommandGetPrice) {
+		t.Errorf("expected body to contain command name %q", config.OPCommandGetPrice)
 	}
 }
 
-// --- Valid Actions ---
+// --- GET_PRICE ---
 
-func TestProcessAction_ValidSayHello(t *testing.T) {
-	e := &Extension{}
+func TestProcessGetPrice_Success(t *testing.T) {
+	e := newTestExtension()
 
-	payload, _ := json.Marshal(types.SayHelloRequest{Name: "Alice"})
-	action := buildTestAction(
-		toHash(config.OPTypeGreeting),
-		toHash(config.OPCommandSayHello),
-		payload,
-	)
-
-	status, body := e.processAction(action)
-
-	if status != http.StatusOK {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, body)
-	}
-
-	var result teetypes.ActionResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatalf("failed to unmarshal ActionResult: %v", err)
-	}
+	status, body := e.processAction(getPriceAction())
+	result := mustResult(t, status, body, http.StatusOK)
 
 	if result.Status != 1 {
-		t.Fatalf("expected ActionResult.Status=1 (success), got %d: %s", result.Status, result.Log)
+		t.Fatalf("expected ActionResult.Status=1, got %d: %s", result.Status, result.Log)
 	}
 
-	var resp types.SayHelloResponse
+	var resp types.GetPriceResponse
 	if err := json.Unmarshal(result.Data, &resp); err != nil {
-		t.Fatalf("failed to unmarshal SayHelloResponse: %v", err)
+		t.Fatalf("failed to unmarshal GetPriceResponse: %v", err)
 	}
 
-	if resp.Greeting == "" {
-		t.Error("expected non-empty greeting")
+	// SCAFFOLD: $1.00 at 8 decimals.
+	if want := "100000000"; resp.Price != want {
+		t.Errorf("expected price %q, got %q", want, resp.Price)
 	}
-	if resp.GreetingNumber != 1 {
-		t.Errorf("expected GreetingNumber=1, got %d", resp.GreetingNumber)
+	if resp.Decimals != config.PriceDecimals {
+		t.Errorf("expected decimals %d, got %d", config.PriceDecimals, resp.Decimals)
 	}
-	if !contains(resp.Greeting, "Alice") {
-		t.Errorf("expected greeting to contain 'Alice', got %q", resp.Greeting)
+	if resp.ObservedAt != testTimestamp {
+		t.Errorf("expected observedAt %d, got %d", testTimestamp, resp.ObservedAt)
 	}
-	t.Logf("Response: %+v", resp)
 }
 
-func TestProcessAction_ValidSayGoodbye(t *testing.T) {
-	e := &Extension{}
+// The price is a JSON string, not a number. On-chain it is a uint256, which does
+// not survive a float64 round-trip, so the encoding has to be a string from the
+// start rather than being widened later.
+func TestProcessGetPrice_PriceIsJSONString(t *testing.T) {
+	e := newTestExtension()
 
-	payload := abiEncodeSayGoodbye("Bob", "leaving town")
+	status, body := e.processAction(getPriceAction())
+	result := mustResult(t, status, body, http.StatusOK)
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(result.Data, &raw); err != nil {
+		t.Fatalf("failed to unmarshal data: %v", err)
+	}
+	if got := string(raw["price"]); !strings.HasPrefix(got, `"`) {
+		t.Errorf("expected price to be JSON-encoded as a string, got %s", got)
+	}
+}
+
+// requestPriceUpdate() sends no payload. A caller that supplies one must be
+// rejected rather than silently ignored, so nobody builds on a field the
+// extension drops.
+func TestProcessGetPrice_RejectsPayload(t *testing.T) {
+	e := newTestExtension()
+
+	// A sentinel that cannot collide with the vocabulary's own wording, so a hit
+	// below is unambiguously an echo of caller-supplied bytes.
+	const sentinel = "Zq7CanaryTokenXyz"
+	payload := []byte(`{"` + sentinel + `":"` + sentinel + `"}`)
+
 	action := buildTestAction(
-		toHash(config.OPTypeGreeting),
-		toHash(config.OPCommandSayGoodbye),
+		toHash(config.OPTypeUsdxOracle),
+		toHash(config.OPCommandGetPrice),
 		payload,
 	)
 
 	status, body := e.processAction(action)
-
-	if status != http.StatusOK {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, status, body)
-	}
-
-	var result teetypes.ActionResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatalf("failed to unmarshal ActionResult: %v", err)
-	}
-
-	if result.Status != 1 {
-		t.Fatalf("expected ActionResult.Status=1 (success), got %d: %s", result.Status, result.Log)
-	}
-
-	var resp types.SayGoodbyeResponse
-	if err := json.Unmarshal(result.Data, &resp); err != nil {
-		t.Fatalf("failed to unmarshal SayGoodbyeResponse: %v", err)
-	}
-
-	if resp.Farewell == "" {
-		t.Error("expected non-empty farewell")
-	}
-	if resp.FarewellNumber != 1 {
-		t.Errorf("expected FarewellNumber=1, got %d", resp.FarewellNumber)
-	}
-	if !contains(resp.Farewell, "Bob") {
-		t.Errorf("expected farewell to contain 'Bob', got %q", resp.Farewell)
-	}
-	if !contains(resp.Farewell, "leaving town") {
-		t.Errorf("expected farewell to contain 'leaving town', got %q", resp.Farewell)
-	}
-	t.Logf("Response: %+v", resp)
-}
-
-// --- Error Cases ---
-
-func TestProcessSayHello_EmptyName(t *testing.T) {
-	e := &Extension{}
-
-	payload, _ := json.Marshal(types.SayHelloRequest{Name: ""})
-	action := buildTestAction(
-		toHash(config.OPTypeGreeting),
-		toHash(config.OPCommandSayHello),
-		payload,
-	)
-
-	status, body := e.processAction(action)
-
-	if status != http.StatusOK {
-		t.Fatalf("expected status %d (error is in ActionResult, not HTTP), got %d", http.StatusOK, status)
-	}
-
-	var result teetypes.ActionResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
+	result := mustResult(t, status, body, http.StatusOK)
 
 	if result.Status != 0 {
-		t.Fatalf("expected ActionResult.Status=0 (error), got %d", result.Status)
+		t.Fatalf("expected ActionResult.Status=0 for an unexpected payload, got %d", result.Status)
+	}
+	if result.Log != "error: "+failure.UnexpectedPayload.Error() {
+		t.Errorf("expected the vocabulary reason, got %q", result.Log)
 	}
 
-	if !contains(result.Log, "name must not be empty") {
-		t.Errorf("expected log to contain 'name must not be empty', got %q", result.Log)
+	// ActionResult.Log is public (contract §4.6). It must echo back neither the
+	// submitted bytes nor their length — both are free reconnaissance for anyone
+	// probing the oracle. The whole result is checked, not just Log, since data
+	// must be empty on a failure too.
+	whole := string(body)
+	if strings.Contains(whole, sentinel) {
+		t.Errorf("result echoes caller-supplied bytes: %s", whole)
 	}
-	t.Logf("Error log: %s", result.Log)
-}
-
-func TestProcessSayHello_InvalidJSON(t *testing.T) {
-	e := &Extension{}
-
-	action := buildTestAction(
-		toHash(config.OPTypeGreeting),
-		toHash(config.OPCommandSayHello),
-		[]byte(`{invalid json`),
-	)
-
-	status, body := e.processAction(action)
-
-	if status != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, status)
+	if strings.Contains(result.Log, strconv.Itoa(len(payload))) {
+		t.Errorf("log %q discloses the payload length", result.Log)
 	}
 
-	var result teetypes.ActionResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
+	if e.lastErrorClass != failure.ClassSourceInvalid {
+		t.Errorf("expected error class %q, got %q", failure.ClassSourceInvalid, e.lastErrorClass)
 	}
-
-	if result.Status != 0 {
-		t.Fatalf("expected ActionResult.Status=0 (error), got %d", result.Status)
-	}
-
-	if !contains(result.Log, "decoding request") {
-		t.Errorf("expected log to mention 'decoding request', got %q", result.Log)
-	}
-	t.Logf("Error log: %s", result.Log)
-}
-
-func TestProcessSayHello_UnknownFields(t *testing.T) {
-	e := &Extension{}
-
-	// DisallowUnknownFields is used in processSayHello — extra fields should fail
-	action := buildTestAction(
-		toHash(config.OPTypeGreeting),
-		toHash(config.OPCommandSayHello),
-		[]byte(`{"name":"Alice","extra":"field"}`),
-	)
-
-	status, body := e.processAction(action)
-
-	if status != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, status)
-	}
-
-	var result teetypes.ActionResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-
-	if result.Status != 0 {
-		t.Fatalf("expected ActionResult.Status=0 (error for unknown field), got %d", result.Status)
-	}
-
-	t.Logf("Error log: %s", result.Log)
-}
-
-func TestProcessSayGoodbye_EmptyName(t *testing.T) {
-	e := &Extension{}
-
-	payload := abiEncodeSayGoodbye("", "some reason")
-	action := buildTestAction(
-		toHash(config.OPTypeGreeting),
-		toHash(config.OPCommandSayGoodbye),
-		payload,
-	)
-
-	status, body := e.processAction(action)
-
-	if status != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, status)
-	}
-
-	var result teetypes.ActionResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-
-	if result.Status != 0 {
-		t.Fatalf("expected ActionResult.Status=0 (error), got %d", result.Status)
-	}
-
-	if !contains(result.Log, "name must not be empty") {
-		t.Errorf("expected log to contain 'name must not be empty', got %q", result.Log)
-	}
-	t.Logf("Error log: %s", result.Log)
-}
-
-// --- State Tracking ---
-
-func TestProcessAction_GreetingCountIncrementsAcrossCalls(t *testing.T) {
-	e := &Extension{}
-
-	for i := 1; i <= 3; i++ {
-		payload, _ := json.Marshal(types.SayHelloRequest{Name: "Counter"})
-		action := buildTestAction(
-			toHash(config.OPTypeGreeting),
-			toHash(config.OPCommandSayHello),
-			payload,
-		)
-
-		status, body := e.processAction(action)
-		if status != http.StatusOK {
-			t.Fatalf("call %d: expected status %d, got %d", i, http.StatusOK, status)
-		}
-
-		var result teetypes.ActionResult
-		json.Unmarshal(body, &result)
-
-		var resp types.SayHelloResponse
-		json.Unmarshal(result.Data, &resp)
-
-		if resp.GreetingNumber != i {
-			t.Errorf("call %d: expected GreetingNumber=%d, got %d", i, i, resp.GreetingNumber)
-		}
+	if e.failureCount != 1 {
+		t.Errorf("expected failureCount=1, got %d", e.failureCount)
 	}
 }
 
 func TestProcessAction_InvalidDataMessage(t *testing.T) {
-	e := &Extension{}
+	e := newTestExtension()
 
-	// Data.Message is not valid JSON — processorutils.Parse should fail
+	// Data.Message is not valid JSON — processorutils.Parse should fail.
 	action := teetypes.Action{
 		Data: teetypes.ActionData{
 			ID:      common.HexToHash("0xabcd"),
@@ -403,14 +259,337 @@ func TestProcessAction_InvalidDataMessage(t *testing.T) {
 		t.Fatalf("expected status %d for invalid Data.Message, got %d: %s",
 			http.StatusBadRequest, status, body)
 	}
-
-	bodyStr := string(body)
-	if !contains(bodyStr, "decoding fixed data") {
-		t.Errorf("expected body to mention 'decoding fixed data', got %q", bodyStr)
+	if !contains(string(body), "decoding fixed data") {
+		t.Errorf("expected body to mention 'decoding fixed data', got %q", string(body))
 	}
-	t.Logf("400 body: %s", bodyStr)
+}
+
+// --- State tracking ---
+
+func TestState_UpdateCountIncrementsAcrossCalls(t *testing.T) {
+	e := newTestExtension()
+
+	for i := 1; i <= 3; i++ {
+		status, body := e.processAction(getPriceAction())
+		result := mustResult(t, status, body, http.StatusOK)
+		if result.Status != 1 {
+			t.Fatalf("call %d: expected status 1, got %d: %s", i, result.Status, result.Log)
+		}
+		if e.updateCount != i {
+			t.Errorf("call %d: expected updateCount=%d, got %d", i, i, e.updateCount)
+		}
+	}
+}
+
+func TestState_ReflectsLastObservation(t *testing.T) {
+	e := newTestExtension()
+
+	if _, body := e.processAction(getPriceAction()); len(body) == 0 {
+		t.Fatal("expected a result body")
+	}
+
+	if e.lastPrice != "100000000" {
+		t.Errorf("expected lastPrice=100000000, got %q", e.lastPrice)
+	}
+	if e.lastDecimals != config.PriceDecimals {
+		t.Errorf("expected lastDecimals=%d, got %d", config.PriceDecimals, e.lastDecimals)
+	}
+	if e.lastObservedAt != testTimestamp {
+		t.Errorf("expected lastObservedAt=%d, got %d", testTimestamp, e.lastObservedAt)
+	}
+	if e.lastErrorClass != failure.ClassNone {
+		t.Errorf("expected no error class, got %q", e.lastErrorClass)
+	}
+}
+
+// A success after a failure must clear the error class, otherwise /state reports
+// a stale failure forever and the monitoring in WP7 fires on a healthy feed.
+func TestState_SuccessClearsErrorClass(t *testing.T) {
+	e := newTestExtension()
+
+	bad := buildTestAction(
+		toHash(config.OPTypeUsdxOracle),
+		toHash(config.OPCommandGetPrice),
+		[]byte(`{"unexpected":"payload"}`),
+	)
+	e.processAction(bad)
+	if e.lastErrorClass == failure.ClassNone {
+		t.Fatal("expected an error class to be recorded")
+	}
+
+	e.processAction(getPriceAction())
+	if e.lastErrorClass != failure.ClassNone {
+		t.Errorf("expected error class cleared after success, got %q", e.lastErrorClass)
+	}
+	if e.failureCount != 1 {
+		t.Errorf("expected failureCount to stay at 1, got %d", e.failureCount)
+	}
+	if e.updateCount != 1 {
+		t.Errorf("expected updateCount=1, got %d", e.updateCount)
+	}
+}
+
+// GET /state is public and attested (spec §4.1). This asserts the wire shape
+// carries only operational fields — no supply, reserves, endpoints or secrets.
+func TestState_ExposesOnlyOperationalFields(t *testing.T) {
+	e := newTestExtension()
+	e.processAction(getPriceAction())
+
+	b, err := json.Marshal(types.State{
+		Readiness:      types.Readiness{MissingRefs: []string{}},
+		LastPrice:      e.lastPrice,
+		LastDecimals:   e.lastDecimals,
+		LastObservedAt: e.lastObservedAt,
+		UpdateCount:    e.updateCount,
+		FailureCount:   e.failureCount,
+		LastErrorClass: string(e.lastErrorClass),
+		SourceHealth:   e.sourceHealth,
+	})
+	if err != nil {
+		t.Fatalf("marshalling state: %v", err)
+	}
+
+	var fields map[string]any
+	if err := json.Unmarshal(b, &fields); err != nil {
+		t.Fatalf("unmarshalling state: %v", err)
+	}
+
+	allowed := map[string]bool{
+		"lastPrice": true, "lastDecimals": true, "lastObservedAt": true,
+		"updateCount": true, "failureCount": true, "lastErrorClass": true,
+		"sourceHealth": true,
+		// readiness names outstanding secret REFS, never their values —
+		// TestState_ReadinessNamesRefsNotValues holds that line.
+		"readiness": true,
+	}
+	for k := range fields {
+		if !allowed[k] {
+			t.Errorf("unexpected field %q in public state — /state is world-readable, "+
+				"see spec §4.1 before adding fields here", k)
+		}
+	}
+	for k := range allowed {
+		if _, ok := fields[k]; !ok {
+			t.Errorf("expected field %q in state", k)
+		}
+	}
 }
 
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
+
+// --- observer path ---
+
+// fakeObserver stands in for the oracle so the handler can be tested without
+// RPC endpoints, credentials or a signing service.
+type fakeObserver struct {
+	obs oracle.Observation
+	err error
+
+	mu     sync.Mutex
+	calls  int
+	lastID common.Hash
+}
+
+func (f *fakeObserver) Observe(ctx context.Context, instructionID common.Hash) (oracle.Observation, error) {
+	f.mu.Lock()
+	f.calls++
+	f.lastID = instructionID
+	f.mu.Unlock()
+	return f.obs, f.err
+}
+
+func TestProcessGetPrice_UsesObserverResult(t *testing.T) {
+	obs := oracle.Observation{
+		Price:      big.NewInt(95_374_751),
+		Decimals:   8,
+		ObservedAt: 1_700_000_123,
+		Data:       []byte{0xAB, 0xCD},
+		Health:     map[string]string{"hex_bonds": config.HealthOK},
+	}
+	o := &fakeObserver{obs: obs}
+	e := newTestExtension()
+	e.observer = o
+
+	status, body := e.processAction(getPriceAction())
+	result := mustResult(t, status, body, http.StatusOK)
+
+	if result.Status != 1 {
+		t.Fatalf("expected status 1, got %d: %s", result.Status, result.Log)
+	}
+	// The payload must be the observer's signed bytes, verbatim.
+	if !bytes.Equal(result.Data, obs.Data) {
+		t.Errorf("data = %x, want %x", result.Data, obs.Data)
+	}
+	if e.lastPrice != "95374751" {
+		t.Errorf("lastPrice = %q", e.lastPrice)
+	}
+	if e.lastObservedAt != 1_700_000_123 {
+		t.Errorf("lastObservedAt = %d", e.lastObservedAt)
+	}
+	if e.sourceHealth["hex_bonds"] != config.HealthOK {
+		t.Errorf("health not adopted from the observation: %v", e.sourceHealth)
+	}
+}
+
+// The instruction id must reach the observer, since it is bound into the signed
+// report to tie the price to the request that asked for it.
+func TestProcessGetPrice_PassesInstructionID(t *testing.T) {
+	o := &fakeObserver{obs: oracle.Observation{
+		Price: big.NewInt(1), Decimals: 8, ObservedAt: 1, Data: []byte{0x01},
+	}}
+	e := newTestExtension()
+	e.observer = o
+
+	e.processAction(getPriceAction())
+
+	if o.calls != 1 {
+		t.Fatalf("expected 1 observation, got %d", o.calls)
+	}
+	if o.lastID != testInstructionID {
+		t.Errorf("observer got instruction id %s, want %s", o.lastID.Hex(), testInstructionID.Hex())
+	}
+}
+
+// A failed observation must publish nothing and surface only the vocabulary.
+func TestProcessGetPrice_ObserverFailureFailsClosed(t *testing.T) {
+	o := &fakeObserver{
+		err: failure.BackingUnavailable,
+		obs: oracle.Observation{Health: map[string]string{"hex_bonds": config.HealthDown}},
+	}
+	e := newTestExtension()
+	e.observer = o
+
+	status, body := e.processAction(getPriceAction())
+	result := mustResult(t, status, body, http.StatusOK)
+
+	if result.Status != 0 {
+		t.Fatalf("expected status 0, got %d", result.Status)
+	}
+	if len(result.Data) != 0 {
+		t.Error("a failed observation must publish no data")
+	}
+	if result.Log != "error: "+failure.BackingUnavailable.Error() {
+		t.Errorf("log = %q", result.Log)
+	}
+	if e.lastErrorClass != failure.ClassSourceDown {
+		t.Errorf("lastErrorClass = %q", e.lastErrorClass)
+	}
+	// Health must still be reported, so an operator can see which source broke.
+	if e.sourceHealth["hex_bonds"] != config.HealthDown {
+		t.Errorf("health not reported on failure: %v", e.sourceHealth)
+	}
+}
+
+// A non-vocabulary error must not reach the public Log.
+func TestProcessGetPrice_ForeignErrorIsNotPublished(t *testing.T) {
+	o := &fakeObserver{err: errors.New("dial tcp 10.0.0.1:8545?apikey=SECRET: refused")}
+	e := newTestExtension()
+	e.observer = o
+
+	status, body := e.processAction(getPriceAction())
+	result := mustResult(t, status, body, http.StatusOK)
+
+	if strings.Contains(string(body), "SECRET") || strings.Contains(string(body), "10.0.0.1") {
+		t.Errorf("a raw error reached the public result: %s", body)
+	}
+	if result.Log != "error: "+failure.Internal.Error() {
+		t.Errorf("log = %q, want the generic internal reason", result.Log)
+	}
+}
+
+// A failed observation must not overwrite the last good price: the feed freezes
+// at its last value with an ageing timestamp rather than going blank.
+func TestProcessGetPrice_FailureKeepsLastGoodPrice(t *testing.T) {
+	o := &fakeObserver{obs: oracle.Observation{
+		Price: big.NewInt(100_000_000), Decimals: 8, ObservedAt: 1_700_000_000,
+		Data: []byte{0x01}, Health: map[string]string{},
+	}}
+	e := newTestExtension()
+	e.observer = o
+
+	e.processAction(getPriceAction())
+	if e.lastPrice != "100000000" {
+		t.Fatalf("setup: lastPrice = %q", e.lastPrice)
+	}
+
+	o.err = failure.BackingUnavailable
+	e.processAction(getPriceAction())
+
+	if e.lastPrice != "100000000" {
+		t.Errorf("lastPrice = %q; a failure must not clear the last good price", e.lastPrice)
+	}
+	if e.lastObservedAt != 1_700_000_000 {
+		t.Errorf("lastObservedAt = %d; it must age rather than reset", e.lastObservedAt)
+	}
+}
+
+// Stub mode must be impossible to enter accidentally and impossible to miss.
+// A hard-coded par price is the one failure that produces no errors, no alerts
+// and no stale timestamp — it looks exactly like a healthy fully-backed feed.
+func TestStubMode_IsAnnouncedAndDistinguishable(t *testing.T) {
+	stub := NewWithObserver(0, 0, nil)
+	if stub.observer != nil {
+		t.Fatal("a nil observer must leave the extension in stub mode")
+	}
+	if !stub.StubMode() {
+		t.Error("StubMode() must report true when no observer is configured")
+	}
+
+	live := NewWithObserver(0, 0, &fakeObserver{})
+	if live.StubMode() {
+		t.Error("StubMode() must report false once an observer is configured")
+	}
+}
+
+// The stub's payload is JSON; a live observation's payload is the ABI-encoded
+// signed report. They are NOT the same wire format, which is why conformance
+// fixtures generated in stub mode do not pin the production payload.
+func TestStubMode_PayloadDiffersFromObserverPayload(t *testing.T) {
+	stub := newTestExtension() // observer nil
+	_, stubBody := stub.processAction(getPriceAction())
+	stubResult := mustResult(t, http.StatusOK, stubBody, http.StatusOK)
+
+	// The stub emits JSON, which must parse as GetPriceResponse.
+	var resp types.GetPriceResponse
+	if err := json.Unmarshal(stubResult.Data, &resp); err != nil {
+		t.Fatalf("stub payload is not the JSON shape: %v", err)
+	}
+
+	live := newTestExtension()
+	live.observer = &fakeObserver{obs: oracle.Observation{
+		Price: big.NewInt(1), Decimals: 8, ObservedAt: 1,
+		Data: []byte{0xDE, 0xAD}, Health: map[string]string{},
+	}}
+	_, liveBody := live.processAction(getPriceAction())
+	liveResult := mustResult(t, http.StatusOK, liveBody, http.StatusOK)
+
+	if bytes.Equal(stubResult.Data, liveResult.Data) {
+		t.Error("stub and observer payloads coincidentally matched; the test proves nothing")
+	}
+	if err := json.Unmarshal(liveResult.Data, &resp); err == nil {
+		t.Error("the observer payload parsed as the stub's JSON shape; " +
+			"these are meant to be different formats and the difference must stay visible")
+	}
+}
+
+// doStateRequest performs GET /state against the handler and returns the body.
+func doStateRequest(t *testing.T, e *Extension) []byte {
+	t.Helper()
+	rec := newRecorder()
+	e.stateHandler(rec, nil)
+	return rec.body
+}
+
+type recorder struct {
+	body   []byte
+	status int
+	hdr    http.Header
+}
+
+func newRecorder() *recorder { return &recorder{hdr: http.Header{}} }
+
+func (r *recorder) Header() http.Header         { return r.hdr }
+func (r *recorder) Write(b []byte) (int, error) { r.body = append(r.body, b...); return len(b), nil }
+func (r *recorder) WriteHeader(s int)           { r.status = s }

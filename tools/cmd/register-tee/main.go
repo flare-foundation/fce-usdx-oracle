@@ -2,9 +2,9 @@ package main
 
 import (
 	"encoding/hex"
-	"extension-scaffold/tools/pkg/configs"
-	"extension-scaffold/tools/pkg/fccutils"
-	"extension-scaffold/tools/pkg/support"
+	"fce-usdx-oracle/tools/pkg/configs"
+	"fce-usdx-oracle/tools/pkg/fccutils"
+	"fce-usdx-oracle/tools/pkg/support"
 	"flag"
 	"os"
 
