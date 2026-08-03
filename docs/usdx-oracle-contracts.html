@@ -74,7 +74,22 @@ which endpoints — is fixed in the image. Accepting caller-supplied parameters 
 update influence what gets measured, which defeats the point. The scaffold's docs note that
 <code>message</code> is "typically non-empty"; empty is fine and is the right choice here.</p>
 
-<h3>Who may call it</h3>
+<h3>Endpoint configuration</h3>
+<p><b>Only endpoints go through this contract.</b> Credentials are delivered off-chain by direct
+instruction and never touch the sender — see
+<a href="usdx-oracle-config.html">Configuration &amp; Secrets</a>. That keeps the whole secret-handling
+path out of Solidity.</p>
+<pre>function setEndpoints(address teeId, bytes calldata config) external payable onlyOwner;</pre>
+<table>
+  <tbody>
+    <tr><td style="width:13em"><b>Explicit <code>teeId</code></b></td><td>Not <code>getRandomTeeIds</code>. Configuration must land on a <i>named</i> machine, not a random one, or machines silently drift apart. Provisioning N machines is N calls.</td></tr>
+    <tr><td><b><code>onlyOwner</code></b></td><td>An open setter is a denial-of-service hole — and worse here, endpoint selection is data-source selection. The <code>extension-apikey</code> reference leaves its equivalent unrestricted: correct for a demo, not for us.</td></tr>
+    <tr><td><b>Plaintext is intended</b></td><td>Publishing which providers we read is the point. The credential portion is substituted inside the enclave from a placeholder, so nothing secret appears in calldata.</td></tr>
+    <tr><td><b>Consider a timelock</b></td><td>The change is public, so a delay gives observers a chance to notice a wrong-looking endpoint set before it takes effect — which is most of the reason to put it on-chain at all.</td></tr>
+  </tbody>
+</table>
+
+<h3>Who may call <code>requestPriceUpdate()</code></h3>
 <table>
   <thead><tr><th style="width:11em">Option</th><th>Trade-off</th></tr></thead>
   <tbody>

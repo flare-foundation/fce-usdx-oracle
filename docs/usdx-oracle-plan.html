@@ -38,6 +38,7 @@
 <a href="usdx-oracle-architecture.html">Architecture</a> ·
 <a href="usdx-oracle-extension.html">Extension</a> ·
 <a href="usdx-oracle-contracts.html">Contracts</a> ·
+<a href="usdx-oracle-config.html">Config</a> ·
 <a href="usdx-oracle-operations.html">Operations</a> ·
 <a href="usdx-oracle-index.html">Index</a>
 <br><span style="color:#5f6368">Replace these with Google Doc URLs once the Docs are created.</span>
@@ -81,6 +82,8 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
         <td>They differ: 18 on Ethereum, 6 on Flare/Songbird.</td></tr>
     <tr><td>On-chain payload carries price only</td>
         <td>Hex may consider reserve figures sensitive. Note <code>GET /state</code> is public too, so it can't hold them either.</td></tr>
+    <tr><td><b>Endpoints on-chain, credentials by direct instruction</b></td>
+        <td>Publishing which RPC providers we read is the point — it is what makes the data sources verifiable. Credentials go off-chain via <code>/direct-instruction</code>: no gas, no permanent on-chain record, instant rotation, and no secret-handling path in Solidity. A baked host allowlist keeps on-chain endpoint config from becoming a substitution channel.</td></tr>
     <tr><td>Fail closed</td>
         <td>Source down or value implausible → publish nothing, let the timestamp age. Never guess a price.</td></tr>
     <tr><td>Feed never reverts on stale data</td>
@@ -118,6 +121,16 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
   <li>☐ Op type / commands (<code>USDX_ORACLE</code> / <code>GET_PRICE</code>) · ☐ decimal arithmetic, no floats</li>
   <li>☐ Parallel fetch of all 5 sources with a global deadline · ☐ consistency-window check</li>
   <li>☐ Sign result via <code>POST /sign</code> · ☐ error taxonomy → status/log</li>
+  <li>☐ <b>Config loader</b> — finding 12's blocker; then construct <code>oracle.Runner</code> in
+      <code>cmd/docker</code> and regenerate conformance fixtures against the real payload</li>
+  <li>☐ <code>USDX_CONFIG</code>: <code>SET_ENDPOINTS</code> (on-chain instruction) · <code>SET_SECRET</code>
+      (<b>direct only</b> — reject any other action type)</li>
+  <li>☐ Envelope verification — domain, chainId, teeId, <code>issuedAt</code> freshness, version, <b>M-of-N
+      distinct</b> admin signers from the baked set; nil data and a fixed log on every path</li>
+  <li>☐ Readiness state — credentials are memory-only and lost on restart; distinct
+      <code>not_configured</code> class, booleans in <code>/state</code>, alert</li>
+  <li>☐ Validate endpoint templates against the <b>baked host allowlist</b> · ☐ no redirect-following on
+      credentialed requests (finding 2)</li>
   <li>☐ <code>GET /state</code>: operational only (last price, price history?, counters, error class, source health) — no raw reserve/supply figures</li>
   <li>☐ Logging that never emits secrets, raw responses, or reserve figures</li>
 </ul>
@@ -128,6 +141,8 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
   <li>☐ <code>UsdxPriceStore.sol</code> — verify sig against <code>TeeMachineRegistry</code>, strictly increasing
       <code>observedAt</code> (FCC has no ordering guarantee → covers replays <i>and</i> out-of-order), price bounds, pause</li>
   <li>☐ <code>UsdxCustomFeed.sol</code> — <code>IICustomFeed</code>, a thin read adapter over the store (findings §5)</li>
+  <li>☐ <code>setEndpoints(teeId, cfg)</code> — <b>explicit teeId, owner-only</b> (an open setter is a DoS
+      hole) · ☐ consider a timelock. <b>No secret path in Solidity</b> — credentials go by direct instruction.</li>
   <li>☐ Register via governance <code>addCustomFeeds</code> — <b>a proposal with lead time, not a deploy step. Start early.</b></li>
   <li>☐ Agree feed name + category byte with Flare · ☐ Foundry tests incl. fuzzing the store's guards · ☐ regenerate Go bindings</li>
 </ul>
@@ -136,7 +151,12 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
 <ul>
   <li>☐ Schedule updates · ☐ poll proxy for results · ☐ submit to store (gas, nonce, resubmission)</li>
   <li>☐ ≥2 instances (idempotent) · ☐ wallet funding + low-balance alerts</li>
-  <li>☐ Secret inventory (Hex + RPC keys) · ☐ inject encrypted to TEE pubkey, decrypt via <code>POST /decrypt</code></li>
+  <li>☐ <b>Provisioning CLI</b> — wrap <code>teesecret</code>, build + sign envelopes, POST to
+      <code>/direct-instruction</code>. No gas, no contract call.</li>
+  <li>☐ <b>Per-machine provisioning</b> — each machine has its own key, so N machines = N envelopes</li>
+  <li>☐ Keeper re-submits held ciphertext envelopes on <code>not_configured</code> — safe precisely because
+      they're encrypted · ☐ rotate forward: install everywhere, confirm, then revoke at Hex</li>
+  <li>☐ Decide admin set + M-of-N (suggest 2-of-3) and the <code>issuedAt</code> freshness window</li>
   <li>☐ Rotation without a new code hash · ☐ static egress IP per machine (Cloud NAT) · ☐ reproducible build + code hash registration</li>
   <li>☐ Write up what a third party can verify from the attestation</li>
 </ul>

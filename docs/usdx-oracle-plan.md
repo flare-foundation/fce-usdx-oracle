@@ -3,6 +3,11 @@
 _Working plan. Evidence and reference data: `usdx-oracle-reference.html` (Google-Doc-ready)
 or `usdx-oracle-spec.md` (deep technical). Google-Doc-ready plan: `usdx-oracle-plan.html`._
 
+_**Implementation findings — including security issues found while building — are in
+`usdx-oracle-findings.md`.** Read it before touching the extension: it records eight
+findings, each pinned by a named test, and four that would publish a credential, a
+reserve figure, or a wrong price if reintroduced._
+
 ## What & why
 
 USDX's only real market (BitMart) is down, so there's no price for FTSO. We publish a

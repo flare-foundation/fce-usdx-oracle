@@ -292,17 +292,30 @@ else is "in progress" — we have no in-progress state, so we only use 0 and 1.<
 detail may contain values we have agreed not to publish, and <code>log</code> travels with the result.</p>
 
 <h2>9. Configuration</h2>
-<p>Only <code>EXTENSION_PORT</code> and <code>SIGN_PORT</code> come from the environment per the container
-contract; everything else is ours to place. The dividing line matters for the code hash:</p>
+<p>Full treatment in <a href="usdx-oracle-config.html">Configuration &amp; Secrets</a> — inventory,
+delivery mechanism, ordering hazards and access control. Summary:</p>
 <table>
-  <thead><tr><th style="width:13em">Where</th><th>What</th><th>Why</th></tr></thead>
+  <thead><tr><th style="width:11em">Tier</th><th>What</th><th>Delivery</th></tr></thead>
   <tbody>
-    <tr><td><b>Baked into the image</b></td><td>token addresses, chain IDs, the price rule, quorum policy, bounds</td><td>These <i>are</i> the oracle's semantics. Changing them should change the code hash — that is the guarantee.</td></tr>
-    <tr><td><b>Injected encrypted</b></td><td>Hex API key, RPC provider keys</td><td>Secret, and rotatable without a new code hash.</td></tr>
-    <tr><td><b>Operator-settable</b></td><td>log level, ports, proxy URL</td><td>Must appear in the <code>allow_env_override</code> launch-policy label or Confidential Space rejects the override at attestation time.</td></tr>
-    <tr><td><b class="r">Undecided</b></td><td>exclusion list, RPC endpoint URLs</td><td>Config is operationally flexible; baking them in is auditable. Leaning baked-in for exclusions (they change the answer) and config for endpoint URLs (they don't).</td></tr>
+    <tr><td><b>Baked</b></td><td>token addresses, chain IDs, price rule, quorum, exclusions, Hex URLs, permitted RPC hosts</td><td>compiled in — covered by the code hash</td></tr>
+    <tr><td><b>Endpoints</b></td><td>RPC endpoint descriptors, timeouts</td><td>on-chain instruction, plaintext — publicly verifiable</td></tr>
+    <tr><td><b>Credentials</b></td><td>Hex API key, RPC credentials</td><td><b>direct instruction</b> — off-chain, admin-signed, ECIES to that machine's key</td></tr>
+    <tr><td><b>Operator env</b></td><td>ports, log level, proxy URL, mode</td><td>must appear in the <code>allow_env_override</code> label or attestation rejects it</td></tr>
   </tbody>
 </table>
+<p>Three implications the handler code has to carry:</p>
+<ul>
+  <li><b>A <code>USDX_CONFIG</code> op type</b> with <code>SET_ENDPOINTS</code> (arrives as an
+      <i>instruction</i>) and <code>SET_SECRET</code> (arrives as a <i>direct</i> action). <code>SET_SECRET</code>
+      must <b>reject anything not of type <code>"direct"</code></b>, verify an M-of-N admin signature threshold
+      itself — FCC gives no signer guarantee for direct actions — and return nil <code>data</code> with a fixed
+      log string.</li>
+  <li><b>A readiness state.</b> Secrets are memory-only and do not survive a restart, so the extension
+      starts unconfigured and must fail price actions with a distinct <code>not_configured</code> class
+      until provisioned.</li>
+  <li><b>A version check on config payloads.</b> FCC has no ordering guarantee, so two rotations can land
+      out of order and reinstate an old key. Same monotonicity rule as the store's <code>observedAt</code>.</li>
+</ul>
 
 </body>
 </html>
