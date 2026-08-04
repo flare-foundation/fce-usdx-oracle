@@ -12,7 +12,7 @@
       "state": {
         "readiness": {
           "endpointsSet": false,
-          "secretsSet": false,
+          "endpointsHash": "",
           "ready": false,
           "missingSecretRefs": []
         },

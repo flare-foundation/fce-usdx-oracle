@@ -258,7 +258,7 @@ func TestConfig_UnknownCommandIs501(t *testing.T) {
 func TestState_ReportsReadiness(t *testing.T) {
 	e := newProvisionedExtension(&fakeProvisioner{
 		readiness: types.Readiness{
-			EndpointsSet: true, SecretsSet: false, Ready: false,
+			EndpointsSet: true, Ready: false,
 			MissingRefs: []string{"hex_api_key"},
 		},
 	})

@@ -61,32 +61,24 @@ type Signer interface {
 
 // Config is a complete observation configuration.
 //
-// Everything that determines the published price is here, and all of it is
-// pinned in the container image and therefore covered by the registered code
-// hash. None of it is caller-supplied: if the store address or the chain id
-// came from the instruction, anyone could obtain a TEE signature over a report
-// bound to a contract they control.
+// It carries no target binding: where a signed report lands is settled by the
+// store's registered-machine check, not by the payload (see internal/report).
 type Config struct {
 	Chains []supply.ChainConfig
 	Bonds  backing.Source
 	Cash   backing.Source
 
-	// HaircutBps discounts the bond component (spec §3.4). Default 0.
-	HaircutBps uint16
-
-	Decimals int8
-	ChainID  *big.Int
-	Store    common.Address
-	FeedID   report.FeedID
-
-	// Deadline bounds the whole observation.
-	Deadline time.Duration
-
-	// Window is the maximum spread between the earliest and latest input read.
-	// Exceeding it means the inputs describe meaningfully different moments and
-	// the ratio compares apples to oranges.
-	Window time.Duration
+	// EndpointsHash commits the signed report to the configuration it was
+	// computed under, so UsdxPriceStore can refuse a price from a machine
+	// running something other than what setEndpoints published.
+	EndpointsHash common.Hash
 }
+
+// The observation's timing bounds and output scale are constants in
+// internal/config, not fields here. They are safety properties rather than
+// knobs: widening the window silently weakens the TOCTOU guarantee the
+// conservative double-read provides, and the decimals are what the store and
+// every consumer agree on.
 
 // Validate checks a configuration at startup.
 func (c Config) Validate() error {
@@ -100,18 +92,6 @@ func (c Config) Validate() error {
 	}
 	if c.Bonds == nil || c.Cash == nil {
 		return errors.New("oracle: both backing sources are required")
-	}
-	if c.ChainID == nil || c.ChainID.Sign() <= 0 {
-		return errors.New("oracle: a positive chain id is required")
-	}
-	if c.Store == (common.Address{}) {
-		return errors.New("oracle: store address is required")
-	}
-	if c.Decimals < 0 {
-		return errors.New("oracle: decimals must be non-negative")
-	}
-	if c.Deadline <= 0 || c.Window <= 0 {
-		return errors.New("oracle: deadline and window must be positive")
 	}
 	return nil
 }
@@ -133,7 +113,7 @@ type Observation struct {
 //
 // The returned error is always a failure.Failure, safe to publish.
 func Observe(ctx context.Context, cfg Config, signer Signer, instructionID common.Hash) (Observation, error) {
-	ctx, cancel := context.WithTimeout(ctx, cfg.Deadline)
+	ctx, cancel := context.WithTimeout(ctx, config.ObservationDeadline)
 	defer cancel()
 
 	health := newHealth(cfg)
@@ -158,7 +138,7 @@ func Observe(ctx context.Context, cfg Config, signer Signer, instructionID commo
 	}
 
 	// The consistency window spans every input, including both supply passes.
-	if err := checkWindow(cfg.Window, first, second, bonds, cash); err != nil {
+	if err := checkWindow(config.ObservationWindow, first, second, bonds, cash); err != nil {
 		return Observation{Health: health}, err
 	}
 
@@ -169,11 +149,10 @@ func Observe(ctx context.Context, cfg Config, signer Signer, instructionID commo
 	}
 
 	value, err := price.Compute(price.Inputs{
-		Bonds:      bonds.Amount,
-		Cash:       cash.Amount,
-		Supply:     total,
-		HaircutBps: cfg.HaircutBps,
-	}, cfg.Decimals)
+		Bonds:  bonds.Amount,
+		Cash:   cash.Amount,
+		Supply: total,
+	}, config.PriceDecimals)
 	if err != nil {
 		return Observation{Health: health}, err
 	}
@@ -196,7 +175,7 @@ func Observe(ctx context.Context, cfg Config, signer Signer, instructionID commo
 
 	return Observation{
 		Price:      value,
-		Decimals:   cfg.Decimals,
+		Decimals:   config.PriceDecimals,
 		ObservedAt: observedAt,
 		Data:       data,
 		Health:     health,
@@ -209,13 +188,11 @@ func sign(
 	value *big.Int, observedAt uint64, instructionID common.Hash,
 ) ([]byte, error) {
 	body, err := report.EncodeBody(report.PriceReport{
-		ChainID:       cfg.ChainID,
-		Store:         cfg.Store,
-		FeedID:        cfg.FeedID,
 		Price:         value,
-		Decimals:      cfg.Decimals,
+		Decimals:      config.PriceDecimals,
 		ObservedAt:    observedAt,
 		InstructionID: instructionID,
+		EndpointsHash: cfg.EndpointsHash,
 	})
 	if err != nil {
 		return nil, err

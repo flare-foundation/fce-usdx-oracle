@@ -104,12 +104,11 @@ func (s *fakeSigner) Sign(ctx context.Context, message []byte) ([]byte, error) {
 
 // --- helpers ---
 
+// testEndpointsHash stands in for keccak256 of a SET_ENDPOINTS payload.
+var testEndpointsHash = common.HexToHash("0x9f3c")
+
 func testConfig(t *testing.T, chain *fakeChain, bonds, cash *fakeSource) Config {
 	t.Helper()
-	feedID, err := report.ParseFeedID(0x20, "USDX/USD")
-	if err != nil {
-		t.Fatalf("ParseFeedID: %v", err)
-	}
 	return Config{
 		Chains: []supply.ChainConfig{{
 			Name:  "flare",
@@ -119,14 +118,9 @@ func testConfig(t *testing.T, chain *fakeChain, bonds, cash *fakeSource) Config 
 			},
 			Quorum: 1, FinalityTag: supply.TagLatest, FinalityMargin: 10,
 		}},
-		Bonds:    bonds,
-		Cash:     cash,
-		Decimals: 8,
-		ChainID:  big.NewInt(114),
-		Store:    common.HexToAddress("0x00000000000000000000000000000000000000AA"),
-		FeedID:   feedID,
-		Deadline: 5 * time.Second,
-		Window:   30 * time.Second,
+		Bonds:         bonds,
+		Cash:          cash,
+		EndpointsHash: testEndpointsHash,
 	}
 }
 
@@ -277,35 +271,25 @@ func TestObserve_SigningFailurePublishesNothing(t *testing.T) {
 	}
 }
 
-// The deadline must bound the whole observation, not each call individually.
-func TestObserve_RespectsDeadline(t *testing.T) {
+// The deadline is a constant in internal/config, so it is exercised by
+// cancelling the caller's context instead — the property under test is that the
+// observation honours a deadline at all, not which one.
+func TestObserve_RespectsContextCancellation(t *testing.T) {
 	cfg := testConfig(t,
 		&fakeChain{supplies: []string{"1000000"}, decimals: 6},
-		&fakeSource{name: "hex_bonds", amount: "1", delay: 2 * time.Second},
+		&fakeSource{name: "hex_bonds", amount: "1", delay: 3 * time.Second},
 		&fakeSource{name: "hex_cash", amount: "0"},
 	)
-	cfg.Deadline = 150 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
 
 	start := time.Now()
-	_, err := observe(t, cfg)
-	if err == nil {
-		t.Fatal("expected the observation to fail on its deadline")
+	if _, err := Observe(ctx, cfg, &fakeSigner{}, common.HexToHash("0xabc")); err == nil {
+		t.Fatal("expected the observation to fail once its context expired")
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("observation ran %v, past its 150ms deadline", elapsed)
-	}
-}
-
-func TestObserve_WindowExceeded(t *testing.T) {
-	cfg := testConfig(t,
-		&fakeChain{supplies: []string{"1000000"}, decimals: 6},
-		&fakeSource{name: "hex_bonds", amount: "1", delay: 300 * time.Millisecond},
-		&fakeSource{name: "hex_cash", amount: "0"},
-	)
-	cfg.Window = 50 * time.Millisecond // narrower than the backing fetch
-
-	if _, err := observe(t, cfg); !errors.Is(err, failure.WindowExceeded) {
-		t.Errorf("expected WindowExceeded, got %v", err)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("observation ran %v past its cancelled context", elapsed)
 	}
 }
 
@@ -346,14 +330,13 @@ func TestObserve_SignsTheEncodedBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeBody: %v", err)
 	}
-	if r.Store != cfg.Store {
-		t.Errorf("store = %s, want %s", r.Store, cfg.Store)
-	}
-	if r.ChainID.Cmp(cfg.ChainID) != 0 {
-		t.Errorf("chainId = %s, want %s", r.ChainID, cfg.ChainID)
-	}
 	if r.InstructionID != common.HexToHash("0xdeadbeef") {
 		t.Errorf("instructionId = %s", r.InstructionID.Hex())
+	}
+	// The signed body commits to the configuration this price was computed
+	// under, so UsdxPriceStore can refuse a machine running something else.
+	if r.EndpointsHash != testEndpointsHash {
+		t.Errorf("endpointsHash = %s, want %s", r.EndpointsHash.Hex(), testEndpointsHash.Hex())
 	}
 	if r.ObservedAt != got.ObservedAt {
 		t.Errorf("observedAt in body (%d) differs from the observation (%d); "+
@@ -450,12 +433,6 @@ func TestConfigValidate(t *testing.T) {
 		{"no chains", func(c *Config) { c.Chains = nil }},
 		{"no bonds source", func(c *Config) { c.Bonds = nil }},
 		{"no cash source", func(c *Config) { c.Cash = nil }},
-		{"nil chain id", func(c *Config) { c.ChainID = nil }},
-		{"zero chain id", func(c *Config) { c.ChainID = big.NewInt(0) }},
-		{"zero store", func(c *Config) { c.Store = common.Address{} }},
-		{"negative decimals", func(c *Config) { c.Decimals = -1 }},
-		{"zero deadline", func(c *Config) { c.Deadline = 0 }},
-		{"zero window", func(c *Config) { c.Window = 0 }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

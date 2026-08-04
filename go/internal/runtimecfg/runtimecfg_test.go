@@ -1,111 +1,146 @@
 package runtimecfg
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
-	"time"
 
-	"fce-usdx-oracle/internal/report"
+	"fce-usdx-oracle/internal/config"
+	"fce-usdx-oracle/internal/provision"
 
 	"github.com/ethereum/go-ethereum/common"
 )
 
-func testPinned(t *testing.T) Pinned {
-	t.Helper()
-	feedID, err := report.ParseFeedID(0x20, "USDX/USD")
-	if err != nil {
-		t.Fatalf("ParseFeedID: %v", err)
-	}
-	return Pinned{
-		AllowedHosts: []string{
-			"flare-api.flare.network",
-			"rpc.ankr.com",
-			"api.htdigitalassets.com",
-		},
-		ChainID:  big.NewInt(114),
-		Store:    common.HexToAddress("0x00000000000000000000000000000000000000AA"),
-		FeedID:   feedID,
-		Decimals: 8,
-		Deadline: 20 * time.Second,
-		Window:   30 * time.Second,
-	}
+// fakeNode stands in for tee-node: it echoes the ciphertext back as plaintext,
+// which exercises everything except the crypto itself. Envelope verification is
+// covered exhaustively in internal/provision.
+type fakeNode struct{ teeID common.Address }
+
+func (f *fakeNode) Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error) {
+	return ciphertext, nil
 }
 
+func (f *fakeNode) TeeID(ctx context.Context) (common.Address, error) { return f.teeID, nil }
+
+func newStore(t *testing.T) *Store {
+	t.Helper()
+	return New(provision.NewVerifier(big.NewInt(114), common.Address{}), &fakeNode{})
+}
+
+// testEndpoints covers every pinned chain, with a mix of thresholds and a
+// third-party provider added the way an operator would add Alchemy.
 func testEndpoints() Endpoints {
 	return Endpoints{
-		Backing: BackingEndpoints{
-			Bonds: Endpoint{
-				Name: "hex_bonds", URL: "https://api.htdigitalassets.com/reserves",
-				MaxAgeMs: 1800000, TimeoutMs: 5000,
-			},
-			Cash: Endpoint{
-				Name: "hex_cash", URL: "https://api.htdigitalassets.com/cash",
-				RequireCurrency: true, MaxAgeMs: 1800000, TimeoutMs: 5000,
-				AuthHeader: "X-API-Key", AuthSecretRef: "hex_api_key",
+		"flare": {
+			Threshold: 2,
+			Providers: []Provider{
+				{URL: "https://flare-api.flare.network/ext/C/rpc"},
+				{URL: "https://rpc.ankr.com/flare/{secret}", Secret: "ankr_flare_key"},
+				{URL: "https://flare-mainnet.g.alchemy.com/v2/{secret}", Secret: "alchemy_flare_key"},
 			},
 		},
-		Chains: []Chain{{
-			Name: "flare", Token: "0x4A771Cc1a39FDd8AA08B8EA51F7Fd412e73B3d2B",
-			Quorum: 1, FinalityTag: "latest", FinalityMargin: 54,
+		"ethereum": {
+			Threshold: 2,
 			Providers: []Provider{
-				{Name: "rpc_flare_1", URL: "https://flare-api.flare.network/ext/C/rpc"},
+				{URL: "https://ethereum-rpc.publicnode.com"},
+				{URL: "https://rpc.ankr.com/eth/{secret}", Secret: "ankr_eth_key"},
 			},
-		}},
+		},
+		"songbird": {
+			Threshold: 1,
+			Providers: []Provider{
+				{URL: "https://songbird-api.flare.network/ext/C/rpc"},
+			},
+		},
 	}
 }
 
-// --- the host allowlist ---
-
-// The substitution defence. Endpoints arrive over a channel we do not fully
-// control, so a host outside the attested allowlist must be impossible to
-// configure — otherwise setting endpoints is setting the price.
-func TestSetEndpoints_RejectsHostOutsideAllowlist(t *testing.T) {
-	s := New(testPinned(t))
-	e := testEndpoints()
-	e.Chains[0].Providers[0].URL = "https://evil.example.com/rpc"
-
-	if err := s.SetEndpoints(e); err == nil {
-		t.Fatal("a host outside the baked allowlist must be rejected")
+func provisioned(t *testing.T) *Store {
+	t.Helper()
+	s := newStore(t)
+	if err := setEndpoints(s, testEndpoints()); err != nil {
+		t.Fatalf("SetEndpoints: %v", err)
 	}
-	if _, ok := s.Config(); ok {
-		t.Error("a rejected configuration must not become active")
-	}
-}
-
-// The allowlist is matched against the parsed hostname, never a substring of
-// the raw URL — otherwise an allowed name in a query string would pass.
-func TestSetEndpoints_AllowlistMatchesParsedHostNotSubstring(t *testing.T) {
-	s := New(testPinned(t))
-
-	for _, raw := range []string{
-		"https://evil.example.com/?x=flare-api.flare.network",
-		"https://evil.example.com/flare-api.flare.network",
-		"https://flare-api.flare.network.evil.com/rpc",
-		"https://user@evil.com/rpc",
+	for _, ref := range []string{
+		config.HexAPIKeyRef, "ankr_flare_key", "ankr_eth_key", "alchemy_flare_key",
 	} {
-		e := testEndpoints()
-		e.Chains[0].Providers[0].URL = raw
-		if err := s.SetEndpoints(e); err == nil {
-			t.Errorf("%q must not satisfy the allowlist", raw)
+		setSecret(t, s, ref, "value-"+ref)
+	}
+	return s
+}
+
+// setEndpoints marshals and applies, exercising the same decode path a real
+// SET_ENDPOINTS instruction takes.
+func setEndpoints(s *Store, e Endpoints) error {
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	return s.ApplyEndpoints(raw)
+}
+
+// setSecret installs a credential directly, bypassing envelope verification —
+// that is covered exhaustively in internal/provision.
+func setSecret(t *testing.T, s *Store, ref, value string) {
+	t.Helper()
+	s.mu.Lock()
+	s.secrets[ref] = value
+	s.mu.Unlock()
+}
+
+// --- what can no longer be configured ---
+
+// The point of the simplification: the pinned policy is what reaches the supply
+// reader, and nothing in a payload can change it.
+func TestPinnedPolicyIsUsed(t *testing.T) {
+	cfg, err := provisioned(t).Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	for _, ch := range cfg.Chains {
+		pinnedChain, found := config.LookupChain(ch.Name)
+		if !found {
+			t.Fatalf("chain %q is not pinned", ch.Name)
+		}
+		if ch.Token != common.HexToAddress(pinnedChain.Token) {
+			t.Errorf("chain %q token = %s, want the pinned %s", ch.Name, ch.Token, pinnedChain.Token)
+		}
+		if ch.FinalityMargin != pinnedChain.FinalityMargin {
+			t.Errorf("chain %q margin = %d, want the pinned %d",
+				ch.Name, ch.FinalityMargin, pinnedChain.FinalityMargin)
 		}
 	}
 }
 
-// Exact match, not suffix: "evil-flare-api.flare.network" style near-misses.
-func TestHostAllowed_ExactMatchOnly(t *testing.T) {
-	allowed := []string{"rpc.ankr.com"}
+// A Provider has exactly two fields. Anything else an operator might try to
+// send — token, quorum, finalityMargin — has nowhere to land.
+func TestProviderCarriesOnlyURLAndSecret(t *testing.T) {
+	raw := []byte(`{"url":"https://rpc.ankr.com/eth","secret":"k",
+	                "token":"0xdead","finalityMargin":0}`)
 
-	for _, host := range []string{"rpc.ankr.com", "RPC.ANKR.COM"} {
-		if !hostAllowed(allowed, host) {
-			t.Errorf("%q should be allowed (matching is case-insensitive)", host)
-		}
+	var p Provider
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err == nil {
+		t.Error("a provider carrying price-determining fields must be rejected")
 	}
-	for _, host := range []string{
-		"evil-rpc.ankr.com", "rpc.ankr.com.evil.com", "ankr.com", "", "sub.rpc.ankr.com",
-	} {
-		if hostAllowed(allowed, host) {
-			t.Errorf("%q must not be allowed", host)
+}
+
+// Provider names are positional, so nothing an operator supplies reaches the
+// public GET /state.
+func TestProviderNamesAreDerived(t *testing.T) {
+	cfg, _ := provisioned(t).Resolve()
+
+	for _, ch := range cfg.Chains {
+		for i, p := range ch.Providers {
+			want := fmt.Sprintf("rpc_%s_%d", ch.Name, i+1)
+			if p.Name != want {
+				t.Errorf("provider name = %q, want %q", p.Name, want)
+			}
 		}
 	}
 }
@@ -113,16 +148,13 @@ func TestHostAllowed_ExactMatchOnly(t *testing.T) {
 // --- the secret split ---
 
 func TestResolveAgainst_PlaceholderRejectedInHost(t *testing.T) {
-	allowed := []string{"rpc.ankr.com"}
-	if _, err := resolveAgainst(allowed, "https://{secret}/eth", "k", "evil.com"); err == nil {
+	if _, err := resolveURL("https://{secret}/eth", "k", "evil.com"); err == nil {
 		t.Error("{secret} in the host would let a credential repoint the chain")
 	}
 }
 
 func TestResolveAgainst_SubstitutesInPathAndQuery(t *testing.T) {
-	allowed := []string{"rpc.ankr.com"}
-
-	got, err := resolveAgainst(allowed, "https://rpc.ankr.com/eth/{secret}", "k", "abc123")
+	got, err := resolveURL("https://rpc.ankr.com/eth/{secret}", "k", "abc123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -132,65 +164,175 @@ func TestResolveAgainst_SubstitutesInPathAndQuery(t *testing.T) {
 }
 
 func TestResolveAgainst_RejectsSecretThatWouldAlterURL(t *testing.T) {
-	allowed := []string{"rpc.ankr.com"}
 	for _, bad := range []string{"a/b", "a?b", "a#b", "a b"} {
-		if _, err := resolveAgainst(allowed, "https://rpc.ankr.com/eth/{secret}", "k", bad); err == nil {
+		if _, err := resolveURL("https://rpc.ankr.com/eth/{secret}", "k", bad); err == nil {
 			t.Errorf("secret %q could restructure the url", bad)
 		}
 	}
 }
 
 func TestResolveAgainst_RequiresHTTPS(t *testing.T) {
-	if _, err := resolveAgainst([]string{"rpc.ankr.com"}, "http://rpc.ankr.com/x", "", ""); err == nil {
+	if _, err := resolveURL("http://rpc.ankr.com/x", "", ""); err == nil {
 		t.Error("plaintext must be rejected")
+	}
+}
+
+// --- chain completeness ---
+
+// A missing chain silently undercounts supply, which OVERSTATES the price — the
+// error direction this oracle exists to prevent.
+func TestSetEndpoints_RejectsMissingChain(t *testing.T) {
+	s := newStore(t)
+	e := testEndpoints()
+	delete(e, "songbird")
+
+	if err := setEndpoints(s, e); err == nil {
+		t.Fatal("a missing chain must be rejected")
+	}
+}
+
+func TestSetEndpoints_RejectsUnknownChain(t *testing.T) {
+	s := newStore(t)
+	e := testEndpoints()
+	e["polygon"] = ChainEndpoints{Threshold: 1, Providers: []Provider{{URL: "https://rpc.ankr.com/polygon"}}}
+
+	if err := setEndpoints(s, e); err == nil {
+		t.Fatal("a chain outside the pinned set must be rejected")
+	}
+}
+
+// --- the configurable threshold ---
+
+// The threshold reaches the supply reader as configured, so 2-of-3 really is
+// two of three.
+func TestThresholdIsConfigurable(t *testing.T) {
+	cfg, err := provisioned(t).Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	want := map[string]int{"flare": 2, "ethereum": 2, "songbird": 1}
+	for _, ch := range cfg.Chains {
+		if ch.Quorum != want[ch.Name] {
+			t.Errorf("chain %q threshold = %d, want %d", ch.Name, ch.Quorum, want[ch.Name])
+		}
+	}
+}
+
+// Adding a provider and raising the threshold is exactly the change this
+// design exists to make possible without a rebuild.
+func TestThresholdCanChangeWithoutRebuild(t *testing.T) {
+	s := provisioned(t)
+
+	e := testEndpoints()
+	flare := e["flare"]
+	flare.Threshold = 3 // was 2, of 3 providers
+	e["flare"] = flare
+
+	if err := setEndpoints(s, e); err != nil {
+		t.Fatalf("raising the threshold must be accepted: %v", err)
+	}
+	cfg, _ := s.Resolve()
+	for _, ch := range cfg.Chains {
+		if ch.Name == "flare" && ch.Quorum != 3 {
+			t.Errorf("flare threshold = %d, want 3", ch.Quorum)
+		}
+	}
+}
+
+// A threshold above the provider count can never be met, so it would configure
+// a chain that fails on every observation.
+func TestSetEndpoints_RejectsThresholdAboveProviderCount(t *testing.T) {
+	s := newStore(t)
+	e := testEndpoints()
+	e["songbird"] = ChainEndpoints{
+		Threshold: 2,
+		Providers: []Provider{{URL: "https://songbird-api.flare.network/ext/C/rpc"}},
+	}
+
+	if err := setEndpoints(s, e); err == nil {
+		t.Fatal("a threshold above the provider count must be rejected")
+	}
+}
+
+func TestSetEndpoints_RejectsBadThreshold(t *testing.T) {
+	for _, th := range []int{0, -1} {
+		s := newStore(t)
+		e := testEndpoints()
+		e["songbird"] = ChainEndpoints{
+			Threshold: th,
+			Providers: []Provider{{URL: "https://songbird-api.flare.network/ext/C/rpc"}},
+		}
+		if err := setEndpoints(s, e); err == nil {
+			t.Errorf("threshold %d must be rejected", th)
+		}
+	}
+}
+
+func TestSetEndpoints_RejectsEmptyProviderList(t *testing.T) {
+	s := newStore(t)
+	e := testEndpoints()
+	e["songbird"] = ChainEndpoints{Threshold: 1}
+
+	if err := setEndpoints(s, e); err == nil {
+		t.Fatal("a chain with no providers must be rejected")
+	}
+}
+
+// Any host may be named — that is the decision recorded in the package doc.
+// This test exists so the property is visible rather than assumed, and so
+// reintroducing an allowlist is a deliberate change to a named test.
+func TestAnyHostIsAccepted(t *testing.T) {
+	s := newStore(t)
+	e := testEndpoints()
+	e["songbird"] = ChainEndpoints{
+		Threshold: 1,
+		Providers: []Provider{{URL: "https://anything-at-all.example.com/rpc"}},
+	}
+
+	if err := setEndpoints(s, e); err != nil {
+		t.Fatalf("an arbitrary host must be accepted: %v", err)
 	}
 }
 
 // --- readiness ---
 
-// Boot state: nothing configured, nothing served.
 func TestStore_StartsUnconfigured(t *testing.T) {
-	s := New(testPinned(t))
+	s := newStore(t)
 
 	r := s.Readiness()
-	if r.Ready || r.EndpointsSet || r.SecretsSet {
+	if r.Ready || r.EndpointsSet {
 		t.Errorf("a fresh store must be unconfigured: %+v", r)
 	}
-	if _, ok := s.Config(); ok {
-		t.Error("Config() must report false before provisioning")
+	if _, err := s.Resolve(); err == nil {
+		t.Error("Resolve must fail before provisioning")
 	}
 }
 
-// Endpoints alone are not enough when they reference a credential.
-func TestStore_EndpointsWithoutSecretIsNotReady(t *testing.T) {
-	s := New(testPinned(t))
-	if err := s.SetEndpoints(testEndpoints()); err != nil {
+// The Hex key is always required: cash reserves are half the numerator, so
+// computing backing without it would understate it.
+func TestStore_HexKeyIsAlwaysRequired(t *testing.T) {
+	s := newStore(t)
+	if err := setEndpoints(s, testEndpoints()); err != nil {
 		t.Fatalf("SetEndpoints: %v", err)
 	}
 
-	r := s.Readiness()
-	if !r.EndpointsSet {
-		t.Error("endpointsSet should be true")
+	found := false
+	for _, ref := range s.Readiness().MissingRefs {
+		if ref == config.HexAPIKeyRef {
+			found = true
+		}
 	}
-	if r.Ready {
-		t.Error("must not be ready while a referenced secret is missing")
+	if !found {
+		t.Errorf("%s must be reported missing", config.HexAPIKeyRef)
 	}
-	if len(r.MissingRefs) != 1 || r.MissingRefs[0] != "hex_api_key" {
-		t.Errorf("missing refs = %v, want [hex_api_key]", r.MissingRefs)
-	}
-	if _, ok := s.Config(); ok {
-		t.Error("Config() must report false while unready")
+	if s.Readiness().Ready {
+		t.Error("must not be ready without the Hex key")
 	}
 }
 
-func TestStore_BecomesReadyWhenBothArrive(t *testing.T) {
-	s := New(testPinned(t))
-	if err := s.SetEndpoints(testEndpoints()); err != nil {
-		t.Fatalf("SetEndpoints: %v", err)
-	}
-	if err := s.SetSecret("hex_api_key", "s3cr3t"); err != nil {
-		t.Fatalf("SetSecret: %v", err)
-	}
+func TestStore_BecomesReadyWhenEverythingArrives(t *testing.T) {
+	s := provisioned(t)
 
 	r := s.Readiness()
 	if !r.Ready {
@@ -200,147 +342,66 @@ func TestStore_BecomesReadyWhenBothArrive(t *testing.T) {
 		t.Errorf("missing refs = %v", r.MissingRefs)
 	}
 
-	cfg, ok := s.Config()
-	if !ok {
-		t.Fatal("Config() should report true once ready")
+	cfg, err := s.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve should succeed once ready: %v", err)
 	}
-	if cfg.Store != s.pinned.Store {
-		t.Error("pinned store address must survive assembly")
-	}
-	if cfg.ChainID.Cmp(s.pinned.ChainID) != 0 {
-		t.Error("pinned chain id must survive assembly")
+	if len(cfg.Chains) != len(config.Chains) {
+		t.Errorf("chains = %d, want %d", len(cfg.Chains), len(config.Chains))
 	}
 }
 
-// Order must not matter: fire-and-forget delivery gives no ordering guarantee,
-// so a secret may well arrive before the endpoints that reference it.
+// Fire-and-forget delivery gives no ordering guarantee, so a secret may arrive
+// before the endpoints that reference it.
 func TestStore_SecretBeforeEndpoints(t *testing.T) {
-	s := New(testPinned(t))
-	if err := s.SetSecret("hex_api_key", "s3cr3t"); err != nil {
-		t.Fatalf("SetSecret: %v", err)
-	}
+	s := newStore(t)
+	setSecret(t, s, config.HexAPIKeyRef, "k")
 	if s.Readiness().Ready {
 		t.Error("a secret alone must not make the store ready")
-	}
-	if err := s.SetEndpoints(testEndpoints()); err != nil {
-		t.Fatalf("SetEndpoints: %v", err)
-	}
-	if !s.Readiness().Ready {
-		t.Error("expected ready once endpoints arrive")
 	}
 }
 
 // A bad update must not take a working feed down.
 func TestStore_FailedUpdateKeepsPreviousSnapshot(t *testing.T) {
-	s := New(testPinned(t))
-	if err := s.SetEndpoints(testEndpoints()); err != nil {
-		t.Fatalf("SetEndpoints: %v", err)
-	}
-	if err := s.SetSecret("hex_api_key", "s3cr3t"); err != nil {
-		t.Fatalf("SetSecret: %v", err)
-	}
+	s := provisioned(t)
 	if !s.Readiness().Ready {
 		t.Fatal("setup: expected ready")
 	}
 
 	bad := testEndpoints()
-	bad.Chains[0].Providers[0].URL = "https://evil.example.com/rpc"
-	if err := s.SetEndpoints(bad); err == nil {
+	// Threshold above the provider count: invalid, so it must be refused.
+	bad["flare"] = ChainEndpoints{Threshold: 9, Providers: []Provider{{URL: "https://x.example.com/rpc"}}}
+	if err := setEndpoints(s, bad); err == nil {
 		t.Fatal("expected the bad update to be rejected")
 	}
-
 	if !s.Readiness().Ready {
 		t.Error("a rejected update must leave the working configuration in place")
 	}
 }
 
-// --- validation ---
-
-func TestSetEndpoints_Rejects(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(*Endpoints)
-	}{
-		{"no chains", func(e *Endpoints) { e.Chains = nil }},
-		{"backing names collide", func(e *Endpoints) { e.Backing.Cash.Name = e.Backing.Bonds.Name }},
-		{"missing backing name", func(e *Endpoints) { e.Backing.Bonds.Name = "" }},
-		{"url-shaped provider name", func(e *Endpoints) {
-			e.Chains[0].Providers[0].Name = "https://rpc.ankr.com"
-		}},
-		{"duplicate provider", func(e *Endpoints) {
-			e.Chains[0].Providers = append(e.Chains[0].Providers, e.Chains[0].Providers[0])
-		}},
-		{"duplicate chain", func(e *Endpoints) { e.Chains = append(e.Chains, e.Chains[0]) }},
-		{"plaintext provider url", func(e *Endpoints) {
-			e.Chains[0].Providers[0].URL = "http://flare-api.flare.network/rpc"
-		}},
-		{"placeholder without ref", func(e *Endpoints) {
-			e.Chains[0].Providers[0].URL = "https://rpc.ankr.com/flare/{secret}"
-		}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			s := New(testPinned(t))
-			e := testEndpoints()
-			c.mutate(&e)
-			if err := s.SetEndpoints(e); err == nil {
-				t.Error("expected rejection")
-			}
-		})
-	}
-}
-
-func TestSetSecret_Rejects(t *testing.T) {
-	s := New(testPinned(t))
-	for _, c := range []struct{ ref, value string }{
-		{"", "v"}, {"k", ""}, {"k", "has/slash"}, {"k", "has space"},
-	} {
-		if err := s.SetSecret(c.ref, c.value); err == nil {
-			t.Errorf("SetSecret(%q, %q) should be rejected", c.ref, c.value)
-		}
-	}
-}
-
-// Rotation must not need a restart, and must take effect immediately.
+// Rotation must take effect without a restart.
 func TestStore_SecretRotationTakesEffect(t *testing.T) {
-	pinned := testPinned(t)
-	s := New(pinned)
-
-	e := testEndpoints()
-	e.Chains[0].Providers[0].URL = "https://rpc.ankr.com/flare/{secret}"
-	e.Chains[0].Providers[0].SecretRef = "ankr_key"
-
-	if err := s.SetEndpoints(e); err != nil {
-		t.Fatalf("SetEndpoints: %v", err)
-	}
-	if err := s.SetSecret("hex_api_key", "a"); err != nil {
-		t.Fatalf("SetSecret: %v", err)
-	}
-	if err := s.SetSecret("ankr_key", "old"); err != nil {
-		t.Fatalf("SetSecret: %v", err)
-	}
-	if !s.Readiness().Ready {
-		t.Fatal("expected ready")
-	}
-
-	if err := s.SetSecret("ankr_key", "new"); err != nil {
-		t.Fatalf("rotate: %v", err)
-	}
+	s := provisioned(t)
+	setSecret(t, s, "ankr_eth_key", "rotated")
 	if !s.Readiness().Ready {
 		t.Error("the store must stay ready across a rotation")
 	}
 }
 
-// Readiness is what tells an operator "never provisioned" from "provisioned but
-// broken", so it must be reportable without exposing a credential.
-func TestReadiness_ExposesNoSecrets(t *testing.T) {
-	s := New(testPinned(t))
-	_ = s.SetEndpoints(testEndpoints())
-	_ = s.SetSecret("hex_api_key", "SUPERSECRETVALUE")
+// A credential containing a URL separator could restructure an endpoint after
+// substitution, so ApplySecret refuses it after decryption.
+func TestApplySecret_RejectsCredentialThatWouldAlterAURL(t *testing.T) {
+	for _, bad := range []string{"has/slash", "has space", "has?query", ""} {
+		if _, err := resolveURL("https://x.example.com/p/{secret}", "k", bad); err == nil {
+			t.Errorf("credential %q must be refused", bad)
+		}
+	}
+}
 
-	r := s.Readiness()
-	for _, ref := range r.MissingRefs {
-		if strings.Contains(ref, "SUPERSECRETVALUE") {
+func TestReadiness_ExposesNoSecrets(t *testing.T) {
+	s := provisioned(t)
+	for _, ref := range s.Readiness().MissingRefs {
+		if strings.Contains(ref, "value-") {
 			t.Error("readiness leaks a secret value")
 		}
 	}

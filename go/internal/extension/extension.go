@@ -68,37 +68,45 @@ type Extension struct {
 	sourceHealth   map[string]string
 }
 
-// NewWithObserver builds an Extension backed by a live observer. Passing nil
-// leaves it in stub mode: it answers GET_PRICE with an unsigned $1.00, which is
-// enough to exercise the wire contract without credentials.
+// NewWithObserver builds an Extension backed by a live observer.
 //
-// There is deliberately no New(observerless) convenience constructor. The
-// scaffold's New(port, signPort) was removed because it read as the ordinary
-// way to build an extension while silently producing a stub — which is how the
-// production entrypoint ended up serving a hard-coded price (findings doc §12).
-// Reaching stub mode now requires writing nil at the call site.
-//
-// Stub mode announces itself loudly and repeatedly. It is a hard-coded price
-// masquerading as an oracle — the one failure that produces no errors, no
-// alerts and no stale timestamp, because a frozen-at-par feed looks exactly like
-// a healthy fully-backed one. It must never reach a live network unnoticed.
+// A nil observer panics, and that is deliberate. The scaffold's New(port,
+// signPort) was first removed because it read as the ordinary way to build an
+// extension while silently producing a stub — which is how the production
+// entrypoint ended up serving a hard-coded price (findings doc §12). The next
+// defence logged a banner at startup, which is useless inside a TEE: the logs
+// cannot be read from outside, and a feed frozen at $1.00 looks exactly like a
+// healthy fully-backed one. So there is no way left to build a stub by
+// accident — the only stub path is NewStub, named at its single call site.
 func NewWithObserver(extensionPort, signPort int, observer Observer) *Extension {
 	return NewWithProvisioner(extensionPort, signPort, observer, nil)
 }
 
-// NewWithProvisioner builds a fully wired Extension.
+// NewWithProvisioner builds a fully wired Extension. A nil observer panics —
+// see NewWithObserver.
 func NewWithProvisioner(
 	extensionPort, signPort int, observer Observer, provisioner Provisioner,
 ) *Extension {
 	if observer == nil {
-		logger.Errorf("=====================================================================")
-		logger.Errorf("STUB MODE: no observer configured. GET_PRICE will return a hard-coded")
-		logger.Errorf("$1.00 that is NOT signed and NOT derived from any supply or reserve")
-		logger.Errorf("data. This is for wire-contract testing only and must never serve a")
-		logger.Errorf("live feed. Build an oracle.Runner and pass it to NewWithObserver.")
-		logger.Errorf("=====================================================================")
+		panic("extension: observer is nil — build a stub with NewStub, never by passing nil")
 	}
+	return newExtension(extensionPort, signPort, observer, provisioner)
+}
 
+// NewStub builds a wire-contract conformance extension that answers GET_PRICE
+// with an unsigned $1.00. It exists because scripts/test-conformance.sh
+// exercises the extension alone — no tee-node, no chain, no credentials — and
+// a real observation needs all of those.
+//
+// It must never be called outside that harness. Every production constructor
+// panics on a nil observer precisely so this named path is the only way in.
+func NewStub(extensionPort, signPort int) *Extension {
+	return newExtension(extensionPort, signPort, nil, nil)
+}
+
+func newExtension(
+	extensionPort, signPort int, observer Observer, provisioner Provisioner,
+) *Extension {
 	e := &Extension{
 		signPort:       signPort,
 		observer:       observer,
@@ -204,10 +212,10 @@ func (e *Extension) processUsdxOracle(action teetypes.Action, df *instruction.Da
 // timestamp is the designed failure mode (spec §7.15), and consumers are
 // required to check the timestamp.
 //
-// With no observer configured the extension runs in stub mode, returning $1.00
-// unsigned. That keeps the container startable for wire-contract conformance
-// without credentials or RPC access; it is never the production path, because
-// New() only leaves observer nil when no configuration was supplied.
+// With no observer the extension is in stub mode and returns $1.00 unsigned.
+// That path is reachable only through NewStub, which the wire-contract
+// conformance server calls by name; the production constructors panic on a nil
+// observer rather than ever reaching here.
 func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
 	// requestPriceUpdate() sends an empty message: everything the observation
 	// needs is pinned in extension config, so there is nothing to decode. Reject

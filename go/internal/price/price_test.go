@@ -121,53 +121,6 @@ func TestCompute_BadDecimalsRejected(t *testing.T) {
 	}
 }
 
-func TestHaircut(t *testing.T) {
-	cases := []struct {
-		name       string
-		haircutBps uint16
-		want       string
-	}{
-		{"no haircut is the default", 0, "100000000"},
-		{"one percent haircut on bonds", 100, "99000000"},
-		{"fifty percent haircut", 5000, "50000000"},
-		{"full haircut values bonds at zero", 10000, "0"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			i := in(t, "100", "0", "100")
-			i.HaircutBps = c.haircutBps
-			got, err := Compute(i, decimals)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got.String() != c.want {
-				t.Errorf("Compute() = %s, want %s", got, c.want)
-			}
-		})
-	}
-}
-
-// The haircut discounts bonds only. Cash is cash.
-func TestHaircut_DoesNotApplyToCash(t *testing.T) {
-	i := in(t, "0", "100", "100")
-	i.HaircutBps = 5000
-	got, err := Compute(i, decimals)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.String() != "100000000" {
-		t.Errorf("Compute() = %s, want 100000000 — cash must not be haircut", got)
-	}
-}
-
-func TestCompute_HaircutOverOneHundredPercentRejected(t *testing.T) {
-	i := in(t, "100", "0", "100")
-	i.HaircutBps = bpsDivisor + 1
-	if _, err := Compute(i, decimals); !errors.Is(err, failure.Internal) {
-		t.Errorf("expected failure.Internal, got %v", err)
-	}
-}
-
 // Precision beyond float64. Supply at Ethereum's 18 decimals against a backing
 // figure at 2 decimals is where a float-based implementation drifts.
 func TestCompute_ExactBeyondFloat64(t *testing.T) {
@@ -198,20 +151,19 @@ func TestCompute_ErrorsAreVocabulary(t *testing.T) {
 // The two invariants everything downstream relies on, over arbitrary inputs:
 // the result is never negative, and never exceeds par.
 func FuzzCompute(f *testing.F) {
-	f.Add(int64(100), int64(0), int64(100), uint16(0))
-	f.Add(int64(50), int64(50), int64(100), uint16(0))
-	f.Add(int64(1), int64(0), int64(3), uint16(100))
-	f.Add(int64(0), int64(0), int64(1), uint16(10000))
+	f.Add(int64(100), int64(0), int64(100))
+	f.Add(int64(50), int64(50), int64(100))
+	f.Add(int64(1), int64(0), int64(3))
+	f.Add(int64(0), int64(0), int64(1))
 
-	f.Fuzz(func(t *testing.T, bonds, cash, supply int64, haircut uint16) {
-		if bonds < 0 || cash < 0 || supply <= 0 || haircut > bpsDivisor {
+	f.Fuzz(func(t *testing.T, bonds, cash, supply int64) {
+		if bonds < 0 || cash < 0 || supply <= 0 {
 			t.Skip()
 		}
 		got, err := Compute(Inputs{
-			Bonds:      new(big.Rat).SetInt64(bonds),
-			Cash:       new(big.Rat).SetInt64(cash),
-			Supply:     new(big.Rat).SetInt64(supply),
-			HaircutBps: haircut,
+			Bonds:  new(big.Rat).SetInt64(bonds),
+			Cash:   new(big.Rat).SetInt64(cash),
+			Supply: new(big.Rat).SetInt64(supply),
 		}, decimals)
 		if err != nil {
 			t.Fatalf("unexpected error for valid inputs: %v", err)

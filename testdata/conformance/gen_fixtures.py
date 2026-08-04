@@ -239,7 +239,10 @@ FIXTURES: list[dict] = [
                     # a source is down" — see the findings doc §14.
                     "readiness": {
                         "endpointsSet": False,
-                        "secretsSet": False,
+                        # Empty until SET_ENDPOINTS lands. Once set, this is
+                        # keccak256 of the payload and must equal the hash in
+                        # the EndpointsSet event.
+                        "endpointsHash": "",
                         "ready": False,
                         "missingSecretRefs": [],
                     },

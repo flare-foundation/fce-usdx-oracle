@@ -42,7 +42,9 @@ func (e *Extension) processUsdxConfig(action teetypes.Action, df *instruction.Da
 			return respond(e, action, df, failure.WrongActionType)
 		}
 		if err := e.provisioner.ApplyEndpoints(df.OriginalMessage); err != nil {
-			// The detail names hosts and refs, so it goes to the log only.
+			// The detail names chain names, thresholds and secret refs — names,
+			// never values, and all of it is public on-chain anyway — so it goes
+			// to the log only.
 			logger.Errorf("SET_ENDPOINTS rejected: %v", err)
 			return respond(e, action, df, failure.ProvisionRejected)
 		}

@@ -422,15 +422,18 @@ func FuzzVerify(f *testing.F) {
 // The baked admin set must be replaced before a live deployment. This test is
 // EXPECTED TO FAIL until it is — that is the point.
 func TestAdminSetIsNotPlaceholder(t *testing.T) {
+	// The addresses of private keys 1, 2 and 3 — publicly known, so anyone can
+	// sign as these admins.
 	placeholders := map[common.Address]bool{
-		common.HexToAddress("0x1111111111111111111111111111111111111111"): true,
-		common.HexToAddress("0x2222222222222222222222222222222222222222"): true,
-		common.HexToAddress("0x3333333333333333333333333333333333333333"): true,
+		common.HexToAddress("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"): true,
+		common.HexToAddress("0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF"): true,
+		common.HexToAddress("0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"): true,
 	}
 	for _, a := range Admins {
 		if placeholders[a] {
-			t.Skipf("admin set is still the placeholder %s — replace before any live "+
-				"deployment; this test becomes a hard failure once real keys are baked", a)
+			t.Skipf("admin set is still the dev placeholder %s (private key 1, 2 or 3 — "+
+				"publicly known). Replace before any live deployment and turn this skip "+
+				"into a hard failure.", a)
 		}
 	}
 	if len(Admins) < Threshold {

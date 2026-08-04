@@ -4,34 +4,44 @@
 //
 //	struct PriceReport {
 //	    bytes32 domain;         // keccak256("USDX_ORACLE_PRICE_V1")
-//	    uint256 chainId;
-//	    address store;
-//	    bytes21 feedId;
 //	    uint256 price;
 //	    int8    decimals;
 //	    uint64  observedAt;
 //	    bytes32 instructionId;
+//	    bytes32 endpointsHash;  // keccak256 of the active SET_ENDPOINTS payload
 //	}
 //
 //	body = abi.encode(report)
 //	data = abi.encode(body, signature)
 //
 // FCC is explicitly "fire and forget": no ordering guarantee, no delivery
-// guarantee, no replay protection beyond what a payload arranges for itself. So
-// every binding here is load-bearing.
+// guarantee, no replay protection beyond what a payload arranges for itself.
 //
 //   - **domain** separates this signature from any other thing the TEE identity
 //     key ever signs. Without it, a signature produced for some future USDX
 //     instruction could be replayed as a price.
-//   - **chainId** blocks Coston2 → mainnet replay. Without it a price observed
-//     on testnet is a valid mainnet price.
-//   - **store** blocks replay into a different deployment of the same contract
-//     on the same chain — including one an attacker deployed.
-//   - **feedId** blocks reuse against a different feed served by the same store.
 //   - **observedAt** is the store's monotonicity key, so it MUST be inside the
 //     signed body. If it were outside, a relayer could rewrite it and either
 //     replay an old price as fresh or push a real price out of order.
 //   - **instructionId** ties the report to the instruction that requested it.
+//   - **endpointsHash** commits to the configuration this price was computed
+//     under. UsdxPriceStore compares it against what setEndpoints published for
+//     this machine, so a machine running a stale or divergent configuration
+//     cannot submit at all. Without it the on-chain config is advisory: it
+//     records what was *sent*, never what a machine is actually *running*, and
+//     with several machines a missed setEndpoints call leaves one publishing
+//     perfectly valid prices from the wrong configuration.
+//
+// # No target binding, by decision
+//
+// The payload carries no chain id, store address or feed id. WHERE a report is
+// accepted is settled by the store's trust anchor instead: a signature is only
+// ever accepted from a TEE machine currently registered to the store's
+// extension (UsdxPriceStore._requireRegisteredTee). The payload binds WHAT was
+// observed; the registry check plus governance bind where it lands. The
+// trade — a genuinely-signed report can be replayed into another deployment
+// registered under the same extension, though nobody can forge a price — was
+// made deliberately before launch; see the findings doc.
 //
 // # Carry the body, never re-encode it
 //
@@ -65,44 +75,38 @@ import (
 // reinterpreted under the new schema.
 const DomainName = "USDX_ORACLE_PRICE_V1"
 
-// FeedIDLength is the byte length of an FTSO feed id: 1 category byte plus 20
-// bytes of ASCII name, right-padded with zeros.
-const FeedIDLength = 21
-
-// BodyLength is the encoded body's length: eight static ABI words.
-const BodyLength = 8 * 32
-
-// FeedID is an FTSO feed identifier.
-type FeedID [FeedIDLength]byte
+// BodyLength is the encoded body's length: six static ABI words.
+const BodyLength = 6 * 32
 
 // Domain returns keccak256(DomainName).
 func Domain() common.Hash { return crypto.Keccak256Hash([]byte(DomainName)) }
 
 // PriceReport is the signed observation.
 type PriceReport struct {
-	ChainID       *big.Int
-	Store         common.Address
-	FeedID        FeedID
 	Price         *big.Int
 	Decimals      int8
 	ObservedAt    uint64
 	InstructionID common.Hash
+
+	// EndpointsHash is keccak256 of the raw SET_ENDPOINTS payload currently in
+	// force. Hashed as received, never re-serialised: json.Marshal will not
+	// reproduce byte-identical input, so a re-encode could never match
+	// keccak256(_config) from the transaction.
+	EndpointsHash common.Hash
 }
 
 // bodyArgs is the ABI layout of the struct's fields, in declaration order.
 //
-// Every field is a static type, so the encoding is eight 32-byte words with no
+// Every field is a static type, so the encoding is five 32-byte words with no
 // offsets — which is what makes the golden-vector test in this package able to
 // assert the layout word by word.
 var bodyArgs = mustArgs(
 	"bytes32", // domain
-	"uint256", // chainId
-	"address", // store
-	"bytes21", // feedId
 	"uint256", // price
 	"int8",    // decimals
 	"uint64",  // observedAt
 	"bytes32", // instructionId
+	"bytes32", // endpointsHash
 )
 
 // dataArgs is the outer envelope: (bytes body, bytes signature).
@@ -124,15 +128,7 @@ func mustArgs(types ...string) abi.Arguments {
 
 // EncodeBody returns abi.encode(report) — the exact bytes to be signed.
 func EncodeBody(r PriceReport) ([]byte, error) {
-	if r.ChainID == nil || r.Price == nil {
-		return nil, failure.Internal
-	}
-	if r.ChainID.Sign() <= 0 || r.Price.Sign() < 0 {
-		return nil, failure.Internal
-	}
-	if r.Store == (common.Address{}) {
-		// A zero store would produce a report bound to nothing, verifiable
-		// against any deployment.
+	if r.Price == nil || r.Price.Sign() < 0 {
 		return nil, failure.Internal
 	}
 	if r.Decimals < 0 {
@@ -144,15 +140,19 @@ func EncodeBody(r PriceReport) ([]byte, error) {
 		return nil, failure.Internal
 	}
 
+	if r.EndpointsHash == (common.Hash{}) {
+		// Zero is the store's "no configuration published" sentinel, so a report
+		// carrying it could never be accepted.
+		return nil, failure.Internal
+	}
+
 	body, err := bodyArgs.Pack(
 		Domain(),
-		r.ChainID,
-		r.Store,
-		r.FeedID,
 		r.Price,
 		r.Decimals,
 		r.ObservedAt,
 		r.InstructionID,
+		r.EndpointsHash,
 	)
 	if err != nil {
 		return nil, failure.Internal
@@ -196,7 +196,7 @@ func DecodeData(data []byte) (body, signature []byte, err error) {
 // misread.
 func DecodeBody(body []byte) (PriceReport, error) {
 	values, err := bodyArgs.Unpack(body)
-	if err != nil || len(values) != 8 {
+	if err != nil || len(values) != 6 {
 		return PriceReport{}, failure.Internal
 	}
 
@@ -205,51 +205,21 @@ func DecodeBody(body []byte) (PriceReport, error) {
 		return PriceReport{}, failure.Internal
 	}
 
-	chainID, _ := values[1].(*big.Int)
-	store, _ := values[2].(common.Address)
-	feedID, _ := values[3].([FeedIDLength]byte)
-	priceV, _ := values[4].(*big.Int)
-	decimals, _ := values[5].(int8)
-	observedAt, _ := values[6].(uint64)
-	instructionID, _ := values[7].([32]byte)
+	priceV, _ := values[1].(*big.Int)
+	decimals, _ := values[2].(int8)
+	observedAt, _ := values[3].(uint64)
+	instructionID, _ := values[4].([32]byte)
+	endpointsHash, _ := values[5].([32]byte)
 
-	if chainID == nil || priceV == nil {
+	if priceV == nil {
 		return PriceReport{}, failure.Internal
 	}
 
 	return PriceReport{
-		ChainID:       chainID,
-		Store:         store,
-		FeedID:        feedID,
 		Price:         priceV,
 		Decimals:      decimals,
 		ObservedAt:    observedAt,
 		InstructionID: common.Hash(instructionID),
+		EndpointsHash: common.Hash(endpointsHash),
 	}, nil
-}
-
-// ParseFeedID builds a feed id from a category byte and an ASCII name.
-//
-// Verified against flare-smart-contracts-v2 FtsoFeedIdConverter.getFeedId: the
-// id is bytes21 = 1 category byte ‖ 20 bytes of name, right-padded with zeros.
-// FtsoV2._isCustomFeedId requires 32 <= category < 64 for a custom feed.
-func ParseFeedID(category byte, name string) (FeedID, error) {
-	var id FeedID
-	if category < 32 || category >= 64 {
-		// Outside this range FtsoV2.addCustomFeeds reverts with
-		// "invalid feed category".
-		return id, failure.Internal
-	}
-	if len(name) == 0 || len(name) > FeedIDLength-1 {
-		return id, failure.Internal
-	}
-	for i := 0; i < len(name); i++ {
-		// Non-ASCII would encode to multiple bytes and silently truncate.
-		if name[i] < 0x20 || name[i] > 0x7E {
-			return id, failure.Internal
-		}
-	}
-	id[0] = category
-	copy(id[1:], name)
-	return id, nil
 }

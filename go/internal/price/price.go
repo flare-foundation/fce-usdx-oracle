@@ -16,7 +16,7 @@
 //
 // # The formula
 //
-//	B     = R_cash + R_bonds · (1 − h)      total backing, USD
+//	B     = R_cash + R_bonds                total backing, USD
 //	S     = ΣtotalSupply                    circulating supply, USD-denominated
 //	price = min(1, B / S)
 //	value = ⌊price · 10^decimals⌋
@@ -44,9 +44,6 @@ import (
 // only exists so a misconfiguration cannot ask for 10^127 and exhaust memory.
 const maxDecimals = 36
 
-// bpsDivisor is one hundred percent in basis points.
-const bpsDivisor = 10000
-
 // Inputs are the measured quantities the price is derived from.
 //
 // All amounts are USD-denominated and must be non-negative. Supply is the sum
@@ -62,11 +59,6 @@ type Inputs struct {
 
 	// Supply is S, circulating supply.
 	Supply *big.Rat
-
-	// HaircutBps discounts the bond component only, in basis points, for
-	// liquidity and duration risk (spec §3.4). Cash is not haircut. 0 means no
-	// discount and is the default; 10000 would value bonds at zero.
-	HaircutBps uint16
 }
 
 // Compute returns ⌊min(1, B/S) · 10^decimals⌋.
@@ -78,9 +70,6 @@ func Compute(in Inputs, decimals int8) (*big.Int, error) {
 		return nil, failure.Internal
 	}
 	if in.Bonds == nil || in.Cash == nil || in.Supply == nil {
-		return nil, failure.Internal
-	}
-	if in.HaircutBps > bpsDivisor {
 		return nil, failure.Internal
 	}
 	if in.Bonds.Sign() < 0 || in.Cash.Sign() < 0 {
@@ -116,18 +105,15 @@ func Compute(in Inputs, decimals int8) (*big.Int, error) {
 	return value, nil
 }
 
-// Backing returns B = R_cash + R_bonds · (1 − h), exactly.
+// Backing returns B = R_cash + R_bonds, exactly.
 //
-// Exported because the observation path checks the backing figure's
-// plausibility before dividing, and recomputing it there by hand would be a
-// second implementation of the same formula.
+// Spec §3.4 floated a haircut factor on the bond component. Deliberately not
+// implemented: it was only ever a proposal, it would always have been zero, and
+// applying one changes the published price — which means a new code hash
+// regardless. A configurable value buys nothing and adds a knob that silently
+// moves the feed.
 func Backing(in Inputs) *big.Rat {
-	bonds := new(big.Rat).Set(in.Bonds)
-	if in.HaircutBps > 0 {
-		keep := big.NewRat(int64(bpsDivisor-in.HaircutBps), bpsDivisor)
-		bonds.Mul(bonds, keep)
-	}
-	return new(big.Rat).Add(in.Cash, bonds)
+	return new(big.Rat).Add(in.Cash, in.Bonds)
 }
 
 // Scale returns 10^decimals. Callers treat it as the on-chain representation of

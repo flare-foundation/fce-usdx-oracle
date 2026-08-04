@@ -1,44 +1,60 @@
-// Package runtimecfg holds configuration that arrives after startup.
+// Package runtimecfg holds the two things that arrive after startup: RPC
+// provider URLs and credentials.
 //
-// Endpoints come by on-chain instruction and credentials by direct instruction,
-// so the extension boots with neither and assembles an oracle.Config only once
-// both are present. Until then it is not_configured and refuses to price.
+// Everything else — token addresses, finality behaviour, the Hex endpoints, the
+// observation bounds, the output encoding — is a settled fact in
+// internal/config, compiled in and covered by the registered code hash.
 //
-// # Credentials are memory-only, and that is deliberate
+// # Shape
 //
-// Nothing here is written to disk. A restart loses every credential and the
-// extension returns to not_configured until the keeper re-submits. That is the
-// intended trade: a TEE that persisted secrets would need somewhere to persist
-// them to, and that store becomes a thing to protect, back up, and eventually
-// leak. The cost is a provisioning round trip after every restart, which the
-// keeper automates by holding the ciphertext envelopes — safe precisely because
-// they are encrypted to the TEE.
+// One type. It receives provisioning messages, holds what they carried, and
+// resolves that into an oracle.Config on demand:
 //
-// # The host allowlist is the substitution defence
+//	ApplyEndpoints ─┐
+//	                ├─► Store ──► Resolve() ──► oracle.Config
+//	ApplySecret   ──┘
 //
-// Endpoints arrive over a channel we do not fully control, so an attacker who
-// could set them could point a chain at a server they control and dictate the
-// price outright. The allowlist is baked into the image and covered by the code
-// hash: whatever endpoints are configured, they can only ever be hosts that were
-// attested. Publishing endpoints on-chain then makes the data sources
-// verifiable without making them substitutable.
+// Resolve runs per observation rather than being cached. Dialling an HTTP RPC
+// endpoint opens no connection, so it costs nothing, and it removes a whole
+// class of staleness bug: there is no snapshot that can disagree with the
+// configuration it came from.
+//
+// # The provider list is unconstrained, by decision
+//
+// Provider URLs and the per-chain threshold are set entirely at runtime, with no
+// host allowlist. Whoever can send SET_ENDPOINTS can name any host and any
+// threshold, and can therefore choose the published price. The trade — no
+// rebuild to add a provider or change 2-of-3 to 2-of-4 — was made deliberately;
+// see finding 15.
+//
+// What is still enforced is unrelated to which host is named: https only, and a
+// credential that cannot restructure the URL it is substituted into.
+//
+// # Credentials are memory-only
+//
+// Nothing is written to disk. A restart loses every credential and the
+// extension returns to not_configured until the keeper re-submits.
 package runtimecfg
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
-	"net/url"
+	"io"
 	"strings"
 	"sync"
-	"time"
 
 	"fce-usdx-oracle/internal/backing"
+	"fce-usdx-oracle/internal/config"
+	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/oracle"
-	"fce-usdx-oracle/internal/report"
+	"fce-usdx-oracle/internal/provision"
 	"fce-usdx-oracle/internal/supply"
+	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
@@ -46,434 +62,360 @@ import (
 // appear in the path or a query value, never in the scheme or host.
 const secretPlaceholder = "{secret}"
 
-// Endpoints is the configuration delivered by SET_ENDPOINTS.
+// maxPayloadBytes caps an endpoint configuration.
+const maxPayloadBytes = 256 << 10
+
+// Endpoints is the entire SET_ENDPOINTS payload.
 //
-// JSON rather than ABI: it is a nested config blob carried as opaque bytes by
-// the instruction sender, and a human has to be able to read what was published
-// on-chain and confirm it matches what they intended.
-type Endpoints struct {
-	Backing BackingEndpoints `json:"backing"`
-	Chains  []Chain          `json:"chains"`
-}
-
-// BackingEndpoints configures the two reserve sources.
-type BackingEndpoints struct {
-	Bonds Endpoint `json:"bonds"`
-	Cash  Endpoint `json:"cash"`
-}
-
-// Endpoint is one HTTP backing source.
+//	{
+//	  "flare": {
+//	    "threshold": 2,
+//	    "providers": [
+//	      {"url": "https://flare-api.flare.network/ext/C/rpc"},
+//	      {"url": "https://rpc.ankr.com/flare/{secret}", "secret": "ankr_flare_key"}
+//	    ]
+//	  }
+//	}
 //
-// A credential can be needed in two distinct places, so they are two distinct
-// fields. Collapsing them into one "secretRef" reads simpler and is wrong: the
-// Hex private endpoint authenticates with a header and has no URL placeholder,
-// while a keyed RPC URL has a placeholder and no header. One field cannot mean
-// both without the validation silently rejecting one of the two real cases.
-type Endpoint struct {
-	Name            string `json:"name"`
-	URL             string `json:"url"`
-	RequireCurrency bool   `json:"requireCurrency"`
-	MaxAgeMs        int    `json:"maxAgeMs"`
-	TimeoutMs       int    `json:"timeoutMs"`
+// Chain names must match internal/config.Chains, which supplies the token
+// address and finality behaviour.
+type Endpoints map[string]ChainEndpoints
 
-	// AuthHeader and AuthSecretRef send a credential as a request header.
-	AuthHeader    string `json:"authHeader,omitempty"`
-	AuthSecretRef string `json:"authSecretRef,omitempty"`
+// ChainEndpoints is one chain's provider set and agreement rule.
+type ChainEndpoints struct {
+	// Threshold is how many providers must return identical results at the
+	// agreed block. Identical, not median: a read at a fixed block is
+	// deterministic, so disagreement means fault rather than noise.
+	Threshold int `json:"threshold"`
 
-	// URLSecretRef is substituted into {secret} in URL.
-	URLSecretRef string `json:"urlSecretRef,omitempty"`
+	Providers []Provider `json:"providers"`
 }
 
-// Chain is one chain's supply read.
-type Chain struct {
-	Name           string     `json:"name"`
-	Token          string     `json:"token"`
-	Quorum         int        `json:"quorum"`
-	FinalityTag    string     `json:"finalityTag"`
-	FinalityMargin uint64     `json:"finalityMargin"`
-	Providers      []Provider `json:"providers"`
-}
-
-// Provider is one RPC endpoint.
+// Provider is one RPC endpoint. Two fields, and Secret is usually absent —
+// there is no name to supply, so nothing an operator writes reaches the public
+// GET /state.
 type Provider struct {
-	Name      string `json:"name"`
-	URL       string `json:"url"`
-	SecretRef string `json:"secretRef,omitempty"`
+	URL string `json:"url"`
+
+	// Secret names the credential substituted for {secret} in URL. A name,
+	// never a value.
+	Secret string `json:"secret,omitempty"`
 }
 
-// Pinned is the part of the configuration that stays in the image, because it
-// must not be substitutable.
-type Pinned struct {
-	// AllowedHosts bounds every endpoint that can ever be configured.
-	AllowedHosts []string
+// Node is the subset of tee-node this package needs.
+type Node interface {
+	Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error)
 
-	ChainID  *big.Int
-	Store    common.Address
-	FeedID   report.FeedID
-	Decimals int8
-
-	HaircutBps uint16
-	Deadline   time.Duration
-	Window     time.Duration
+	// TeeID is this machine's own address, which envelopes are bound to.
+	TeeID(ctx context.Context) (common.Address, error)
 }
 
-// Store holds runtime configuration and derives an oracle.Config from it.
-//
-// Safe for concurrent use: the extension serialises handlers, but GET /state
-// reads concurrently.
+// Store receives provisioning messages and resolves them into an oracle.Config.
 type Store struct {
-	mu sync.RWMutex
+	mu        sync.RWMutex
+	endpoints Endpoints
 
-	pinned Pinned
+	// endpointsHash is keccak256 of the raw payload that produced endpoints,
+	// hashed AS RECEIVED. It goes into every signed price report and must equal
+	// keccak256(_config) from the setEndpoints transaction, so it cannot be
+	// recomputed from the decoded struct — json.Marshal would not reproduce the
+	// original bytes.
+	endpointsHash common.Hash
 
-	endpoints *Endpoints
-	secrets   map[string]string
+	secrets map[string]string
 
-	// snapshot is the assembled config, rebuilt whenever inputs change. nil
-	// means not ready.
-	snapshot *oracle.Config
+	verifier *provision.Verifier
+	node     Node
 }
 
-// New returns an unconfigured Store.
-func New(pinned Pinned) *Store {
-	return &Store{pinned: pinned, secrets: map[string]string{}}
+// New returns an unprovisioned Store.
+func New(verifier *provision.Verifier, node Node) *Store {
+	return &Store{secrets: map[string]string{}, verifier: verifier, node: node}
 }
 
-// Readiness describes what the extension is still waiting for.
+// --- provisioning ---
+
+// ApplyEndpoints installs a provider configuration from an on-chain
+// instruction.
 //
-// Reported in GET /state so an operator can tell "never provisioned" from
-// "provisioned but a source is down" without shell access.
-type Readiness struct {
-	EndpointsSet bool     `json:"endpointsSet"`
-	SecretsSet   bool     `json:"secretsSet"`
-	Ready        bool     `json:"ready"`
-	MissingRefs  []string `json:"missingSecretRefs"`
-}
-
-// Readiness returns the current provisioning state.
-func (s *Store) Readiness() Readiness {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	r := Readiness{
-		EndpointsSet: s.endpoints != nil,
-		SecretsSet:   len(s.secrets) > 0,
-		Ready:        s.snapshot != nil,
-		MissingRefs:  []string{},
+// No envelope: authorisation is the owner-only check in the instruction sender,
+// and the extension has already established this arrived over the instruction
+// channel. What is checked here is content.
+func (s *Store) ApplyEndpoints(payload []byte) error {
+	if len(payload) == 0 || len(payload) > maxPayloadBytes {
+		return errors.New("runtimecfg: endpoint payload is empty or too large")
 	}
-	if s.endpoints != nil {
-		for _, ref := range requiredRefs(*s.endpoints) {
-			if s.secrets[ref] == "" {
-				r.MissingRefs = append(r.MissingRefs, ref)
-			}
-		}
+
+	var e Endpoints
+	dec := json.NewDecoder(io.LimitReader(strings.NewReader(string(payload)), maxPayloadBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&e); err != nil {
+		// An unrecognised field means the publisher and this build disagree
+		// about the schema. Stopping is safer than applying the subset we
+		// happen to understand.
+		return errors.New("runtimecfg: payload is not a known configuration")
 	}
-	return r
-}
 
-// Config returns the assembled configuration, or false when not provisioned.
-func (s *Store) Config() (oracle.Config, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.snapshot == nil {
-		return oracle.Config{}, false
-	}
-	return *s.snapshot, true
-}
-
-// SetEndpoints installs a new endpoint configuration.
-//
-// The whole configuration is replaced atomically. A partial update would let an
-// attacker who could land one message leave the extension in a state that is
-// neither the old configuration nor the intended new one.
-func (s *Store) SetEndpoints(e Endpoints) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if err := s.validateEndpoints(e); err != nil {
+	if err := validate(e); err != nil {
 		return err
 	}
 
-	s.endpoints = &e
-	s.rebuild()
-	return nil
-}
-
-// SetSecret installs one credential.
-func (s *Store) SetSecret(ref, value string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if ref == "" || value == "" {
-		return errors.New("runtimecfg: ref and value are required")
-	}
-	// A credential containing a URL separator could restructure an endpoint
-	// after substitution.
-	if strings.ContainsAny(value, " \t\r\n/?#") {
-		return errors.New("runtimecfg: secret contains characters that would alter a url")
-	}
-
-	s.secrets[ref] = value
-	s.rebuild()
+	s.endpoints = e
+	s.endpointsHash = crypto.Keccak256Hash(payload)
+	s.mu.Unlock()
 	return nil
 }
 
-// rebuild reassembles the snapshot. Callers hold the write lock.
+// ApplySecret verifies a signed envelope and installs the credential it carries.
 //
-// A failure leaves the previous snapshot in place: a bad update must not take a
-// working feed down.
-func (s *Store) rebuild() {
-	if s.endpoints == nil {
-		return
+// The payload is a ciphertext encrypted to this TEE's public key, so the
+// plaintext exists only inside the enclave and only in memory.
+func (s *Store) ApplySecret(ctx context.Context, message []byte) error {
+	if !s.verifier.HasTeeID() {
+		teeID, err := s.node.TeeID(ctx)
+		if err != nil {
+			return failure.ProvisionRejected
+		}
+		s.verifier.SetTeeID(teeID)
 	}
-	cfg, err := s.assemble(*s.endpoints)
+
+	env, err := s.verifier.Verify(message) //todo: What is this doing exactly?
 	if err != nil {
-		return
+		return err
 	}
-	s.snapshot = &cfg
+
+	plaintext, err := s.node.Decrypt(ctx, env.Payload)
+	if err != nil {
+		return failure.ProvisionRejected
+	}
+
+	// The plaintext is a credential. Never logged, never wrapped into an error,
+	// never returned.
+	value := string(plaintext)
+	if value == "" || strings.ContainsAny(value, " \t\r\n/?#") {
+		// A credential containing a URL separator could restructure an endpoint
+		// after substitution.
+		return failure.ProvisionRejected
+	}
+
+	s.mu.Lock()
+	s.secrets[env.Ref] = value
+	s.mu.Unlock()
+	return nil
 }
 
-func (s *Store) assemble(e Endpoints) (oracle.Config, error) {
-	bonds, err := s.buildEndpoint(e.Backing.Bonds)
-	if err != nil {
-		return oracle.Config{}, err
-	}
-	cash, err := s.buildEndpoint(e.Backing.Cash)
-	if err != nil {
-		return oracle.Config{}, err
+// --- readiness ---
+
+// Readiness reports what provisioning is still outstanding, in the shape
+// GET /state publishes. Names refs, never values.
+func (s *Store) Readiness() types.Readiness {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	missing := []string{}
+	for _, ref := range s.required() {
+		if s.secrets[ref] == "" {
+			missing = append(missing, ref)
+		}
 	}
 
-	chains := make([]supply.ChainConfig, 0, len(e.Chains))
-	for _, c := range e.Chains {
-		ch, err := s.buildChain(c)
-		if err != nil {
-			return oracle.Config{}, err
+	return types.Readiness{
+		EndpointsSet:  s.endpoints != nil,
+		EndpointsHash: s.endpointsHash.Hex(),
+		Ready:         s.endpoints != nil && len(missing) == 0,
+		MissingRefs:   missing,
+	}
+}
+
+// required lists every credential the current configuration needs. Callers hold
+// at least the read lock.
+func (s *Store) required() []string {
+	// The Hex key is always required: cash reserves are half the numerator, so
+	// computing backing without it would understate it.
+	refs := []string{config.HexAPIKeyRef}
+
+	for _, ce := range s.endpoints {
+		for _, p := range ce.Providers {
+			if p.Secret != "" && !contains(refs, p.Secret) {
+				refs = append(refs, p.Secret)
+			}
 		}
-		chains = append(chains, ch)
+	}
+	return refs
+}
+
+// --- resolution ---
+
+// Resolve turns the stored configuration into a live oracle.Config.
+//
+// Called once per observation. Everything it builds is cheap: an HTTP RPC
+// client opens no connection until it is used.
+func (s *Store) Resolve() (oracle.Config, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.endpoints == nil {
+		return oracle.Config{}, failure.NotConfigured
+	}
+
+	cashKey := s.secrets[config.HexAPIKeyRef]
+	if cashKey == "" {
+		return oracle.Config{}, failure.NotConfigured
+	}
+
+	bonds, err := newBacking(config.BondsSource())
+	if err != nil {
+		return oracle.Config{}, failure.Internal
+	}
+	cash, err := newBacking(config.CashSource(cashKey))
+	if err != nil {
+		return oracle.Config{}, failure.Internal
+	}
+
+	chains := make([]supply.ChainConfig, 0, len(config.Chains))
+	for _, pinned := range config.Chains {
+		ce, ok := s.endpoints[pinned.Name]
+		if !ok {
+			// A missing chain undercounts supply, which OVERSTATES the price.
+			return oracle.Config{}, failure.NotConfigured
+		}
+
+		providers := make([]supply.Provider, 0, len(ce.Providers))
+		for i, p := range ce.Providers {
+			url, err := resolveURL(p.URL, p.Secret, s.secrets[p.Secret])
+			if err != nil {
+				return oracle.Config{}, failure.NotConfigured
+			}
+			client, err := ethclient.Dial(url)
+			if err != nil {
+				return oracle.Config{}, failure.NotConfigured
+			}
+			// Names are positional, so nothing an operator supplies reaches the
+			// public GET /state.
+			providers = append(providers, supply.Provider{
+				Name:   fmt.Sprintf("rpc_%s_%d", pinned.Name, i+1),
+				Client: client,
+			})
+		}
+
+		tag := supply.TagLatest
+		if pinned.FinalityTag == string(supply.TagFinalized) {
+			tag = supply.TagFinalized
+		}
+
+		chains = append(chains, supply.ChainConfig{
+			Name:           pinned.Name,
+			Token:          common.HexToAddress(pinned.Token),
+			Providers:      providers,
+			Quorum:         ce.Threshold,
+			FinalityTag:    tag,
+			FinalityMargin: pinned.FinalityMargin,
+		})
 	}
 
 	cfg := oracle.Config{
-		Chains:     chains,
-		Bonds:      bonds,
-		Cash:       cash,
-		HaircutBps: s.pinned.HaircutBps,
-		Decimals:   s.pinned.Decimals,
-		ChainID:    s.pinned.ChainID,
-		Store:      s.pinned.Store,
-		FeedID:     s.pinned.FeedID,
-		Deadline:   s.pinned.Deadline,
-		Window:     s.pinned.Window,
+		Chains: chains, Bonds: bonds, Cash: cash,
+		EndpointsHash: s.endpointsHash,
 	}
-	return cfg, cfg.Validate()
+	if err := cfg.Validate(); err != nil {
+		return oracle.Config{}, failure.Internal
+	}
+	return cfg, nil
 }
 
-func (s *Store) buildEndpoint(e Endpoint) (backing.Source, error) {
-	resolved, err := s.resolveURL(e.URL, e.URLSecretRef)
-	if err != nil {
-		return nil, err
-	}
-	cfg := backing.Config{
-		Name:            e.Name,
-		URL:             resolved,
-		RequireCurrency: e.RequireCurrency,
-		MaxAge:          time.Duration(e.MaxAgeMs) * time.Millisecond,
-		Timeout:         time.Duration(e.TimeoutMs) * time.Millisecond,
-	}
-	if e.AuthHeader != "" {
-		value := s.secrets[e.AuthSecretRef]
-		if value == "" {
-			return nil, fmt.Errorf("runtimecfg: secret %q is not set", e.AuthSecretRef)
-		}
-		cfg.AuthHeader = e.AuthHeader
-		cfg.AuthValue = value
-	}
-	return backing.New(cfg)
+func newBacking(spec config.BackingSpec) (backing.Source, error) {
+	return backing.New(backing.Config{
+		Name: spec.Name, URL: spec.URL,
+		RequireCurrency: spec.RequireCurrency,
+		MaxAge:          spec.MaxAge, Timeout: spec.Timeout,
+		AuthHeader: spec.AuthHeader, AuthValue: spec.AuthValue,
+	})
 }
 
-func (s *Store) buildChain(c Chain) (supply.ChainConfig, error) {
-	var out supply.ChainConfig
+// --- validation ---
 
-	if !common.IsHexAddress(c.Token) {
-		return out, fmt.Errorf("runtimecfg: chain %q: token is not an address", c.Name)
+// validate checks a payload's structure. Pure string work: no dialling, no
+// secrets needed, so a bad configuration is rejected when it is sent rather
+// than surfacing later as a failed observation.
+func validate(e Endpoints) error {
+	if len(e) == 0 {
+		return errors.New("runtimecfg: no chains configured")
 	}
 
-	var tag supply.BlockTag
-	switch c.FinalityTag {
-	case string(supply.TagLatest):
-		tag = supply.TagLatest
-	case string(supply.TagFinalized):
-		tag = supply.TagFinalized
-	default:
-		return out, fmt.Errorf("runtimecfg: chain %q: bad finalityTag", c.Name)
-	}
-
-	providers := make([]supply.Provider, 0, len(c.Providers))
-	for _, p := range c.Providers {
-		resolved, err := s.resolveURL(p.URL, p.SecretRef)
-		if err != nil {
-			return out, err
+	for name, ce := range e {
+		if _, ok := config.LookupChain(name); !ok {
+			return fmt.Errorf("runtimecfg: unknown chain %q", name)
 		}
-		client, err := ethclient.Dial(resolved)
-		if err != nil {
-			return out, fmt.Errorf("runtimecfg: chain %q provider %q: cannot dial", c.Name, p.Name)
+		if len(ce.Providers) == 0 {
+			return fmt.Errorf("runtimecfg: chain %q has no providers", name)
 		}
-		providers = append(providers, supply.Provider{Name: p.Name, Client: client})
+		if ce.Threshold < 1 || ce.Threshold > len(ce.Providers) {
+			// A threshold outside this range can never be met, so it would
+			// configure a chain that fails on every observation.
+			return fmt.Errorf("runtimecfg: chain %q threshold %d is not between 1 and %d",
+				name, ce.Threshold, len(ce.Providers))
+		}
+		for _, p := range ce.Providers {
+			// A dummy credential: this checks URL shape, not whether the secret
+			// has arrived yet.
+			if _, err := resolveURL(p.URL, p.Secret, "placeholder"); err != nil {
+				return fmt.Errorf("runtimecfg: chain %q: %w", name, err)
+			}
+		}
 	}
 
-	out = supply.ChainConfig{
-		Name: c.Name, Token: common.HexToAddress(c.Token), Providers: providers,
-		Quorum: c.Quorum, FinalityTag: tag, FinalityMargin: c.FinalityMargin,
+	for _, c := range config.Chains {
+		if _, ok := e[c.Name]; !ok {
+			return fmt.Errorf("runtimecfg: chain %q is missing", c.Name)
+		}
 	}
-	return out, out.Validate()
+	return nil
 }
 
-// resolveURL substitutes a credential and enforces the allowlist.
-func (s *Store) resolveURL(raw, secretRef string) (string, error) {
-	value := ""
-	if secretRef != "" {
-		value = s.secrets[secretRef]
-		if value == "" {
-			return "", fmt.Errorf("runtimecfg: secret %q is not set", secretRef)
-		}
-	}
-	return resolveAgainst(s.pinned.AllowedHosts, raw, secretRef, value)
-}
-
-// resolveAgainst validates a URL against an allowlist and substitutes a secret.
-// Split out from Store so it is testable without one.
-func resolveAgainst(allowed []string, raw, secretRef, value string) (string, error) {
+// resolveURL validates a URL's shape and substitutes a credential.
+//
+// It says nothing about WHICH host is named — that is unconstrained by
+// decision. What it enforces is that the transport is encrypted, and that an
+// injected credential cannot change where the request goes. Those matter
+// because the URL author and the credential holder can be different parties.
+func resolveURL(raw, secretRef, value string) (string, error) {
 	hasPlaceholder := strings.Contains(raw, secretPlaceholder)
 	if hasPlaceholder != (secretRef != "") {
-		return "", errors.New("runtimecfg: {secret} and secretRef must be used together")
+		return "", errors.New("{secret} and secret must be used together")
 	}
-
-	const sentinel = "zzsecretsentinelzz"
-	probe := strings.ReplaceAll(raw, secretPlaceholder, sentinel)
-
-	u, err := url.Parse(probe)
-	if err != nil {
-		return "", errors.New("runtimecfg: url is not a valid URL")
+	if !strings.HasPrefix(raw, "https://") {
+		return "", errors.New("url must use https")
 	}
-	if u.Scheme != "https" {
-		return "", errors.New("runtimecfg: url must use https")
-	}
-	if strings.Contains(u.Host, sentinel) || strings.Contains(u.Scheme, sentinel) {
-		return "", errors.New("runtimecfg: {secret} may not appear in the scheme or host")
-	}
-
-	// The allowlist check. Compared against the parsed host, never against the
-	// raw string: a substring match on the raw URL would accept
-	// https://evil.com/?x=allowed.example.com.
-	if !hostAllowed(allowed, u.Hostname()) {
-		return "", fmt.Errorf("runtimecfg: host %q is not in the baked allowlist", u.Hostname())
-	}
-
 	if !hasPlaceholder {
 		return raw, nil
 	}
+
+	// The placeholder must sit after the authority, so a credential cannot
+	// change the host. Everything before the first '/' after "https://" is the
+	// authority.
+	authorityEnd := strings.Index(raw[len("https://"):], "/")
+	if authorityEnd < 0 {
+		return "", errors.New("{secret} may not appear in the host")
+	}
+	if strings.Index(raw, secretPlaceholder) <= len("https://")+authorityEnd {
+		return "", errors.New("{secret} may not appear in the scheme or host")
+	}
+
+	if value == "" {
+		return "", fmt.Errorf("secret %q is not set", secretRef)
+	}
 	if strings.ContainsAny(value, " \t\r\n/?#") {
-		return "", errors.New("runtimecfg: secret would alter the url")
+		return "", errors.New("secret would alter the url")
 	}
 	return strings.ReplaceAll(raw, secretPlaceholder, value), nil
 }
 
-// hostAllowed matches a hostname exactly, case-insensitively.
-//
-// Exact match, not suffix: a suffix rule like ".example.com" would also accept
-// "evil-example.com" under a careless implementation, and there is no need for
-// wildcards when the provider set is known and pinned.
-func hostAllowed(allowed []string, host string) bool {
-	host = strings.ToLower(strings.TrimSpace(host))
-	if host == "" {
-		return false
-	}
-	for _, a := range allowed {
-		if strings.EqualFold(strings.TrimSpace(a), host) {
+func contains(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
 			return true
 		}
 	}
 	return false
-}
-
-// validateEndpoints checks a configuration before it replaces the current one.
-// Callers hold the write lock.
-func (s *Store) validateEndpoints(e Endpoints) error {
-	if len(e.Chains) == 0 {
-		return errors.New("runtimecfg: at least one chain is required")
-	}
-	if e.Backing.Bonds.Name == "" || e.Backing.Cash.Name == "" {
-		return errors.New("runtimecfg: both backing sources need names")
-	}
-	if e.Backing.Bonds.Name == e.Backing.Cash.Name {
-		return errors.New("runtimecfg: backing sources must have distinct names")
-	}
-
-	// Every URL must clear the allowlist even when its secret is missing, so a
-	// disallowed host is rejected at configuration time rather than lying
-	// dormant until a credential arrives.
-	if (e.Backing.Bonds.AuthHeader == "") != (e.Backing.Bonds.AuthSecretRef == "") ||
-		(e.Backing.Cash.AuthHeader == "") != (e.Backing.Cash.AuthSecretRef == "") {
-		return errors.New("runtimecfg: authHeader and authSecretRef must be set together")
-	}
-
-	urls := []struct{ raw, ref string }{
-		{e.Backing.Bonds.URL, e.Backing.Bonds.URLSecretRef},
-		{e.Backing.Cash.URL, e.Backing.Cash.URLSecretRef},
-	}
-	seenChain := map[string]bool{}
-	for _, c := range e.Chains {
-		if seenChain[c.Name] {
-			return fmt.Errorf("runtimecfg: duplicate chain %q", c.Name)
-		}
-		seenChain[c.Name] = true
-
-		seenProvider := map[string]bool{}
-		for _, p := range c.Providers {
-			if p.Name == "" || strings.Contains(p.Name, "://") || strings.Contains(p.Name, ".") {
-				// Names reach GET /state, which is public.
-				return fmt.Errorf("runtimecfg: provider name %q must be an identifier, not a URL", p.Name)
-			}
-			if seenProvider[p.Name] {
-				return fmt.Errorf("runtimecfg: chain %q: duplicate provider %q", c.Name, p.Name)
-			}
-			seenProvider[p.Name] = true
-			urls = append(urls, struct{ raw, ref string }{p.URL, p.SecretRef})
-		}
-	}
-
-	for _, u := range urls {
-		// A dummy value: this checks structure and the allowlist, not whether
-		// the credential has arrived yet.
-		if _, err := resolveAgainst(s.pinned.AllowedHosts, u.raw, u.ref, "placeholder"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// requiredRefs lists every secret the configuration needs.
-func requiredRefs(e Endpoints) []string {
-	var refs []string
-	add := func(r string) {
-		if r == "" {
-			return
-		}
-		for _, existing := range refs {
-			if existing == r {
-				return
-			}
-		}
-		refs = append(refs, r)
-	}
-
-	add(e.Backing.Bonds.AuthSecretRef)
-	add(e.Backing.Bonds.URLSecretRef)
-	add(e.Backing.Cash.AuthSecretRef)
-	add(e.Backing.Cash.URLSecretRef)
-	for _, c := range e.Chains {
-		for _, p := range c.Providers {
-			add(p.SecretRef)
-		}
-	}
-	return refs
 }

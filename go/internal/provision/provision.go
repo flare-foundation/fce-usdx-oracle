@@ -11,10 +11,12 @@
 //     path in Solidity.
 //
 // What stays baked is the part that must not be substitutable: the admin signer
-// set that authorises provisioning, and the host allowlist that bounds which
-// endpoints can ever be configured. Without the allowlist, on-chain endpoint
-// config would itself be a substitution channel — an attacker who could set
-// endpoints could point a chain at a server they control and dictate the price.
+// set that authorises provisioning. Note there is NO host allowlist: endpoint
+// configuration is unconstrained, so whoever can send SET_ENDPOINTS can name
+// any https host and any threshold, and the attested code will faithfully sign
+// whatever those sources return. The published price is therefore only as
+// trustworthy as the contract owner key as well as the TEE — a deliberate
+// trade for rotation without rebuilds; see the findings doc §15.
 //
 // # The envelope
 //
@@ -89,13 +91,23 @@ const Threshold = 2
 
 // Admins is the baked admin signer set — the root of trust for provisioning.
 //
-// PLACEHOLDER VALUES. These MUST be replaced with the real admin addresses
-// before any deployment that serves a live feed. TestAdminSetIsNotPlaceholder
-// documents the requirement and is expected to fail until they are.
+// ############################################################################
+// # DEVELOPMENT PLACEHOLDERS. These are the addresses of private keys 1, 2    #
+// # and 3 — the most widely known keys in existence. Anyone can sign as any   #
+// # of these admins. They MUST be replaced before any deployment that serves  #
+// # a live feed.                                                              #
+// #                                                                           #
+// # They are deliberately these rather than unusable literals like 0x1111…,   #
+// # so the provisioning flow can be walked end to end locally. That           #
+// # convenience is exactly why the warning is this loud.                      #
+// #                                                                           #
+// # TestAdminSetIsNotPlaceholder fails the moment they are replaced with      #
+// # anything real, at which point delete the skip and make it a hard check.   #
+// ############################################################################
 var Admins = []common.Address{
-	common.HexToAddress("0x1111111111111111111111111111111111111111"),
-	common.HexToAddress("0x2222222222222222222222222222222222222222"),
-	common.HexToAddress("0x3333333333333333333333333333333333333333"),
+	common.HexToAddress("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"), // privkey 0x01
+	common.HexToAddress("0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF"), // privkey 0x02
+	common.HexToAddress("0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"), // privkey 0x03
 }
 
 // Domain returns keccak256(DomainName).

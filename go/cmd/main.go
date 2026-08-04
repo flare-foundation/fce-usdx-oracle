@@ -24,9 +24,10 @@ import (
 )
 
 func main() {
-	// nil observer == stub mode, written out explicitly. NewWithObserver logs a
-	// prominent banner so this can never be mistaken for a live feed.
-	e := extension.NewWithObserver(config.ExtensionPort, config.SignPort, nil)
+	// NewStub is the only constructor that can build an observerless extension;
+	// the production constructors panic on nil, so this binary cannot be
+	// mistaken for a live feed by accident — or serve one.
+	e := extension.NewStub(config.ExtensionPort, config.SignPort)
 
 	// Graceful shutdown.
 	sigChan := make(chan os.Signal, 1)

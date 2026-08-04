@@ -525,16 +525,29 @@ func TestProcessGetPrice_FailureKeepsLastGoodPrice(t *testing.T) {
 	}
 }
 
-// Stub mode must be impossible to enter accidentally and impossible to miss.
-// A hard-coded par price is the one failure that produces no errors, no alerts
-// and no stale timestamp — it looks exactly like a healthy fully-backed feed.
-func TestStubMode_IsAnnouncedAndDistinguishable(t *testing.T) {
-	stub := NewWithObserver(0, 0, nil)
-	if stub.observer != nil {
-		t.Fatal("a nil observer must leave the extension in stub mode")
+// Stub mode must be impossible to enter accidentally: the production
+// constructors panic on a nil observer, and the only stub path is the
+// explicitly named NewStub, used solely by the wire-contract conformance
+// server. A hard-coded par price is the one failure that produces no errors,
+// no alerts and no stale timestamp — it looks exactly like a healthy
+// fully-backed feed — so a log banner was never enough defence, and inside a
+// TEE it is not even readable.
+func TestStubMode_CannotBeEnteredAccidentally(t *testing.T) {
+	mustPanic := func(name string, f func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s: a nil observer must panic, not build a stub", name)
+			}
+		}()
+		f()
 	}
+	mustPanic("NewWithObserver", func() { NewWithObserver(0, 0, nil) })
+	mustPanic("NewWithProvisioner", func() { NewWithProvisioner(0, 0, nil, nil) })
+
+	stub := NewStub(0, 0)
 	if !stub.StubMode() {
-		t.Error("StubMode() must report true when no observer is configured")
+		t.Error("StubMode() must report true for a NewStub extension")
 	}
 
 	live := NewWithObserver(0, 0, &fakeObserver{})

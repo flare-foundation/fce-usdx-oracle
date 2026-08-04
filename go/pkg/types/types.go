@@ -75,10 +75,15 @@ type State struct {
 
 // Readiness is the provisioning state reported by GET /state.
 type Readiness struct {
-	EndpointsSet bool     `json:"endpointsSet"`
-	SecretsSet   bool     `json:"secretsSet"`
-	Ready        bool     `json:"ready"`
-	MissingRefs  []string `json:"missingSecretRefs"`
+	EndpointsSet bool `json:"endpointsSet"`
+
+	// EndpointsHash is keccak256 of the active SET_ENDPOINTS payload. Compare it
+	// against the EndpointsSet event from setEndpoints to confirm this machine
+	// is running exactly what was published. Empty until endpoints arrive.
+	EndpointsHash string `json:"endpointsHash"`
+
+	Ready       bool     `json:"ready"`
+	MissingRefs []string `json:"missingSecretRefs"`
 }
 
 // --- DO NOT MODIFY below this line. ---

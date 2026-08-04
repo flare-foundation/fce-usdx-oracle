@@ -74,3 +74,170 @@ func init() {
 		}
 	}
 }
+
+// --- Pinned deployment facts ---
+//
+// Everything below is compiled into the binary and therefore covered by the
+// registered code hash. These are settled facts and safety properties, not
+// knobs: the contract addresses are verified on-chain (spec §3.1), the finality
+// margins come from measured block times, and the observation bounds are what
+// make the conservative double-read mean anything.
+//
+// Only two things are configurable at runtime — the RPC provider URLs and the
+// credentials. Everything an operator could change to move the published price
+// lives here instead.
+
+const (
+	// ObservationDeadline bounds one complete observation: both supply passes
+	// and both reserve reads.
+	ObservationDeadline = 20 * time.Second
+
+	// ObservationWindow is the maximum spread between the earliest and latest
+	// input read — the TOCTOU bound. Not configurable: widening it silently
+	// weakens the guarantee the double-read provides.
+	ObservationWindow = 30 * time.Second
+
+	// BackingMaxAge rejects a reserve figure older than this. Hex refreshes on a
+	// ~10 minute tick, so anything below that is noise.
+	BackingMaxAge = 30 * time.Minute
+
+	// HTTPTimeout bounds a single upstream request attempt.
+	HTTPTimeout = 5 * time.Second
+
+	// HexAPIKeyRef names the credential for Hex's restricted endpoint.
+	HexAPIKeyRef = "hex_api_key"
+)
+
+// Hex reserve endpoints. Pinned rather than configurable: these are the one
+// source that cannot be swapped for another, so allowing an operator to
+// redirect the reserve read would hand them the numerator of the price.
+const (
+	HexBondsURL = "https://api.htdigitalassets.com/alm-stablecoin-db/metrics/current_reserves_amount"
+	HexCashURL  = "https://api.htdigitalassets.com/alm-stablecoin-db/restricted/metrics/current_cash_reserves_amount"
+
+	// HexCashAuthHeader carries the credential for the restricted endpoint.
+	//
+	// OPEN (spec WP1): the scheme is unconfirmed — the endpoint returns 404
+	// rather than 401 without credentials, so bearer vs X-API-Key cannot be
+	// distinguished until a key is issued. Revisit when it is.
+	HexCashAuthHeader = "X-API-Key"
+
+	// HexBondsName and HexCashName identify the sources in GET /state health.
+	HexBondsName = "hex_bonds"
+	HexCashName  = "hex_cash"
+)
+
+// Chain is a pinned per-chain fact.
+//
+// Only what cannot change: the token contract and the chain's finality
+// behaviour. The provider list and the agreement threshold are configured at
+// runtime — see internal/runtimecfg.
+type Chain struct {
+	// Name identifies the chain in health reporting.
+	Name string
+
+	// Token is the USDX contract. Verified on-chain 31 Jul 2026 (spec §3.1).
+	// Pinned because pointing this at another ERC-20 would let whoever set it
+	// publish an arbitrary price.
+	Token string
+
+	// FinalityTag is the reference each provider resolves before the minimum is
+	// taken: "finalized" on Ethereum, "latest" elsewhere.
+	FinalityTag string
+
+	// FinalityMargin is in BLOCKS, not seconds. Measured block times: Flare
+	// 1.11s, Songbird 1.07s, Ethereum 12.01s — so the same number is a very
+	// different amount of time on each. Must stay inside the shallowest
+	// provider's state-retention window.
+	FinalityMargin uint64
+}
+
+// Chains is the pinned chain set. USDX is a native burn-and-mint LayerZero OFT
+// on each, so supply is a plain sum with no exclusions — see internal/supply.
+//
+// The pre-migration Ethereum contract (0x7A48…D56c, 150,000 USDX) is
+// deliberately absent: Hex excludes it from their reserves figure, and counting
+// it here would compare two different populations and publish a spurious ~0.6%
+// depeg.
+var Chains = []Chain{
+	{
+		Name: "flare", Token: "0x4A771Cc1a39FDd8AA08B8EA51F7Fd412e73B3d2B",
+		FinalityTag: "latest", FinalityMargin: 54,
+	},
+	{
+		Name: "ethereum", Token: "0xf8750b54d86BE7aE9e32b4A0C826811198D63313",
+		FinalityTag: "finalized", FinalityMargin: 5,
+	},
+	{
+		Name: "songbird", Token: "0x4A771Cc1a39FDd8AA08B8EA51F7Fd412e73B3d2B",
+		FinalityTag: "latest", FinalityMargin: 56,
+	},
+}
+
+// LookupChain returns the pinned policy for a chain name.
+func LookupChain(name string) (Chain, bool) {
+	for _, c := range Chains {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return Chain{}, false
+}
+
+// ChainID is the network this build serves. Set at build time alongside the
+// other network-dependent values:
+//
+//	go build -ldflags "-X fce-usdx-oracle/internal/config.chainIDStr=14"
+//
+// It binds provisioning envelopes to one network, so an envelope signed for
+// Coston2 cannot be replayed against mainnet. A constant rather than a config
+// file because it is a pure function of which network the build targets — the
+// same reason the network itself is a build-time choice.
+var ChainID = mustChainID()
+
+// chainIDStr is the ldflags injection point. Default is Coston2.
+var chainIDStr = "114"
+
+func mustChainID() uint64 {
+	v, err := strconv.ParseUint(chainIDStr, 10, 64)
+	if err != nil || v == 0 {
+		panic("config: chainIDStr must be a positive integer, got " + chainIDStr)
+	}
+	return v
+}
+
+// BondsSource is the pinned configuration for Hex's public reserves endpoint.
+//
+// RequireCurrency is false and must stay so: the public endpoint omits the
+// field entirely, so requiring it would fail closed on every call forever.
+func BondsSource() BackingSpec {
+	return BackingSpec{
+		Name: HexBondsName, URL: HexBondsURL,
+		RequireCurrency: false,
+		MaxAge:          BackingMaxAge, Timeout: HTTPTimeout,
+	}
+}
+
+// CashSource is the pinned configuration for Hex's restricted endpoint, plus
+// the injected credential.
+func CashSource(apiKey string) BackingSpec {
+	return BackingSpec{
+		Name: HexCashName, URL: HexCashURL,
+		RequireCurrency: true,
+		MaxAge:          BackingMaxAge, Timeout: HTTPTimeout,
+		AuthHeader: HexCashAuthHeader, AuthValue: apiKey,
+	}
+}
+
+// BackingSpec mirrors backing.Config. Declared here so the pinned facts live
+// with the other pinned facts; internal/backing cannot be imported from this
+// package without a cycle.
+type BackingSpec struct {
+	Name            string
+	URL             string
+	RequireCurrency bool
+	MaxAge          time.Duration
+	Timeout         time.Duration
+	AuthHeader      string
+	AuthValue       string
+}
