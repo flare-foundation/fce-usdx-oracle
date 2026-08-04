@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { ITeeMachineRegistry } from "./interfaces/ITeeMachineRegistry.sol";
+import { IUsdxConfigSource } from "./interfaces/IUsdxConfigSource.sol";
 
 /// @title UsdxPriceStore
 /// @author Flare Foundation
@@ -25,6 +26,10 @@ contract UsdxPriceStore {
 
     /// @notice The registry that says which TEE machines serve this extension.
     ITeeMachineRegistry public immutable TEE_MACHINE_REGISTRY;
+
+    /// @notice The instruction sender, which records the configuration hash
+    /// published for each TEE machine.
+    IUsdxConfigSource public immutable CONFIG_SOURCE;
 
     /// @notice The extension id whose TEE machines may sign price reports.
     uint256 public immutable EXTENSION_ID;
@@ -91,9 +96,6 @@ contract UsdxPriceStore {
     error MalleableSignature();
     error UnknownSigner();
     error WrongDomain();
-    error WrongChain();
-    error WrongStore();
-    error WrongFeed();
     error WrongDecimals();
     error NotNewer();
     error TooOld();
@@ -101,6 +103,8 @@ contract UsdxPriceStore {
     error OutOfBounds();
     error ZeroAddress();
     error BadBounds();
+    error StaleConfig();
+    error NoConfigPublished();
 
     modifier onlyGovernance() {
         if (msg.sender != governance) revert NotGovernance();
@@ -109,6 +113,7 @@ contract UsdxPriceStore {
 
     constructor(
         ITeeMachineRegistry _teeMachineRegistry,
+        IUsdxConfigSource _configSource,
         uint256 _extensionId,
         uint8 _requiredTeeStatus,
         bytes21 _feedId,
@@ -120,10 +125,12 @@ contract UsdxPriceStore {
         uint64 _maxSkew
     ) {
         if (address(_teeMachineRegistry) == address(0)) revert ZeroAddress();
+        if (address(_configSource) == address(0)) revert ZeroAddress();
         if (_governance == address(0)) revert ZeroAddress();
         if (_minPrice > _maxPrice) revert BadBounds();
 
         TEE_MACHINE_REGISTRY = _teeMachineRegistry;
+        CONFIG_SOURCE = _configSource;
         EXTENSION_ID = _extensionId;
         REQUIRED_TEE_STATUS = _requiredTeeStatus;
         FEED_ID = _feedId;
@@ -162,21 +169,36 @@ contract UsdxPriceStore {
 
         (
             bytes32 domain,
-            uint256 chainId,
-            address store,
-            bytes21 feedId,
             uint256 reportedPrice,
             int8 decimals,
             uint64 reportedAt,
-        ) = abi.decode(_body, (bytes32, uint256, address, bytes21, uint256, int8, uint64, bytes32));
+            ,
+            bytes32 endpointsHash
+        ) = abi.decode(_body, (bytes32, uint256, int8, uint64, bytes32, bytes32));
 
-        // Binding checks. Each blocks a distinct replay: a signature valid for
-        // some other schema, chain, deployment or feed must not be valid here.
+        // Schema checks: a signature valid for some other layout or output
+        // scale must not be valid here. Which deployment a report lands in is
+        // settled by the registry check above together with governance — the
+        // payload itself carries no target binding.
         if (domain != DOMAIN) revert WrongDomain();
-        if (chainId != block.chainid) revert WrongChain();
-        if (store != address(this)) revert WrongStore();
-        if (feedId != FEED_ID) revert WrongFeed();
         if (decimals != DECIMALS) revert WrongDecimals();
+
+        // The report commits to the configuration it was computed under, and
+        // that must match what setEndpoints published for this machine.
+        //
+        // This is what makes the on-chain configuration binding rather than
+        // advisory. Without it, setEndpoints records only what was *sent*: a
+        // payload the extension rejected, or an instruction that was never
+        // delivered, leaves a machine running its previous configuration while
+        // still publishing perfectly valid prices. With several machines the
+        // same gap means one that never received its call keeps submitting from
+        // stale configuration indefinitely.
+        //
+        // It does NOT constrain the owner, who sets both the configuration and
+        // the expected hash — see the findings doc on that trade.
+        bytes32 expected = CONFIG_SOURCE.expectedConfigHash(teeId);
+        if (expected == bytes32(0)) revert NoConfigPublished();
+        if (endpointsHash != expected) revert StaleConfig();
 
         // Strict monotonicity. Covers replay and out-of-order delivery together,
         // which matters because FCC guarantees neither.

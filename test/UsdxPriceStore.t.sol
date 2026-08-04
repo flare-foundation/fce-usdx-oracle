@@ -5,6 +5,9 @@ import { Test } from "forge-std/Test.sol";
 import { UsdxPriceStore } from "../contracts/UsdxPriceStore.sol";
 import { UsdxCustomFeed } from "../contracts/UsdxCustomFeed.sol";
 import { ITeeMachineRegistry } from "../contracts/interfaces/ITeeMachineRegistry.sol";
+import { IUsdxConfigSource } from "../contracts/interfaces/IUsdxConfigSource.sol";
+import { ITeeExtensionRegistry } from "../contracts/interfaces/ITeeExtensionRegistry.sol";
+import { UsdxOracleInstructionSender } from "../contracts/InstructionSender.sol";
 
 /// @dev Stands in for the MachineManager diamond.
 contract MockRegistry is ITeeMachineRegistry {
@@ -34,6 +37,15 @@ contract MockRegistry is ITeeMachineRegistry {
     }
 }
 
+/// @dev Stands in for the instruction sender's expectedConfigHash mapping.
+contract MockConfigSource {
+    mapping(address => bytes32) public expectedConfigHash;
+
+    function setExpected(address teeId, bytes32 h) external {
+        expectedConfigHash[teeId] = h;
+    }
+}
+
 contract UsdxPriceStoreTest is Test {
     uint256 constant EXTENSION_ID = 0x10148;
     uint8 constant ACTIVE = 1;
@@ -42,7 +54,10 @@ contract UsdxPriceStoreTest is Test {
     bytes21 constant FEED_ID = bytes21(hex"20555344582f555344000000000000000000000000");
 
     MockRegistry registry;
+    MockConfigSource configSource;
     UsdxPriceStore store;
+
+    bytes32 constant CONFIG_HASH = keccak256("endpoints-v1");
 
     uint256 teeKey = 0xA11CE;
     address teeId;
@@ -54,8 +69,12 @@ contract UsdxPriceStoreTest is Test {
         registry = new MockRegistry();
         registry.setMachine(teeId, EXTENSION_ID, ACTIVE);
 
+        configSource = new MockConfigSource();
+        configSource.setExpected(teeId, CONFIG_HASH);
+
         store = new UsdxPriceStore(
-            registry, EXTENSION_ID, ACTIVE, FEED_ID, DECIMALS, governance,
+            registry, IUsdxConfigSource(address(configSource)),
+            EXTENSION_ID, ACTIVE, FEED_ID, DECIMALS, governance,
             50_000_000,   // minPrice = $0.50
             PAR,          // maxPrice = $1.00
             1 hours,      // maxAge
@@ -67,23 +86,25 @@ contract UsdxPriceStoreTest is Test {
 
     // --- helpers ---
 
-    function _body(
-        uint256 price, uint64 observedAt, address storeAddr, uint256 chainId, bytes21 feedId, int8 decimals
-    ) internal pure returns (bytes memory) {
+    function _body(uint256 price, uint64 observedAt, int8 decimals) internal pure returns (bytes memory) {
+        return _bodyWithConfig(price, observedAt, decimals, CONFIG_HASH);
+    }
+
+    function _bodyWithConfig(uint256 price, uint64 observedAt, int8 decimals, bytes32 configHash)
+        internal pure returns (bytes memory)
+    {
         return abi.encode(
             keccak256("USDX_ORACLE_PRICE_V1"),
-            chainId,
-            storeAddr,
-            feedId,
             price,
             decimals,
             observedAt,
-            bytes32(uint256(0xABC))
+            bytes32(uint256(0xABC)),
+            configHash
         );
     }
 
-    function _goodBody(uint256 price, uint64 observedAt) internal view returns (bytes memory) {
-        return _body(price, observedAt, address(store), block.chainid, FEED_ID, DECIMALS);
+    function _goodBody(uint256 price, uint64 observedAt) internal pure returns (bytes memory) {
+        return _body(price, observedAt, DECIMALS);
     }
 
     /// @dev Signs the way tee-node does, then normalises v to 27/28 the way the
@@ -208,28 +229,10 @@ contract UsdxPriceStoreTest is Test {
         store.submitPrice(body, _sign(body, teeKey));
     }
 
-    // --- cross-deployment replay ---
-
-    function test_RejectsWrongChainId() public {
-        bytes memory body = _body(PAR, 1_700_000_000, address(store), block.chainid + 1, FEED_ID, DECIMALS);
-        vm.expectRevert(UsdxPriceStore.WrongChain.selector);
-        store.submitPrice(body, _sign(body, teeKey));
-    }
-
-    function test_RejectsWrongStore() public {
-        bytes memory body = _body(PAR, 1_700_000_000, address(0xBEEF), block.chainid, FEED_ID, DECIMALS);
-        vm.expectRevert(UsdxPriceStore.WrongStore.selector);
-        store.submitPrice(body, _sign(body, teeKey));
-    }
-
-    function test_RejectsWrongFeed() public {
-        bytes memory body = _body(PAR, 1_700_000_000, address(store), block.chainid, bytes21(hex"21"), DECIMALS);
-        vm.expectRevert(UsdxPriceStore.WrongFeed.selector);
-        store.submitPrice(body, _sign(body, teeKey));
-    }
+    // --- schema ---
 
     function test_RejectsWrongDecimals() public {
-        bytes memory body = _body(PAR, 1_700_000_000, address(store), block.chainid, FEED_ID, 6);
+        bytes memory body = _body(PAR, 1_700_000_000, 6);
         vm.expectRevert(UsdxPriceStore.WrongDecimals.selector);
         store.submitPrice(body, _sign(body, teeKey));
     }
@@ -237,8 +240,7 @@ contract UsdxPriceStoreTest is Test {
     function test_RejectsWrongDomain() public {
         bytes memory body = abi.encode(
             keccak256("SOME_OTHER_DOMAIN_V1"),
-            block.chainid, address(store), FEED_ID, PAR, DECIMALS,
-            uint64(1_700_000_000), bytes32(uint256(1))
+            PAR, DECIMALS, uint64(1_700_000_000), bytes32(uint256(1)), CONFIG_HASH
         );
         vm.expectRevert(UsdxPriceStore.WrongDomain.selector);
         store.submitPrice(body, _sign(body, teeKey));
@@ -299,6 +301,61 @@ contract UsdxPriceStoreTest is Test {
 
         vm.expectRevert(UsdxPriceStore.MalleableSignature.selector);
         store.submitPrice(body, abi.encodePacked(r, flippedS, flippedV));
+    }
+
+    // --- configuration binding ---
+
+    /// A machine running configuration other than what setEndpoints published
+    /// cannot submit at all. This is what makes the on-chain config binding
+    /// rather than advisory.
+    function test_RejectsReportFromStaleConfig() public {
+        bytes memory body = _bodyWithConfig(PAR, 1_700_000_000, DECIMALS, keccak256("other-config"));
+
+        vm.expectRevert(UsdxPriceStore.StaleConfig.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+    }
+
+    /// Fail closed before any configuration is published: no expected hash
+    /// means nothing is accepted, rather than everything.
+    function test_RejectsWhenNoConfigPublished() public {
+        configSource.setExpected(teeId, bytes32(0));
+
+        bytes memory body = _goodBody(PAR, 1_700_000_000);
+        vm.expectRevert(UsdxPriceStore.NoConfigPublished.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+    }
+
+    /// Republishing configuration invalidates reports built under the old one,
+    /// which is the point: the machine must pick up the change before it can
+    /// publish again.
+    function test_RepublishingConfigInvalidatesOldReports() public {
+        _submit(PAR, 1_700_000_000);
+
+        configSource.setExpected(teeId, keccak256("endpoints-v2"));
+
+        bytes memory body = _goodBody(PAR, 1_700_000_100);
+        vm.expectRevert(UsdxPriceStore.StaleConfig.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+
+        // A report under the new configuration is accepted.
+        bytes memory fresh = _bodyWithConfig(PAR, 1_700_000_200, DECIMALS, keccak256("endpoints-v2"));
+        store.submitPrice(fresh, _sign(fresh, teeKey));
+        (uint256 p,, uint64 t) = store.latest();
+        assertEq(p, PAR);
+        assertEq(t, 1_700_000_200);
+    }
+
+    /// Each machine is bound to its own published configuration, so one that
+    /// never received its setEndpoints call cannot publish from stale config.
+    function test_ConfigIsPerMachine() public {
+        uint256 otherKey = 0xB0B;
+        address otherTee = vm.addr(otherKey);
+        registry.setMachine(otherTee, EXTENSION_ID, ACTIVE);
+        // otherTee has no published configuration.
+
+        bytes memory body = _goodBody(PAR, 1_700_000_000);
+        vm.expectRevert(UsdxPriceStore.NoConfigPublished.selector);
+        store.submitPrice(body, _sign(body, otherKey));
     }
 
     // --- governance ---
@@ -379,7 +436,8 @@ contract UsdxCustomFeedTest is Test {
     function setUp() public {
         registry = new MockRegistry();
         store = new UsdxPriceStore(
-            registry, 1, ACTIVE, FEED_ID, 8, address(this), 0, 100_000_000, 1 hours, 5 minutes
+            registry, IUsdxConfigSource(address(new MockConfigSource())),
+            1, ACTIVE, FEED_ID, 8, address(this), 0, 100_000_000, 1 hours, 5 minutes
         );
         feed = new UsdxCustomFeed(store, FEED_ID);
     }
@@ -431,41 +489,165 @@ contract UsdxCustomFeedTest is Test {
 contract ReportEncodingCompatibilityTest is Test {
     bytes constant GO_ENCODED_BODY =
         hex"88b5ff1e9159fdf5d2b094502b22516857105f507dfc36b0248520a930571a0d"
-        hex"0000000000000000000000000000000000000000000000000000000000000072"
-        hex"00000000000000000000000000000000000000000000000000000000000000aa"
-        hex"20555344582f555344000000000000000000000000000000000000000000000000"
-        hex"00000000000000000000000000000000000000000000000000000005f5e100"
+        hex"0000000000000000000000000000000000000000000000000000000005f5e100"
         hex"0000000000000000000000000000000000000000000000000000000000000008"
         hex"000000000000000000000000000000000000000000000000000000006553f100"
-        hex"0000000000000000000000000000000000000000000000000000000000000011";
+        hex"0000000000000000000000000000000000000000000000000000000000000011"
+        hex"0000000000000000000000000000000000000000000000000000000000009f3c";
 
     function test_SolidityDecodesGoEncodedBody() public pure {
         (
             bytes32 domain,
-            uint256 chainId,
-            address store,
-            bytes21 feedId,
             uint256 price,
             int8 decimals,
             uint64 observedAt,
-            bytes32 instructionId
+            bytes32 instructionId,
+            bytes32 endpointsHash
         ) = abi.decode(
             GO_ENCODED_BODY,
-            (bytes32, uint256, address, bytes21, uint256, int8, uint64, bytes32)
+            (bytes32, uint256, int8, uint64, bytes32, bytes32)
         );
 
         assertEq(domain, keccak256("USDX_ORACLE_PRICE_V1"), "domain separator");
-        assertEq(chainId, 114, "chain id (Coston2)");
-        assertEq(store, address(0xAA), "store address");
-        assertEq(feedId, bytes21(hex"20555344582f555344000000000000000000000000"), "feed id");
         assertEq(price, 100_000_000, "price ($1.00 at 8 decimals)");
         assertEq(decimals, int8(8), "decimals");
         assertEq(observedAt, uint64(1_700_000_000), "observedAt");
         assertEq(instructionId, bytes32(uint256(0x11)), "instruction id");
+        assertEq(endpointsHash, bytes32(uint256(0x9f3c)), "endpoints hash");
     }
 
-    /// The Go-encoded body must be exactly eight static words.
-    function test_GoEncodedBodyIsEightWords() public pure {
-        assertEq(GO_ENCODED_BODY.length, 8 * 32, "body length");
+    /// The Go-encoded body must be exactly five static words.
+    function test_GoEncodedBodyIsSixWords() public pure {
+        assertEq(GO_ENCODED_BODY.length, 6 * 32, "body length");
+    }
+}
+
+/// @dev Captures what was sent, so tests can assert the instruction's contents
+/// rather than merely that it did not revert.
+contract MockExtensionRegistry is ITeeExtensionRegistry {
+    address[] public lastTeeIds;
+    bytes32 public lastOpType;
+    bytes32 public lastOpCommand;
+    bytes public lastMessage;
+    uint256 public sendCount;
+    uint256 public nextId = 0x10001;
+
+    function sendInstructions(address[] calldata _teeIds, TeeInstructionParams calldata _params)
+        external payable returns (bytes32)
+    {
+        delete lastTeeIds;
+        for (uint256 i = 0; i < _teeIds.length; ++i) lastTeeIds.push(_teeIds[i]);
+        lastOpType = _params.opType;
+        lastOpCommand = _params.opCommand;
+        lastMessage = _params.message;
+        sendCount++;
+        return bytes32(uint256(sendCount));
+    }
+
+    function nextPublicExtensionId() external view returns (uint256) { return nextId; }
+
+    function getTeeExtensionInstructionsSender(uint256) external view returns (address) {
+        return msg.sender;
+    }
+
+    function teeIdCount() external view returns (uint256) { return lastTeeIds.length; }
+}
+
+contract SetEndpointsTest is Test {
+    MockExtensionRegistry extReg;
+    MockRegistry machineReg;
+    UsdxOracleInstructionSender sender;
+
+    address teeA = address(0xA1);
+    address teeB = address(0xB2);
+    address stranger = address(0xBAD);
+
+    bytes config = bytes('{"chains":[{"name":"flare"}]}');
+
+    function setUp() public {
+        extReg = new MockExtensionRegistry();
+        machineReg = new MockRegistry();
+        sender = new UsdxOracleInstructionSender(extReg, machineReg);
+    }
+
+    function test_DeployerIsOwner() public view {
+        assertEq(sender.owner(), address(this));
+    }
+
+    function test_SetEndpointsSendsConfiguration() public {
+        sender.setEndpoints(teeA, config);
+
+        assertEq(extReg.sendCount(), 1);
+        assertEq(extReg.lastOpType(), bytes32("USDX_CONFIG"));
+        assertEq(extReg.lastOpCommand(), bytes32("SET_ENDPOINTS"));
+        assertEq(extReg.lastMessage(), config, "payload must be delivered verbatim");
+    }
+
+    /// The machine is named explicitly. A random pick would configure one
+    /// machine and leave the rest stale.
+    function test_TargetsTheNamedMachineOnly() public {
+        sender.setEndpoints(teeB, config);
+
+        assertEq(extReg.teeIdCount(), 1);
+        assertEq(extReg.lastTeeIds(0), teeB);
+    }
+
+    /// An open setter is a denial-of-service hole: anyone could repoint the
+    /// extension's data sources and it would fail closed on every observation.
+    function test_OnlyOwnerMaySetEndpoints() public {
+        vm.prank(stranger);
+        vm.expectRevert(UsdxOracleInstructionSender.NotOwner.selector);
+        sender.setEndpoints(teeA, config);
+    }
+
+    function test_RejectsZeroTeeId() public {
+        vm.expectRevert(UsdxOracleInstructionSender.ZeroTeeId.selector);
+        sender.setEndpoints(address(0), config);
+    }
+
+    function test_RejectsEmptyConfig() public {
+        vm.expectRevert(UsdxOracleInstructionSender.EmptyConfig.selector);
+        sender.setEndpoints(teeA, "");
+    }
+
+    function test_RejectsOversizedConfig() public {
+        bytes memory big = new bytes(sender.MAX_ENDPOINTS_BYTES() + 1);
+        vm.expectRevert(UsdxOracleInstructionSender.ConfigTooLarge.selector);
+        sender.setEndpoints(teeA, big);
+    }
+
+    /// The event carries the config hash so an observer can confirm which
+    /// configuration was published without re-reading calldata.
+    function test_EmitsConfigHash() public {
+        vm.expectEmit(true, true, false, false);
+        emit UsdxOracleInstructionSender.EndpointsSet(teeA, keccak256(config));
+        sender.setEndpoints(teeA, config);
+    }
+
+    function test_OwnershipTransfer() public {
+        sender.transferOwnership(stranger);
+        assertEq(sender.owner(), stranger);
+
+        vm.expectRevert(UsdxOracleInstructionSender.NotOwner.selector);
+        sender.setEndpoints(teeA, config);
+
+        vm.prank(stranger);
+        sender.setEndpoints(teeA, config);
+        assertEq(extReg.sendCount(), 1);
+    }
+
+    function test_RejectsZeroOwner() public {
+        vm.expectRevert(UsdxOracleInstructionSender.ZeroOwner.selector);
+        sender.transferOwnership(address(0));
+    }
+
+    /// requestPriceUpdate stays permissionless: the store verifies the TEE
+    /// signature, so anyone paying the fee may trigger an observation.
+    function test_RequestPriceUpdateIsNotOwnerOnly() public {
+        machineReg.setMachine(teeA, 1, 1);
+        vm.prank(stranger);
+        // Reverts only because the extension id is unset, not on authorisation.
+        vm.expectRevert(bytes("Extension ID is not set."));
+        sender.requestPriceUpdate();
     }
 }

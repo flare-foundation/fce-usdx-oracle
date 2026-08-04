@@ -1,24 +1,27 @@
 // Command deploy-store deploys UsdxPriceStore and UsdxCustomFeed.
 //
-// It runs from scripts/extension-setup.sh, which sits between pre-build.sh (which
-// registers the extension and produces EXTENSION_ID) and the image build. That
-// ordering is what makes the store address available to pin into the image:
+// It runs from scripts/extension-setup.sh, which sits between pre-build.sh
+// (which registers the extension and produces EXTENSION_ID) and the image
+// build:
 //
 //	pre-build.sh        deploy InstructionSender, register extension -> EXTENSION_ID
-//	extension-setup.sh  THIS: deploy store + feed -> STORE address
-//	start-services.sh   build image with STORE pinned -> code hash
+//	extension-setup.sh  THIS: deploy store + feed -> record addresses
+//	start-services.sh   build image -> code hash
 //	post-build.sh       register the TEE machine
 //
-// The store address must be pinned rather than injected: the signed report binds
-// it (see internal/report), so an operator who could change it at runtime could
-// obtain TEE signatures over reports bound to a store they control.
+// The signed price report carries no target binding — acceptance is anchored
+// by the store's registered-machine check — so the store address is NOT part
+// of the extension image; it is recorded in the deployed-addresses file for
+// the setup script's redeploy detection and for operators.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math/big"
+	"os"
 	"strings"
 	"time"
 
@@ -40,6 +43,8 @@ func main() {
 	af := flag.String("a", configs.AddressesFile, "file with deployed addresses")
 	cf := flag.String("c", configs.ChainNodeURL, "chain node url")
 	extensionIDF := flag.String("extensionId", "", "extension id (hex), from pre-build.sh")
+	senderF := flag.String("instructionSender", "",
+		"UsdxOracleInstructionSender address — the store reads expectedConfigHash from it")
 	feedCategoryF := flag.Uint("feedCategory", 32, "feed category byte, must be 32..63")
 	feedNameF := flag.String("feedName", "USDX/USD", "feed name, 1..20 ASCII bytes")
 	decimalsF := flag.Int("decimals", 8, "price decimals")
@@ -96,9 +101,16 @@ func main() {
 	logger.Infof("Deploying UsdxPriceStore (extensionId=%s, requiredTeeStatus=%d)...",
 		extensionID, *teeStatusF)
 
+	if !common.IsHexAddress(*senderF) || common.HexToAddress(*senderF) == (common.Address{}) {
+		fccutils.FatalWithCause(errors.Errorf(
+			"-instructionSender is required: the store reads expectedConfigHash from it, " +
+				"so a price is only accepted from a machine running the published configuration"))
+	}
+
 	storeAddr, tx, _, err := usdxstore.DeployUsdxPriceStore(
 		opts, s.ChainClient,
 		s.Addresses.FlareTeeManager,
+		common.HexToAddress(*senderF),
 		extensionID,
 		uint8(*teeStatusF),
 		feedID,
@@ -129,9 +141,53 @@ func main() {
 	logger.Infof("Register the feed with Flare governance via addCustomFeeds — " +
 		"that is a proposal with a timelock, not a deploy step.")
 
+	// Record both addresses so extension-setup.sh can detect the deployment on
+	// a re-run instead of resetting the stored price with a fresh one. A
+	// failure here is not fatal: the contracts are deployed, the script just
+	// loses its reuse detection.
+	if err := recordAddresses(*af, []support.RawContract{
+		{Name: "UsdxPriceStore", ContractName: "UsdxPriceStore.sol", Address: storeAddr.Hex()},
+		{Name: "UsdxCustomFeed", ContractName: "UsdxCustomFeed.sol", Address: feedAddr.Hex()},
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: could not record addresses into %s: %v\n", *af, err)
+	}
+
 	// Last line is the store address, so the calling script can capture it the
 	// same way pre-build.sh captures the instruction sender.
 	fmt.Println(storeAddr.Hex())
+}
+
+// recordAddresses merges the deployed addresses into the addresses file,
+// preserving the entries the scaffold already wrote there. The file uses
+// Flare's standard array format ([{name, contractName, address}, ...]):
+// entries are matched by name and updated in place, or appended when new.
+func recordAddresses(path string, add []support.RawContract) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var entries []support.RawContract
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return err
+	}
+	for _, a := range add {
+		replaced := false
+		for i := range entries {
+			if entries[i].Name == a.Name {
+				entries[i] = a
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			entries = append(entries, a)
+		}
+	}
+	out, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
 }
 
 // buildFeedID mirrors FtsoFeedIdConverter.getFeedId: 1 category byte plus up to
