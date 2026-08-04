@@ -26,7 +26,7 @@ import (
 	"syscall"
 	"time"
 
-	extserver "extension-scaffold/pkg/server"
+	extserver "fce-usdx-oracle/pkg/server"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"

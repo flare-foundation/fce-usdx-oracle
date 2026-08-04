@@ -8,6 +8,12 @@
 > unresolved question, not a placeholder for prose. Anything marked **ASSUMPTION**
 > is something we guessed and should confirm before building on it.
 
+> **Implementation findings live in `usdx-oracle-findings.md`.** Where this spec
+> and that document disagree, the findings doc wins: it records what was verified
+> against source and pinned by a test, including the signing-path details in §WP3
+> (confirmed against tee-node `v0.0.21-0.20260619120252-31fc839ae6d2`) and two
+> credential-disclosure paths this spec does not mention.
+
 ### Decisions log
 
 | Date | Decision | Rationale |
@@ -17,6 +23,7 @@
 | 2026-07-31 | Deviation-guard policy (§6.2) deferred — **needs a named risk owner** | Trades depeg-detection latency against manipulation resistance; not an engineering call. |
 | 2026-07-31 | **`getCurrentFeed()` never reverts on staleness** — returns the last price with an ageing timestamp | `FtsoV2` forwards the call, so a revert becomes a liveness outage for every downstream consumer at once. See WP4. |
 | 2026-07-31 | **`calculateFee()` returns 0** | Unlike the sFLR/stXRP feeds we have no underlying FTSO read to pay for. |
+| 2026-08-03 | **§3.0 premise resolved** — `current_reserves_amount` is the bank-provider balance of the reserve account | Provenance from the team. The observed supply-tracking is 1:1 treasury operation, not derivation from chain data; the figure falls below supply on any unmirrored outflow. Written confirmation from Hex remains as diligence. |
 
 ---
 
@@ -57,7 +64,13 @@ price, not just trust an operator.
 
 ## 3. Price definition
 
-### 3.0 ⚠ Premise check — unresolved, blocking
+### 3.0 Premise check — resolved (was blocking)
+
+**Resolved 3 Aug 2026.** `current_reserves_amount` is sourced from Hex's banking
+provider: it reports the actual balance of the reserve account, not a metric
+computed from chain data. The evidence below is retained as the record of why
+this was in question — and of what disciplined 1:1 treasury operation looks like
+from outside.
 
 `R_bonds` equals total on-chain supply **to the cent**, and tracks it through
 changes.
@@ -69,24 +82,21 @@ changes.
 | Flare burn at 07:10:58Z, block 66310829 | `21,620,459.685024 → 20,620,459.685024` (−1,000,000 exactly) |
 | API value after that burn | matches the **post-burn** sum |
 
-So it is not a static coincidence — the figure moved down by exactly 1M within
-hours of the burn. Two readings, both degenerate:
+Of the two readings we could construct — (1) a metric derived from chain supply,
+(2) genuine 1:1 par-backed operation — the bank-balance provenance selects (2):
+a redemption burns tokens and wires the same amount out of the account, so the
+figure tracks supply exactly while both sides move honestly.
 
-1. The metric is **derived from chain supply** — not a measurement of assets.
-2. Hex is **genuinely 1:1 par-backed**, every mint/redeem moves both sides
-   equally and yield is swept out — real, but structurally unable to fall below
-   supply.
+The consequence for the design is the opposite of what we feared: a real account
+balance **can** fall below supply, on any outflow with no matching burn (theft,
+account freeze, operational loss), and that is exactly the depeg event the feed
+exists to detect.
 
-Either way `R_bonds ≡ S`, so `price = min(1, (S + R_cash)/S) = 1` always and the
-oracle cannot report anything but $1.00.
+**Remaining (ordinary diligence, not blocking):** written confirmation from Hex
+of the provenance and semantics — see the consolidated questions (§7).
 
-**Question to put to Hex:** *under what circumstances would
-`current_reserves_amount` ever be less than total on-chain supply?* If the answer
-is "never" or "only on a manual write-down", this design cannot work and we need
-mark-to-market bond valuations or an independent custody attestation instead.
-
-*Limitation of our evidence: the API exposes no history, so tracking is inferred
-from one observed supply change rather than a time series.*
+*Limitation of our evidence: the API exposes no history, so tracking was
+inferred from one observed supply change rather than a time series.*
 
 ### 3.1 Inputs
 
@@ -272,6 +282,11 @@ Flow:
    submits it to `UsdxPriceStore`, which verifies the signature against
    `TeeMachineRegistry` before accepting.
 
+**No cosigners:** both instructions are sent with an empty `cosigners` list and
+`cosignersThreshold` 0, so a machine executes on delivery without waiting for
+external co-signatures. Adding cosigners later changes instruction dispatch and
+delivery only — see the findings doc.
+
 **DECIDED:** the keeper relays the signed result (as drawn). The TEE does not
 broadcast its own transaction — no PMW, no gas or nonce handling inside the
 enclave.
@@ -301,6 +316,13 @@ health. No raw supply or reserve figures.
 who can read them? If they land in Cloud Logging under an account Flare controls,
 that is a disclosure surface Hex needs to agree to. Resolve before logging any
 reserve figure. Until then: log the *derived price* and error classes only.
+
+**Audit status (2026-08-04).** Every log statement and error surface was
+audited against this rule (findings doc §17). Nothing logs a credential, a
+reserve or supply figure, a response body, or an endpoint URL: internal detail
+is confined to error classes, source identifiers, and values already public
+on-chain. The OPEN above is therefore about *whether* logs leave the machine,
+not about what they carry.
 
 **OPEN:** consumers cannot audit `min(1, B/S)` without `B` and `S`. If Hex is
 willing to publish the components after some delay, a lagged or periodic
@@ -455,9 +477,6 @@ Result payload (`ActionResult.data`) — **decided**. Canonical definition lives
 ```solidity
 struct PriceReport {
     bytes32 domain;         // keccak256("USDX_ORACLE_PRICE_V1")
-    uint256 chainId;        // binds to target chain — blocks Coston2→mainnet replay
-    address store;          // binds to this UsdxPriceStore
-    bytes21 feedId;
     uint256 price;          // truncate(price · 10^decimals)
     int8    decimals;       // 8
     uint64  observedAt;     // store's monotonicity key — must be signed
@@ -467,6 +486,12 @@ struct PriceReport {
 body = abi.encode(report)
 data = abi.encode(body, signature)   // carry body as raw bytes, never re-encode
 ```
+
+The payload carries **no target binding** (no chain id, store address or feed
+id): where a report is accepted is settled by the store's registered-machine
+check rather than by the payload. A genuinely-signed report can therefore be
+submitted to any deployment wired to the same extension registration, though
+nobody can forge a price. Decided pre-launch; see the findings doc.
 
 Price only. Supply and backing components are excluded as possibly sensitive to
 Hex — and for the same reason excluded from `GET /state`, which is public (§4.1).
@@ -744,8 +769,10 @@ which someone must consciously accept.
 
 For Hex:
 
-0. **🔴 Why does `current_reserves_amount` exactly equal on-chain supply?** (§3.0)
-   Blocking — it determines whether this oracle can report anything but $1.00.
+0. ~~Why does `current_reserves_amount` exactly equal on-chain supply?~~ (§3.0)
+   Resolved 3 Aug — it is the bank-provider balance of the reserve account, and Hex
+   operates 1:1. Remaining as diligence: written confirmation of that provenance and
+   that an unmirrored outflow shows up in the figure.
 1. ~~Is USDX natively issued or bridged?~~ Evidence says native burn-and-mint OFT
    (§3.3) — needs confirmation, not investigation. Which addresses are
    non-circulating, and what is the old Ethereum contract's status?

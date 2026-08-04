@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"extension-scaffold/tools/pkg/fccutils"
-	instrutils "extension-scaffold/tools/pkg/utils"
+	"fce-usdx-oracle/tools/pkg/fccutils"
+	instrutils "fce-usdx-oracle/tools/pkg/utils"
 )
 
 // --- 2.2: setExtensionId Error Handling ---

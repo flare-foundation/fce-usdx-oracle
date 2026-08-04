@@ -74,7 +74,22 @@ which endpoints — is fixed in the image. Accepting caller-supplied parameters 
 update influence what gets measured, which defeats the point. The scaffold's docs note that
 <code>message</code> is "typically non-empty"; empty is fine and is the right choice here.</p>
 
-<h3>Who may call it</h3>
+<h3>Endpoint configuration</h3>
+<p><b>Only endpoints go through this contract.</b> Credentials are delivered off-chain by direct
+instruction and never touch the sender — see
+<a href="usdx-oracle-config.html">Configuration &amp; Secrets</a>. That keeps the whole secret-handling
+path out of Solidity.</p>
+<pre>function setEndpoints(address teeId, bytes calldata config) external payable onlyOwner;</pre>
+<table>
+  <tbody>
+    <tr><td style="width:13em"><b>Explicit <code>teeId</code></b></td><td>Not <code>getRandomTeeIds</code>. Configuration must land on a <i>named</i> machine, not a random one, or machines silently drift apart. Provisioning N machines is N calls.</td></tr>
+    <tr><td><b><code>onlyOwner</code></b></td><td>An open setter is a denial-of-service hole — and worse here, endpoint selection is data-source selection. The <code>extension-apikey</code> reference leaves its equivalent unrestricted: correct for a demo, not for us.</td></tr>
+    <tr><td><b>Plaintext is intended</b></td><td>Publishing which providers we read is the point. The credential portion is substituted inside the enclave from a placeholder, so nothing secret appears in calldata.</td></tr>
+    <tr><td><b>Consider a timelock</b></td><td>The change is public, so a delay gives observers a chance to notice a wrong-looking endpoint set before it takes effect — which is most of the reason to put it on-chain at all.</td></tr>
+  </tbody>
+</table>
+
+<h3>Who may call <code>requestPriceUpdate()</code></h3>
 <table>
   <thead><tr><th style="width:11em">Option</th><th>Trade-off</th></tr></thead>
   <tbody>
@@ -110,24 +125,33 @@ shouldn't, the feed is wrong and every downstream protocol is wrong with it.
 
     PriceReport memory r = abi.decode(body, (PriceReport));
 
-    // 2. domain separation — without these a Coston2 signature is a valid mainnet one
-    require(r.domain  == DOMAIN,          "wrong domain");
-    require(r.chainId == block.chainid,   "wrong chain");
-    require(r.store   == address(this),   "wrong store");
-    require(r.feedId  == FEED_ID,         "wrong feed");
+    // 2. schema — a signature for another layout or output scale is not valid here.
+    //    There is deliberately no chainId/store/feedId binding: where a report lands
+    //    is settled by the registry check above, not by the payload.
+    require(r.domain   == DOMAIN,            "wrong domain");
+    require(r.decimals == EXPECTED_DECIMALS, "unexpected decimals");
 
-    // 3. ordering + replay, in one rule
+    // 3. configuration binding — the report commits to the config it was computed
+    //    under, and that must match what setEndpoints published for THIS machine.
+    //    Without it the on-chain config records only what was SENT: a rejected
+    //    payload or an undelivered instruction leaves a machine publishing valid
+    //    prices from stale configuration, and with several machines one that never
+    //    received its call does so indefinitely.
+    bytes32 expected = configSource.expectedConfigHash(signer);
+    require(expected != bytes32(0),          "no config published");
+    require(r.endpointsHash == expected,     "stale config");
+
+    // 4. ordering + replay, in one rule
     require(r.observedAt > lastObservedAt, "stale or replayed");
 
-    // 4. clock sanity
+    // 5. clock sanity
     require(r.observedAt <= block.timestamp + MAX_SKEW, "from the future");
     require(r.observedAt >= block.timestamp - MAX_AGE,  "too old to matter");
 
-    // 5. plausibility — reject, never clamp
+    // 6. plausibility — reject, never clamp
     require(r.price >= minPrice && r.price <= maxPrice, "out of bounds");
-    require(r.decimals == EXPECTED_DECIMALS,            "unexpected decimals");
 
-    // 6. optional deviation guard — see below
+    // 7. optional deviation guard — see below
     ...
     lastObservedAt = r.observedAt;
     lastPrice      = r.price;

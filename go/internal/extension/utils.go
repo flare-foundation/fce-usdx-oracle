@@ -2,7 +2,7 @@ package extension
 
 import (
 	"encoding/json"
-	"extension-scaffold/internal/config"
+	"fce-usdx-oracle/internal/config"
 	"fmt"
 	"net/http"
 

@@ -38,6 +38,7 @@
 <a href="usdx-oracle-architecture.html">Architecture</a> ·
 <a href="usdx-oracle-extension.html">Extension</a> ·
 <a href="usdx-oracle-contracts.html">Contracts</a> ·
+<a href="usdx-oracle-config.html">Config</a> ·
 <a href="usdx-oracle-operations.html">Operations</a> ·
 <a href="usdx-oracle-index.html">Index</a>
 <br><span style="color:#5f6368">Replace these with Google Doc URLs once the Docs are created.</span>
@@ -53,18 +54,20 @@ code hash, so consumers verify <i>what</i> computed the price rather than trusti
 backing = bond reserves (public API) + cash reserves (private API)
 price   = min(1, backing / supply)      capped at 1: USDX redeems at par</pre>
 
-<div class="callout">
-<h2>⚠ Blocker: the reserves figure may be pinned to supply</h2>
-<p>Hex's <code>current_reserves_amount</code> equals total on-chain supply <b>to the cent</b>, and tracks
-it through changes — when Flare burned exactly 1M USDX this morning, the figure followed within hours.
-Whether that's because the metric is derived from chain data, or because Hex is genuinely 1:1
-par-backed, the result is the same: <code>backing/supply</code> = 1.000000 by construction and the feed
-prints $1.00 forever, unable to detect the depeg it exists to detect.</p>
-<p><b>The question that settles it:</b> <i>under what circumstances would
-<code>current_reserves_amount</code> ever be less than total on-chain supply?</i> If the answer is
-"never" or "only on a manual write-down", we need a different data source.</p>
-<p style="margin-bottom:0"><b>Nothing else on this plan is worth building until that's answered.</b>
-Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.</p>
+<div class="ref">
+<p style="margin-top:0"><b>✅ Resolved (3 Aug 2026): the reserves figure is a bank-reported balance.</b>
+<i>Was: "⚠ Blocker: the reserves figure may be pinned to supply".</i></p>
+<p><code>current_reserves_amount</code> is sourced from Hex's banking provider — the actual balance of
+the reserve account, not a metric computed from chain data. It equals on-chain supply to the cent
+because Hex operates 1:1: a redemption burns tokens and wires the same amount out of the account.
+That is exactly what the observed behaviour (to-the-cent match; tracking the 1M burn within hours)
+looks like from outside.</p>
+<p>The detection capability is real: a bank balance <b>can</b> fall below supply — any outflow with no
+matching burn (theft, account freeze, operational loss) — which is precisely the depeg event this feed
+exists to catch.</p>
+<p style="margin-bottom:0">Remaining, as ordinary diligence: written confirmation from Hex of the
+provenance and semantics (Questions for Hex, #1). Evidence and history:
+<a href="usdx-oracle-reference.html">the findings doc, §1</a>.</p>
 </div>
 
 <h2>Decisions</h2>
@@ -81,6 +84,8 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
         <td>They differ: 18 on Ethereum, 6 on Flare/Songbird.</td></tr>
     <tr><td>On-chain payload carries price only</td>
         <td>Hex may consider reserve figures sensitive. Note <code>GET /state</code> is public too, so it can't hold them either.</td></tr>
+    <tr><td><b>Endpoints on-chain, credentials by direct instruction</b></td>
+        <td>Publishing which RPC providers we read is the point — it is what makes the data sources verifiable. Credentials go off-chain via <code>/direct-instruction</code>: no gas, no permanent on-chain record, instant rotation, and no secret-handling path in Solidity. There is deliberately <b>no host allowlist</b>: endpoints are unconstrained so providers rotate without rebuilds, and the owner key is therefore price-controlling by decision (Findings §15).</td></tr>
     <tr><td>Fail closed</td>
         <td>Source down or value implausible → publish nothing, let the timestamp age. Never guess a price.</td></tr>
     <tr><td>Feed never reverts on stale data</td>
@@ -92,7 +97,7 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
 
 <h3><span class="r">Blocked on Hex 🔴</span></h3>
 <ul>
-  <li>☐ <b>Resolve the reserves-tracks-supply blocker</b> (above)</li>
+  <li>☑ <s>Resolve the reserves-tracks-supply blocker</s> — resolved: bank-reported balance (above); written confirmation remains as Q1</li>
   <li>☐ API key for the private endpoint · ☐ whitelist TEE egress IPs (one static IP per machine — decide machine count first)</li>
   <li>☐ Status of the old Ethereum contract (150,000 USDX, excluded from Hex's figure)</li>
   <li>☑ <s>Confirm addresses + decimals</s> — done, see findings §2</li>
@@ -118,6 +123,16 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
   <li>☐ Op type / commands (<code>USDX_ORACLE</code> / <code>GET_PRICE</code>) · ☐ decimal arithmetic, no floats</li>
   <li>☐ Parallel fetch of all 5 sources with a global deadline · ☐ consistency-window check</li>
   <li>☐ Sign result via <code>POST /sign</code> · ☐ error taxonomy → status/log</li>
+  <li>☐ <b>Config loader</b> — finding 12's blocker; then construct <code>oracle.Runner</code> in
+      <code>cmd/docker</code> and regenerate conformance fixtures against the real payload</li>
+  <li>☐ <code>USDX_CONFIG</code>: <code>SET_ENDPOINTS</code> (on-chain instruction) · <code>SET_SECRET</code>
+      (<b>direct only</b> — reject any other action type)</li>
+  <li>☐ Envelope verification — domain, chainId, teeId, <code>issuedAt</code> freshness, version, <b>M-of-N
+      distinct</b> admin signers from the baked set; nil data and a fixed log on every path</li>
+  <li>☐ Readiness state — credentials are memory-only and lost on restart; distinct
+      <code>not_configured</code> class, booleans in <code>/state</code>, alert</li>
+  <li>☑ <s>Validate endpoint templates against a baked host allowlist</s> — dropped by decision (Findings §15);
+      ☑ no redirect-following on credentialed requests (finding 2) — implemented</li>
   <li>☐ <code>GET /state</code>: operational only (last price, price history?, counters, error class, source health) — no raw reserve/supply figures</li>
   <li>☐ Logging that never emits secrets, raw responses, or reserve figures</li>
 </ul>
@@ -128,6 +143,8 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
   <li>☐ <code>UsdxPriceStore.sol</code> — verify sig against <code>TeeMachineRegistry</code>, strictly increasing
       <code>observedAt</code> (FCC has no ordering guarantee → covers replays <i>and</i> out-of-order), price bounds, pause</li>
   <li>☐ <code>UsdxCustomFeed.sol</code> — <code>IICustomFeed</code>, a thin read adapter over the store (findings §5)</li>
+  <li>☐ <code>setEndpoints(teeId, cfg)</code> — <b>explicit teeId, owner-only</b> (an open setter is a DoS
+      hole) · ☐ consider a timelock. <b>No secret path in Solidity</b> — credentials go by direct instruction.</li>
   <li>☐ Register via governance <code>addCustomFeeds</code> — <b>a proposal with lead time, not a deploy step. Start early.</b></li>
   <li>☐ Agree feed name + category byte with Flare · ☐ Foundry tests incl. fuzzing the store's guards · ☐ regenerate Go bindings</li>
 </ul>
@@ -136,7 +153,12 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
 <ul>
   <li>☐ Schedule updates · ☐ poll proxy for results · ☐ submit to store (gas, nonce, resubmission)</li>
   <li>☐ ≥2 instances (idempotent) · ☐ wallet funding + low-balance alerts</li>
-  <li>☐ Secret inventory (Hex + RPC keys) · ☐ inject encrypted to TEE pubkey, decrypt via <code>POST /decrypt</code></li>
+  <li>☐ <b>Provisioning CLI</b> — wrap <code>teesecret</code>, build + sign envelopes, POST to
+      <code>/direct-instruction</code>. No gas, no contract call.</li>
+  <li>☐ <b>Per-machine provisioning</b> — each machine has its own key, so N machines = N envelopes</li>
+  <li>☐ Keeper re-submits held ciphertext envelopes on <code>not_configured</code> — safe precisely because
+      they're encrypted · ☐ rotate forward: install everywhere, confirm, then revoke at Hex</li>
+  <li>☐ Decide admin set + M-of-N (suggest 2-of-3) and the <code>issuedAt</code> freshness window</li>
   <li>☐ Rotation without a new code hash · ☐ static egress IP per machine (Cloud NAT) · ☐ reproducible build + code hash registration</li>
   <li>☐ Write up what a third party can verify from the attestation</li>
 </ul>
@@ -160,7 +182,7 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
 
 <h2>Questions for Hex</h2>
 <ol>
-  <li><b class="r">Under what circumstances would <code>current_reserves_amount</code> ever be below total on-chain supply?</b> Blocking.</li>
+  <li>Confirm in writing: <code>current_reserves_amount</code> is the bank-provider balance of the reserve account, and an outflow with no matching burn (loss, freeze) shows up in the figure. <i>(Was the blocking question; resolved 3 Aug — now ordinary diligence.)</i></li>
   <li>Does that number already include cash? <i>(We think not — but it already equals supply on its own, which sharpens this rather than mooting it.)</i></li>
   <li>Status of the old Ethereum contract (<code>0x7A48…D56c</code>, 150,000 USDX) — a live claim on reserves? Currently excluded from your figure.</li>
   <li>Bonds at market or par? Liquidity haircut?</li>
@@ -186,7 +208,7 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
 <table>
   <thead><tr><th style="width:2.5em">#</th><th style="width:11em">Milestone</th><th>Done when</th></tr></thead>
   <tbody>
-    <tr><td><b>0</b></td><td><b>Premise confirmed</b></td><td>Hex explains the reserves figure and we agree it can actually fall below supply</td></tr>
+    <tr><td><b>0</b></td><td><b>Premise confirmed</b></td><td>✅ Resolved 3 Aug — bank-reported balance, falls below supply on any unmirrored outflow; written confirmation from Hex remains (Q1)</td></tr>
     <tr><td><b>1</b></td><td>Access secured</td><td>API key issued, IPs whitelisted</td></tr>
     <tr><td><b>2</b></td><td>Local prototype</td><td>Price computes end-to-end against real APIs; unit + conformance green</td></tr>
     <tr><td><b>3</b></td><td>Contracts on Coston2</td><td>Sender, store, feed deployed and tested</td></tr>
@@ -195,7 +217,7 @@ Full evidence in <a href="usdx-oracle-reference.html">the findings doc, §1</a>.
     <tr><td><b>6</b></td><td>Mainnet</td><td>Feed registered with governance, keepers running, consumers notified</td></tr>
   </tbody>
 </table>
-<p>Milestone 0 gates the design, not just the schedule. Milestones 1–2 can proceed against mocks meanwhile.</p>
+<p>Milestone 0 is resolved; the design stands. Milestones 1–2 can proceed against mocks meanwhile.</p>
 
 </body>
 </html>

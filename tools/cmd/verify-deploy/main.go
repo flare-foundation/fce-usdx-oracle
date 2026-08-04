@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"extension-scaffold/tools/pkg/configs"
-	"extension-scaffold/tools/pkg/support"
-	"extension-scaffold/tools/pkg/validate"
+	"fce-usdx-oracle/tools/pkg/configs"
+	"fce-usdx-oracle/tools/pkg/support"
+	"fce-usdx-oracle/tools/pkg/validate"
 
 	"github.com/ethereum/go-ethereum/common"
 )

@@ -13,4 +13,4 @@ services:
   extension-tee:
     build:
       context: ../..
-      dockerfile: extension-examples/extension-scaffold/go/Dockerfile.siblings
+      dockerfile: extension-examples/fce-usdx-oracle/go/Dockerfile.siblings

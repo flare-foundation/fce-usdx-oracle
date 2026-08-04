@@ -33,6 +33,7 @@
 <div class="nav">📎 <a href="usdx-oracle-index.html">Index</a> ·
 <a href="usdx-oracle-plan.html">Plan</a> · <a href="usdx-oracle-reference.html">Findings</a> ·
 <a href="usdx-oracle-extension.html">Extension</a> · <a href="usdx-oracle-contracts.html">Contracts</a> ·
+<a href="usdx-oracle-config.html">Config</a> ·
 <a href="usdx-oracle-operations.html">Operations</a></div>
 
 <h2>1. The whole system</h2>
@@ -112,8 +113,9 @@
 <div class="verdict warn">
 <b>The TEE cannot make bad input good.</b> If Hex's API reports a wrong reserve figure, the enclave will
 faithfully compute and sign a wrong price. Attestation proves provenance and integrity, never truthfulness
-of external data. This is the entire reason the §1 blocker in the Findings matters: no amount of TEE
-engineering compensates for a source that cannot express the condition we are trying to detect.
+of external data. This is why the §1 premise check in the Findings mattered — no amount of TEE engineering
+compensates for a source that cannot express the condition we are trying to detect. That check is resolved
+(the figure is a bank-reported balance), but the principle stands for any future source change.
 </div>
 <ul>
   <li><b>No protection against source compromise.</b> Mitigated only by bounds checks, alerting and a

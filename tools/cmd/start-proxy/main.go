@@ -12,7 +12,7 @@ import (
 	"runtime"
 	"syscall"
 
-	"extension-scaffold/tools/pkg/fccutils"
+	"fce-usdx-oracle/tools/pkg/fccutils"
 
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	proxyConfig "github.com/flare-foundation/tee-proxy/pkg/config"

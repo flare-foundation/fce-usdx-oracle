@@ -61,3 +61,8 @@ DEPLOYMENT.md
 
 config/**/*.log
 config/register-tee.state
+# Foundry dependencies — run `forge install` after cloning
+lib/
+
+# Personal working notes — not for review
+NOTES.md

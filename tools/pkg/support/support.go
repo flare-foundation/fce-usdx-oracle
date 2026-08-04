@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	stderrors "errors"
-	"extension-scaffold/tools/pkg/configs"
+	"fce-usdx-oracle/tools/pkg/configs"
 	"fmt"
 	"math/big"
 	"os"

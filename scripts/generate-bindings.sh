@@ -9,46 +9,58 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# --- Contract name and Go package ---
-CONTRACT_NAME="HelloWorldInstructionSender"
-GO_PKG="helloworld"
-BINDINGS_DIR="$PROJECT_DIR/tools/pkg/contracts/$GO_PKG"
+# --- Contracts to bind ---
+# Each entry is "SourceFile.sol:ContractName:go_package". The deployment tooling
+# is Go regardless of the extension language, so every contract it must deploy
+# or call needs bindings here.
+CONTRACTS=(
+    "InstructionSender.sol:UsdxOracleInstructionSender:usdxoracle"
+    "UsdxPriceStore.sol:UsdxPriceStore:usdxstore"
+    "UsdxCustomFeed.sol:UsdxCustomFeed:usdxfeed"
+)
 
 cd "$PROJECT_DIR"
 
 echo "=== Step 1: Compile Solidity contracts ==="
 forge build
 
-# Verify the contract name in the source matches what we expect
-if ! grep -q "contract ${CONTRACT_NAME}" "$PROJECT_DIR/contracts/InstructionSender.sol" 2>/dev/null; then
+for entry in "${CONTRACTS[@]}"; do
+    IFS=":" read -r SRC CONTRACT_NAME GO_PKG <<< "$entry"
+    BINDINGS_DIR="$PROJECT_DIR/tools/pkg/contracts/$GO_PKG"
+
     echo ""
-    echo "ERROR: Contract name '${CONTRACT_NAME}' not found in contracts/InstructionSender.sol."
-    echo "Make sure the contract name in InstructionSender.sol matches CONTRACT_NAME in this script."
-    exit 1
-fi
+    echo "=== $CONTRACT_NAME ($SRC) → $GO_PKG ==="
 
-echo "=== Step 2: Extract ABI and BIN ==="
-FORGE_OUT="$PROJECT_DIR/out/InstructionSender.sol/${CONTRACT_NAME}.json"
-if [[ ! -f "$FORGE_OUT" ]]; then
-    echo "ERROR: forge output not found at $FORGE_OUT"
-    echo "Check that CONTRACT_NAME matches your Solidity contract name."
-    exit 1
-fi
+    if ! grep -q "contract ${CONTRACT_NAME}" "$PROJECT_DIR/contracts/${SRC}" 2>/dev/null; then
+        echo "ERROR: contract '${CONTRACT_NAME}' not found in contracts/${SRC}."
+        exit 1
+    fi
 
-mkdir -p "$BINDINGS_DIR"
+    FORGE_OUT="$PROJECT_DIR/out/${SRC}/${CONTRACT_NAME}.json"
+    if [[ ! -f "$FORGE_OUT" ]]; then
+        echo "ERROR: forge output not found at $FORGE_OUT"
+        exit 1
+    fi
 
-# Extract ABI (JSON array)
-jq '.abi' "$FORGE_OUT" > "$BINDINGS_DIR/${CONTRACT_NAME}.abi"
+    mkdir -p "$BINDINGS_DIR"
+    jq '.abi' "$FORGE_OUT" > "$BINDINGS_DIR/${CONTRACT_NAME}.abi"
+    jq -r '.bytecode.object' "$FORGE_OUT" | sed 's/^0x//' > "$BINDINGS_DIR/${CONTRACT_NAME}.bin"
 
-# Extract bytecode (hex string, strip 0x prefix)
-jq -r '.bytecode.object' "$FORGE_OUT" | sed 's/^0x//' > "$BINDINGS_DIR/${CONTRACT_NAME}.bin"
+    # The go:generate directive lives beside the bindings so `go generate ./...`
+    # keeps working; write it if the package is new.
+    GEN_FILE="$BINDINGS_DIR/${GO_PKG}.go"
+    if [[ ! -f "$GEN_FILE" ]]; then
+        cat > "$GEN_FILE" <<GENEOF
+//go:generate go run github.com/ethereum/go-ethereum/cmd/abigen --abi=${CONTRACT_NAME}.abi --bin=${CONTRACT_NAME}.bin --pkg=${GO_PKG} --type=${CONTRACT_NAME} --out=autogen.go
 
-echo "  ABI → $BINDINGS_DIR/${CONTRACT_NAME}.abi"
-echo "  BIN → $BINDINGS_DIR/${CONTRACT_NAME}.bin"
+package ${GO_PKG}
+GENEOF
+        echo "  created $GEN_FILE"
+    fi
 
-echo "=== Step 3: Generate Go bindings ==="
-cd "$PROJECT_DIR/tools"
-go generate ./pkg/contracts/$GO_PKG/
+    ( cd "$PROJECT_DIR/tools" && go generate ./pkg/contracts/$GO_PKG/ )
+    echo "  → $BINDINGS_DIR/autogen.go"
+done
 
+echo ""
 echo "=== Done ==="
-echo "Generated: $BINDINGS_DIR/autogen.go"
