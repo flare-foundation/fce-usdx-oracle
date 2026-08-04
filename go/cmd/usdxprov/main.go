@@ -1,0 +1,481 @@
+// Command usdxprov builds, signs and submits provisioning envelopes.
+//
+// A credential reaches the enclave encrypted to its public key, authorised by
+// M-of-N admin signatures. Assembling that by hand means ECIES encryption, a
+// seven-field ABI body, and signatures collected from different people — so it
+// needs a tool.
+//
+// It lives here, in the extension's own module, so it imports
+// internal/provision directly. That is deliberate: the bytes this produces and
+// the bytes the verifier recomputes come from the same EncodeBody, so they
+// cannot drift.
+//
+// Three subcommands, because step 2 involves different people:
+//
+//	usdxprov build   fetch the TEE key, encrypt, emit an unsigned envelope
+//	usdxprov sign    one admin signs the envelope body
+//	usdxprov submit  combine signatures and POST
+//
+// The unsigned envelope is safe to pass around: the credential inside it is
+// already ciphertext that only the target enclave can open.
+package main
+
+import (
+	"bytes"
+	"crypto/ecdsa"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"math/big"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"fce-usdx-oracle/internal/provision"
+
+	"github.com/ethereum/go-ethereum/accounts"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/ecies"
+)
+
+// envelopeFile is the on-disk intermediate passed between the subcommands.
+type envelopeFile struct {
+	ChainID     string   `json:"chainId"`
+	TeeID       string   `json:"teeId"`
+	Ref         string   `json:"ref"`
+	Version     uint64   `json:"version"`
+	IssuedAt    uint64   `json:"issuedAt"`
+	Ciphertext  string   `json:"ciphertext"`
+	Body        string   `json:"body"`
+	Signatures  []string `json:"signatures"`
+	ProxyPubKey string   `json:"proxyPublicKey"`
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+	}
+	var err error
+	switch os.Args[1] {
+	case "build":
+		err = build(os.Args[2:])
+	case "sign":
+		err = sign(os.Args[2:])
+	case "submit":
+		err = submit(os.Args[2:])
+	default:
+		usage()
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `usdxprov — build, sign and submit provisioning envelopes
+
+  usdxprov build  -url <proxy> -chain-id <n> -ref <name> -value <secret> [-version <n>] -out env.json
+  usdxprov sign   -in env.json -key <hex-private-key> [-out env.json]
+  usdxprov submit -in env.json -url <proxy> [-api-key <k>] [-action-url <url>]
+
+The freshness window is `+provision.Freshness.String()+`: sign and submit within it, or
+the envelope is rejected as stale. `+fmt.Sprint(provision.Threshold)+` distinct admin signatures are required.
+`)
+	os.Exit(2)
+}
+
+// --- build ---
+
+func build(args []string) error {
+	fs := flags("build", args, map[string]*string{}, nil)
+	proxyURL := fs.str("url", "", "proxy or mocknode base URL")
+	chainID := fs.i64("chain-id", 0, "target chain id")
+	ref := fs.str("ref", "", "secret name, e.g. hex_api_key")
+	value := fs.str("value", "", "the credential itself")
+	version := fs.u64("version", 1, "must strictly increase per ref")
+	out := fs.str("out", "envelope.json", "output file")
+	teeIDFlag := fs.str("tee", "", "override the teeId from /info")
+	if err := fs.parse(); err != nil {
+		return err
+	}
+	if *proxyURL == "" || *ref == "" || *value == "" || *chainID == 0 {
+		return fmt.Errorf("-url, -chain-id, -ref and -value are required")
+	}
+
+	pub, teeID, err := fetchKey(*proxyURL)
+	if err != nil {
+		return err
+	}
+	if *teeIDFlag != "" {
+		teeID = common.HexToAddress(*teeIDFlag)
+	}
+	if teeID == (common.Address{}) {
+		return fmt.Errorf("could not determine teeId; pass -tee")
+	}
+
+	// Encrypt to the enclave. From here the credential exists in plaintext only
+	// inside the target TEE.
+	ciphertext, err := ecies.Encrypt(cryptoRand(), ecies.ImportECDSAPublic(pub), []byte(*value), nil, nil)
+	if err != nil {
+		return fmt.Errorf("encrypting to the TEE key: %w", err)
+	}
+
+	env := provision.Envelope{
+		ChainID:     big.NewInt(*chainID),
+		TeeID:       teeID,
+		Version:     *version,
+		IssuedAt:    uint64(time.Now().UTC().Unix()),
+		Ref:         *ref,
+		PayloadHash: crypto.Keccak256Hash(ciphertext),
+		Payload:     ciphertext,
+	}
+
+	body, err := provision.EncodeBody(env)
+	if err != nil {
+		return err
+	}
+
+	f := envelopeFile{
+		ChainID:     env.ChainID.String(),
+		TeeID:       teeID.Hex(),
+		Ref:         env.Ref,
+		Version:     env.Version,
+		IssuedAt:    env.IssuedAt,
+		Ciphertext:  "0x" + hex.EncodeToString(ciphertext),
+		Body:        "0x" + hex.EncodeToString(body),
+		ProxyPubKey: "0x" + hex.EncodeToString(crypto.FromECDSAPub(pub)),
+	}
+	if err := writeJSON(*out, f); err != nil {
+		return err
+	}
+
+	fmt.Printf("envelope written to %s\n", *out)
+	fmt.Printf("  teeId    %s\n", teeID.Hex())
+	fmt.Printf("  ref      %s\n", env.Ref)
+	fmt.Printf("  version  %d\n", env.Version)
+	fmt.Printf("  expires  %s (%s from now)\n",
+		time.Unix(int64(env.IssuedAt), 0).Add(provision.Freshness).UTC().Format(time.RFC3339),
+		provision.Freshness)
+	fmt.Printf("\nNeeds %d distinct admin signatures. The credential is already encrypted,\n", provision.Threshold)
+	fmt.Printf("so this file is safe to send to the signers.\n")
+	return nil
+}
+
+// --- sign ---
+
+func sign(args []string) error {
+	fs := flags("sign", args, nil, nil)
+	in := fs.str("in", "envelope.json", "envelope file")
+	keyHex := fs.str("key", "", "admin private key, hex")
+	out := fs.str("out", "", "output file (defaults to -in)")
+	if err := fs.parse(); err != nil {
+		return err
+	}
+	if *keyHex == "" {
+		return fmt.Errorf("-key is required")
+	}
+
+	var f envelopeFile
+	if err := readJSON(*in, &f); err != nil {
+		return err
+	}
+
+	key, err := crypto.HexToECDSA(strings.TrimPrefix(*keyHex, "0x"))
+	if err != nil {
+		return fmt.Errorf("bad admin key")
+	}
+
+	body, err := hexBytes(f.Body)
+	if err != nil {
+		return err
+	}
+
+	// EIP-191 personal-sign, so a hardware wallet can produce the same thing.
+	sig, err := crypto.Sign(accounts.TextHash(crypto.Keccak256(body)), key)
+	if err != nil {
+		return err
+	}
+	sig[64] += 27
+
+	signer := crypto.PubkeyToAddress(key.PublicKey)
+	for _, existing := range f.Signatures {
+		raw, err := hexBytes(existing)
+		if err != nil {
+			continue
+		}
+		if recovered, ok := recoverSigner(body, raw); ok && recovered == signer {
+			return fmt.Errorf("%s has already signed; M-of-N needs DISTINCT signers", signer.Hex())
+		}
+	}
+
+	f.Signatures = append(f.Signatures, "0x"+hex.EncodeToString(sig))
+
+	dest := *out
+	if dest == "" {
+		dest = *in
+	}
+	if err := writeJSON(dest, f); err != nil {
+		return err
+	}
+
+	fmt.Printf("signed by %s (%d/%d)\n", signer.Hex(), len(f.Signatures), provision.Threshold)
+	if !isAdmin(signer) {
+		fmt.Printf("WARNING: %s is not in the baked admin set — this signature will not count\n", signer.Hex())
+	}
+	return nil
+}
+
+// --- submit ---
+
+func submit(args []string) error {
+	fs := flags("submit", args, nil, nil)
+	in := fs.str("in", "envelope.json", "envelope file")
+	proxyURL := fs.str("url", "", "proxy base URL; POSTs to /direct")
+	apiKey := fs.str("api-key", "", "proxy API key")
+	actionURL := fs.str("action-url", "",
+		"post straight to an extension's /action instead of the proxy (local testing)")
+	if err := fs.parse(); err != nil {
+		return err
+	}
+
+	var f envelopeFile
+	if err := readJSON(*in, &f); err != nil {
+		return err
+	}
+	if len(f.Signatures) < provision.Threshold {
+		return fmt.Errorf("have %d signatures, need %d", len(f.Signatures), provision.Threshold)
+	}
+
+	age := time.Since(time.Unix(int64(f.IssuedAt), 0))
+	if age > provision.Freshness {
+		return fmt.Errorf("envelope is %s old and the window is %s; rebuild and re-sign",
+			age.Truncate(time.Second), provision.Freshness)
+	}
+
+	body, err := hexBytes(f.Body)
+	if err != nil {
+		return err
+	}
+	ciphertext, err := hexBytes(f.Ciphertext)
+	if err != nil {
+		return err
+	}
+
+	sigs := make([][]byte, 0, len(f.Signatures))
+	for _, s := range f.Signatures {
+		raw, err := hexBytes(s)
+		if err != nil {
+			return err
+		}
+		sigs = append(sigs, raw)
+	}
+
+	chainID, ok := new(big.Int).SetString(f.ChainID, 10)
+	if !ok {
+		return fmt.Errorf("bad chainId in envelope")
+	}
+
+	message, err := provision.Encode(provision.Envelope{
+		ChainID:     chainID,
+		TeeID:       common.HexToAddress(f.TeeID),
+		Version:     f.Version,
+		IssuedAt:    f.IssuedAt,
+		Ref:         f.Ref,
+		PayloadHash: crypto.Keccak256Hash(ciphertext),
+		Payload:     ciphertext,
+	}, sigs)
+	if err != nil {
+		return err
+	}
+	_ = body
+
+	if *actionURL != "" {
+		return postAction(*actionURL, message)
+	}
+	if *proxyURL == "" {
+		return fmt.Errorf("-url or -action-url is required")
+	}
+	return postDirect(*proxyURL, *apiKey, message)
+}
+
+// postDirect submits through the proxy, which is the production path.
+func postDirect(proxyURL, apiKey string, message []byte) error {
+	payload := map[string]string{
+		"opType":    b32("USDX_CONFIG"),
+		"opCommand": b32("SET_SECRET"),
+		"message":   "0x" + hex.EncodeToString(message),
+	}
+	raw, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(proxyURL, "/")+"/direct", bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("proxy returned %d: %s", resp.StatusCode, strings.TrimSpace(string(out)))
+	}
+	fmt.Printf("submitted to %s/direct\n", strings.TrimRight(proxyURL, "/"))
+	fmt.Printf("the extension applies it when the machine next polls the direct queue\n")
+	return nil
+}
+
+// postAction delivers straight to an extension, bypassing proxy and chain.
+// Local testing only; the production path is postDirect.
+func postAction(actionURL string, message []byte) error {
+	df := map[string]any{
+		"instructionId":          "0x" + strings.Repeat("bb", 32),
+		"teeId":                  "0x" + strings.Repeat("22", 20),
+		"timestamp":              time.Now().Unix(),
+		"rewardEpochId":          0,
+		"opType":                 b32("USDX_CONFIG"),
+		"opCommand":              b32("SET_SECRET"),
+		"cosigners":              []string{},
+		"cosignersThreshold":     0,
+		"originalMessage":        "0x" + hex.EncodeToString(message),
+		"additionalFixedMessage": "0x",
+	}
+	dfRaw, _ := json.Marshal(df)
+
+	action := map[string]any{
+		"data": map[string]any{
+			"id": "0x" + strings.Repeat("bb", 32),
+			// MUST be "direct": SET_SECRET is refused over the instruction
+			// channel, since on-chain a credential ciphertext would be permanent
+			// and public.
+			"type":          "direct",
+			"submissionTag": "submit",
+			"message":       "0x" + hex.EncodeToString(dfRaw),
+		},
+		"additionalVariableMessages": []string{},
+		"timestamps":                 []int{},
+		"additionalActionData":       "0x",
+		"signatures":                 []string{},
+	}
+	raw, _ := json.Marshal(action)
+
+	resp, err := http.Post(actionURL, "application/json", bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+
+	var result struct {
+		Status uint8  `json:"status"`
+		Log    string `json:"log"`
+	}
+	_ = json.Unmarshal(out, &result)
+
+	if result.Status == 1 {
+		fmt.Println("accepted")
+		return nil
+	}
+	return fmt.Errorf("rejected: %s", result.Log)
+}
+
+// --- helpers ---
+
+func fetchKey(base string) (*ecdsa.PublicKey, common.Address, error) {
+	resp, err := http.Get(strings.TrimRight(base, "/") + "/info")
+	if err != nil {
+		return nil, common.Address{}, fmt.Errorf("fetching /info: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// The response carries no teeId field: the machine identity is the address
+	// of the attested publicKey and must be derived from it — the same
+	// derivation fccutils.TeeProxyId and tee-proxy's ParseTeeID use.
+	var info struct {
+		TEEInfo struct {
+			PublicKey struct {
+				X string `json:"x"`
+				Y string `json:"y"`
+			} `json:"publicKey"`
+		} `json:"teeInfo"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, common.Address{}, fmt.Errorf("parsing /info: %w", err)
+	}
+
+	x, ok := new(big.Int).SetString(strings.TrimPrefix(info.TEEInfo.PublicKey.X, "0x"), 16)
+	if !ok {
+		return nil, common.Address{}, fmt.Errorf("/info has no usable public key")
+	}
+	y, ok := new(big.Int).SetString(strings.TrimPrefix(info.TEEInfo.PublicKey.Y, "0x"), 16)
+	if !ok {
+		return nil, common.Address{}, fmt.Errorf("/info has no usable public key")
+	}
+
+	pub := &ecdsa.PublicKey{Curve: crypto.S256(), X: x, Y: y}
+	if !pub.Curve.IsOnCurve(x, y) {
+		return nil, common.Address{}, fmt.Errorf("/info public key is not on the secp256k1 curve")
+	}
+	return pub, crypto.PubkeyToAddress(*pub), nil
+}
+
+func recoverSigner(body, sig []byte) (common.Address, bool) {
+	if len(sig) != 65 {
+		return common.Address{}, false
+	}
+	s := make([]byte, 65)
+	copy(s, sig)
+	if s[64] >= 27 {
+		s[64] -= 27
+	}
+	pub, err := crypto.SigToPub(accounts.TextHash(crypto.Keccak256(body)), s)
+	if err != nil {
+		return common.Address{}, false
+	}
+	return crypto.PubkeyToAddress(*pub), true
+}
+
+func isAdmin(a common.Address) bool {
+	for _, admin := range provision.Admins {
+		if admin == a {
+			return true
+		}
+	}
+	return false
+}
+
+func b32(s string) string {
+	b := make([]byte, 32)
+	copy(b, s)
+	return "0x" + hex.EncodeToString(b)
+}
+
+func hexBytes(s string) ([]byte, error) {
+	return hex.DecodeString(strings.TrimPrefix(s, "0x"))
+}
+
+func readJSON(path string, v any) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, v)
+}
+
+func writeJSON(path string, v any) error {
+	raw, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(raw, '\n'), 0o600)
+}
