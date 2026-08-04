@@ -85,7 +85,7 @@ provenance and semantics (Questions for Hex, #1). Evidence and history:
     <tr><td>On-chain payload carries price only</td>
         <td>Hex may consider reserve figures sensitive. Note <code>GET /state</code> is public too, so it can't hold them either.</td></tr>
     <tr><td><b>Endpoints on-chain, credentials by direct instruction</b></td>
-        <td>Publishing which RPC providers we read is the point — it is what makes the data sources verifiable. Credentials go off-chain via <code>/direct-instruction</code>: no gas, no permanent on-chain record, instant rotation, and no secret-handling path in Solidity. A baked host allowlist keeps on-chain endpoint config from becoming a substitution channel.</td></tr>
+        <td>Publishing which RPC providers we read is the point — it is what makes the data sources verifiable. Credentials go off-chain via <code>/direct-instruction</code>: no gas, no permanent on-chain record, instant rotation, and no secret-handling path in Solidity. There is deliberately <b>no host allowlist</b>: endpoints are unconstrained so providers rotate without rebuilds, and the owner key is therefore price-controlling by decision (Findings §15).</td></tr>
     <tr><td>Fail closed</td>
         <td>Source down or value implausible → publish nothing, let the timestamp age. Never guess a price.</td></tr>
     <tr><td>Feed never reverts on stale data</td>
@@ -131,8 +131,8 @@ provenance and semantics (Questions for Hex, #1). Evidence and history:
       distinct</b> admin signers from the baked set; nil data and a fixed log on every path</li>
   <li>☐ Readiness state — credentials are memory-only and lost on restart; distinct
       <code>not_configured</code> class, booleans in <code>/state</code>, alert</li>
-  <li>☐ Validate endpoint templates against the <b>baked host allowlist</b> · ☐ no redirect-following on
-      credentialed requests (finding 2)</li>
+  <li>☑ <s>Validate endpoint templates against a baked host allowlist</s> — dropped by decision (Findings §15);
+      ☑ no redirect-following on credentialed requests (finding 2) — implemented</li>
   <li>☐ <code>GET /state</code>: operational only (last price, price history?, counters, error class, source health) — no raw reserve/supply figures</li>
   <li>☐ Logging that never emits secrets, raw responses, or reserve figures</li>
 </ul>

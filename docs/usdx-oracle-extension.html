@@ -203,13 +203,11 @@ this one wins. Any change here is a wire-format break requiring a new <code>doma
 have nowhere to go).</p>
 <pre>struct PriceReport {
     bytes32 domain;         // keccak256("USDX_ORACLE_PRICE_V1")  — purpose + format version
-    uint256 chainId;        // target chain (Flare mainnet = 14)
-    address store;          // the UsdxPriceStore this is valid for
-    bytes21 feedId;         // scopes the signature to one feed
     uint256 price;          // truncate(price · 10^decimals)
     int8    decimals;       // 8
     uint64  observedAt;     // measurement time — the store's monotonicity key
     bytes32 instructionId;  // the instruction that triggered this update
+    bytes32 endpointsHash;  // keccak256 of the SET_ENDPOINTS payload in force
 }
 
 body      = abi.encode(report)          // NOT encodePacked
@@ -220,15 +218,19 @@ bytes that were signed instead of re-encoding a decoded struct and hoping the en
 identically. It also decodes those same bytes to read the fields — one source, no ambiguity.</p>
 
 <h3>6c. Why each field is in the signature</h3>
+<p><b>No target binding, by decision.</b> The payload carries no <code>chainId</code>,
+<code>store</code> or <code>feedId</code>. Where a report is accepted is settled by the store's trust
+anchor instead — a signature is only accepted from a TEE machine currently registered to that store's
+extension. The payload binds <i>what</i> was observed and <i>under what configuration</i>; the registry
+check binds where it lands. The trade is that a genuinely-signed report can be replayed into another
+deployment registered under the same extension, though nobody can forge a price.</p>
 <table>
   <thead><tr><th style="width:9em">Field</th><th>Attack it prevents</th></tr></thead>
   <tbody>
     <tr><td><code>domain</code></td><td>A signature produced for some other <code>USDX_ORACLE</code> message being reinterpreted as a price. Also versions the format — changing the layout means changing this tag.</td></tr>
-    <tr><td><code>chainId</code></td><td><b class="r">Coston2 → mainnet replay.</b> We will test on Coston2, quite possibly with the same TEE machine and therefore the same signing key. Without this field a testnet price is a valid mainnet price. This is the least obvious and most likely of the replay risks.</td></tr>
-    <tr><td><code>store</code></td><td>Replay onto a redeployed or attacker-deployed store expecting the same format.</td></tr>
-    <tr><td><code>feedId</code></td><td>Cross-feed reuse if we ever run more than one feed from this extension.</td></tr>
     <tr><td><code>price</code>, <code>decimals</code></td><td>Reinterpreting a value at the wrong scale — 1.0 at 8 decimals is 0.00000001 at 18.</td></tr>
     <tr><td><code>observedAt</code></td><td>Re-timing an old price under a fresh timestamp. It is the store's ordering key, so it <b>must</b> be signed.</td></tr>
+    <tr><td><code>endpointsHash</code></td><td><b class="r">A machine running configuration other than what was published.</b> The store compares this against <code>expectedConfigHash[teeId]</code> from <code>setEndpoints</code>. Without it the on-chain configuration is advisory — it records what was <i>sent</i>, never what a machine is <i>running</i>. A rejected payload, an undelivered instruction, or (with several machines) one that never received its call, all leave a machine publishing perfectly valid prices from stale configuration.</td></tr>
     <tr><td><code>instructionId</code></td><td>Not security-critical — an audit trail linking the price to its triggering event.</td></tr>
   </tbody>
 </table>

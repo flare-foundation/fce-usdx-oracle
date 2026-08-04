@@ -1,6 +1,6 @@
 # USDX Oracle — Implementation Findings
 
-**Status:** living document · **Last updated:** 2026-08-03
+**Status:** living document · **Last updated:** 2026-08-04
 
 Findings discovered while implementing the extension, each with the evidence
 that established it and the test that now pins it. Design intent lives in
@@ -24,7 +24,10 @@ quietly mispublished.
 | 9 | The TEE machine status enum's numeric values are not published | **High** | `REQUIRED_TEE_STATUS` (parameterised, unresolved) |
 | 10 | secp256k1 malleability gives one report two valid signatures | **Medium** | `test_RejectsMalleableSignature` |
 | 11 | A `TeeExtensionStateVerifier` is NOT required — the spec is wrong | Info | `register(address(0), …)` in the scaffold |
-| 12 | ~~The production entrypoint lands in stub mode silently~~ **RESOLVED** | **High** | `TestStubMode_IsAnnouncedAndDistinguishable` |
+| 12 | ~~The production entrypoint lands in stub mode silently~~ **RESOLVED** | **High** | `TestStubMode_CannotBeEnteredAccidentally` |
+| 15 | The contract owner key can set any RPC host and any threshold — accepted | **High** | `TestAnyHostIsAccepted` |
+| 16 | On-chain config recorded what was *sent*, not what a machine *runs* | **High** | `test_RejectsReportFromStaleConfig` |
+| 17 | Full audit of every logging and error surface found no sensitive disclosure | Info | §17 audit + the finding-1 tests |
 
 ---
 
@@ -375,15 +378,18 @@ monitoring in WP7 is designed to detect, and precisely the state it cannot see.
 
 1. **`extension.New()` was deleted.** That constructor was the actual defect: it
    read as the ordinary way to build an extension while silently producing a
-   stub. Reaching stub mode now requires writing `nil` at the call site.
+   stub.
 2. **`server.StartExtension` loads the embedded config and refuses to start
    without it.** There is no fallback to stub on error — falling back would
    reintroduce the exact failure, just later.
-3. **The two entrypoints are separate binaries.** `./cmd` is the stub, used only
-   by `test-conformance.sh` which has no credentials by design; `./cmd/docker` is
-   production and is what `go/Dockerfile` builds. Stub mode also still logs a
-   six-line banner at `ERROR` level, and `Extension.StubMode()` is exposed for
-   health checks.
+3. **A nil observer is now unconstructible.** An interim fix logged a six-line
+   banner at `ERROR` level, but inside a TEE the logs cannot be read from
+   outside, so a banner is not a defence. The production constructors
+   (`NewWithObserver`, `NewWithProvisioner`) now **panic** on a nil observer,
+   and the only stub path is `extension.NewStub`, called at exactly one site:
+   `./cmd`, the binary used by `test-conformance.sh`, which has no credentials
+   by design. `./cmd/docker` is production and is what `go/Dockerfile` builds.
+   `Extension.StubMode()` remains exposed for health checks.
 
 **Still true:** the two modes emit different wire formats, so conformance
 fixtures pin the stub's JSON rather than the production ABI payload. Regenerating
@@ -412,27 +418,29 @@ Coston2.
 **Severity: informational.** Corrects an error in an earlier draft of this
 document.
 
-The signed report binds the store address, so the store must be pinned in the
-extension's embedded config — which appeared to require the store before the
-image, while the store's constructor needs `EXTENSION_ID`, which appeared to
-require a registered extension and therefore a running TEE. That reasoning was
-wrong.
+The original concern: while the signed report bound the store address, the
+store had to be pinned in the extension's embedded config — which appeared to
+require the store before the image, while the store's constructor needs
+`EXTENSION_ID`, which appeared to require a registered extension and therefore
+a running TEE. That reasoning was wrong even then, and the binding has since
+been removed (pre-launch), so the ordering constraint no longer exists at all:
+the store address is not part of the extension image.
 
 **Registering an extension does not require a running TEE machine.** Only
 registering a *machine* does. The scaffold's lifecycle already separates them:
 
     pre-build.sh        deploy InstructionSender, register extension -> EXTENSION_ID
-    extension-setup.sh  deploy UsdxPriceStore + UsdxCustomFeed -> STORE
-    start-services.sh   build image with STORE pinned -> code hash
+    extension-setup.sh  deploy UsdxPriceStore + UsdxCustomFeed -> record addresses
+    start-services.sh   build image -> code hash
     post-build.sh       register the TEE machine
 
 `extension-setup.sh` is a hook the scaffold already provides, and it runs exactly
 between the two. One build pass, no CREATE2, no provisional image. The earlier
 two-phase-build proposal solved a problem that does not exist.
 
-`scripts/extension-setup.sh` now deploys both contracts and writes the store
-address into the embedded config with `jq`. It skips deployment if a real address
-is already pinned, since redeploying resets the stored price and the `observedAt`
+`scripts/extension-setup.sh` deploys both contracts; `deploy-store` records the
+addresses in the deployed-addresses file. It skips deployment if one is already
+recorded there, since redeploying resets the stored price and the `observedAt`
 high-water mark — `FORCE_REDEPLOY_STORE=1` overrides.
 
 ---
@@ -462,15 +470,18 @@ of a ciphertext, instant rotation, and no secret-handling path in Solidity.
 **What still had to stay baked**, because moving it would have made the
 attestation meaningless:
 
-- **The host allowlist.** Without it, on-chain endpoint configuration is itself a
-  substitution channel: whoever can set endpoints can point a chain at a server
-  they control and dictate the price. The allowlist means configured endpoints
-  can only ever be hosts that were attested.
+- **The host allowlist** — *superseded, see §15*. Baked at this point because,
+  without it, on-chain endpoint configuration is itself a substitution channel:
+  whoever can set endpoints can point a chain at a server they control and
+  dictate the price. It was later removed so providers can be rotated without a
+  rebuild, and the resulting owner-key trust is accepted explicitly in §15.
 - **The admin signer set** (`internal/provision.Admins`), the root of trust for
   provisioning.
-- **The target binding** — chain id, store, feed id, decimals — which the signed
-  report commits to.
 - **The observation window**, since widening it weakens the TOCTOU bound.
+
+(The signed report's target binding — chain id, store, feed id — was removed
+pre-launch; acceptance is anchored by the store's registered-machine check.
+See §16.)
 
 ### Properties worth knowing
 
@@ -497,10 +508,6 @@ would otherwise let a captured envelope be replayed indefinitely.
 M-of-N threshold; recovered addresses are deduplicated.
 `TestVerify_RejectsDuplicateSignerReachingThreshold`.
 
-**The allowlist matches the parsed hostname, never a substring.**
-`https://evil.com/?x=flare-api.flare.network` must not pass, and exact matching
-avoids the `evil-flare-api.flare.network` class of near-miss.
-
 **A rejected update leaves the working configuration in place.** A bad
 `SET_ENDPOINTS` must not take a live feed down.
 
@@ -520,6 +527,225 @@ The admin set is **still placeholder addresses**
 `TestAdminSetIsNotPlaceholder` skips with a warning today and must become a hard
 failure once real keys are baked. Nothing can be provisioned against a live
 deployment until they are.
+
+---
+
+## 15. The owner key is price-controlling, by decision
+
+**Severity: High. Accepted deliberately — this is a recorded trade, not a defect.**
+
+`SET_ENDPOINTS` carries RPC provider URLs and a per-chain agreement threshold,
+both unconstrained. An earlier build bounded URLs with a baked host allowlist
+and pinned the threshold; both were removed so that adding a provider (Alchemy,
+say) or moving from 2-of-3 to 2-of-4 needs no rebuild and no re-attestation.
+
+**The consequence.** `setEndpoints` is `onlyOwner`, so whoever holds that key
+can send `{"threshold": 1, "providers": [{"url": "https://their-server/"}]}`,
+have that server return any `totalSupply()`, and the attested code will
+faithfully compute and sign the resulting price. A higher threshold does not
+help, because the same party chooses every provider in the list.
+
+So the published price is only as trustworthy as the **contract owner key**, not
+as the code hash alone. The attestation still proves which code ran and that the
+credentials stayed in the enclave; it no longer proves the inputs came from
+anywhere in particular. Anyone relying on this feed has to trust the owner as
+well as the TEE.
+
+**What this rules out.** The original claim in spec §2 — that consumers can
+verify *what* computed the price rather than trusting an operator — is now only
+half true. Worth restating in consumer documentation rather than leaving the
+spec's stronger wording in place.
+
+**What is still enforced**, and is unrelated to which host is named:
+
+- https only, so a credential is never put on the wire in plaintext and nobody
+  on path can dictate a supply figure
+- `{secret}` may not appear in a URL's scheme or host, so the credential holder
+  cannot change the destination even though the URL author can
+- a credential containing `/ ? #` or whitespace is rejected, so substitution
+  cannot restructure a URL
+- threshold must be between 1 and the provider count, so a chain cannot be
+  configured to fail on every observation
+- every pinned chain must be present, since a missing one undercounts supply and
+  therefore *overstates* the price
+- token addresses, finality tag and margin, decimals, the Hex endpoints and the
+  observation bounds remain pinned and are not expressible in a payload
+
+**Mitigations available if the trade is later reconsidered:** put the owner
+behind a multisig or timelock; or pin a per-chain *minimum* threshold so the
+runtime value can only be raised; or reinstate the host allowlist.
+`TestAnyHostIsAccepted` exists so that reintroducing a constraint means changing
+a named test rather than silently altering behaviour.
+
+---
+
+## 16. The report's target binding was removed pre-launch
+
+**Severity: informational. A deliberate simplification, recorded so the absence
+is a documented decision rather than an oversight.**
+
+The signed report originally carried `chainId`, `store` and `feedId`, and the
+store verified each against itself. All three were removed before launch. The
+payload is now `(domain, price, decimals, observedAt, instructionId)`.
+
+**Why they were weaker than they looked.** The store's acceptance gate is the
+registered-machine check: a signature is only ever accepted from a TEE machine
+currently registered to the store's extension. That check proves the price was
+computed by attested code from the configured sources regardless of what the
+payload binds. The binding fields never protected the price itself — only
+*where a correctly-signed price could be delivered*:
+
+- `feedId` was redundant outright: one store serves one feed, `FEED_ID` is
+  immutable, and the store binding already determined the destination.
+- `store` blocked replay into other deployments under the same extension id —
+  including deployments governance did not intend — but such a replay still
+  delivers a genuine TEE price, never a forged one.
+- `chainId` blocked cross-chain replay, which additionally requires a machine
+  key to be registered in two networks' registries — a platform invariant the
+  deployment model (one chain per machine) already makes unlikely.
+
+**What is accepted in exchange.** Two operational invariants, carried by
+governance rather than enforced by the contract: one intended store deployment
+per extension (a second deployment under the same extension id accepts the
+same genuine reports until paused), and machine keys staying on one network.
+Nobody can publish a wrong price either way.
+
+**What changed with it.** The store address left the extension's embedded
+config (schema v5 drops `target`; the chain id stays, because provisioning
+envelopes still bind to it), `extension-setup.sh` no longer writes a deployed
+address into the config (`deploy-store` records it in the deployed-addresses
+file instead), and the image no longer needs the store deployed before it is
+built. `FEED_ID` remains on the store as the feed's FTSO identity.
+
+---
+
+## 17. Full audit of logging and error surfaces (2026-08-04)
+
+**Severity: informational. No sensitive disclosure found. Records what was
+checked so the next reviewer starts from a known baseline rather than
+re-auditing from scratch.**
+
+Finding 1 built the mechanism. This audit walked every site that emits
+anything — every `logger` call, every error return, every HTTP response body,
+every contract event — to confirm the mechanism is complete and nothing beside
+it leaks.
+
+**Scope and verdict, surface by surface.**
+
+- *Internal logging.* The runtime extension imports `logger` in exactly three
+  files: `extension.go`, `config_handler.go`, `utils.go`. The packages that
+  actually touch secrets and reserve figures — `backing`, `supply`, `price`,
+  `decimal`, `report`, `provision`, `runtimecfg`, `teenode` — import no logger
+  at all, so the sensitive values have no log path to reach. What the three
+  files log is: action IDs, statuses, the vocabulary `Log`, port numbers, the
+  stub-mode banner, `SET_ENDPOINTS` validation detail (chain names, thresholds
+  and secret *ref names* — all public on-chain or names rather than values),
+  and the fixed string `SET_SECRET rejected` with deliberately no cause.
+- *ActionResult.Log.* Every path reaches it through `Extension.fail()`, whose
+  parameter type is `failure.Failure`, not `error` — a raw error cannot be
+  passed in even by accident. `asFailure()` sanitises at the extension and
+  oracle boundaries. Pinned by `TestProcessGetPrice_ForeignErrorIsNotPublished`
+  (an injected `dial tcp …?apikey=SECRET` error surfaces as `internal error`)
+  and `TestVocabularyIsPublishable` (rejects digits, URLs, hostnames, quotes
+  and credential-words in the vocabulary).
+- *GET /state.* Carries last price, timestamps, counters, the coarse error
+  class, readiness (secret ref *names*, never values) and per-source health
+  keyed by non-URL identifiers (`backing.New` rejects URL-shaped names).
+- *Signing/decrypt round trips.* `teenode.post` returns vocabulary values
+  only; the failed-decrypt response body is dropped because it could carry key
+  material. `backing.fetchOnce` drops the `*url.Error` that embeds the request
+  URL with any query-string credential. `decimal` errors never quote their
+  input, and the input is dropped anyway, because the input is the reserve
+  figure.
+- *Contract events and reverts.* Events carry the price (the intended public
+  output), timestamps, addresses, and `keccak256(config)` — the hash, not the
+  endpoint config. Revert strings are constants. The endpoint payload itself
+  is public by construction (it arrives by on-chain instruction) and carries
+  URLs with `{secret}` placeholders and ref names, never credential values.
+- *Operator tooling.* `deploy-store`, `set-endpoints.sh` and `usdxprov` print
+  addresses, refs, versions and expiry — nothing secret. `usdxprov build`
+  prints metadata about the envelope but never the credential, which exists in
+  plaintext only inside the target TEE.
+
+**What remains, recorded rather than leaked.**
+
+1. *HTTP-level error bodies are not vocabulary-controlled.* `decoding action:
+   %v`, `decoding fixed data: %v`, the 501 unsupported-op messages and
+   `sending response: %v` are formatted with the underlying error. They are
+   visible only to the direct HTTP peer (tee-node, the proxy, or a direct
+   submitter), never on the two public surfaces, and their content is either
+   the caller's own input or public type names. Not a disclosure; recorded so
+   nobody assumes the closed-vocabulary property extends to raw HTTP bodies.
+2. *`usdxprov` takes the credential (`-value`) and the admin key (`-key`) as
+   argv flags*, which are visible in `ps` output and shell history on the
+   operator's own machine. Operational exposure rather than a logging one; a
+   stdin/env mode would close it.
+
+One inaccuracy was found and corrected during the audit: the `SET_ENDPOINTS`
+rejection comment in `config_handler.go` claimed the error detail names hosts;
+the `runtimecfg` errors actually carry chain names, thresholds and secret ref
+names. No host ever appears, which is the safer direction.
+
+---
+
+## 16. On-chain configuration was advisory, not binding
+
+**Severity: High. Resolved.**
+
+`setEndpoints` published a configuration and emitted `EndpointsSet(teeId,
+keccak256(config))`. That recorded what was **sent**. Nothing recorded, or
+required, what a machine was actually **running**.
+
+Three ways they diverge, none of which raised anything:
+
+1. **The extension rejected the payload.** `ApplyEndpoints` validates before
+   storing, so a malformed config leaves the *previous* one in force — correct
+   behaviour, but the chain still shows the new one.
+2. **The instruction was never delivered.** FCC is fire-and-forget: no delivery
+   guarantee.
+3. **Several machines.** `setEndpoints` names one `teeId`, so N machines means N
+   calls. A machine that never received its call keeps running stale
+   configuration — and `UsdxPriceStore` accepts a signed price from *any*
+   registered machine for the extension, so its prices are equally valid.
+
+The third is the sharpest: every machine reports `ready: true`, and nothing
+anywhere reveals that they disagree.
+
+**Resolution.** The signed price report now carries `endpointsHash`, and the
+store enforces it:
+
+```solidity
+// UsdxOracleInstructionSender.setEndpoints — recorded BEFORE dispatch, so a
+// machine that never receives the instruction cannot submit either.
+expectedConfigHash[_teeId] = keccak256(_config);
+
+// UsdxPriceStore.submitPrice
+bytes32 expected = CONFIG_SOURCE.expectedConfigHash(teeId);
+if (expected == bytes32(0)) revert NoConfigPublished();
+if (endpointsHash != expected) revert StaleConfig();
+```
+
+The TEE already signs the report, so it attests its active configuration in the
+same signature. A machine running anything other than what was published cannot
+submit at all — no monitoring, no human, no off-chain comparison.
+
+This makes a claim readable from chain alone that was previously unsupported:
+*this price was computed by attested code, running this exact published
+configuration.*
+
+**Implementation detail that matters.** The hash is taken over the **raw payload
+bytes as received**, never a re-serialisation of the decoded struct.
+`json.Marshal` will not reproduce byte-identical input — key order, whitespace —
+so a re-encode could never match `keccak256(_config)` from the transaction. Same
+lesson as "carry the body, never re-encode it".
+
+**What it does NOT do.** It does not constrain the owner, who sets both the
+configuration and the expected hash and can keep them consistent while pointing
+at anything. It closes divergence, not finding 15.
+
+**Also exposed** in `GET /state` as `readiness.endpointsHash`, so an operator can
+compare against the `EndpointsSet` event without waiting for a price submission.
+That field is a convenience; the enforcement is on-chain.
 
 ---
 
@@ -553,12 +779,26 @@ public RPC (spec §2.8), so a three-provider rule cannot be met there for free.
 `Quorum: 1` is a documented acceptance of single-provider risk for that chain's
 ~4.5% of supply, not an oversight.
 
-**`GET_PRICE` takes no payload.** The report binds `chainId`, `store` and
-`feedId`, all pinned in extension config rather than supplied by the caller. If
-they were caller-supplied, anyone could obtain a TEE signature over a report
-bound to a store they control. A non-empty payload is rejected rather than
-ignored, so nobody builds on a field the extension drops — and the rejection
-does not echo the payload or its length back out, since `Log` is public.
+**No cosigners on any instruction.** Every instruction this system sends —
+`GET_PRICE` and `SET_ENDPOINTS` in `InstructionSender`, the provisioning
+envelope dispatched by `usdxprov`, and the `set-endpoints.sh` payload — goes
+out with an empty `cosigners` list and `cosignersThreshold` 0. The machine
+executes on delivery; no external address has to co-sign first. This is the
+default state, recorded so changing it later is a documented decision. If
+cosigners are ever added — e.g. requiring FDC data providers to vouch for a
+price-update request before it executes — the change lands in
+`InstructionSender` and in those two payloads; the extension and the price
+store are untouched, since cosigning gates *delivery/execution*, not the signed
+report. The conformance fixtures (`testdata/conformance/gen_fixtures.py`) pin
+the empty list and would need regenerating.
+
+**`GET_PRICE` takes no payload.** The observation needs nothing from the
+caller: everything it reads is configured by `SET_ENDPOINTS`/`SET_SECRET` or
+pinned in the image, and where the signed report lands is settled by the
+store's registered-machine check, not by the payload (§16). A non-empty payload
+is rejected rather than ignored, so nobody builds on a field the extension
+drops — and the rejection does not echo the payload or its length back out,
+since `Log` is public.
 
 **Unknown JSON fields are rejected.** A shape change from Hex is a signal to
 stop and look, not to keep publishing prices derived from a response we no
