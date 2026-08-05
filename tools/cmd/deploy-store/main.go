@@ -48,12 +48,9 @@ func main() {
 	feedCategoryF := flag.Uint("feedCategory", 32, "feed category byte, must be 32..63")
 	feedNameF := flag.String("feedName", "USDX/USD", "feed name, 1..20 ASCII bytes")
 	decimalsF := flag.Int("decimals", 8, "price decimals")
-	teeStatusF := flag.Uint("requiredTeeStatus", 1,
-		"getTeeMachineStatus value a signer must report — CONFIRM against flare-smart-contracts-v2")
 	minPriceF := flag.String("minPrice", "50000000", "minimum acceptable price, scaled")
 	maxPriceF := flag.String("maxPrice", "100000000", "maximum acceptable price, scaled")
 	maxAgeF := flag.Uint64("maxAge", 3600, "maximum report age in seconds")
-	maxSkewF := flag.Uint64("maxSkew", 300, "tolerated clock skew in seconds")
 	governanceF := flag.String("governance", "", "governance address (defaults to the deployer)")
 	flag.Parse()
 
@@ -98,8 +95,9 @@ func main() {
 		fccutils.FatalWithCause(err)
 	}
 
-	logger.Infof("Deploying UsdxPriceStore (extensionId=%s, requiredTeeStatus=%d)...",
-		extensionID, *teeStatusF)
+	// REQUIRED_TEE_STATUS is a constant in the contract (TeeStatus.PRODUCTION),
+	// not a deploy-time choice: only one value is ever correct.
+	logger.Infof("Deploying UsdxPriceStore (extensionId=%s)...", extensionID)
 
 	if !common.IsHexAddress(*senderF) || common.HexToAddress(*senderF) == (common.Address{}) {
 		fccutils.FatalWithCause(errors.Errorf(
@@ -112,12 +110,10 @@ func main() {
 		s.Addresses.FlareTeeManager,
 		common.HexToAddress(*senderF),
 		extensionID,
-		uint8(*teeStatusF),
-		feedID,
 		int8(*decimalsF),
 		governance,
 		minPrice, maxPrice,
-		*maxAgeF, *maxSkewF,
+		*maxAgeF,
 	)
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("store deployment failed: %s", err))

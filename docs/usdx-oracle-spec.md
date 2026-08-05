@@ -531,7 +531,15 @@ and is explicitly not for external use.
   extension ID in `TeeMachineRegistry`;
 - `observedAt > lastObservedAt` (rejects replays *and* out-of-order delivery —
   FCC is explicitly "fire and forget" with no ordering guarantee);
-- `observedAt` within `[now - maxAge, now + skew]`;
+- `observedAt` within `[now - maxAge, now + MAX_FUTURE_SKEW]`, where
+  `MAX_FUTURE_SKEW` is a fixed 2 minutes. The forward window absorbs ordinary
+  clock drift between the TEE and the chain so a slightly-early report can be
+  submitted immediately rather than held. It is bounded because `observedAt` is
+  a one-way ratchet with no reset: an accepted future timestamp blocks honest
+  reports until chain time catches up, so the window is also the worst-case
+  feed freeze — keep it far below `maxAge`. Consumers are unaffected: `latest()`
+  clamps the published timestamp to chain time, so `block.timestamp - timestamp`
+  is always safe even while `observedAt` is briefly ahead;
 - `price` within `[minPrice, maxPrice]` governance bounds (e.g. `[0.5, 1.0]`) —
   a value outside the band is rejected, not clamped, and raises an alert;
 - optional deviation guard: reject a move larger than `maxDeviationBps` from the
