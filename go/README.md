@@ -10,18 +10,41 @@ Go is the only language that can embed tee-node as a **library**, so this image 
 cmd/
 ├── main.go             Standalone extension server (local dev)
 ├── docker/main.go      Combined tee-node + extension — the image entry point
+├── devserver/main.go   Real provisioning, no chain — exercise SET_ENDPOINTS / SET_SECRET
+├── mocknode/main.go    Stand-in for tee-node's /sign, /decrypt and /info
+├── usdxprov/           Build, sign and submit provisioning envelopes
 └── start-tee/main.go   Host-process runner backing `start-services.sh --local`
 internal/
-├── config/config.go    ★ Version, OPType and OPCommand constants
-└── extension/
-    ├── extension.go    ★ MAIN CUSTOMIZATION POINT — routing and handlers
-    └── utils.go        Infrastructure: actionHandler, buildResult
+├── config/config.go    ★ Constants: op types, pinned chains and endpoints, timing bounds
+├── extension/
+│   ├── extension.go    ★ MAIN CUSTOMIZATION POINT — routing and handlers
+│   └── utils.go        Infrastructure: actionHandler, buildResult
+├── observe/            The observation timer and the staleness bound
+├── oracle/             One observation: ordering, deadlines, the window — then Sign
+├── price/              The price rule. Pure: no I/O, no clock, no config
+├── supply/, backing/   The five upstream sources
+├── decimal/            Exact parsing; never float64
+├── runtimecfg/         What arrives after startup: RPC URLs and credentials
+├── provision/          M-of-N envelope verification for SET_SECRET
+├── report/             The signed payload's encoding
+├── teenode/            Client for tee-node's /sign and /decrypt
+└── failure/            The closed public error vocabulary
 pkg/
-├── server/server.go    Infrastructure: StartExtension
+├── server/server.go    Infrastructure: StartExtension (starts the observation loop too)
 └── types/types.go      ★ Request, response and state types
 ```
 
 ★ = yours to change. Everything else is infrastructure — see the `DO NOT MODIFY` comments.
+
+**Two constraints worth knowing before you edit a handler**, both found on-chain and both
+written up in [../docs/usdx-oracle-findings.md](../docs/usdx-oracle-findings.md) §22–23:
+
+- **An instruction's message may not be empty.** The registry rejects it with `MessageEmpty()`.
+  GET_PRICE carries a one-byte envelope, `config.GetPriceRequestV1`, and the handler requires
+  exactly that.
+- **A handler has 2 seconds to answer.** tee-node's client timeout is a const in its internal
+  package. Anything slower must happen off the request path — which is what `internal/observe`
+  is: it observes on a timer, and the handler only signs.
 
 ## Develop
 

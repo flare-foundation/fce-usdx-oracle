@@ -95,8 +95,7 @@ else
         -extensionId "$EXTENSION_ID" \
         -instructionSender "$INSTRUCTION_SENDER" \
         -feedCategory "${FEED_CATEGORY:-32}" \
-        -feedName "${FEED_NAME:-USDX/USD}" \
-        -requiredTeeStatus "${REQUIRED_TEE_STATUS:-1}" >"$DEPLOY_LOG"; then
+        -feedName "${FEED_NAME:-USDX/USD}" >"$DEPLOY_LOG"; then
         cat "$DEPLOY_LOG" >&2
         echo "[extension-setup] ERROR: deploy-store failed — full output above" >&2
         exit 1

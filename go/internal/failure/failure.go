@@ -137,6 +137,17 @@ var (
 	WindowExceeded = Failure{ClassSourceInvalid, "observation window exceeded"}
 	Deadline       = Failure{ClassSourceDown, "observation deadline exceeded"}
 
+	// NoObservation is returned when a price is requested before the background
+	// loop has completed one. Distinct from NotConfigured: provisioning may be
+	// complete and the first observation simply not finished yet.
+	NoObservation = Failure{ClassSourceDown, "no observation available yet"}
+
+	// ObservationStale is returned when the newest observation is older than
+	// config.MaxObservationAge. Signing it anyway would publish a price whose
+	// timestamp says it is fresh; failing closed lets the on-chain value age
+	// visibly instead, which is the designed failure mode.
+	ObservationStale = Failure{ClassSourceDown, "no recent observation"}
+
 	// --- price computation ---
 
 	SupplyZero       = Failure{ClassImplausible, "supply is zero"}
@@ -162,6 +173,7 @@ var All = []Failure{
 	SupplyUnavailable, SupplyTimeout, SupplyMalformed,
 	SupplyNoQuorum, SupplyImplausible,
 	WindowExceeded, Deadline,
+	NoObservation, ObservationStale,
 	SupplyZero, PriceImplausible,
 	SignUnavailable, SignRejected,
 	Internal,

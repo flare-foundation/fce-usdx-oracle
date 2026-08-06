@@ -24,11 +24,17 @@ import (
 	"github.com/flare-foundation/tee-node/pkg/processorutils"
 )
 
-// Observer performs one price observation. The extension depends on this
-// interface rather than on package oracle directly, so the handler's own tests
-// need no RPC endpoints, no credentials and no signing service.
+// Observer returns a signed price report for one instruction, built from the
+// most recent background observation.
+//
+// It is Report, not Observe, because the observation does not happen here: a
+// complete one takes longer than the 2 seconds tee-node allows an extension to
+// answer an action, so it runs on a timer in internal/observe and this call
+// costs one signing round trip. The extension depends on the interface rather
+// than on that package directly, so the handler's own tests need no RPC
+// endpoints, no credentials and no signing service.
 type Observer interface {
-	Observe(ctx context.Context, instructionID common.Hash) (oracle.Observation, error)
+	Report(ctx context.Context, instructionID common.Hash) (oracle.Observation, error)
 }
 
 // Provisioner applies verified configuration. The extension depends on this
@@ -217,14 +223,20 @@ func (e *Extension) processUsdxOracle(action teetypes.Action, df *instruction.Da
 // conformance server calls by name; the production constructors panic on a nil
 // observer rather than ever reaching here.
 func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
-	// requestPriceUpdate() sends an empty message: everything the observation
-	// needs is pinned in extension config, so there is nothing to decode. Reject
-	// a non-empty payload rather than ignoring it, so a caller cannot come to
-	// depend on a field the extension silently drops.
+	// requestPriceUpdate() sends a fixed one-byte request envelope: everything
+	// the observation needs is pinned in extension config, so there is nothing
+	// to decode. It is not empty only because the registry rejects an empty
+	// message outright (MessageEmpty), found the first time the instruction path
+	// ran on Coston2 — see config.GetPriceRequestV1.
 	//
-	// Note the length is deliberately NOT reported: ActionResult.Log is public,
-	// and echoing attacker-supplied dimensions back out is free reconnaissance.
-	if len(df.OriginalMessage) != 0 {
+	// Require exactly that envelope rather than ignoring whatever arrives, so a
+	// caller cannot come to depend on a field the extension silently drops, and
+	// an unrecognised version is refused rather than guessed at.
+	//
+	// Note neither the length nor the content is reported: ActionResult.Log is
+	// public, and echoing attacker-supplied dimensions back out is free
+	// reconnaissance.
+	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.GetPriceRequestV1 {
 		return e.fail(action, df, failure.UnexpectedPayload)
 	}
 
@@ -232,7 +244,7 @@ func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.Data
 		return e.stubPrice(action, df)
 	}
 
-	obs, err := e.observer.Observe(context.Background(), df.InstructionID)
+	obs, err := e.observer.Report(context.Background(), df.InstructionID)
 
 	// Health is reported whether or not the observation succeeded: on failure it
 	// is what tells an operator WHICH source broke.

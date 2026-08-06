@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"math/big"
 	"strings"
@@ -9,6 +8,7 @@ import (
 
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
+	"fce-usdx-oracle/tools/pkg/pricereport"
 	"fce-usdx-oracle/tools/pkg/support"
 	instrutils "fce-usdx-oracle/tools/pkg/utils"
 
@@ -17,18 +17,13 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Expected response shape for the USDX oracle's GET_PRICE operation.
+// The USDX oracle's GET_PRICE result is an ABI-encoded, TEE-signed price
+// report. Decoding lives in tools/pkg/pricereport, which declares the wire
+// layout independently of any one extension implementation so this test runs
+// unchanged against Go, Python and TypeScript alike (docs/extension-contract.md).
 //
-// These are deliberately declared here rather than imported from the extension:
-// this tool asserts on the *wire format*, and must run unchanged against every
-// language implementation (see docs/extension-contract.md). Keeping them local
-// is what lets tools/ stay independent of any one implementation.
-
-type getPriceResponse struct {
-	Price      string `json:"price"`
-	Decimals   int8   `json:"decimals"`
-	ObservedAt uint64 `json:"observedAt"`
-}
+// What stays here are the assertions: this tool exists to say whether the
+// payload a real machine produced is one UsdxPriceStore would accept.
 
 func main() {
 	af := flag.String("a", configs.AddressesFile, "file with deployed addresses")
@@ -109,8 +104,8 @@ func main() {
 	logger.Infof("All tests passed.")
 }
 
-func verifyPriceResult(proxyURL string, instructionId common.Hash) (getPriceResponse, error) {
-	var resp getPriceResponse
+func verifyPriceResult(proxyURL string, instructionId common.Hash) (pricereport.Report, error) {
+	var resp pricereport.Report
 
 	// --- Generic: poll proxy for result (do not modify) ---
 	actionResponse, err := fccutils.ActionResult(proxyURL, instructionId)
@@ -130,21 +125,42 @@ func verifyPriceResult(proxyURL string, instructionId common.Hash) (getPriceResp
 		return resp, errors.New("expected response data but got none")
 	}
 
-	err = json.Unmarshal(actionResult.Data, &resp)
+	// Decode verifies the domain separator, which is what separates this
+	// signature from anything else the TEE identity key ever signs: a wrong one
+	// means the payload was built for another schema.
+	resp, err = pricereport.Decode(actionResult.Data)
 	if err != nil {
-		return resp, errors.Errorf("failed to unmarshal response: %s", err)
+		return resp, errors.Errorf("failed to decode response: %s", err)
 	}
 
-	// Price is a decimal string carrying a uint256. Parse it as a big.Int rather
-	// than a float: at the on-chain scale a float64 silently loses precision, and
-	// a "valid-looking" price that fails to round-trip is exactly the bug this
-	// assertion exists to catch.
-	price, ok := new(big.Int).SetString(resp.Price, 10)
-	if !ok {
-		return resp, errors.Errorf("price %q is not a base-10 integer", resp.Price)
+	// The report must name the instruction that asked for it. Without this a
+	// result could be replayed against a different request.
+	if resp.InstructionID != instructionId {
+		return resp, errors.Errorf(
+			"report is for instruction %s, expected %s", resp.InstructionID.Hex(), instructionId.Hex())
 	}
-	if price.Sign() <= 0 {
-		return resp, errors.Errorf("expected a positive price, got %s", resp.Price)
+
+	// 65-byte signature, v normalised to 27/28 so the store can use stock
+	// ECDSA recovery.
+	if len(resp.Signature) != 65 {
+		return resp, errors.Errorf("expected a 65-byte signature, got %d bytes", len(resp.Signature))
+	}
+	if v := resp.Signature[64]; v != 27 && v != 28 {
+		return resp, errors.Errorf("expected signature v in {27,28}, got %d", v)
+	}
+
+	// The config hash commits the report to the endpoint configuration it was
+	// computed under. Zero is the store's "no configuration published" sentinel,
+	// so a report carrying it could never be accepted.
+	if resp.ConfigHash == (common.Hash{}) {
+		return resp, errors.New("expected a non-zero endpoints hash: the store rejects a zero as unconfigured")
+	}
+
+	// Price is a uint256. Compared as a big.Int rather than a float: at the
+	// on-chain scale a float64 silently loses precision, and a "valid-looking"
+	// price that fails to round-trip is exactly the bug this assertion catches.
+	if resp.Price.Sign() <= 0 {
+		return resp, errors.Errorf("expected a positive price, got %s", resp.Price.String())
 	}
 
 	if resp.Decimals < 0 {
@@ -154,17 +170,26 @@ func verifyPriceResult(proxyURL string, instructionId common.Hash) (getPriceResp
 	// price must not exceed 1.0 — USDX redeems at par, so over-collateralisation
 	// is capped rather than reported as a premium (spec §3.2).
 	one := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(resp.Decimals)), nil)
-	if price.Cmp(one) > 0 {
+	if resp.Price.Cmp(one) > 0 {
 		return resp, errors.Errorf(
 			"price %s exceeds 1.0 at %d decimals (max %s) — the formula caps at par",
-			resp.Price, resp.Decimals, one.String())
+			resp.Price.String(), resp.Decimals, one.String())
 	}
 
 	if resp.ObservedAt == 0 {
 		return resp, errors.New("expected a non-zero observedAt: it is the price store's monotonicity key")
 	}
 
-	logger.Infof("Response data: %+v", resp)
+	// Recovering the signer is what a relayer does before submitting, so a
+	// malformed signature is caught here rather than as an opaque revert.
+	teeID, err := resp.Signer()
+	if err != nil {
+		return resp, errors.Errorf("report does not recover to a signer: %s", err)
+	}
+
+	logger.Infof("Price report: price=%s (%s) decimals=%d observedAt=%d instructionId=%s configHash=%s signer=%s",
+		resp.Price.String(), resp.Human(), resp.Decimals, resp.ObservedAt,
+		resp.InstructionID.Hex(), resp.ConfigHash.Hex(), teeID.Hex())
 
 	return resp, nil
 }

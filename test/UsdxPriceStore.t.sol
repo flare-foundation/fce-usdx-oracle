@@ -46,9 +46,17 @@ contract MockConfigSource {
     }
 }
 
+/// @dev A config source that is deployed but broken — e.g. repointed at a
+/// contract that does not implement the interface.
+contract RevertingConfigSource {
+    function expectedConfigHash(address) external pure returns (bytes32) {
+        revert("config source down");
+    }
+}
+
 contract UsdxPriceStoreTest is Test {
     uint256 constant EXTENSION_ID = 0x10148;
-    uint8 constant ACTIVE = 1;
+    uint8 constant PRODUCTION = uint8(ITeeMachineRegistry.TeeStatus.PRODUCTION);
     int8 constant DECIMALS = 8;
     uint256 constant PAR = 100_000_000;
     bytes21 constant FEED_ID = bytes21(hex"20555344582f555344000000000000000000000000");
@@ -67,18 +75,17 @@ contract UsdxPriceStoreTest is Test {
         teeId = vm.addr(teeKey);
 
         registry = new MockRegistry();
-        registry.setMachine(teeId, EXTENSION_ID, ACTIVE);
+        registry.setMachine(teeId, EXTENSION_ID, PRODUCTION);
 
         configSource = new MockConfigSource();
         configSource.setExpected(teeId, CONFIG_HASH);
 
         store = new UsdxPriceStore(
             registry, IUsdxConfigSource(address(configSource)),
-            EXTENSION_ID, ACTIVE, FEED_ID, DECIMALS, governance,
+            EXTENSION_ID, DECIMALS, governance,
             50_000_000,   // minPrice = $0.50
             PAR,          // maxPrice = $1.00
-            1 hours,      // maxAge
-            5 minutes     // maxSkew
+            1 hours       // maxAge
         );
 
         vm.warp(1_700_000_000);
@@ -184,7 +191,7 @@ contract UsdxPriceStoreTest is Test {
     /// A machine registered to a DIFFERENT extension must not sign our prices,
     /// even though it is a genuine, active TEE machine.
     function test_RejectsSignerFromAnotherExtension() public {
-        registry.setMachine(teeId, EXTENSION_ID + 1, ACTIVE);
+        registry.setMachine(teeId, EXTENSION_ID + 1, PRODUCTION);
 
         bytes memory body = _goodBody(PAR, 1_700_000_000);
         vm.expectRevert(UsdxPriceStore.UnknownSigner.selector);
@@ -193,7 +200,7 @@ contract UsdxPriceStoreTest is Test {
 
     /// A revoked machine must stop being able to publish prices.
     function test_RejectsInactiveSigner() public {
-        registry.setMachine(teeId, EXTENSION_ID, ACTIVE + 1);
+        registry.setMachine(teeId, EXTENSION_ID, uint8(ITeeMachineRegistry.TeeStatus.SUSPENDED));
 
         bytes memory body = _goodBody(PAR, 1_700_000_000);
         vm.expectRevert(UsdxPriceStore.UnknownSigner.selector);
@@ -268,16 +275,131 @@ contract UsdxPriceStoreTest is Test {
         store.submitPrice(body, _sign(body, teeKey));
     }
 
+    /// Monotonicity alone would accept this: nothing is stored yet, so the
+    /// report is trivially "newer". maxAge is what stops a report held back and
+    /// released long after it was observed — without it, a signed report never
+    /// expires, and submission is deliberately unpermissioned.
+    function test_HeldBackReportExpires() public {
+        bytes memory body = _goodBody(PAR, uint64(block.timestamp));
+
+        // The holder sits on a valid, signed report while the feed stays idle.
+        vm.warp(block.timestamp + 30 days);
+
+        vm.expectRevert(UsdxPriceStore.TooOld.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+    }
+
     function test_RejectsFutureReport() public {
         bytes memory body = _goodBody(PAR, uint64(block.timestamp + 10 minutes));
         vm.expectRevert(UsdxPriceStore.TooFarAhead.selector);
         store.submitPrice(body, _sign(body, teeKey));
     }
 
-    function test_AcceptsWithinSkew() public {
-        _submit(PAR, uint64(block.timestamp + 1 minutes));
+    /// A report stamped exactly at chain time is accepted.
+    function test_AcceptsReportAtChainTime() public {
+        _submit(PAR, uint64(block.timestamp));
         (uint256 p,,) = store.latest();
         assertEq(p, PAR);
+    }
+
+    /// Ordinary clock drift is absorbed: a slightly-early report goes straight
+    /// through instead of having to be held until chain time reaches it.
+    function test_AcceptsReportWithinSkewWindow() public {
+        uint64 early = uint64(block.timestamp) + 3;
+        _submit(PAR, early);
+
+        assertEq(store.price(), PAR);
+        // The stamp is stored verbatim; `latest()` clamps what consumers see —
+        // see test_LatestClampsFutureTimestampToChainTime.
+        assertEq(store.observedAt(), early);
+    }
+
+    /// Both sides of the boundary, since this is the whole point of the window.
+    function test_SkewWindowBoundary() public {
+        uint64 limit = uint64(block.timestamp) + store.MAX_FUTURE_SKEW();
+
+        bytes memory tooFar = _goodBody(PAR, limit + 1);
+        vm.expectRevert(UsdxPriceStore.TooFarAhead.selector);
+        store.submitPrice(tooFar, _sign(tooFar, teeKey));
+
+        _submit(PAR, limit);
+        assertEq(store.observedAt(), limit);
+    }
+
+    /// A report inside the window has no age yet, so the maxAge check must not
+    /// fire on it — and must not underflow computing an age that is negative.
+    function test_FutureReportIsNotAlsoTooOld() public {
+        _submit(PAR, uint64(block.timestamp) + 1 minutes);
+        assertEq(store.price(), PAR);
+    }
+
+    /// The skew window may leave `observedAt` briefly ahead of chain time, but
+    /// consumers must never see that: every other feed an integrator uses has an
+    /// on-chain timestamp, so `block.timestamp - ts` is the reflex, and it would
+    /// panic on underflow. `latest()` clamps; the true stamp stays on
+    /// `observedAt` for anyone who needs it.
+    function test_LatestClampsFutureTimestampToChainTime() public {
+        uint64 early = uint64(block.timestamp) + 90;
+        _submit(PAR, early);
+
+        (uint256 p,, uint64 t) = store.latest();
+        assertEq(p, PAR);
+        assertEq(t, uint64(block.timestamp));
+        assertEq(store.observedAt(), early);
+
+        // The subtraction a consumer actually writes must not revert.
+        assertEq(block.timestamp - t, 0);
+
+        // Once chain time passes the stamp, the true value is reported.
+        vm.warp(uint256(early) + 5);
+        (,, t) = store.latest();
+        assertEq(t, early);
+    }
+
+    /// Clamping must not defeat the withdrawal signal.
+    function test_InvalidationWinsOverClamping() public {
+        _submit(PAR, uint64(block.timestamp) + 90);
+
+        vm.prank(governance);
+        store.setInvalidated(true);
+
+        (,, uint64 t) = store.latest();
+        assertEq(t, 0);
+    }
+
+    /// The window is also the worst-case freeze: a report accepted at the limit
+    /// blocks honest ones until chain time catches up, then resolves itself.
+    function test_SkewWindowFreezeIsSelfHealing() public {
+        uint64 limit = uint64(block.timestamp) + store.MAX_FUTURE_SKEW();
+        _submit(PAR, limit);
+
+        // Honest reports stamped at real chain time lose to the ratchet.
+        vm.warp(block.timestamp + 30);
+        bytes memory blocked = _goodBody(99_000_000, uint64(block.timestamp));
+        vm.expectRevert(UsdxPriceStore.NotNewer.selector);
+        store.submitPrice(blocked, _sign(blocked, teeKey));
+
+        // Once chain time passes the stamp, normal operation resumes on its own.
+        vm.warp(uint256(limit) + 1);
+        _submit(99_000_000, uint64(block.timestamp));
+        assertEq(store.price(), 99_000_000);
+    }
+
+    /// A clock-jumped report cannot wedge the ratchet: it is rejected outright,
+    /// and honest reporting continues unaffected.
+    function test_ClockJumpCannotWedgeTheRatchet() public {
+        _submit(PAR, uint64(block.timestamp));
+
+        bytes memory jumped = _goodBody(99_000_000, uint64(block.timestamp + 365 days));
+        vm.expectRevert(UsdxPriceStore.TooFarAhead.selector);
+        store.submitPrice(jumped, _sign(jumped, teeKey));
+
+        vm.warp(block.timestamp + 10 minutes);
+        _submit(99_500_000, uint64(block.timestamp));
+
+        (uint256 p,, uint64 t) = store.latest();
+        assertEq(p, 99_500_000);
+        assertEq(t, uint64(block.timestamp));
     }
 
     // --- malformed signatures ---
@@ -333,11 +455,15 @@ contract UsdxPriceStoreTest is Test {
 
         configSource.setExpected(teeId, keccak256("endpoints-v2"));
 
+        // Chain time must reach each observation timestamp: no report may be
+        // stamped ahead of it.
+        vm.warp(1_700_000_100);
         bytes memory body = _goodBody(PAR, 1_700_000_100);
         vm.expectRevert(UsdxPriceStore.StaleConfig.selector);
         store.submitPrice(body, _sign(body, teeKey));
 
         // A report under the new configuration is accepted.
+        vm.warp(1_700_000_200);
         bytes memory fresh = _bodyWithConfig(PAR, 1_700_000_200, DECIMALS, keccak256("endpoints-v2"));
         store.submitPrice(fresh, _sign(fresh, teeKey));
         (uint256 p,, uint64 t) = store.latest();
@@ -350,7 +476,7 @@ contract UsdxPriceStoreTest is Test {
     function test_ConfigIsPerMachine() public {
         uint256 otherKey = 0xB0B;
         address otherTee = vm.addr(otherKey);
-        registry.setMachine(otherTee, EXTENSION_ID, ACTIVE);
+        registry.setMachine(otherTee, EXTENSION_ID, PRODUCTION);
         // otherTee has no published configuration.
 
         bytes memory body = _goodBody(PAR, 1_700_000_000);
@@ -385,10 +511,120 @@ contract UsdxPriceStoreTest is Test {
         store.setBounds(0, PAR);
     }
 
+    // --- invalidation ---
+
+    /// Pause preserves the value; invalidation withdraws it. Zeroing the
+    /// TIMESTAMP is what makes every downstream freshness check fail, while the
+    /// value is left alone so nobody reads a zero as "USDX is worthless".
+    function test_InvalidateZeroesTimestampNotValue() public {
+        _submit(PAR, 1_700_000_000);
+
+        vm.prank(governance);
+        store.setInvalidated(true);
+
+        (uint256 p, int8 d, uint64 t) = store.latest();
+        assertEq(p, PAR);
+        assertEq(d, DECIMALS);
+        assertEq(t, 0);
+
+        // The underlying observation is untouched — only what consumers see.
+        assertEq(store.observedAt(), 1_700_000_000);
+    }
+
+    function test_InvalidateIsReversible() public {
+        _submit(PAR, 1_700_000_000);
+
+        vm.prank(governance);
+        store.setInvalidated(true);
+        vm.prank(governance);
+        store.setInvalidated(false);
+
+        (,, uint64 t) = store.latest();
+        assertEq(t, 1_700_000_000);
+    }
+
+    /// Invalidation does not stop writes; that is what pause is for. A new price
+    /// still lands, and clearing the flag stays a deliberate governance act
+    /// rather than a side effect of the next submission.
+    function test_InvalidateDoesNotBlockSubmissionsNorSelfClear() public {
+        _submit(PAR, 1_700_000_000);
+
+        vm.prank(governance);
+        store.setInvalidated(true);
+
+        vm.warp(1_700_000_100);
+        _submit(99_000_000, 1_700_000_100);
+
+        assertEq(store.price(), 99_000_000);
+        assertTrue(store.invalidated());
+        (,, uint64 t) = store.latest();
+        assertEq(t, 0);
+    }
+
+    function test_OnlyGovernanceMayInvalidate() public {
+        vm.expectRevert(UsdxPriceStore.NotGovernance.selector);
+        store.setInvalidated(true);
+    }
+
+    // --- extension repointing ---
+
+    /// Re-registering the extension mints a new id and a new sender. Repointing
+    /// keeps the store — and therefore the FtsoV2 feed registration — in place.
+    function test_SetExtensionRepointsAcceptance() public {
+        uint256 newExtensionId = EXTENSION_ID + 7;
+        MockConfigSource newSource = new MockConfigSource();
+        newSource.setExpected(teeId, CONFIG_HASH);
+
+        // Under the old extension the machine is now a stranger.
+        registry.setMachine(teeId, newExtensionId, PRODUCTION);
+        bytes memory body = _goodBody(PAR, 1_700_000_000);
+        vm.expectRevert(UsdxPriceStore.UnknownSigner.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+
+        vm.prank(governance);
+        store.setExtension(newExtensionId, IUsdxConfigSource(address(newSource)));
+
+        store.submitPrice(body, _sign(body, teeKey));
+        assertEq(store.price(), PAR);
+        assertEq(store.extensionId(), newExtensionId);
+        assertEq(address(store.configSource()), address(newSource));
+    }
+
+    function test_SetExtensionRejectsZeroValues() public {
+        vm.prank(governance);
+        vm.expectRevert(UsdxPriceStore.ZeroExtensionId.selector);
+        store.setExtension(0, IUsdxConfigSource(address(configSource)));
+
+        vm.prank(governance);
+        vm.expectRevert(UsdxPriceStore.ZeroAddress.selector);
+        store.setExtension(EXTENSION_ID, IUsdxConfigSource(address(0)));
+    }
+
+    function test_OnlyGovernanceMaySetExtension() public {
+        vm.expectRevert(UsdxPriceStore.NotGovernance.selector);
+        store.setExtension(EXTENSION_ID, IUsdxConfigSource(address(configSource)));
+    }
+
+    /// A config source that reverts is rejected input, and must be
+    /// distinguishable from "no configuration published for this machine".
+    function test_RevertingConfigSourceIsTyped() public {
+        RevertingConfigSource bad = new RevertingConfigSource();
+
+        vm.prank(governance);
+        store.setExtension(EXTENSION_ID, IUsdxConfigSource(address(bad)));
+
+        bytes memory body = _goodBody(PAR, 1_700_000_000);
+        vm.expectRevert(UsdxPriceStore.ConfigSourceUnavailable.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+    }
+
     // --- fuzz ---
 
-    /// Whatever is accepted must lie inside the bounds and strictly advance the
-    /// timestamp. These are the two invariants downstream consumers rely on.
+    /// Whatever is accepted must lie inside the bounds, strictly advance the
+    /// stored timestamp, and — as consumers see it — never sit ahead of chain
+    /// time. The last one is what makes `block.timestamp - timestamp` safe
+    /// downstream, and it holds even though `observedAt` itself may briefly be
+    /// up to MAX_FUTURE_SKEW in the future: `latest()` clamps.
     function testFuzz_AcceptedPricesRespectInvariants(uint256 price, uint64 observedAt) public {
         price = bound(price, 0, PAR * 2);
         observedAt = uint64(bound(observedAt, 1, block.timestamp + 1 hours));
@@ -403,7 +639,11 @@ contract UsdxPriceStoreTest is Test {
             assertEq(p, price);
             assertGe(p, store.minPrice());
             assertLe(p, store.maxPrice());
-            assertGt(t, before);
+
+            // Monotonicity is a property of the stored stamp, not the clamped one.
+            assertGt(store.observedAt(), before);
+            // What consumers see is never ahead of chain time.
+            assertLe(t, block.timestamp);
         } catch {
             // Rejection is normal operation under fire-and-forget delivery.
         }
@@ -427,7 +667,6 @@ contract UsdxPriceStoreTest is Test {
 
 contract UsdxCustomFeedTest is Test {
     bytes21 constant FEED_ID = bytes21(hex"20555344582f555344000000000000000000000000");
-    uint8 constant ACTIVE = 1;
 
     MockRegistry registry;
     UsdxPriceStore store;
@@ -437,7 +676,7 @@ contract UsdxCustomFeedTest is Test {
         registry = new MockRegistry();
         store = new UsdxPriceStore(
             registry, IUsdxConfigSource(address(new MockConfigSource())),
-            1, ACTIVE, FEED_ID, 8, address(this), 0, 100_000_000, 1 hours, 5 minutes
+            1, 8, address(this), 0, 100_000_000, 1 hours
         );
         feed = new UsdxCustomFeed(store, FEED_ID);
     }
@@ -451,9 +690,31 @@ contract UsdxCustomFeedTest is Test {
         assertEq(feed.calculateFee(), 0);
     }
 
-    function test_ConstructorRejectsFeedMismatch() public {
-        vm.expectRevert(UsdxCustomFeed.FeedMismatch.selector);
-        new UsdxCustomFeed(store, bytes21(hex"21"));
+    function test_ConstructorRejectsZeroStore() public {
+        vm.expectRevert(UsdxCustomFeed.ZeroAddress.selector);
+        new UsdxCustomFeed(UsdxPriceStore(address(0)), FEED_ID);
+    }
+
+    /// FtsoV2 would reject a zero id at registration, but only at a governance
+    /// proposal with a timelock. Fail at deploy instead.
+    function test_ConstructorRejectsZeroFeedId() public {
+        vm.expectRevert(UsdxCustomFeed.ZeroFeedId.selector);
+        new UsdxCustomFeed(store, bytes21(0));
+    }
+
+    /// The adapter is the sole authority on the feed id: FtsoV2 reads `feedId()`
+    /// off the contract being registered rather than taking an id argument, and
+    /// the store holds no copy to disagree with. A second adapter over the same
+    /// store may therefore carry a different id — deliberately allowed, since a
+    /// rescaled or renamed variant would need exactly that.
+    function test_AdapterOwnsTheFeedIdIndependentlyOfTheStore() public {
+        bytes21 otherId = bytes21(hex"21555344582f555344000000000000000000000000");
+        UsdxCustomFeed other = new UsdxCustomFeed(store, otherId);
+
+        assertEq(other.feedId(), otherId);
+        assertEq(address(other.STORE()), address(store));
+        // Both adapters serve the same store, under different ids.
+        assertEq(address(feed.STORE()), address(other.STORE()));
     }
 
     /// The critical liveness property. FtsoV2.getFeedById forwards this call, so
@@ -471,6 +732,17 @@ contract UsdxCustomFeedTest is Test {
         store.setPaused(true);
         (uint256 v,, uint64 t) = feed.getCurrentFeed();
         assertEq(v, 0);
+        assertEq(t, 0);
+    }
+
+    /// Invalidation is the withdrawal signal, and it must reach consumers
+    /// through the return value rather than a revert — FtsoV2 forwards this call
+    /// straight through, so throwing would take down every consumer at once.
+    function test_NeverRevertsWhenInvalidated() public {
+        store.setInvalidated(true);
+        (uint256 v, int8 d, uint64 t) = feed.getCurrentFeed();
+        assertEq(v, 0);
+        assertEq(d, 8);
         assertEq(t, 0);
     }
 }

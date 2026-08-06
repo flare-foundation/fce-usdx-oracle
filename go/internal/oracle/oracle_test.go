@@ -119,14 +119,37 @@ func testConfig(t *testing.T, chain *fakeChain, bonds, cash *fakeSource) Config 
 			Quorum: 1, FinalityTag: supply.TagLatest, FinalityMargin: 10,
 		}},
 		Bonds:         bonds,
-		Cash:          cash,
+		Cash:          cashSource(cash),
 		EndpointsHash: testEndpointsHash,
 	}
 }
 
+// cashSource converts a nil *fakeSource into a nil interface. Assigning the
+// typed nil directly would leave Config.Cash non-nil holding a nil pointer, and
+// the cash-less path is selected by exactly that comparison — so the shortcut
+// would silently test the wrong branch and then panic in Name().
+func cashSource(f *fakeSource) backing.Source {
+	if f == nil {
+		return nil
+	}
+	return f
+}
+
+// observe runs both halves back to back — observe, then sign — which is what
+// most of these tests assert on. Production splits them across a timer and a
+// request; the arithmetic and the fail-closed rules are identical either way.
 func observe(t *testing.T, cfg Config) (Observation, error) {
 	t.Helper()
-	return Observe(context.Background(), cfg, &fakeSigner{}, common.HexToHash("0xabc"))
+	return observeWith(t, cfg, &fakeSigner{}, common.HexToHash("0xabc"))
+}
+
+func observeWith(t *testing.T, cfg Config, signer Signer, id common.Hash) (Observation, error) {
+	t.Helper()
+	obs, err := Observe(context.Background(), cfg)
+	if err != nil {
+		return obs, err
+	}
+	return Sign(context.Background(), signer, obs, id)
 }
 
 // --- the double-read ---
@@ -220,10 +243,13 @@ func TestObserve_FailsClosed(t *testing.T) {
 			failure.BackingUnavailable,
 		},
 		{
-			"cash source down", ok(),
-			&fakeSource{name: "hex_bonds", amount: "1"},
+			// A cash outage is fatal only when the figure could have changed
+			// the answer. Bonds at half of supply is squarely that case: the
+			// price is genuinely below par and cash decides how far.
+			"cash source down below par", ok(),
+			&fakeSource{name: "hex_bonds", amount: "0.5"},
 			&fakeSource{name: "hex_cash", err: failure.BackingTimeout},
-			failure.BackingTimeout,
+			failure.BackingUnavailable,
 		},
 		{
 			"chain down",
@@ -261,8 +287,7 @@ func TestObserve_SigningFailurePublishesNothing(t *testing.T) {
 		&fakeSource{name: "hex_cash", amount: "0"},
 	)
 
-	got, err := Observe(context.Background(), cfg,
-		&fakeSigner{err: failure.SignUnavailable}, common.HexToHash("0xabc"))
+	got, err := observeWith(t, cfg, &fakeSigner{err: failure.SignUnavailable}, common.HexToHash("0xabc"))
 	if !errors.Is(err, failure.SignUnavailable) {
 		t.Fatalf("expected SignUnavailable, got %v", err)
 	}
@@ -285,7 +310,7 @@ func TestObserve_RespectsContextCancellation(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	if _, err := Observe(ctx, cfg, &fakeSigner{}, common.HexToHash("0xabc")); err == nil {
+	if _, err := Observe(ctx, cfg); err == nil {
 		t.Fatal("expected the observation to fail once its context expired")
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
@@ -305,7 +330,7 @@ func TestObserve_SignsTheEncodedBody(t *testing.T) {
 	)
 
 	signer := &fakeSigner{}
-	got, err := Observe(context.Background(), cfg, signer, common.HexToHash("0xdeadbeef"))
+	got, err := observeWith(t, cfg, signer, common.HexToHash("0xdeadbeef"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -415,6 +440,117 @@ func TestObserve_AllErrorsArePublishable(t *testing.T) {
 	}
 }
 
+// --- observing without cash ---
+
+// The cash figure has one unredundant source, so its absence must not take the
+// feed down on its own. What it must never do is change the published number:
+// this publishes only where cash provably cannot matter.
+func TestObserve_WithoutCash(t *testing.T) {
+	// Supply is 1.0 at 6 decimals throughout.
+	chain := func() *fakeChain { return &fakeChain{supplies: []string{"1000000"}, decimals: 6} }
+
+	cases := []struct {
+		name  string
+		bonds string
+		want  *big.Int // nil means the observation must fail closed
+	}{
+		{"bonds above supply publishes par", "1.5", big.NewInt(100_000_000)},
+		{"bonds equal to supply publishes par", "1", big.NewInt(100_000_000)},
+
+		// The case this rule exists for, scaled down: Hex quotes to the cent, so
+		// bonds lands a hair under supply and rounding carries it to par.
+		{"bonds a hair under supply publishes par", "0.999999999", big.NewInt(100_000_000)},
+
+		// Beyond half a ULP the cash figure decides, and there is nothing
+		// honest to publish.
+		{"bonds beyond half a ULP fails closed", "0.999999994", nil},
+		{"one percent short fails closed", "0.99", nil},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := testConfig(t, chain(), &fakeSource{name: "hex_bonds", amount: c.bonds}, nil)
+
+			got, err := observe(t, cfg)
+			if c.want == nil {
+				if !errors.Is(err, failure.BackingUnavailable) {
+					t.Fatalf("expected failure.BackingUnavailable, got price=%v err=%v", got.Price, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.Price.Cmp(c.want) != 0 {
+				t.Errorf("price = %s, want %s", got.Price, c.want)
+			}
+		})
+	}
+}
+
+// Whatever the cash-less path publishes must equal what the same observation
+// would have published with the source present. If these ever diverge, the
+// extension is silently publishing a degraded number under a signature that
+// says otherwise.
+func TestObserve_WithoutCash_MatchesTheFullObservation(t *testing.T) {
+	chain := func() *fakeChain { return &fakeChain{supplies: []string{"1000000"}, decimals: 6} }
+	bonds := func() *fakeSource { return &fakeSource{name: "hex_bonds", amount: "0.999999999"} }
+
+	cashless, err := observe(t, testConfig(t, chain(), bonds(), nil))
+	if err != nil {
+		t.Fatalf("cash-less observation failed: %v", err)
+	}
+
+	for _, cash := range []string{"0", "0.000000001", "0.5", "1000"} {
+		full, err := observe(t, testConfig(t, chain(), bonds(),
+			&fakeSource{name: "hex_cash", amount: cash}))
+		if err != nil {
+			t.Fatalf("cash=%s: %v", cash, err)
+		}
+		if full.Price.Cmp(cashless.Price) != 0 {
+			t.Errorf("cash=%s: full observation gives %s, cash-less path published %s",
+				cash, full.Price, cashless.Price)
+		}
+	}
+}
+
+// An unprovisioned source must not simply disappear from health. A missing key
+// reads as "no such source", which is indistinguishable from healthy to anyone
+// reading GET /state — and it is a different remedy from an outage.
+func TestObserve_WithoutCash_ReportsNotConfigured(t *testing.T) {
+	cfg := testConfig(t,
+		&fakeChain{supplies: []string{"1000000"}, decimals: 6},
+		&fakeSource{name: "hex_bonds", amount: "1"}, nil)
+
+	got, err := observe(t, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h := got.Health[config.HexCashName]; h != config.HealthNotConfigured {
+		t.Errorf("health[%s] = %q, want %q", config.HexCashName, h, config.HealthNotConfigured)
+	}
+	if h := got.Health["hex_bonds"]; h != config.HealthOK {
+		t.Errorf("health[hex_bonds] = %q, want %q", h, config.HealthOK)
+	}
+}
+
+// A configured source that fails is an outage, not an absence, even on the
+// observations that still publish.
+func TestObserve_CashDownReportsDownNotAbsent(t *testing.T) {
+	cfg := testConfig(t,
+		&fakeChain{supplies: []string{"1000000"}, decimals: 6},
+		&fakeSource{name: "hex_bonds", amount: "1"},
+		&fakeSource{name: "hex_cash", err: failure.BackingTimeout})
+
+	got, err := observe(t, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h := got.Health["hex_cash"]; h != config.HealthDown {
+		t.Errorf("health[hex_cash] = %q, want %q", h, config.HealthDown)
+	}
+}
+
 // --- config ---
 
 func TestConfigValidate(t *testing.T) {
@@ -432,7 +568,6 @@ func TestConfigValidate(t *testing.T) {
 	}{
 		{"no chains", func(c *Config) { c.Chains = nil }},
 		{"no bonds source", func(c *Config) { c.Bonds = nil }},
-		{"no cash source", func(c *Config) { c.Cash = nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -29,6 +29,18 @@ const (
 
 	TimeoutShutdown = 5 * time.Second
 
+	// GetPriceRequestV1 is the request envelope a GET_PRICE instruction carries,
+	// mirroring GET_PRICE_REQUEST_V1 in contracts/InstructionSender.sol.
+	//
+	// The observation needs nothing from the caller, so the natural payload is
+	// none at all — but the registry rejects an empty `message` with
+	// MessageEmpty(), found the first time this path ran on Coston2 (5 Aug 2026).
+	// One version byte is the smallest payload that satisfies it and still says
+	// something: the handler requires exactly this value, so an unrecognised
+	// envelope is refused rather than ignored, and a future version can change
+	// the request shape without ambiguity about which one arrived.
+	GetPriceRequestV1 = byte(0x01)
+
 	// PriceDecimals is the fixed-point scale of the published price: the value
 	// carried on-chain is truncate(price * 10^PriceDecimals). 8 gives 1e-8
 	// resolution around $1.00. IICustomFeed returns decimals as int8 and imposes
@@ -50,6 +62,12 @@ const (
 	HealthOK       = "ok"
 	HealthDegraded = "degraded"
 	HealthDown     = "down"
+
+	// HealthNotConfigured is a source that was never provisioned, as opposed to
+	// one that is broken. Only the cash endpoint can be in this state, and the
+	// distinction is operational: "down" pages someone to fix an outage,
+	// "not_configured" tells them to send a SET_SECRET.
+	HealthNotConfigured = "not_configured"
 )
 
 // Defaults.
@@ -91,6 +109,33 @@ const (
 	// ObservationDeadline bounds one complete observation: both supply passes
 	// and both reserve reads.
 	ObservationDeadline = 20 * time.Second
+
+	// ObservationInterval is how often the background loop observes.
+	//
+	// Observations run on a timer rather than inside the GET_PRICE handler
+	// because tee-node gives an extension **2 seconds** to answer an action —
+	// `settings.ProxyTimeout`, a const in its internal package, so not
+	// configurable from here — and a complete observation measured 2.0–2.9s
+	// against live sources on 5 Aug 2026. Every request timed out. Handling a
+	// request now costs one signing round trip; the slow part happens here.
+	//
+	// Two minutes against Hex's ~10 minute refresh is deliberately faster than
+	// the source: it keeps the supply side current and, more importantly, leaves
+	// room for several consecutive failures inside MaxObservationAge.
+	ObservationInterval = 2 * time.Minute
+
+	// MaxObservationAge is the oldest observation that may still be signed.
+	//
+	// This is the fail-closed bound for the cache. Past it, GET_PRICE returns
+	// failure.ObservationStale and publishes nothing, so the on-chain price ages
+	// visibly rather than being refreshed with a stale figure under a fresh
+	// signature. At ObservationInterval it allows four consecutive failed
+	// observations before the feed stops updating.
+	//
+	// It has to stay well inside UsdxPriceStore.maxAge (3600s at deployment),
+	// which bounds the same staleness from the other end: this caps how old the
+	// inputs may be, that caps how long the report may take to land.
+	MaxObservationAge = 10 * time.Minute
 
 	// ObservationWindow is the maximum spread between the earliest and latest
 	// input read — the TOCTOU bound. Not configurable: widening it silently

@@ -124,9 +124,12 @@ now the two documents disagree with the code.
     <tr><td><b>Chains</b><br>(Flare / Ethereum / Songbird)</td>
         <td><code>readAllChains</code> fails the whole observation if any chain fails.</td>
         <td>Intolerant — and correctly so. Dropping Songbird's 1.16M would manufacture a 4.5% depeg.</td></tr>
-    <tr><td><b>Backing APIs</b><br>(bonds / cash)</td>
-        <td><code>readBacking</code> aborts on either error. Two attempts, 250 ms apart, transient faults only — 5xx and 429 retry, 4xx and malformed bodies do not.</td>
-        <td class="r">Intolerant, <b>and with no redundancy</b> — a single URL per source.</td></tr>
+    <tr><td><b>Backing API</b><br>(bonds)</td>
+        <td><code>readBacking</code> aborts on error. Two attempts, 250 ms apart, transient faults only — 5xx and 429 retry, 4xx and malformed bodies do not.</td>
+        <td class="r">Intolerant, <b>and with no redundancy</b> — a single URL.</td></tr>
+    <tr><td><b>Backing API</b><br>(cash)</td>
+        <td><i>Changed 5 Aug 2026.</i> Absent or failing, the observation continues and publishes only where the figure provably cannot matter. Same retry policy when present.</td>
+        <td>Tolerant <b>only at par</b>; below par it fails closed. See "What was implemented instead" below.</td></tr>
   </tbody>
 </table>
 
@@ -215,6 +218,28 @@ whether a depeg prints, which is a strong reason not to degrade.</p>
 
 <p>Neither (1) nor (2) is a correctness bug in the current code. They are gaps between what the
 design claims and what the implementation guarantees.</p>
+
+<h3>What was implemented instead — 5 Aug 2026</h3>
+<p>Recommendation (3) stands and is now enforced in code. What shipped is <b>narrower</b> than degradation
+and does not weaken it: a cash-less observation is published <b>only where the missing figure provably
+cannot change the answer</b>, and fails closed everywhere else.</p>
+<p>Cash is non-negative and the price is capped at par. So if the bonds-only price already reaches par, the
+complete computation reaches par too, and the number published is exactly the one a full observation would
+have produced — not a stand-in for it. The decisive case in the table above is untouched:</p>
+<table>
+  <thead><tr><th>Case</th><th>With cash</th><th>Degradation</th><th>Implemented rule</th></tr></thead>
+  <tbody>
+    <tr><td>Bonds = 1.00 · S</td><td>1.000</td><td>1.000</td><td>1.000</td></tr>
+    <tr><td>Bonds = 0.99 · S</td><td>0.998</td><td><b>0.990</b> ← the harm</td><td><b>nothing published</b></td></tr>
+  </tbody>
+</table>
+<p>Two things make this more than a technicality. <code>internal/price</code> now <b>rounds half-up</b> rather
+than truncating (Findings §21), which is what lets the measured figures — bonds $0.004 below supply, purely
+because Hex quotes to the cent — reach par at all. And <code>GET /state</code> reports the cash source as
+<code>not_configured</code> rather than dropping it, so a par-from-bonds observation stays distinguishable
+from a complete one even though the published price is identical by construction.</p>
+<p>Recommendation (1) is unaffected: this covers the case where <i>cash</i> is absent, not where the bond
+figure is. That source still has no redundancy, and it is the one whose failure stops the feed outright.</p>
 
 <h2>Deferred — source-unreachable alerting, in the keeper</h2>
 

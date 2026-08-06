@@ -1,6 +1,6 @@
 {
   "name": "03-get-price-rejects-payload",
-  "description": "requestPriceUpdate() sends no payload. A non-empty message is a handler error, not silently ignored: HTTP 200, status 0, no data.",
+  "description": "requestPriceUpdate() sends exactly the v1 request envelope. Any other message is a handler error, not silently ignored: HTTP 200, status 0, no data.",
   "request": {
     "method": "POST",
     "path": "/action",

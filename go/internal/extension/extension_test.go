@@ -76,10 +76,11 @@ func buildTestAction(opType, opCommand common.Hash, originalMessage []byte) teet
 	}
 }
 
-// getPriceAction builds a well-formed GET_PRICE action with an empty payload,
-// exactly as requestPriceUpdate() emits it.
+// getPriceAction builds a well-formed GET_PRICE action carrying the fixed
+// request envelope, exactly as requestPriceUpdate() emits it.
 func getPriceAction() teetypes.Action {
-	return buildTestAction(toHash(config.OPTypeUsdxOracle), toHash(config.OPCommandGetPrice), nil)
+	return buildTestAction(toHash(config.OPTypeUsdxOracle), toHash(config.OPCommandGetPrice),
+		[]byte{config.GetPriceRequestV1})
 }
 
 // mustResult unwraps an ActionResult from a handler body, failing the test if it
@@ -242,6 +243,53 @@ func TestProcessGetPrice_RejectsPayload(t *testing.T) {
 	}
 }
 
+// The request envelope is exactly one byte and exactly this value. Anything
+// else is refused rather than ignored, so a caller cannot come to depend on
+// bytes the extension silently drops, and a future envelope version cannot be
+// mistaken for this one.
+//
+// Empty is included deliberately: the registry rejects an empty message with
+// MessageEmpty() before it ever reaches a machine, but the handler must not
+// rely on that — the direct channel is not the registry.
+func TestProcessGetPrice_RequiresTheRequestEnvelope(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload []byte
+		accept  bool
+	}{
+		{"the v1 envelope", []byte{config.GetPriceRequestV1}, true},
+		{"empty", nil, false},
+		{"a future version", []byte{0x02}, false},
+		{"the right byte, twice", []byte{config.GetPriceRequestV1, config.GetPriceRequestV1}, false},
+		{"zero byte", []byte{0x00}, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newTestExtension()
+			action := buildTestAction(
+				toHash(config.OPTypeUsdxOracle), toHash(config.OPCommandGetPrice), c.payload)
+
+			status, body := e.processAction(action)
+			result := mustResult(t, status, body, http.StatusOK)
+
+			if c.accept {
+				if result.Status != 1 {
+					t.Fatalf("expected the envelope to be accepted, got status %d: %s",
+						result.Status, result.Log)
+				}
+				return
+			}
+			if result.Status != 0 {
+				t.Fatalf("expected status 0, got %d", result.Status)
+			}
+			if result.Log != "error: "+failure.UnexpectedPayload.Error() {
+				t.Errorf("expected the vocabulary reason, got %q", result.Log)
+			}
+		})
+	}
+}
+
 func TestProcessAction_InvalidDataMessage(t *testing.T) {
 	e := newTestExtension()
 
@@ -392,7 +440,7 @@ type fakeObserver struct {
 	lastID common.Hash
 }
 
-func (f *fakeObserver) Observe(ctx context.Context, instructionID common.Hash) (oracle.Observation, error) {
+func (f *fakeObserver) Report(ctx context.Context, instructionID common.Hash) (oracle.Observation, error) {
 	f.mu.Lock()
 	f.calls++
 	f.lastID = instructionID

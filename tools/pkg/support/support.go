@@ -26,6 +26,7 @@ import (
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/extensiongovernance"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/extensionmanager"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/machinemanager"
+	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/operationfees"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/ownerallowlist"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/verification"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/walletkeymanager"
@@ -52,6 +53,7 @@ type Support struct {
 	TeeExtensionRegistry    *extensionmanager.ExtensionManager
 	TeeExtensionGovernance  *extensiongovernance.ExtensionGovernance
 	TeeOwnerAllowlist       *ownerallowlist.OwnerAllowlist
+	TeeOperationFees        *operationfees.OperationFees
 
 	Addresses *Addresses
 
@@ -92,8 +94,12 @@ func DefaultSupport(AddressesFilePath, chainNodeURL string) (*Support, error) {
 }
 
 func DefaultPrivateKey() (*ecdsa.PrivateKey, error) {
+	// Commands typically run from tools/, so the repo-root .env is one level up.
+	// godotenv never overrides vars already exported in the shell.
 	if err := godotenv.Load(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Error loading .env file: %v\n", err)
+		if err2 := godotenv.Load("../.env"); err2 != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Error loading .env file: %v\n", err2)
+		}
 	}
 	privKeyString := os.Getenv("DEPLOYMENT_PRIVATE_KEY")
 
@@ -168,6 +174,11 @@ func NewSupport(prv *ecdsa.PrivateKey, chainClient *ethclient.Client, addresses 
 		return nil, err
 	}
 
+	tof, err := operationfees.NewOperationFees(diamond, chainClient)
+	if err != nil {
+		return nil, err
+	}
+
 	chainID, err := chainClient.ChainID(context.Background())
 	if err != nil {
 		return nil, err
@@ -187,6 +198,7 @@ func NewSupport(prv *ecdsa.PrivateKey, chainClient *ethclient.Client, addresses 
 		ChainID:                 chainID,
 		TeeOwnerAllowlist:       toal,
 		TeeExtensionGovernance:  teg,
+		TeeOperationFees:        tof,
 		Addresses:               addresses,
 	}, nil
 }

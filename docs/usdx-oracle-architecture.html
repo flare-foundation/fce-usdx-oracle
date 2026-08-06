@@ -53,12 +53,14 @@
                                  │  tee-node        : attestation, keys, /sign, /decrypt
                                  │  usdx-oracle ext : /action, /state
                                  │
-                                 │ (4) reads, inside the enclave:
+                                 │ (4) reads, inside the enclave — ON A TIMER, not per request:
                                  │      • 3 chains × N RPC providers → totalSupply
                                  │      • Hex public API  → bond reserves
                                  │      • Hex private API → cash reserves   (key + IP allowlist)
+                                 │      price = min(1, backing/supply), cached
                                  │
-                                 │ (5) price = min(1, backing/supply), signed with the TEE key
+                                 │ (5) on the instruction: sign the cached observation
+                                 │      for THIS instructionId — one round trip
                                  ▼
               TEE proxy result store
                      │
@@ -76,6 +78,14 @@
 <table>
   <thead><tr><th style="width:13em">Choice</th><th>Reasoning</th></tr></thead>
   <tbody>
+    <tr><td>Steps (4) and (5) are separate, and (4) runs on a timer</td>
+        <td><b>Forced, not chosen.</b> tee-node allows an extension <b>2 seconds</b> to answer an action —
+            a <code>const</code> in its internal package, not configurable — and a complete observation
+            measured 2.0–2.9 s, so every request timed out with <code>status 3</code> and no price ever
+            reached the chain. Observing cannot happen on demand; signing cannot happen in advance, because
+            the body binds <code>instructionId</code>. So the slow half runs every 2 minutes and the request
+            costs one signature. Staleness is bounded at 10 minutes, past which the extension publishes
+            nothing. Findings §23.</td></tr>
     <tr><td>Keeper relays the result; the TEE broadcasts nothing</td>
         <td>Signing a transaction inside the enclave would mean managing gas price, nonces, stuck-transaction
             replacement and a funded wallet there. The store verifies the TEE signature, so a keeper cannot

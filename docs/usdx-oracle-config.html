@@ -91,10 +91,13 @@ the extension checks itself.</p>
 <h3 class="t3" style="padding:.2em .4em">Credentials — direct instruction</h3>
 <table>
   <tbody>
-    <tr><td style="width:15em"><code>HEX_API</code></td><td>Gates the private cash-reserves endpoint. The one true secret.</td></tr>
-    <tr><td><code>RPC_&lt;provider&gt;_&lt;chain&gt;</code></td><td>One per keyed provider. Usually embedded <i>in the URL</i> — see §5.</td></tr>
+    <tr><td style="width:15em"><code>hex_api_key</code></td><td>Gates the private cash-reserves endpoint. The one true secret — but <b>not</b> a hard prerequisite: without it the extension still publishes at par, where the cash figure provably cannot change the answer, and fails closed everywhere else. <code>/state</code> reports it in <code>missingSecretRefs</code> and the source as <code>not_configured</code>. Findings §21.</td></tr>
+    <tr><td><code>&lt;provider&gt;_&lt;chain&gt;_key</code></td><td>One per keyed provider, named freely by the SET_ENDPOINTS payload. Embedded <i>in the URL</i> via <code>{secret}</code> — see §5. Unlike the Hex key these <b>are</b> hard requirements: a URL with an unsubstituted placeholder cannot be dialled, so the config will not resolve. Use all-public endpoints (<code>testdata/endpoints/public-only.json</code>) to provision none at all.</td></tr>
   </tbody>
 </table>
+<p><b>Readiness is stricter than answerability, deliberately.</b> <code>ready: true</code> means fully
+provisioned; a machine missing only the Hex key answers for part of the price range and must not claim
+otherwise. Do not gate deployment on <code>ready</code> alone — read <code>missingSecretRefs</code>.</p>
 
 <h2>3. Why direct instructions are the right channel for credentials</h2>
 

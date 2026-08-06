@@ -513,5 +513,15 @@
     "name": "VrfVerifier",
     "contractName": "VrfVerifier.sol",
     "address": "0x7214D4c13aaFE0e26F5EC5Fc625a6b60AfF99533"
+  },
+  {
+    "name": "UsdxPriceStore",
+    "contractName": "UsdxPriceStore.sol",
+    "address": "0x786307b2bd21A5BfE4524Ff14C0B80F9c618cD60"
+  },
+  {
+    "name": "UsdxCustomFeed",
+    "contractName": "UsdxCustomFeed.sol",
+    "address": "0x00c22a4e5f915de82C30aa6cd74E9d722D1e8028"
   }
 ]

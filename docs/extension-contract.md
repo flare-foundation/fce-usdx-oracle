@@ -140,6 +140,27 @@ Source: `go-flare-common/pkg/tee/instruction/instruction.go`.
 
 `originalMessage` is what a handler receives. Its interpretation is entirely up to the extension — the scaffold's `SAY_HELLO` treats it as UTF-8 JSON, `SAY_GOODBYE` treats it as ABI-encoded `(string,string)`.
 
+**It may not be empty.** `TeeExtensionRegistry.sendInstructions` rejects an empty
+`message` with `MessageEmpty()`, so an operation that needs no input from the
+caller still has to send *something*. Found on Coston2, 5 Aug 2026, when
+`requestPriceUpdate()` — which passed `message: ""` — reverted before any
+machine saw it (findings §22).
+
+USDX_ORACLE/GET_PRICE therefore carries a **one-byte request envelope**,
+`0x01`, declared as `GET_PRICE_REQUEST_V1` in `contracts/InstructionSender.sol`
+and `config.GetPriceRequestV1` in the extension. Every implementation must
+require **exactly** that byte and fail the action otherwise:
+
+| `originalMessage` | Expected result |
+| --- | --- |
+| `0x01` | status 1, signed price report |
+| `0x` (empty) | status 0, `instruction carries an unexpected payload` |
+| anything else | status 0, `instruction carries an unexpected payload` |
+
+Accepting-and-ignoring is not equivalent: a caller must not be able to come to
+depend on bytes the extension silently drops, and a future envelope version must
+not be mistakable for this one. Conformance fixtures 01 and 03 pin both halves.
+
 ### 4.4 `ActionResult` — response body of `POST /action`
 
 Source: `tee-node/pkg/types/actions.go`.

