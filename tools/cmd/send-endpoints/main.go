@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"os"
@@ -46,6 +47,13 @@ func main() {
 	if !json.Valid(configBytes) {
 		fccutils.FatalWithCause(errors.Errorf("%s is not valid JSON", *configF))
 	}
+
+	var prettyConfig bytes.Buffer
+	if err := json.Indent(&prettyConfig, configBytes, "", "  "); err != nil {
+		fccutils.FatalWithCause(errors.Errorf("formatting config JSON: %s", err))
+	}
+	logger.Infof("Config from %s (%d bytes, delivered verbatim on-chain):", *configF, len(configBytes))
+	logger.Info(prettyConfig.String())
 
 	testSupport, err := support.DefaultSupport(*af, *cf)
 	if err != nil {
