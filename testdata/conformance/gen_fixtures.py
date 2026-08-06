@@ -82,8 +82,19 @@ def action(op_type: str, op_command: str, original: bytes, action_id: str = ACTI
     }
 
 
-def get_price(original: bytes = b"") -> dict:
-    """A GET_PRICE action. requestPriceUpdate() sends an empty message."""
+# The request envelope requestPriceUpdate() carries, mirroring
+# GET_PRICE_REQUEST_V1 in contracts/InstructionSender.sol and
+# config.GetPriceRequestV1 in the extension.
+#
+# One byte rather than nothing because the registry rejects an empty message
+# with MessageEmpty() — found the first time the instruction path ran on
+# Coston2, 5 Aug 2026. The handler requires exactly this value, so an
+# unrecognised envelope is refused rather than ignored.
+GET_PRICE_REQUEST_V1 = bytes([0x01])
+
+
+def get_price(original: bytes = GET_PRICE_REQUEST_V1) -> dict:
+    """A GET_PRICE action carrying the fixed request envelope."""
     return action(OP_TYPE, OP_COMMAND, original)
 
 
@@ -109,7 +120,7 @@ PRICE_PAYLOAD = json_msg({
 FIXTURES: list[dict] = [
     {
         "name": "01-get-price-success",
-        "description": "GET_PRICE with an empty payload returns the price, decimals and observedAt",
+        "description": "GET_PRICE with the v1 request envelope returns the price, decimals and observedAt",
         "request": {"method": "POST", "path": "/action", "body": get_price()},
         "expect": {
             "status": 200,
@@ -144,8 +155,9 @@ FIXTURES: list[dict] = [
     {
         "name": "03-get-price-rejects-payload",
         "description": (
-            "requestPriceUpdate() sends no payload. A non-empty message is a handler "
-            "error, not silently ignored: HTTP 200, status 0, no data."
+            "requestPriceUpdate() sends exactly the v1 request envelope. Any other "
+            "message is a handler error, not silently ignored: HTTP 200, status 0, "
+            "no data."
         ),
         "request": {"method": "POST", "path": "/action",
                     "body": get_price(json_msg({"unexpected": "payload"}))},

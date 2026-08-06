@@ -29,6 +29,16 @@ contract UsdxOracleInstructionSender {
     /// @notice Maximum endpoint configuration payload size.
     uint256 public constant MAX_ENDPOINTS_BYTES = 16384;
 
+    /// @notice Request envelope version carried by every GET_PRICE instruction.
+    /// @dev The registry rejects an empty `message` with `MessageEmpty()`, so a
+    /// price request cannot carry nothing — found on Coston2, 5 Aug 2026, the
+    /// first time this path ran on-chain. A single version byte is the smallest
+    /// payload that satisfies it while staying checkable: the extension requires
+    /// exactly this value and rejects anything else, so no caller can come to
+    /// depend on a field the extension silently drops. Bump it when the request
+    /// envelope changes; the extension pins the same constant.
+    bytes public constant GET_PRICE_REQUEST_V1 = hex"01";
+
     /// @notice TEE extension registry.
     ITeeExtensionRegistry public immutable TEE_EXTENSION_REGISTRY;
     /// @notice TEE machine registry.
@@ -45,7 +55,9 @@ contract UsdxOracleInstructionSender {
     address public owner;
 
     /// @notice Emitted when a price update is requested.
-    event PriceUpdateRequested(address indexed requester);
+    /// @dev Carries the instruction id so a keeper can fetch the result from the
+    /// TEE proxy without parsing the registry's own event out of the receipt.
+    event PriceUpdateRequested(address indexed requester, bytes32 indexed instructionId);
 
     /// @notice Emitted when endpoint configuration is sent to a TEE machine.
     event EndpointsSet(address indexed teeId, bytes32 indexed configHash);
@@ -133,25 +145,30 @@ contract UsdxOracleInstructionSender {
 
     /// @notice Requests a fresh price observation from a random registered TEE machine.
     /// @dev Open to anyone; registry fee bounds spam, price store verifies the TEE signature.
-    function requestPriceUpdate() external payable {
+    /// The observation needs nothing from the caller, so the message is the fixed
+    /// `GET_PRICE_REQUEST_V1` envelope rather than caller-supplied data.
+    /// @return _instructionId Id of the dispatched instruction, also emitted in
+    /// `PriceUpdateRequested`. The return value serves contract callers; the event
+    /// is what an off-chain keeper reads, since a transaction returns nothing to it.
+    function requestPriceUpdate() external payable returns (bytes32 _instructionId) {
         address[] memory teeIds = TEE_MACHINE_REGISTRY.getRandomTeeIds(_getExtensionId(), 1);
         address[] memory cosigners = new address[](0);
 
         ITeeExtensionRegistry.TeeInstructionParams memory params = ITeeExtensionRegistry.TeeInstructionParams({
             opType: OP_TYPE_USDX_ORACLE,
             opCommand: OP_COMMAND_GET_PRICE,
-            message: "",
+            message: GET_PRICE_REQUEST_V1,
             cosigners: cosigners,
             cosignersThreshold: 0,
             claimBackAddress: msg.sender
         });
 
-        TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(
+        _instructionId = TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(
             teeIds,
             params
         );
 
-        emit PriceUpdateRequested(msg.sender);
+        emit PriceUpdateRequested(msg.sender, _instructionId);
     }
 
     /// @notice Returns the cached extension ID, reverting if not yet set.

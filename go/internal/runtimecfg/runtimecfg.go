@@ -65,6 +65,20 @@ const secretPlaceholder = "{secret}"
 // maxPayloadBytes caps an endpoint configuration.
 const maxPayloadBytes = 256 << 10
 
+// urlUnsafe lists characters a credential may not contain, because each one can
+// restructure the URL it is substituted into: '/' changes the path, '?' opens a
+// query and '&' splits or appends parameters, '#' truncates the rest to a
+// fragment, and whitespace terminates the request line.
+//
+// This matters because the URL author (the owner key, via SET_ENDPOINTS) and the
+// credential holder (the admins, via SET_SECRET) are different parties. Neither
+// should be able to change what the other authorised.
+//
+// Declared once and used at both checkpoints — ApplySecret on arrival and
+// resolveURL at substitution. Two copies of a security-relevant character set
+// drift, and the one that drifts is the one that stops matching.
+const urlUnsafe = " \t\r\n/?#&"
+
 // Endpoints is the entire SET_ENDPOINTS payload.
 //
 //	{
@@ -112,6 +126,24 @@ type Node interface {
 
 // Store receives provisioning messages and resolves them into an oracle.Config.
 type Store struct {
+	// applyMu serialises provisioning. Two locks rather than one because they
+	// protect different things over different spans:
+	//
+	// applyMu covers a whole Apply* call, including the verifier — which keeps
+	// per-ref version state in a plain map and is not safe for concurrent use.
+	// Nothing serialises us above: /action is an ordinary net/http handler, so
+	// tee-node delivering two direct actions at once runs two ApplySecret
+	// goroutines, and a concurrent map write is a hard runtime throw that takes
+	// the process down.
+	//
+	// mu covers only the data fields, in short critical sections. It is
+	// deliberately NOT held across the tee-node round trips in ApplySecret: it
+	// is also taken by Readiness and Resolve, so a hung /decrypt would otherwise
+	// freeze GET /state and every observation.
+	//
+	// Order is applyMu then mu, never the reverse.
+	applyMu sync.Mutex
+
 	mu        sync.RWMutex
 	endpoints Endpoints
 
@@ -142,6 +174,11 @@ func New(verifier *provision.Verifier, node Node) *Store {
 // and the extension has already established this arrived over the instruction
 // channel. What is checked here is content.
 func (s *Store) ApplyEndpoints(payload []byte) error {
+	// Held even though this path does not touch the verifier: the rule is one
+	// provisioning operation at a time, which stays true as this code changes.
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
 	if len(payload) == 0 || len(payload) > maxPayloadBytes {
 		return errors.New("runtimecfg: endpoint payload is empty or too large")
 	}
@@ -172,6 +209,13 @@ func (s *Store) ApplyEndpoints(payload []byte) error {
 // The payload is a ciphertext encrypted to this TEE's public key, so the
 // plaintext exists only inside the enclave and only in memory.
 func (s *Store) ApplySecret(ctx context.Context, message []byte) error {
+	// Covers the verifier for the whole call: SetTeeID writes a field, and
+	// Verify writes lastVersion[ref] on success. Both are unsynchronised, and
+	// the replay defence itself depends on this — two concurrent envelopes for
+	// one ref could otherwise both read the old version and both be accepted.
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
 	if !s.verifier.HasTeeID() {
 		teeID, err := s.node.TeeID(ctx)
 		if err != nil {
@@ -180,7 +224,10 @@ func (s *Store) ApplySecret(ctx context.Context, message []byte) error {
 		s.verifier.SetTeeID(teeID)
 	}
 
-	env, err := s.verifier.Verify(message) //todo: What is this doing exactly?
+	// Verify checks the envelope against the baked admin set: chain and machine
+	// binding, payload hash, freshness, per-ref version, then at least Threshold
+	// distinct admin signatures over the re-encoded body.
+	env, err := s.verifier.Verify(message)
 	if err != nil {
 		return err
 	}
@@ -193,7 +240,7 @@ func (s *Store) ApplySecret(ctx context.Context, message []byte) error {
 	// The plaintext is a credential. Never logged, never wrapped into an error,
 	// never returned.
 	value := string(plaintext)
-	if value == "" || strings.ContainsAny(value, " \t\r\n/?#") {
+	if value == "" || strings.ContainsAny(value, urlUnsafe) {
 		// A credential containing a URL separator could restructure an endpoint
 		// after substitution.
 		return failure.ProvisionRejected
@@ -231,8 +278,12 @@ func (s *Store) Readiness() types.Readiness {
 // required lists every credential the current configuration needs. Callers hold
 // at least the read lock.
 func (s *Store) required() []string {
-	// The Hex key is always required: cash reserves are half the numerator, so
-	// computing backing without it would understate it.
+	// The Hex key stays on this list even though Resolve no longer refuses
+	// without it. Ready means "fully provisioned", not "able to answer": a
+	// machine missing this key can still publish, but only prices that do not
+	// depend on the cash figure, and every other observation fails closed. That
+	// is a state an operator must be able to see, and MissingRefs naming the
+	// ref is how they see it.
 	refs := []string{config.HexAPIKeyRef}
 
 	for _, ce := range s.endpoints {
@@ -259,18 +310,22 @@ func (s *Store) Resolve() (oracle.Config, error) {
 		return oracle.Config{}, failure.NotConfigured
 	}
 
-	cashKey := s.secrets[config.HexAPIKeyRef]
-	if cashKey == "" {
-		return oracle.Config{}, failure.NotConfigured
-	}
-
 	bonds, err := newBacking(config.BondsSource())
 	if err != nil {
 		return oracle.Config{}, failure.Internal
 	}
-	cash, err := newBacking(config.CashSource(cashKey))
-	if err != nil {
-		return oracle.Config{}, failure.Internal
+
+	// A missing cash credential no longer fails the observation outright. The
+	// oracle runs cash-less and publishes only where the figure provably cannot
+	// change the answer, failing closed everywhere else — see
+	// price.ComputeWithoutCash. Resolving to a nil source is how that state is
+	// carried; readiness still names the ref as missing.
+	var cash backing.Source
+	if cashKey := s.secrets[config.HexAPIKeyRef]; cashKey != "" {
+		cash, err = newBacking(config.CashSource(cashKey))
+		if err != nil {
+			return oracle.Config{}, failure.Internal
+		}
 	}
 
 	chains := make([]supply.ChainConfig, 0, len(config.Chains))
@@ -357,6 +412,22 @@ func validate(e Endpoints) error {
 				name, ce.Threshold, len(ce.Providers))
 		}
 		for _, p := range ce.Providers {
+			// The backing credential authenticates the PINNED Hex endpoint, by
+			// header, and has no business in a provider URL. Without this, a
+			// payload author could name it as a provider secret and have it
+			// substituted into a path on a host of their choosing — receiving it
+			// on the next observation.
+			//
+			// This is the URL-ref / auth-ref split enforced at the boundary
+			// rather than left to convention. It matters most for this ref
+			// because it is the one credential whose destination is otherwise
+			// pinned and therefore not the owner's to choose.
+			if p.Secret == config.HexAPIKeyRef {
+				return fmt.Errorf(
+					"runtimecfg: chain %q: %q authenticates the backing source and may not be used as a provider secret",
+					name, config.HexAPIKeyRef)
+			}
+
 			// A dummy credential: this checks URL shape, not whether the secret
 			// has arrived yet.
 			if _, err := resolveURL(p.URL, p.Secret, "placeholder"); err != nil {
@@ -405,7 +476,7 @@ func resolveURL(raw, secretRef, value string) (string, error) {
 	if value == "" {
 		return "", fmt.Errorf("secret %q is not set", secretRef)
 	}
-	if strings.ContainsAny(value, " \t\r\n/?#") {
+	if strings.ContainsAny(value, urlUnsafe) {
 		return "", errors.New("secret would alter the url")
 	}
 	return strings.ReplaceAll(raw, secretPlaceholder, value), nil

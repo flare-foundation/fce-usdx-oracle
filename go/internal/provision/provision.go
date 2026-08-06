@@ -165,8 +165,11 @@ func Encode(e Envelope, signatures [][]byte) ([]byte, error) {
 
 // Verifier checks envelopes against the baked admin set and tracks versions.
 //
-// Not safe for concurrent use; the extension serialises handler invocations, so
-// the caller already holds a lock.
+// NOT SAFE FOR CONCURRENT USE. Verify writes lastVersion and SetTeeID writes
+// teeID, neither synchronised. Callers must serialise: runtimecfg.Store holds
+// applyMu across every call. Do not assume the extension does it for you — its
+// /action handler is an ordinary net/http handler, so actions are served
+// concurrently, one goroutine each.
 type Verifier struct {
 	chainID *big.Int
 	teeID   common.Address

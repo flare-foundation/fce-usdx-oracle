@@ -104,9 +104,82 @@ func SetExtensionId(s *support.Support, instructionSenderAddress common.Address)
 	return nil
 }
 
+// priceUpdateFee returns the registry's current fee for one GET_PRICE instruction.
+//
+// Read, never hard-coded. The fee is governance-settable, and a stale constant
+// fails closed in the worst way: every request reverts, no price is published,
+// and nothing in this repo changed to explain it. The op type and command come
+// from the deployed contract's own constants rather than being re-derived here,
+// so the fee lookup cannot drift from the instruction actually sent.
+//
+// calculateFeeByTeeIds is not used: requestPriceUpdate picks its machine
+// internally via getRandomTeeIds, so the caller cannot know the tee id in
+// advance. getOperationFee is the per-operation price for the single machine
+// that call dispatches to; getDefaultFee covers an operation with no specific
+// fee configured.
+func priceUpdateFee(s *support.Support, senderAddress common.Address) (*big.Int, error) {
+	return instructionFee(s, senderAddress, opGetPrice)
+}
 
-// instructionFeeWei is the per-instruction fee charged by the extension registry.
-const instructionFeeWei = 1000000
+// endpointsFee is the same lookup for a SET_ENDPOINTS instruction, which is
+// charged under a different op type and command.
+func endpointsFee(s *support.Support, senderAddress common.Address) (*big.Int, error) {
+	return instructionFee(s, senderAddress, opSetEndpoints)
+}
+
+// opSelector reads one (opType, opCommand) pair off the deployed sender.
+type opSelector func(*usdxoracle.UsdxOracleInstructionSenderCaller, *bind.CallOpts) ([32]byte, [32]byte, error)
+
+func opGetPrice(c *usdxoracle.UsdxOracleInstructionSenderCaller, o *bind.CallOpts) ([32]byte, [32]byte, error) {
+	t, err := c.OPTYPEUSDXORACLE(o)
+	if err != nil {
+		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_TYPE_USDX_ORACLE: %s", err)
+	}
+	cmd, err := c.OPCOMMANDGETPRICE(o)
+	if err != nil {
+		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_COMMAND_GET_PRICE: %s", err)
+	}
+	return t, cmd, nil
+}
+
+func opSetEndpoints(c *usdxoracle.UsdxOracleInstructionSenderCaller, o *bind.CallOpts) ([32]byte, [32]byte, error) {
+	t, err := c.OPTYPEUSDXCONFIG(o)
+	if err != nil {
+		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_TYPE_USDX_CONFIG: %s", err)
+	}
+	cmd, err := c.OPCOMMANDSETENDPOINTS(o)
+	if err != nil {
+		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_COMMAND_SET_ENDPOINTS: %s", err)
+	}
+	return t, cmd, nil
+}
+
+func instructionFee(s *support.Support, senderAddress common.Address, sel opSelector) (*big.Int, error) {
+	caller, err := usdxoracle.NewUsdxOracleInstructionSenderCaller(senderAddress, s.ChainClient)
+	if err != nil {
+		return nil, errors.Errorf("binding instruction sender: %s", err)
+	}
+
+	opts := &bind.CallOpts{Context: context.Background()}
+	opType, opCommand, err := sel(caller, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	fee, err := s.TeeOperationFees.GetOperationFee(opts, opType, opCommand)
+	if err != nil {
+		return nil, errors.Errorf("reading operation fee: %s", err)
+	}
+	if fee != nil && fee.Sign() > 0 {
+		return fee, nil
+	}
+
+	def, err := s.TeeOperationFees.GetDefaultFee(opts)
+	if err != nil {
+		return nil, errors.Errorf("reading default fee: %s", err)
+	}
+	return def, nil
+}
 
 // RequestPriceUpdate calls requestPriceUpdate() on the instruction sender and
 // returns the resulting instruction ID and transaction hash.
@@ -125,7 +198,11 @@ func RequestPriceUpdate(s *support.Support, instructionSenderAddress common.Addr
 	if err != nil {
 		return common.Hash{}, common.Hash{}, errors.Errorf("failed to create transactor: %s", err)
 	}
-	opts.Value = big.NewInt(instructionFeeWei) // must match the registry's required fee
+	fee, err := priceUpdateFee(s, instructionSenderAddress)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	opts.Value = fee
 
 	// simulateRevert re-runs the call with eth_call to recover a revert reason,
 	// which the raw send/receipt path does not surface.
@@ -141,7 +218,7 @@ func RequestPriceUpdate(s *support.Support, instructionSenderAddress common.Addr
 		from := crypto.PubkeyToAddress(s.Prv.PublicKey)
 		return fccutils.SimulateAndDecodeRevert(
 			s.ChainClient, from, instructionSenderAddress,
-			big.NewInt(instructionFeeWei), callData,
+			fee, callData,
 		)
 	}
 
@@ -169,22 +246,29 @@ func RequestPriceUpdate(s *support.Support, instructionSenderAddress common.Addr
 		return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status: %d", receipt.Status)
 	}
 
-	// Scan for TeeInstructionsSent rather than assuming it is the first log.
-	// requestPriceUpdate() emits its own PriceUpdateRequested event alongside the
-	// registry's, so a positional assumption would break the moment the emit
-	// order changes.
+	// Read the id off our own PriceUpdateRequested event.
+	//
+	// The registry's TeeInstructionsSent carries the same value, but parsing it
+	// couples every caller to the registry's event ABI for a value our own
+	// contract already has. requestPriceUpdate returns the id to contract callers
+	// and emits it here for off-chain ones, since a transaction returns nothing
+	// to an off-chain caller.
+	//
+	// Scanned rather than indexed by position: the receipt also contains the
+	// registry's logs, and a positional assumption would break the moment the
+	// emit order changes.
 	for _, l := range receipt.Logs {
 		if l == nil {
 			continue
 		}
-		instructionSent, parseErr := s.TeeVerification.ParseTeeInstructionsSent(*l)
+		requested, parseErr := sender.ParsePriceUpdateRequested(*l)
 		if parseErr == nil {
-			return instructionSent.InstructionId, receipt.TxHash, nil
+			return requested.InstructionId, receipt.TxHash, nil
 		}
 	}
 
 	return common.Hash{}, common.Hash{}, errors.Errorf(
-		"no TeeInstructionsSent event in receipt (%d logs) for tx %s", len(receipt.Logs), receipt.TxHash.Hex())
+		"no PriceUpdateRequested event in receipt (%d logs) for tx %s", len(receipt.Logs), receipt.TxHash.Hex())
 }
 
 // endpointsSetTopic is keccak256("EndpointsSet(address,bytes32)").
@@ -210,7 +294,11 @@ func SetEndpoints(s *support.Support, instructionSenderAddress, teeID common.Add
 	if err != nil {
 		return common.Hash{}, common.Hash{}, errors.Errorf("failed to create transactor: %s", err)
 	}
-	opts.Value = big.NewInt(instructionFeeWei) // must match the registry's required fee
+	fee, err := endpointsFee(s, instructionSenderAddress)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	opts.Value = fee
 
 	simulateRevert := func() string {
 		callData, packErr := parsed.Pack("setEndpoints", teeID, config)
@@ -220,7 +308,7 @@ func SetEndpoints(s *support.Support, instructionSenderAddress, teeID common.Add
 		from := crypto.PubkeyToAddress(s.Prv.PublicKey)
 		return fccutils.SimulateAndDecodeRevert(
 			s.ChainClient, from, instructionSenderAddress,
-			big.NewInt(instructionFeeWei), callData,
+			fee, callData,
 		)
 	}
 

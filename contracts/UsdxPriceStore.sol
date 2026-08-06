@@ -17,16 +17,14 @@ contract UsdxPriceStore {
     ITeeMachineRegistry public immutable TEE_MACHINE_REGISTRY;
 
     /// @notice Per-machine configuration hashes published via setEndpoints.
-    /// @dev Settable with `extensionId` so re-registering the extension does not
-    /// force a store redeploy and a fresh addCustomFeeds proposal.
+    /// @dev Updatable with extensionId so re-registration does not require redeploying the store.
     IUsdxConfigSource public configSource;
 
     /// @notice Extension whose registered TEE machines may sign reports.
     uint256 public extensionId;
 
-    /// @notice How far ahead of chain time a report may be stamped.
-    /// @dev Absorbs TEE clock drift, and bounds the worst-case feed freeze (see
-    /// the ratchet note in submitPrice). Keep far below `maxAge`.
+    /// @notice Max clock drift allowed between report timestamp and chain time.
+    /// @dev Caps how long a future-dated report can freeze the feed; keep well below maxAge.
     uint64 public constant MAX_FUTURE_SKEW = 2 minutes;
 
     /// @notice Required machine status for an accepted signer (PRODUCTION = 2).
@@ -58,11 +56,8 @@ contract UsdxPriceStore {
     /// @notice When true, new submissions are rejected; consumers keep reading the last price.
     bool public paused;
 
-    /// @notice When true, `latest()` reports a zero timestamp so consumers read
-    /// the feed as having no usable data.
-    /// @dev `paused` stops writes but leaves the last price readable and fresh;
-    /// this withdraws it. Zeroing the timestamp rather than the value, because
-    /// a zero value reads as "USDX is worthless" to consumers that ignore it.
+    /// @notice When true, latest() returns timestamp 0 so consumers treat the feed as empty.
+    /// @dev Unlike paused, this withdraws the value without zeroing price (zero would read as worthless).
     bool public invalidated;
 
     event PriceUpdated(uint256 indexed price, uint64 indexed observedAt, address indexed teeId);
@@ -123,17 +118,14 @@ contract UsdxPriceStore {
     }
 
     /// @notice Submits a TEE-signed price report.
-    /// @param _body The ABI-encoded PriceReport, exactly as signed.
+    /// @param _body ABI-encoded PriceReport, exactly as signed.
     /// @param _signature 65-byte ECDSA signature, v in {27, 28}.
-    ///
-    /// @dev `_body` is verified as received, then decoded — never re-encoded, or
-    /// an encoder divergence would surface as a bad signature instead.
+    /// @dev Body is verified as received, then decoded — never re-encoded.
     function submitPrice(bytes calldata _body, bytes calldata _signature) external {
         if (paused) revert IsPaused();
 
         address teeId = _recover(_body, _signature);
 
-        // is this machine registered to OUR extension
         _requireRegisteredTee(teeId);
 
         (
@@ -148,12 +140,7 @@ contract UsdxPriceStore {
         if (domain != DOMAIN) revert WrongDomain();
         if (decimals != DECIMALS) revert WrongDecimals();
 
-        // Wrapped like the registry calls: a broken config source is rejected
-        // input, and must be distinguishable from "no config published".
-        //
-        // TODO(M5): expectedConfigHash records what was SENT, not what the
-        // machine RUNS. Verify it against the TEE's GET /state `endpointsHash`
-        // before it becomes authoritative.
+        // Config source errors are rejected input, not opaque reverts.
         bytes32 expected;
         try configSource.expectedConfigHash(teeId) returns (bytes32 h) {
             expected = h;
@@ -163,18 +150,13 @@ contract UsdxPriceStore {
         if (expected == bytes32(0)) revert NoConfigPublished();
         if (configHash != expected) revert StaleConfig();
 
-        // Strict monotonicity. Covers replay and out-of-order delivery together,
-        // which matters because FCC guarantees neither.
+        // Strictly increasing observedAt covers replay and out-of-order delivery.
         if (reportedAt <= observedAt) revert NotNewer();
 
-        // `observedAt` is a one-way ratchet with no reset, so a future stamp
-        // blocks honest reports until chain time catches up. The bound caps that
-        // freeze at MAX_FUTURE_SKEW; unbounded, one clock-jumped report would
-        // wedge the feed for as long as it claimed.
+        // Reject reports too far in the future; observedAt only ratchets up.
         if (reportedAt > block.timestamp + MAX_FUTURE_SKEW) revert TooFarAhead();
 
-        // A report inside the skew window has no age yet. The guard also keeps
-        // the subtraction from underflowing.
+        // Inside the skew window, age is zero; also prevents subtraction underflow.
         if (reportedAt < block.timestamp && block.timestamp - reportedAt > maxAge) revert TooOld();
 
         // Todo: Claude don't touch this! We need to check if there is anything alse, to add since we removed a few unnecessary checks. 
@@ -189,13 +171,7 @@ contract UsdxPriceStore {
     }
 
     /// @notice Returns the stored price and its observation timestamp.
-    /// @dev Never reverts. A zero timestamp means governance has withdrawn the
-    /// value, or nothing has been published.
-    ///
-    /// The timestamp is clamped to chain time: MAX_FUTURE_SKEW can leave
-    /// `observedAt` briefly ahead, which would make the usual
-    /// `block.timestamp - ts` staleness check panic on underflow. The exact
-    /// stamp stays readable on `observedAt` and in `PriceUpdated`.
+    /// @dev Never reverts. Zero timestamp means invalidated or unpublished. Clamped to block.timestamp so staleness checks cannot underflow.
     function latest() external view returns (uint256 _price, int8 _decimals, uint64 _timestamp) {
         if (invalidated) return (price, DECIMALS, 0);
 
@@ -204,27 +180,23 @@ contract UsdxPriceStore {
     }
 
     /// @notice Freezes or unfreezes acceptance of new prices.
-    /// @dev Stops writes only; pair with `setInvalidated` to withdraw the value.
+    /// @dev Stops writes only; use setInvalidated to withdraw the value from consumers.
     function setPaused(bool _paused) external onlyGovernance {
         paused = _paused;
         emit Paused(_paused);
     }
 
     /// @notice Withdraws or restores the stored value for consumers.
-    /// @dev Never cleared automatically — recovery is a decision, not a side
-    /// effect of whatever price arrives next.
+    /// @dev Not cleared automatically — recovery requires an explicit governance decision.
     function setInvalidated(bool _invalidated) external onlyGovernance {
         invalidated = _invalidated;
         emit Invalidated(_invalidated);
     }
 
     /// @notice Repoints the store at a new extension generation.
-    /// @dev Both move together — a re-registration mints a new id and a new
-    /// sender. The stored price is left alone; consider `setInvalidated` until
-    /// the new generation has published one.
+    /// @dev Id and config source move together on re-registration; consider invalidating until the new generation publishes.
     function setExtension(uint256 _extensionId, IUsdxConfigSource _configSource) external onlyGovernance {
-        // Zero would make the id comparison vacuous: the registry returns 0 for
-        // machines it does not know.
+        // Zero id would make the registry check vacuous.
         if (_extensionId == 0) revert ZeroExtensionId();
         if (address(_configSource) == address(0)) revert ZeroAddress();
 
@@ -248,12 +220,8 @@ contract UsdxPriceStore {
         governance = _governance;
     }
 
-    /// @notice Reverts unless `_teeId` is an active TEE machine for this extension.
-    /// @dev Wrapped so a reverting registry yields UnknownSigner, not an opaque
-    /// bubble. This pair also carries the code-hash guarantee — MachineManager
-    /// checks the attested hash at register, toProduction and every
-    /// confirmAvailability — but only for any approved version, and revoking one
-    /// waits on the availability lease, so it is no emergency stop. Pausing is.
+    /// @notice Reverts unless `_teeId` is a production TEE machine for this extension.
+    /// @dev Registry errors surface as UnknownSigner, not opaque reverts.
     function _requireRegisteredTee(address _teeId) internal view {
         try TEE_MACHINE_REGISTRY.getExtensionId(_teeId) returns (uint256 signerExtensionId) {
             if (signerExtensionId != extensionId) revert UnknownSigner();
@@ -284,8 +252,7 @@ contract UsdxPriceStore {
 
         if (v != 27 && v != 28) revert BadRecoveryId();
 
-        // Reject the high-s form: (r, n-s, v^1) recovers the same signer, so
-        // accepting both would give one report two valid signatures.
+        // Reject high-s signatures; (r, n-s, v^1) recovers the same signer.
         if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
             revert MalleableSignature();
         }

@@ -7,7 +7,7 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	extension "fce-usdx-oracle/internal/extension"
-	"fce-usdx-oracle/internal/oracle"
+	"fce-usdx-oracle/internal/observe"
 	"fce-usdx-oracle/internal/provision"
 	"fce-usdx-oracle/internal/runtimecfg"
 	"fce-usdx-oracle/internal/teenode"
@@ -24,6 +24,12 @@ import (
 // not_configured until both have landed — after first start and after every
 // restart, since credentials are memory-only.
 //
+// Two goroutines run from here: the HTTP server, and the observation loop.
+// **The loop is what makes the extension answerable at all** — tee-node allows
+// an extension 2 seconds per action and an observation takes longer than that,
+// so the slow work happens on a timer and a request costs one signature. See
+// internal/observe.
+//
 // There is nothing to load: every pinned value is a constant in internal/config,
 // selected at build time. No config file, no parsing, no startup failure mode.
 func StartExtension(extensionPort, signPort int) <-chan error {
@@ -33,10 +39,18 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 	verifier := provision.NewVerifier(new(big.Int).SetUint64(config.ChainID), common.Address{})
 	store := runtimecfg.New(verifier, node)
 
-	e := extension.NewWithProvisioner(
-		extensionPort, signPort, &storeObserver{store: store, node: node}, store)
+	poller := observe.New(store, node)
+
+	e := extension.NewWithProvisioner(extensionPort, signPort, poller, store)
+
+	// Background context: the loop lives as long as the process. Shutdown is by
+	// process exit, which is also how the enclave's memory-only credentials are
+	// discarded.
+	go poller.Run(context.Background())
 
 	logger.Infof("extension started unprovisioned; awaiting SET_ENDPOINTS and SET_SECRET")
+	logger.Infof("observing every %s, refusing to sign anything older than %s",
+		config.ObservationInterval, config.MaxObservationAge)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -45,22 +59,4 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 		}
 	}()
 	return errCh
-}
-
-// storeObserver resolves the current configuration for every observation, so a
-// rotated credential or a changed endpoint takes effect on the next price
-// request without a restart.
-type storeObserver struct {
-	store *runtimecfg.Store
-	node  oracle.Signer
-}
-
-func (o *storeObserver) Observe(
-	ctx context.Context, instructionID common.Hash,
-) (oracle.Observation, error) {
-	cfg, err := o.store.Resolve()
-	if err != nil {
-		return oracle.Observation{Health: map[string]string{}}, err
-	}
-	return oracle.Observe(ctx, cfg, o.node, instructionID)
 }
