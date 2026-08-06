@@ -24,6 +24,10 @@
 | 2026-07-31 | **`getCurrentFeed()` never reverts on staleness** — returns the last price with an ageing timestamp | `FtsoV2` forwards the call, so a revert becomes a liveness outage for every downstream consumer at once. See WP4. |
 | 2026-07-31 | **`calculateFee()` returns 0** | Unlike the sFLR/stXRP feeds we have no underlying FTSO read to pay for. |
 | 2026-08-03 | **§3.0 premise resolved** — `current_reserves_amount` is the bank-provider balance of the reserve account | Provenance from the team. The observed supply-tracking is 1:1 treasury operation, not derivation from chain data; the figure falls below supply on any unmirrored outflow. Written confirmation from Hex remains as diligence. |
+| 2026-08-05 | **Round half-up instead of truncating** (§3.5) | Hex quotes reserves to the cent; truncation turned a $0.004 quantisation artifact into a permanent sub-par print. Half a ULP is $0.127 at current supply — 12× the worst-case quantisation, 5e-9 of the float — so the concealable shortfall stays bounded and no material depeg is affected. Findings §21. |
+| 2026-08-05 | **A missing cash figure no longer fails the observation outright** | Published only where the missing figure provably cannot change the answer: cash is non-negative and the price caps at par, so a bonds-only price already at par *is* the full result. Everything below par still fails closed, so the availability doc's objection to degradation is untouched. Findings §21. |
+| 2026-08-05 | **GET_PRICE carries a one-byte request envelope**, `0x01`, not an empty message | `sendInstructions` reverts `MessageEmpty()`, so `requestPriceUpdate()` could never dispatch. The extension requires exactly that byte, preserving the property the empty message was chosen for. Findings §22. |
+| 2026-08-05 | **Observation moved onto a timer; GET_PRICE only signs** | tee-node allows an extension 2 s per action (`settings.ProxyTimeout`, a const in its internal package); a complete observation measures 2.0–2.9 s, so every request timed out. `internal/observe` observes every 2 min and `MaxObservationAge` (10 min) bounds the resulting staleness. Findings §23. |
 
 ---
 
@@ -185,7 +189,15 @@ FTSO custom feeds return `(uint256 value, int8 decimals, uint64 timestamp)`.
 - **decimals:** proposed `8` — gives 1e-8 resolution around $1.00. The interface
   returns `int8` and imposes no constraint, so this is purely our choice.
 - **value:** `round(price * 10^decimals)`. `1.0` → `100_000_000`.
-- **rounding:** round **down** (truncate) so we never over-report backing.
+- **rounding:** round **half-up**. _Changed 5 Aug 2026; was truncation, "so we never
+  over-report backing"._ Truncation is the safe direction, but the error it was
+  protecting against measured **$0.004**: Hex quotes reserves to the cent while supply
+  carries 6 decimals on Flare/Songbird and 18 on Ethereum, so the bond figure is supply
+  with up to $0.01 of quantisation removed — and truncating turned that into a permanent
+  0.99999999 print. Half a ULP is **$0.127** at current supply (5e-9 of the float),
+  twelve times the worst-case quantisation, so rounding absorbs the artifact while the
+  shortfall it can conceal stays bounded by construction. A 1% depeg is unaffected.
+  Findings §21.
 - **feed id:** see §3.6 — **verified** against `flare-smart-contracts-v2`.
 
 ### 3.6 Feed ID encoding — verified
@@ -477,7 +489,7 @@ Result payload (`ActionResult.data`) — **decided**. Canonical definition lives
 ```solidity
 struct PriceReport {
     bytes32 domain;         // keccak256("USDX_ORACLE_PRICE_V1")
-    uint256 price;          // truncate(price · 10^decimals)
+    uint256 price;          // round(price · 10^decimals), half-up
     int8    decimals;       // 8
     uint64  observedAt;     // store's monotonicity key — must be signed
     bytes32 instructionId;
@@ -611,6 +623,10 @@ contract thin (a read adapter over `UsdxPriceStore`) so that most changes land i
 the store or the extension rather than requiring a governance action.
 
 ### WP5 — Keeper / relayer
+
+_Implementation spec: `usdx-oracle-keeper.md`. It corrects two lines of the cycle sketch that
+were not implementable against the deployed contracts — `requestPriceUpdate()` returns `void`
+rather than the instruction ID, and `ActionResult` has no `signature` field._
 
 | # | Task | Owner | Status |
 | --- | --- | --- | --- |

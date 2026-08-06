@@ -69,10 +69,25 @@ function requestPriceUpdate() external payable {
 
     TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(teeIds, params);
 }</pre>
-<p><b>The instruction carries no payload.</b> Everything the extension needs — which chains, which tokens,
-which endpoints — is fixed in the image. Accepting caller-supplied parameters would let whoever triggers an
-update influence what gets measured, which defeats the point. The scaffold's docs note that
-<code>message</code> is "typically non-empty"; empty is fine and is the right choice here.</p>
+<p><b>The instruction carries no caller-supplied data.</b> Everything the extension needs — which chains, which
+tokens, which endpoints — is fixed in the image or provisioned separately. Accepting caller-supplied
+parameters would let whoever triggers an update influence what gets measured, which defeats the point.</p>
+<div class="callout">
+<h2>It cannot be empty, though — corrected 5 Aug 2026</h2>
+<p>This function originally passed <code>message: ""</code>. The scaffold's docs say <code>message</code> is
+"typically non-empty"; it is in fact <b>mandatory</b>. <code>sendInstructions</code> reverts
+<code>MessageEmpty()</code> (<code>0x3b06a1be</code>), so <code>requestPriceUpdate()</code> could never
+dispatch — the revert happened before any machine saw the instruction. It went unnoticed from the contracts'
+first commit because nothing had called it on-chain (Findings §22).</p>
+<pre>bytes public constant GET_PRICE_REQUEST_V1 = hex"01";
+...
+    message: GET_PRICE_REQUEST_V1,</pre>
+<p>A one-byte request-envelope version is the smallest payload that satisfies the registry while staying
+checkable. The extension requires <b>exactly</b> this value and fails the action otherwise, so the property
+the empty message was chosen for — that no caller can influence the measurement, and none can come to depend
+on a field the extension silently drops — is preserved rather than traded away. Bump the constant on both
+sides together if the envelope ever changes.</p>
+</div>
 
 <h3>Endpoint configuration</h3>
 <p><b>Only endpoints go through this contract.</b> Credentials are delivered off-chain by direct

@@ -1,22 +1,100 @@
-# Hello World Extension
+# USDX Price Oracle — FCC Extension
 
-A working Hello World example for building Flare Confidential Compute (FCC) extensions. This repository demonstrates a complete, runnable extension with on-chain contracts, deployment tooling, and registration scripts — everything you need to understand how extensions work on the Flare TEE infrastructure.
+A TEE extension that publishes a **backing-based price for USDX** as an FTSO custom feed.
 
-**The same extension is implemented in Go, Python and TypeScript.** Pick one with `LANGUAGE` in `.env`; everything else — contracts, deployment, registration, tests — is identical regardless of choice.
+USDX's only real market venue (BitMart) is down, so there is no market price to feed into FTSO.
+The next-best truth is collateralisation: the extension reads USDX supply on three chains, asks
+Hex Trust for reserve figures, and publishes `min(1, backing / supply)`. Because it runs inside
+a TEE pinned by a registered code hash, consumers verify **what** computed the price rather
+than trusting an operator.
 
-## Choosing a Language
-
-```bash
-LANGUAGE=go          # default. Smallest image (~22MB distroless), bit-for-bit reproducible
-LANGUAGE=python      # ~268MB. Same-machine reproducible
-LANGUAGE=typescript  # ~472MB. Same-machine reproducible
+```
+supply  = USDX totalSupply on Flare + Ethereum + Songbird
+backing = bond reserves (public API) + cash reserves (private API)
+price   = min(1, backing / supply)        capped at 1: USDX redeems at par
 ```
 
-All three implement identical behaviour and are verified against the same golden wire fixtures by `./scripts/test-conformance.sh`. The Go path is the most thoroughly reproducible because it produces a static binary on a distroless base; Python wheels and `node_modules` trees embed build-host variance (see [REPRODUCIBILITY.md](REPRODUCIBILITY.md)).
+Live on Coston2 and returning `$1.00000000`:
 
-Language selection is **convention-based**: `LANGUAGE=<dir>` is valid iff `<dir>/language.env` exists, so adding a fourth language requires no changes to any script, tool or compose file — you create one directory.
+| | |
+| --- | --- |
+| `UsdxCustomFeed` | [`0x00c22a4e…8028`](https://coston2-explorer.flare.network/address/0x00c22a4e5f915de82C30aa6cd74E9d722D1e8028#code) — feed id `USDX/USD`, category 32 |
+| `UsdxPriceStore` | [`0x786307b2…cD60`](https://coston2-explorer.flare.network/address/0x786307b2bd21A5BfE4524Ff14C0B80F9c618cD60#code) |
+| `UsdxOracleInstructionSender` | [`0x8A03da10…54F0`](https://coston2-explorer.flare.network/address/0x8A03da101770A58f3a3f2737b875A3aB0ef754F0#code) |
 
-> **→ [Working in Multiple Languages](docs/languages.md)** covers choosing between them, the same handler written three ways, and a step-by-step for adding your own. The normative spec an implementation must satisfy is [docs/extension-contract.md](docs/extension-contract.md).
+All three are verified, so you can call `latest()` from the explorer's Read Contract tab.
+
+> **Design docs:** [plan & TODO](docs/usdx-oracle-plan.md) · [spec](docs/usdx-oracle-spec.md) ·
+> **[implementation findings](docs/usdx-oracle-findings.md)** — read the findings before touching
+> the extension. It records the security issues found while building, each pinned by a named
+> test, plus the two constraints that only surfaced on-chain (§22, §23).
+
+## How it works
+
+```
+keeper ──(1) requestPriceUpdate() ──► UsdxOracleInstructionSender ──► TeeExtensionRegistry
+                                                                            │ data providers
+                                                                            │ cosign + deliver
+                                                                            ▼
+                                                              TEE machine (Confidential Space)
+    every 2 min, in the background:  3 chains × N RPC providers → totalSupply
+                                     Hex public API  → bond reserves
+                                     Hex private API → cash reserves
+                                     price = min(1, B/S), cached
+                                                                            │
+    on the instruction:              sign the cached observation for THIS instructionId
+                                                                            ▼
+keeper ──(2) poll /action/result/<id> ──► (3) submitPrice(body, sig) ──► UsdxPriceStore
+                                                                            ▼
+                                                        UsdxCustomFeed ──► FtsoV2 ──► consumers
+```
+
+Five properties are load-bearing, and each exists because of something that went wrong:
+
+**Observation runs on a timer, not per request.** tee-node allows an extension **2 seconds** to
+answer an action — a `const` in its internal package — and a full observation measures 2.0–2.9s.
+Every request timed out until the two were split. A request now costs one signature; the slow
+work happens in `internal/observe`. Staleness is bounded at 10 minutes, past which the extension
+publishes nothing (findings §23).
+
+**Fail closed, always.** A source down, a value implausible, an observation too old: publish
+nothing and let the on-chain timestamp age. A frozen feed is the designed failure mode; a
+confidently wrong price is not recoverable downstream. **Consumers must check the timestamp** —
+the feed cannot revert, because `FtsoV2` forwards the call and a revert would take down every
+consumer at once.
+
+**The price rounds half-up, and is capped at par.** Hex quotes reserves to the cent while supply
+carries 6–18 decimals, so truncation turned a $0.004 quantisation artifact into a permanent
+sub-par print. Half a ULP is $0.127 at current supply, so rounding absorbs the artifact while the
+shortfall it can conceal stays bounded (findings §21).
+
+**A missing cash figure does not stop the feed — but never changes the number.** Cash is
+non-negative and the price caps at par, so a bonds-only price that already reaches par *is* the
+full result. Below par it fails closed rather than publishing a degraded figure.
+
+**The signed report binds the configuration it was computed under.** `submitPrice` rejects any
+report whose `endpointsHash` differs from what `setEndpoints` published, so a machine running a
+stale configuration cannot publish at all.
+
+### Trust model in one paragraph
+
+The keeper holds **no authority** — the store verifies the TEE signature against
+`TeeMachineRegistry`, so a compromised keeper costs gas, not correctness, and anyone may submit.
+What the store trusts is that the signer is a machine currently registered to this extension and
+in PRODUCTION status, which transitively pins the attested code hash. The **owner key is
+price-controlling by decision**: `setEndpoints` has no host allowlist, so whoever holds it
+chooses the RPC sources. That trade is deliberate and written up in findings §15.
+
+## Language
+
+This repository implements the oracle in **Go only**. The scaffold it derives from supports
+Python and TypeScript via `LANGUAGE=<dir>` (valid iff `<dir>/language.env` exists), and the
+tooling, contracts and conformance harness here are still language-neutral — but no other
+implementation is checked in, and the wire fixtures in `testdata/conformance/` are the acceptance
+test if you add one.
+
+> The normative spec an implementation must satisfy is
+> [docs/extension-contract.md](docs/extension-contract.md).
 
 ## Repository Structure
 
@@ -282,7 +360,7 @@ Post-build steps can also be run individually:
 # Allow TEE version
 cd tools && go run ./cmd/allow-tee-version \
   -a /path/to/deployed-addresses.json \
-  -p http://localhost:6664
+  -p http://localhost:6674
 
 # Register TEE machine
 cd tools && go run ./cmd/register-tee \
@@ -327,20 +405,58 @@ LOG_LEVEL=DEBUG docker compose up -d
 
 ## Testing Your Extension
 
-> After post-build completes, you **must** write and run tests to verify your extension works end-to-end. The scaffold includes a test runner and examples to get you started.
->
-> ### **→ [Read the Testing Guide](docs/testing.md)**
+> ### **→ [Read the Testing Guide](docs/testing.md)** — including a full walkthrough,
+> *"Running the USDX oracle end to end yourself"*, with what to check at each hop, how to read
+> the result, and what every revert means.
 
-Quick smoke test:
+**Start with the checks that need no chain** — they catch most breakage in seconds:
 
 ```bash
-./scripts/test.sh
+cd go && go test ./... && cd .. && ./scripts/test-conformance.sh go && forge test
 ```
 
-Or run everything (pre-build + post-build + test) in one shot:
+**Then prove a real observation locally.** This is the highest-value local test: the real
+observation path against live Flare, Ethereum, Songbird and Hex, with no chain, no TEE and no
+credentials. Run `cmd/mocknode` and `cmd/devserver`, apply a config with
+`./scripts/set-endpoints.sh testdata/endpoints/public-only.json 8099`, then POST a GET_PRICE
+action. Healthy output is `lastPrice: "100000000"` with `hex_cash: not_configured`.
+
+**On-chain, the full path** is four commands once the machine is registered and at PRODUCTION:
 
 ```bash
-./scripts/full-setup.sh --test
+cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -config ../testdata/endpoints/public-only.json
+```
+
+```bash
+cd tools && go run ./cmd/run-test -instructionSender <SENDER>
+```
+
+```bash
+cd tools && go run ./cmd/submit-price -instructionSender <SENDER>
+```
+
+```bash
+cast call --rpc-url https://coston2-api.flare.network/ext/C/rpc <FEED> 'getCurrentFeed()(uint256,int8,uint64)'
+```
+
+`run-test` validates the wire format without submitting; `submit-price` runs the whole keeper
+cycle — request, poll, decode, preflight every store guard, submit — and `-dry-run` stops before
+the transaction. The final call returns `(value, decimals, observedAt)`; read it as
+`value / 10^decimals`, and **always check the age**.
+
+Three things that are easy to misread as failures:
+
+| You see | It means |
+| --- | --- |
+| `NotNewer: the store already holds observedAt=…` | Correct. The store takes strictly increasing timestamps, which is what makes replay and out-of-order delivery harmless. With ≥2 keepers exactly one submission wins per cycle |
+| `attempt 1: proxy returned 404` then success | The result was not in the proxy's storage yet. The bounded poll waited it out |
+| Two instructions with the **same** `observedAt` | The observation cache. Both requests signed the same cached observation with different instruction ids — see "How it works" |
+
+**Publish the contracts to the explorer** so the acceptance rules are readable by anyone
+relying on them:
+
+```bash
+./scripts/verify-contracts.sh
 ```
 
 ### The three test layers
@@ -362,7 +478,7 @@ The scaffold tests at three levels, cheapest first. Only the last needs a chain.
 
 This is what guarantees the three implementations stay byte-identical on the wire, and it is the acceptance test for any new language. If you change a handler's output shape, regenerate the fixtures with `./python/.venv/bin/python testdata/conformance/gen_fixtures.py`.
 
-**3. On-chain end-to-end** — `./scripts/test.sh`, identical for every language.
+**3. On-chain end-to-end** — `./scripts/test.sh`, identical for every language. It stops at the proxy, so it proves the machine produced a valid signed report but puts nothing on-chain. To drive the full feed — endpoints published, price relayed into `UsdxPriceStore`, `getCurrentFeed()` returning it — follow "Running the USDX oracle end to end yourself" in [docs/testing.md](docs/testing.md).
 
 Deployment tooling has its own tests:
 
@@ -507,11 +623,21 @@ Sends instructions on-chain via your deployed `InstructionSender` and polls the 
 
 ## Further Reading
 
+**The oracle**
+
+- **[Implementation findings](docs/usdx-oracle-findings.md)** — every issue found while building, each pinned by a named test. Read this first
+- [Plan & TODO](docs/usdx-oracle-plan.md) — decisions, open questions, milestones, and the current Coston2 deployment
+- [Spec](docs/usdx-oracle-spec.md) — price definition, inputs, verified addresses, work packages
+- [Keeper specification](docs/usdx-oracle-keeper.md) — the cycle and its reliability semantics
+- [Source availability](docs/usdx-oracle-availability.md) — what happens when a source is down, and why degradation was rejected
+- [Monitoring](docs/usdx-oracle-monitoring.md) · [mint/redeem dynamics](docs/usdx-oracle-mint-redeem-dynamics.md)
+- Google-Doc-ready HTML of the above: [docs/usdx-oracle-index.html](docs/usdx-oracle-index.html)
+
 **Building your extension**
 
 - [Extension Development Guide](docs/extension-guide.md) — how the code works and how to add your own logic
 - [Working in Multiple Languages](docs/languages.md) — choosing a language, working in each, and **adding your own**
-- [Making It Your Own](docs/manual-setup.md) — renaming from HelloWorld to your own extension
+- [Making It Your Own](docs/manual-setup.md) — renaming the scaffold to your own extension
 - [InstructionSender Contract](docs/instruction-sender.md) — how the on-chain contract works and how to customize it
 
 **Reference**
@@ -522,4 +648,4 @@ Sends instructions on-chain via your deployed `InstructionSender` and polls the 
 
 **Per-language**
 
-- [go/README.md](go/README.md) · [python/README.md](python/README.md) · [typescript/README.md](typescript/README.md)
+- [go/README.md](go/README.md) — the only implementation checked in here; see [Working in Multiple Languages](docs/languages.md) to add another

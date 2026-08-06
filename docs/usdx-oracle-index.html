@@ -51,7 +51,9 @@ diligence. Evidence and history: <b>Research Findings §1</b>.
             public versus private, and the failure modes at each hop.</td></tr>
     <tr><td class="doc"><a href="usdx-oracle-extension.html">Extension</a></td>
         <td>The Go service: container contract, source acquisition, block-selection algorithm,
-            price computation, the timing problem, signing, state, and error handling.</td></tr>
+            price computation, the timing problem, signing, state, and error handling. Includes the two
+            constraints found on-chain — the mandatory request envelope and the 2-second action budget
+            that forces observation onto a timer.</td></tr>
     <tr><td class="doc"><a href="usdx-oracle-contracts.html">Contracts</a></td>
         <td>The four Solidity contracts, the acceptance rules that make the store safe, feed
             registration through governance, and the upgrade paths.</td></tr>
@@ -62,10 +64,16 @@ diligence. Evidence and history: <b>Research Findings §1</b>.
     <tr><td class="doc"><a href="usdx-oracle-operations.html">Operations</a></td>
         <td>Keeper design, secrets and egress IPs, reproducible builds, monitoring and alerting,
             the test pyramid, deployment sequence, and the incident runbook.</td></tr>
-    <tr><td class="doc"><a href="usdx-oracle-availability.html">Source Availability</a> <b class="r">— open question</b></td>
-        <td>Why supply is read twice, what happens when one source is unavailable, and the open
-            question of whether an API outage should block the price or produce a degraded one.
-            <b>Needs a decision owner.</b></td></tr>
+    <tr><td class="doc"><a href="usdx-oracle-keeper.html">Keeper Specification</a></td>
+        <td>The three-step cycle — request, collect, relay — and the reliability semantics around it:
+            why the keeper is deliberately stateless, why cycles must not overlap, and why its
+            timeouts are bounded by the store's <code>maxAge</code>. Includes the corrected cycle
+            pseudocode.</td></tr>
+    <tr><td class="doc"><a href="usdx-oracle-availability.html">Source Availability</a> <b>— resolved 5 Aug 2026</b></td>
+        <td>Why supply is read twice, what happens when one source is unavailable, and whether an API
+            outage should block the price or produce a degraded one. <b>Answered:</b> no degradation —
+            a cash-less observation publishes only where the missing figure provably cannot change the
+            answer, and fails closed otherwise.</td></tr>
   </tbody>
 </table>
 

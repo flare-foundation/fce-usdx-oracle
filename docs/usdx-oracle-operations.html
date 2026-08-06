@@ -39,12 +39,26 @@
 <h2>1. Keeper</h2>
 <p>A small, boring, stateless loop. It holds no authority — the store verifies the TEE signature — so its
 only job is liveness.</p>
-<pre>every T:
-    id = sender.requestPriceUpdate{value: fee}()          # 1. trigger
+<div class="ref">📎 Full implementation spec — step semantics, deadline budget, crash behaviour and the
+monitoring hooks: <a href="usdx-oracle-keeper.html">Keeper Specification</a>.</div>
+
+<pre>every T:                                                  # single-flight, never overlap
+    fee = operationFees.getOperationFee(USDX_ORACLE,      #    never hard-code the fee
+                                        GET_PRICE)
+    tx  = sender.requestPriceUpdate{value: fee}()         # 1. trigger
+    id  = receipt(tx).logs.first(PriceUpdateRequested)    #    a tx returns nothing off-chain
+              .instructionId
     result = poll(proxy, "/action/result/" + id,          # 2. collect
                   timeout = T/2, backoff = exponential)
     if result.status != 1:  record + alert; continue      # fail closed, don't submit
-    store.submitPrice(result.data, result.signature)      # 3. relay</pre>
+    (body, sig) = abi.decode(result.data, (bytes, bytes)) # 3. relay — data wraps both
+    store.submitPrice(body, sig)</pre>
+
+<p style="font-size:9.5pt;color:#5f6368"><i>Three earlier lines of this sketch were not
+implementable: <code>requestPriceUpdate()</code> did not expose the instruction id,
+<code>ActionResult</code> has no <code>signature</code> field (<code>data</code> is
+<code>abi.encode(body, signature)</code>), and the fee was a hard-coded constant. Contracts and
+tooling were fixed on 5 Aug 2026; see the keeper spec.</i></p>
 <table>
   <tbody>
     <tr><td style="width:13em"><b>Run at least two</b></td><td>Independently, ideally in different environments. Submissions are idempotent — the second one hits the <code>observedAt</code> monotonicity check and reverts harmlessly. Budget for that wasted gas rather than trying to coordinate them.</td></tr>
@@ -112,12 +126,13 @@ working at all.
 <table>
   <thead><tr><th style="width:11em">Layer</th><th>Covers</th><th>Runs</th></tr></thead>
   <tbody>
-    <tr><td>Unit — pricing</td><td>The pure price rule: over/under-collateralised, supply = 0, truncation, extreme magnitudes, haircut, decimal fidelity</td><td><code>./scripts/test-unit.sh</code></td></tr>
+    <tr><td>Unit — pricing</td><td>The pure price rule: over/under-collateralised, supply = 0, <b>half-up rounding and its ½-ULP boundary</b>, the cash-less rule's equality against the full formula, extreme magnitudes, decimal fidelity</td><td><code>./scripts/test-unit.sh</code></td></tr>
+    <tr><td>Unit — observation loop</td><td>The staleness bound, that a failed round keeps a fresh price, that a stale one never reaches the signer, and that the instruction id is bound into each report</td><td>same</td></tr>
     <tr><td>Unit — parsing</td><td>Comma and plain values, missing <code>currency</code>, malformed, negative, stale, wrong currency</td><td>same</td></tr>
     <tr><td>Conformance</td><td>The container contract — status codes, routing, wire encoding, byte-exact <code>data</code></td><td><code>./scripts/test-conformance.sh</code> — no chain needed</td></tr>
     <tr><td>Contract</td><td>Foundry: store guards (fuzzed), signature negatives, staleness path, feed ID category</td><td><code>forge test</code></td></tr>
     <tr><td>Integration</td><td>Mock Hex API + mock RPC, including provider disagreement and block-window failures</td><td>CI</td></tr>
-    <tr><td>E2E</td><td>Instruction → TEE → result → store → <code>getCurrentFeed()</code> on Coston2</td><td><code>./scripts/e2e.sh</code></td></tr>
+    <tr><td>E2E</td><td>Instruction → TEE → result → store → <code>getCurrentFeed()</code> on Coston2</td><td>See <a href="../docs/testing.md">testing.md</a> — <code>run-test</code> then <code>submit-price</code>. (<code>scripts/e2e.sh</code> is a background-process helper, not the test.)</td></tr>
     <tr><td><b>Shadow run</b></td><td>Real sources, real computation, <b>no publishing</b>, for several days</td><td>before mainnet</td></tr>
   </tbody>
 </table>

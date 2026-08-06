@@ -61,6 +61,9 @@ burn-and-mint confirmation. Evidence and history: findings doc §1 / `usdx-oracl
       Written confirmation of semantics remains as Q1
 - [ ] API key for the private endpoint · [ ] whitelist TEE egress IPs (one static IP per
       machine — decide machine count first)
+      _No longer blocks a Coston2 end-to-end run (5 Aug 2026): the observation now runs
+      cash-less and publishes where the figure provably cannot matter — findings §21. Still
+      required before the feed can print anything below par._
 - [ ] Status of the old Ethereum contract (150,000 USDX, excluded from Hex's figure)
 - [x] ~~Confirm addresses + decimals~~ — done, see findings §2
 
@@ -101,8 +104,23 @@ burn-and-mint confirmation. Evidence and history: findings doc §1 / `usdx-oracl
 
 ### Keeper · Secrets & infra
 
-- [ ] Schedule updates · [ ] poll proxy for results · [ ] submit to store (gas, nonce, resubmission)
-- [ ] ≥2 instances (idempotent) · [ ] wallet funding + low-balance alerts
+_Implementation spec: `usdx-oracle-keeper.md` — the three-step cycle, its deadline budget, and why
+the keeper is deliberately stateless._
+
+- [x] ~~Schedule updates (single-flight)~~ · [x] ~~poll proxy for results~~ ·
+      [x] ~~decode `data` into `(body, signature)` before submitting~~ · [x] ~~submit to store~~
+      — **built**: cycle in `tools/pkg/keeper`, timer in `tools/cmd/keeper`,
+      one-shot in `tools/cmd/submit-price`. Bounded deadlines, exponential backoff,
+      pending-aware, full preflight against the store's guards, graceful shutdown.
+- [x] ~~Cycle records~~ — one JSON line per tick, the outcome taxonomy from the monitoring doc.
+      **`NotNewer` is classified as success**, not failure: with ≥2 keepers exactly one
+      submission wins per cycle and the rest lose the race.
+- [x] ~~Read the instruction fee from the registry rather than hard-coding it~~
+- [ ] **Replace-by-fee is deliberately not implemented** — a superseded submission is not worth
+      bumping. The keeper instead reports `pendingNonceGap`, since a stuck tx blocks every later
+      cycle behind its nonce. Decide whether that reporting is enough or RBF is wanted.
+- [ ] ≥2 instances (idempotent) — the code is ready for it (`-keeperId`); the deployment is not ·
+      [ ] wallet funding + low-balance alerts
 - [ ] Secret inventory (Hex + RPC keys) · [ ] inject encrypted to TEE pubkey, decrypt via `POST /decrypt`
 - [ ] Rotation without a new code hash · [ ] static egress IP per machine (Cloud NAT) ·
       [ ] reproducible build + code hash registration
@@ -110,15 +128,25 @@ burn-and-mint confirmation. Evidence and history: findings doc §1 / `usdx-oracl
 
 ### Monitoring
 
-- [ ] Feed freshness (> 2× interval) · [ ] Hex API health + `last_update` staleness ·
-      [ ] per-RPC health and disagreement rate
+_Missed-update alerting is designed in `usdx-oracle-monitoring.md` — taxonomy, routing tables
+and the phased build. Placement reasoning (keeper, not extension) stays in
+`usdx-oracle-availability.md`._
+
+- [ ] **Phase 1 — chain-age watcher.** Reads `UsdxPriceStore.latest()`, pages on `age > 2× T`.
+      Must run outside the keepers' failure domain: a dead keeper reports nothing, and its
+      silence is indistinguishable from health. Catches every missed-update cause at once and is
+      the only piece load-bearing on its own. **Prerequisite for mainnet.**
+- [ ] **Phase 2 — keeper cycle heartbeat.** One record per cycle (instruction ID, result status,
+      error class, submit outcome, store `observedAt` after). Separates "one keeper died" from
+      "the feed is stale". **Prerequisite for mainnet.**
+- [ ] Phase 3 — classify status-0 results by `failure.Class` and `submitPrice` reverts by error;
+      **suppress `NotNewer`**, which is normal operation with ≥2 keepers, not a fault ·
+      [ ] Phase 4 — dedup on `(cause, feed)` + cross-keeper and cross-machine correlation
 - [ ] **Price < 1 alert** — a business event, not a metric. Pages someone, and needs an agreed
-      comms path to Hex.
-- [ ] **Source-unreachable alert — build it in the keeper, not the extension.** Fail-closed is
-      only safe if someone finds out. Signals are already on the wire (`lastErrorClass`,
-      `sourceHealth`, keeper timeout); the extension can't do it without putting a webhook host
-      in the code-hash-pinned allowlist. Deferred — see `usdx-oracle-availability.md`.
-- [ ] TEE liveness, keeper balance, failed-tx rate · [ ] dashboard + on-call routing
+      comms path to Hex. **Check it against `minPrice`:** bounds set at par mean a genuine depeg
+      reverts `OutOfBounds` and this alert never fires at all.
+- [ ] Hex API health + `last_update` staleness · [ ] per-RPC health and disagreement rate
+- [ ] TEE liveness, keeper balance, failed-tx rate · [ ] Phase 5 — dashboard + on-call routing
 
 ### Testing · Deployment
 
@@ -164,11 +192,40 @@ burn-and-mint confirmation. Evidence and history: findings doc §1 / `usdx-oracl
 | # | Milestone | Done when |
 | --- | --- | --- |
 | **0** | **Premise confirmed** | ✅ Resolved 3 Aug — bank-reported balance, falls below supply on any unmirrored outflow. Written confirmation from Hex remains (Q1) |
-| **1** | Access secured | API key issued, IPs whitelisted |
-| **2** | Local prototype | Price computes end-to-end against real APIs; unit + conformance green |
-| **3** | Contracts on Coston2 | Sender, store, feed deployed and tested |
-| **4** | E2E on Coston2 | Instruction → TEE → store → `getCurrentFeed()` returns a price |
+| **1** | Access secured | API key issued, IPs whitelisted — _still open; no longer blocks 2–4, see findings §21_ |
+| **2** | Local prototype | ✅ 5 Aug — price computes end-to-end against real APIs (par, cash-less); unit + conformance + contract suites green |
+| **3** | Contracts on Coston2 | ✅ 5 Aug — sender, store and feed deployed, store repointed to the current extension generation |
+| **4** | E2E on Coston2 | ✅ **6 Aug** — full path proven: instruction → observation → signed report → `submitPrice` → `getCurrentFeed()` returns `(100000000, 8, 1786004691)`. Below-par and cash-inclusive paths remain unexercised on-chain |
 | **5** | Hardening | Monitoring live, runbook written, drills passed, security review done |
 | **6** | Mainnet | Feed registered with governance, keepers running, consumers notified |
 
-Milestone 0 is resolved; the design stands. Milestones 1–2 can proceed against mocks meanwhile.
+Milestone 0 is resolved; the design stands. Milestone 1 is still open with Hex but no longer
+gates 2–4: the observation runs cash-less and publishes where the figure provably cannot matter.
+
+### Coston2 deployment, as of 6 Aug 2026
+
+| What | Address / value |
+| --- | --- |
+| `UsdxOracleInstructionSender` | `0xe14781f34a3Ca262D87EE6b6C099C14E70308555` |
+| Extension ID | `0x101a8` (65960) |
+| `UsdxPriceStore` | `0x786307b2bd21A5BfE4524Ff14C0B80F9c618cD60` |
+| `UsdxCustomFeed` | `0xEF67cD9C73FaB3Ef27109a3B0ED9E12305Aa2386` |
+| Feed ID | `0x20555344582f555344…` (`USDX/USD`, category 32) |
+| Endpoints config hash | `0xf9f4c2be0d2821e4735ec587242bb0f2a78409ea47bbc72367f81d7e8c5c4a8d` |
+| Store bounds / maxAge | `0.5 … 1.0`, 3600 s |
+
+All three contracts are **verified** on `coston2-explorer.flare.network` (6 Aug 2026) via
+`./scripts/verify-contracts.sh`, so the acceptance rules are readable by anyone relying on
+them, and `latest()` / `getCurrentFeed()` can be called from the explorer's Read Contract tab.
+
+**Milestone 4 closed 6 Aug 2026.** First price on-chain: `1.00000000` at 8 decimals,
+`observedAt` 1786004691, from instruction `0x7040b32d…cb17` under config hash
+`0xf9f4c2be…4a8d`. Walkthrough and how to read the result: `docs/testing.md`.
+
+Note the addresses above are the generation deployed on 5 Aug. Re-running `pre-build.sh` mints
+a new extension id and sender, and the store must then be repointed with `set-store-extension`
+rather than redeployed — it does not follow automatically.
+
+Two earlier store/sender generations exist on-chain and are superseded — `0xD173d75e…61ba`
+(sender) and `0xE77fc35d…e96E` (store, a pre-hardening build with `REQUIRED_TEE_STATUS = 1`).
+Neither is referenced by the current deployment.

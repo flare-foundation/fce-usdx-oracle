@@ -92,7 +92,8 @@ of 2026-08-03.
 | --- | --- | --- |
 | **RPC providers** (within a chain) | `agreedBlock` skips providers that error; fails only when surviving providers < `Quorum`. `readTotalSupply` then requires `Quorum` **identical** answers. | Tolerant. 3 providers at quorum 2 → one dead provider costs nothing. |
 | **Chains** (Flare / Ethereum / Songbird) | `readAllChains` fails the whole observation if any chain fails. | Intolerant — and correctly so. Dropping Songbird's 1.16M would manufacture a 4.5% depeg. |
-| **Backing APIs** (bonds / cash) | `readBacking` aborts on either error. Two attempts, 250 ms apart, transient faults only — 5xx and 429 retry, 4xx and malformed bodies do not. | Intolerant, **and with no redundancy** — a single URL per source. |
+| **Backing API** (bonds) | `readBacking` aborts on error. Two attempts, 250 ms apart, transient faults only — 5xx and 429 retry, 4xx and malformed bodies do not. | Intolerant, **and with no redundancy** — a single URL. |
+| **Backing API** (cash) | _Changed 5 Aug 2026._ Absent or failing, the observation continues and `price.ComputeWithoutCash` publishes only where the figure provably cannot matter. Same retry policy when present. | Tolerant **only at par**; below par it fails closed. See "What was implemented instead" below. |
 
 Identical results are required rather than a median because a read at a fixed block is
 deterministic: two honest providers cannot disagree, so disagreement means one is wrong
@@ -180,15 +181,50 @@ The fix for the availability concern is **redundancy, not degradation**.
    asset measure, so degradation is actively harmful — it would drop the cash buffer
    that decides whether a depeg prints.
 
+### What was implemented instead, 5 Aug 2026
+
+Recommendation 3 stands and is enforced in code. What shipped is narrower than
+degradation and does not weaken it: `price.ComputeWithoutCash` publishes a
+cash-less observation **only where the missing figure provably cannot change the
+answer**, and fails closed everywhere else.
+
+Cash is non-negative and the price is capped at par. So if the bonds-only price
+already reaches par, the complete computation reaches par too, and the number
+published is the one a full observation would have produced — not a substitute
+for it. The decisive case in the table above is untouched: at `R_bonds = 0.99·S`
+this publishes nothing, where degradation would have printed 0.990 against a true
+0.998.
+
+| | With cash | Degradation | Implemented rule |
+| --- | --- | --- | --- |
+| Bonds = 1.00 · S | 1.000 | 1.000 | 1.000 |
+| Bonds = 0.99 · S | 0.998 | 0.990 ← the harm | **nothing published** |
+
+Two things make this more than a technicality. `internal/price` now rounds
+half-up rather than truncating (findings §21), which is what lets the measured
+figures — bonds $0.004 below supply, purely because Hex quotes to the cent —
+reach par at all. And `GET /state` reports the cash source as `not_configured`
+rather than dropping it, so a par-from-bonds observation is distinguishable from
+a complete one even though the published price is identical by construction.
+
+Recommendation 1 is unaffected: this covers the case where cash is *absent*, not
+the case where the bond figure is. That source still has no redundancy, and it is
+the one whose failure stops the feed outright.
+
 Neither (1) nor (2) is a correctness bug in the current code. They are gaps between what
 the design claims and what the implementation guarantees.
 
 ---
 
-## Deferred — source-unreachable alerting, in the keeper
+## Source-unreachable alerting, in the keeper
 
-**Status: to think about later. Not designed, not scheduled.** Recorded here so the
-placement decision is not relitigated.
+**Status: designed — the build plan is `usdx-oracle-monitoring.md`.** _Was "to think about
+later, not designed, not scheduled" until 4 Aug 2026._
+
+What remains here is the **placement** reasoning — why this belongs in the keeper and not the
+extension — recorded so it is not relitigated. The missed-update taxonomy, the alert routing
+tables and the phased build now live in the monitoring doc, which also carries every design
+point listed at the end of this section.
 
 Fail-closed is only a safe default if somebody finds out. Today an unreachable source
 produces a failed observation and a `sourceHealth` entry, and nothing pages anyone. The
@@ -242,6 +278,9 @@ and should page differently, because a shape change from Hex needs a human readi
 response, not a retry.
 
 ### Design points to settle when this is picked up
+
+_Each of these is carried into `usdx-oracle-monitoring.md` — kept here as the record of what
+was raised. Update that doc, not this list, if the thinking changes._
 
 - **Alert on sustained failure, not single events.** FCC is fire-and-forget with no
   delivery guarantee, and `UsdxPriceStore` treats a rejected submission as normal

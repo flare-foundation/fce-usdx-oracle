@@ -222,6 +222,22 @@ bash ./scripts/test.sh
 
 Sends test instructions through the deployed TEE and verifies the round-trip.
 
+**That verifies the round-trip, not the feed.** `test.sh` stops at the proxy: it proves the
+machine produced a valid signed report, and nothing more. Getting a price on-chain needs two
+further steps — publish the endpoint configuration, then relay the signed report into
+`UsdxPriceStore`:
+
+```bash
+cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -config ../testdata/endpoints/public-only.json
+```
+
+```bash
+cd tools && go run ./cmd/submit-price -instructionSender <SENDER>
+```
+
+The full walkthrough, including what to check at each hop and what each revert means, is in
+[testing.md](testing.md) under "Running the USDX oracle end to end yourself".
+
 ---
 
 ## When the extension image changes

@@ -4,6 +4,11 @@ services:
   ext-proxy:
     volumes:
       - ./config/proxy/extension_proxy.coston2.docker.toml:/app/config/config.toml:ro
+    environment:
+      # The coston2 TOML enables [direct] with api_key_variable = "DIRECT_API_KEY",
+      # so the proxy reads the key from this container env variable. .env values
+      # are only interpolated into the yaml when referenced like this.
+      - DIRECT_API_KEY=${DIRECT_API_KEY:?direct mode is enabled in the coston2 proxy config — set DIRECT_API_KEY in .env}
 
   extension-tee:
     environment:

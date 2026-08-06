@@ -17,6 +17,7 @@ config/proxy/extension_proxy.coston2.docker.toml
 config/extension.env
 out/
 cache/
+lib/
 .DS_Store
 
 # go.work is generated on demand by start-services.sh for USE_LOCAL_SIBLINGS=1
@@ -55,6 +56,9 @@ python/.pytest_cache/
 docs/superpowers
 
 notes/
+
+# Local scratch notes
+NOTES.md
 
 # Private deployment guide (SSH, redeploy instructions)
 DEPLOYMENT.md

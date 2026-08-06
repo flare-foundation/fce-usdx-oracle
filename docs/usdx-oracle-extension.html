@@ -63,11 +63,25 @@ repos have got it wrong. And <code>ActionResult.data</code> must be byte-exact: 
     <tr><td><code>internal/config/config.go</code></td><td>Replace <code>OPTypeGreeting</code> / <code>OPCommandSayHello</code> / <code>OPCommandSayGoodbye</code> with <code>OPTypeUsdxOracle = "USDX_ORACLE"</code> and <code>OPCommandGetPrice = "GET_PRICE"</code>. Add source config: RPC endpoint lists, token addresses, quorum, margins, timeouts.</td></tr>
     <tr><td><code>pkg/types/types.go</code></td><td>Replace the greeting request/response types. Redefine <code>State</code> — <b>operational fields only</b> (see §7).</td></tr>
     <tr><td><code>internal/extension/extension.go</code></td><td><code>New()</code> and <code>actionHandler()</code> are boilerplate: leave them. Replace <code>processGreeting</code> with <code>processUsdxOracle</code>, and the two handlers with one <code>processGetPrice</code>.</td></tr>
-    <tr><td><i>new</i> <code>internal/sources/</code></td><td>Hex API clients, multi-provider RPC client, block selection.</td></tr>
-    <tr><td><i>new</i> <code>internal/pricing/</code></td><td>Decimal arithmetic and the price rule. Pure, no I/O — this is the part that must be exhaustively unit-tested.</td></tr>
+    <tr><td><i>new</i> <code>internal/backing/</code>, <code>internal/supply/</code></td><td>Hex API clients; multi-provider RPC client and block selection. <i>(Planned as one <code>internal/sources/</code>; split because the two have different failure semantics — see §5b and the cash rule below.)</i></td></tr>
+    <tr><td><i>new</i> <code>internal/price/</code>, <code>internal/decimal/</code></td><td>Decimal arithmetic and the price rule. Pure, no I/O — exhaustively unit-tested and fuzzed. <i>(Planned as <code>internal/pricing/</code>.)</i></td></tr>
+    <tr><td><i>new</i> <code>internal/oracle/</code></td><td>Orchestrates one observation: ordering, deadlines, the consistency window. Then <code>Sign</code>, separately (§5b).</td></tr>
+    <tr><td><i>new</i> <code>internal/observe/</code></td><td><b>The observation timer and the staleness bound.</b> Not in the original plan — added once the 2-second action timeout made a synchronous observation impossible (§5b).</td></tr>
+    <tr><td><i>new</i> <code>internal/runtimecfg/</code>, <code>internal/provision/</code></td><td>The two things that arrive after startup: RPC URLs (SET_ENDPOINTS) and credentials (SET_SECRET, M-of-N signed).</td></tr>
+    <tr><td><i>new</i> <code>internal/failure/</code></td><td>The closed public error vocabulary. Nothing else may reach <code>ActionResult.Log</code> or <code>/state</code>.</td></tr>
     <tr><td><code>testdata/conformance/</code></td><td>New fixtures for USDX op types; delete the greeting ones.</td></tr>
   </tbody>
 </table>
+
+<h3>The GET_PRICE request envelope</h3>
+<p><b>The instruction carries one byte, <code>0x01</code>, not an empty message</b> — <code>GET_PRICE_REQUEST_V1</code>
+in the sender, <code>config.GetPriceRequestV1</code> in the extension. The observation needs nothing from the
+caller, so the natural payload is none at all, but
+<code>TeeExtensionRegistry.sendInstructions</code> rejects an empty <code>message</code> with
+<code>MessageEmpty()</code> — found on Coston2 the first time this path ran on-chain (Findings §22).</p>
+<p>The handler requires <b>exactly</b> that byte and fails the action otherwise. Accepting-and-ignoring would
+be weaker in two ways: a caller could come to depend on bytes the extension drops, and a later envelope
+version could not be distinguished from this one.</p>
 
 <h2>3. Acquiring the sources</h2>
 <p>Five reads per update: three chains and two API endpoints. Fetch them concurrently under one global
@@ -144,20 +158,54 @@ guard B ≥ 0
 ratio = B / S
 price = min(1, ratio)
 
-value = truncate(price · 10^decimals)     # round DOWN, never up</pre>
+value = round(price · 10^decimals)        # half-up; see below</pre>
 <ul>
   <li><b>Decimal arithmetic throughout.</b> <code>big.Rat</code> or <code>shopspring/decimal</code>. A float64
       cannot represent these magnitudes exactly and the whole point is cent-level fidelity.</li>
-  <li><b>Truncate rather than round</b> so we never over-report backing.</li>
+  <li><b>Round half-up, not truncate</b> — <i>reversed 5 Aug 2026, Findings §21.</i> Truncation could only
+      ever under-report, which is the safe direction, but the thing it was protecting against turned out to
+      be $0.004. Hex quotes reserves <b>to the cent</b> while supply carries 6 decimals on Flare and Songbird
+      and 18 on Ethereum, so the published bond figure is supply with up to $0.01 of quantisation removed —
+      and truncation turned that formatting artifact into a permanent sub-par print. Measured that day:
+      B − S = −$0.004 on a $25.4M float, truncating to 0.99999999.
+      Half a unit in the last place is <b>$0.127</b> at that supply, twelve times the worst-case cent
+      quantisation and 5e-9 of the float, so rounding absorbs the artifact with margin and the shortfall it
+      can conceal is bounded by construction. A 1% depeg still prints as 0.99000000.</li>
   <li><b>Cap at 1.</b> USDX redeems at par; over-collateralisation does not make it worth more.</li>
   <li><b>The haircut parameter exists but defaults to 0.</b> Wire it now so applying one later is a config
       change, not a code-hash change — but do not apply one until Hex tells us how bonds are valued.</li>
 </ul>
 <div class="verdict warn">
-<b>Reality check.</b> With today's inputs this computes exactly 1.000000, and — per Findings §1 — it may be
-structurally incapable of computing anything else. Build the arithmetic correctly regardless, but do not
-mistake a passing test suite for a working oracle.
+<b>Reality check.</b> With today's inputs this computes exactly 1.00000000. The original worry — that it might
+be <i>structurally incapable</i> of computing anything else — was resolved on 3 Aug 2026:
+<code>current_reserves_amount</code> is a bank-reported balance, so it can fall below supply on any outflow
+with no matching burn. Build the arithmetic correctly regardless, and do not mistake a passing test suite for
+a working oracle.
 </div>
+
+<h3>4b. When the cash figure is missing</h3>
+<p>The restricted cash endpoint is the one input with no redundancy: one URL, one credential, one provider.
+Until Hex issues a key there is no cash figure at all, so <code>Cash</code> may be absent and a fetch failure
+is not automatically fatal. What is <b>not</b> permitted is publishing a different number when it is missing.</p>
+<pre>if bonds-only price already reaches par:  publish it
+else:                                     publish nothing</pre>
+<p>Cash is non-negative and the price is capped at par, so a bonds-only price that already reaches par is
+<i>provably</i> what the complete computation would have produced — not a substitute for it. Everything else
+fails closed with <code>backing source unavailable</code>.</p>
+<table>
+  <thead><tr><th>Case</th><th>With cash</th><th>Degradation would print</th><th>Implemented rule</th></tr></thead>
+  <tbody>
+    <tr><td>Bonds = 1.00 · S</td><td>1.000</td><td>1.000</td><td>1.000</td></tr>
+    <tr><td>Bonds = 0.99 · S</td><td>0.998</td><td><b>0.990</b> ← the harm</td><td><b>nothing published</b></td></tr>
+  </tbody>
+</table>
+<p>This is deliberately narrower than the graceful degradation the Availability doc argues against, and it does
+not weaken that argument: the case it cares about publishes nothing. The rule only has teeth because the price
+now rounds — the measured bonds-only ratio, 0.9999999998, reaches par under rounding and did not under
+truncation. Cash at $205,304 is 806,615 units in the last place, six orders of magnitude beyond what rounding
+can absorb, so this admits the quantisation artifact and nothing else. <code>/state</code> reports the source as
+<code>not_configured</code> rather than omitting it, so a par-from-bonds observation stays distinguishable from
+a complete one.</p>
 
 <h2>5. The timing problem</h2>
 <p>Supply reads and reserve reads are not atomic. A redemption landing between them changes both sides:</p>
@@ -183,6 +231,43 @@ backing, never over-report it. Cost is one extra round of RPC reads.</p>
 window measured in seconds is theatre against <i>that</i> input — it only constrains our own read spread.
 The real fix is a reserve figure with an <code>as_of</code> we can align to a block. Worth asking Hex for.</p>
 
+<h2>5b. Observing on a timer, signing on demand <span class="r">— settled 5 Aug 2026</span></h2>
+<div class="callout">
+<h2>An observation does not fit in the time tee-node allows</h2>
+<p>tee-node gives an extension <b>2 seconds</b> to answer any action:</p>
+<pre>// tee-node@v0.0.18 internal/extension/extension.go
+client := http.Client{Timeout: settings.ProxyTimeout}   // const ProxyTimeout = 2 * time.Second</pre>
+<p>It is a <code>const</code> in an <code>internal/</code> package — not an env var, not a config field, and not
+reachable from this repo. A complete observation reads five upstream sources, two of them across multiple
+RPC providers, and measured <b>2.0–2.9 s</b> against live sources. Every request timed out: tee-node
+recorded <code>status 3</code> with a client-timeout log and discarded the extension's answer, so no price
+could reach the chain. Findings §23.</p>
+</div>
+<p>So the two halves run at different times:</p>
+<pre>every ObservationInterval (2 min):        # internal/observe
+    obs = Observe(resolve())              # the slow part — 2-3 s
+    cache obs, or record why it failed
+
+on GET_PRICE:                             # the fast part — milliseconds
+    obs = latest cached observation
+    if age(obs) &gt; MaxObservationAge:  fail closed
+    return Sign(obs, instructionId)       # one signing round trip</pre>
+<ul>
+  <li><b>Signing cannot happen in advance</b> — the body binds <code>instructionId</code>, which only exists
+      once a request arrives. <b>Observing cannot happen on demand</b> — see above. Hence the split.</li>
+  <li><b>Nothing is resampled at signing time.</b> The signature covers the observation's own figures, its
+      own <code>observedAt</code>, and the <code>endpointsHash</code> in force <i>when the inputs were
+      read</i>. A fresh timestamp over stale inputs is the one lie every freshness guard exists to prevent.</li>
+  <li><b><code>observedAt</code> keeps its meaning</b> — when the inputs were read. It is simply no longer
+      the instant of the request.</li>
+  <li><b>New bound: <code>MaxObservationAge</code> (10 min).</b> A cache introduces a staleness mode the
+      request-time design did not have. Past it, GET_PRICE publishes nothing and the on-chain value ages
+      visibly. At a 2-minute interval that tolerates four consecutive failed observations.</li>
+  <li><b>One failed round does not discard a fresh price.</b> A flapping RPC provider must not stop the feed.
+      Health does reflect the failed attempt — it is the only signal an operator gets while a cached price
+      is still being served.</li>
+</ul>
+
 <h2>6. The on-chain message — canonical definition</h2>
 <div class="verdict">
 <b>This section is normative.</b> The Contracts doc consumes exactly this; if the two ever disagree,
@@ -203,7 +288,7 @@ this one wins. Any change here is a wire-format break requiring a new <code>doma
 have nowhere to go).</p>
 <pre>struct PriceReport {
     bytes32 domain;         // keccak256("USDX_ORACLE_PRICE_V1")  — purpose + format version
-    uint256 price;          // truncate(price · 10^decimals)
+    uint256 price;          // round(price · 10^decimals), half-up
     int8    decimals;       // 8
     uint64  observedAt;     // measurement time — the store's monotonicity key
     bytes32 instructionId;  // the instruction that triggered this update
