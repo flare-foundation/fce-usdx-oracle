@@ -1,12 +1,9 @@
-// Command cmd runs the extension in STUB MODE for wire-contract conformance.
+// Command cmd runs the extension in STUB MODE for wire-contract conformance:
+// a hard-coded, unsigned $1.00, reading no supply or reserve data. Used by
+// scripts/test-conformance.sh, which runs the extension with no tee-node, no
+// proxy, no chain and no credentials.
 //
-// It serves a hard-coded, unsigned $1.00 and reads no supply or reserve data.
-// This exists because scripts/test-conformance.sh exercises the extension alone
-// — no tee-node, no proxy, no chain, no credentials — and a real observation
-// needs all of those.
-//
-// The production entrypoint is ./cmd/docker, which is what go/Dockerfile builds.
-// It loads the embedded configuration and refuses to start without it.
+// The production entrypoint is ./cmd/docker.
 package main
 
 import (
@@ -24,12 +21,10 @@ import (
 )
 
 func main() {
-	// NewStub is the only constructor that can build an observerless extension;
-	// the production constructors panic on nil, so this binary cannot be
-	// mistaken for a live feed by accident — or serve one.
+	// The only constructor that can build an observerless extension; the
+	// production ones panic on nil, so this binary cannot serve a live feed.
 	e := extension.NewStub(config.ExtensionPort, config.SignPort)
 
-	// Graceful shutdown.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {

@@ -1,31 +1,15 @@
 // Package pricereport decodes the USDX oracle's signed price payload.
 //
-// The wire format, as returned in ActionResult.Data:
-//
 //	body = abi.encode(bytes32 domain, uint256 price, int8 decimals,
 //	                  uint64 observedAt, bytes32 instructionId, bytes32 configHash)
 //	data = abi.encode(bytes body, bytes signature)
 //
-// UsdxPriceStore.submitPrice takes (body, signature) — the two halves of data —
-// so decoding this is exactly what a relayer does, and the store does the
-// equivalent on-chain.
-//
-// # Why this lives in tools/ and not in the extension
-//
 // The layout is declared here rather than imported from go/internal/report so
-// that tools/ stays independent of any one implementation: this asserts on the
-// *wire contract*, and must run unchanged against the Go, Python and TypeScript
-// extensions alike (docs/extension-contract.md). It is a second, deliberate
-// declaration of the same layout — which is also why it is one package and not
-// a copy in every command that needs it.
+// tools/ stays independent of any one implementation — this asserts on the wire
+// contract and must run unchanged against every extension language.
 //
-// # Never re-encode the body
-//
-// Body is carried verbatim. The store verifies the signature over exactly the
-// bytes it received and only then decodes them, so re-encoding from the fields
-// below would make acceptance depend on the relayer's encoder matching the
-// TEE's byte for byte. Any divergence would then present as an invalid
-// signature rather than as the encoding bug it is.
+// Body is carried verbatim, never re-encoded: the store verifies the signature
+// over exactly the bytes it received.
 package pricereport
 
 import (
@@ -38,16 +22,14 @@ import (
 	"github.com/pkg/errors"
 )
 
-// DomainName is the schema version the signature is bound to. A change to the
-// payload layout must change this string, so that an old signature cannot be
-// reinterpreted under a new schema.
+// DomainName is the schema version the signature is bound to: a layout change
+// must change it, so an old signature cannot be reinterpreted.
 const DomainName = "USDX_ORACLE_PRICE_V1"
 
 // BodyLength is the encoded body: six static ABI words.
 const BodyLength = 6 * 32
 
-// Domain returns keccak256(DomainName) — the value a valid report carries in
-// its first word, and the one UsdxPriceStore.DOMAIN holds.
+// Domain is the first word of a valid report, and UsdxPriceStore.DOMAIN.
 func Domain() common.Hash { return crypto.Keccak256Hash([]byte(DomainName)) }
 
 // Report is one decoded price report.
@@ -71,8 +53,6 @@ func mustArgs(types ...string) abi.Arguments {
 	for i, t := range types {
 		ty, err := abi.NewType(t, "", nil)
 		if err != nil {
-			// Only reachable via a typo in the literals below, which this
-			// package's tests catch immediately.
 			panic("pricereport: invalid ABI type " + t + ": " + err.Error())
 		}
 		args[i] = abi.Argument{Type: ty}
@@ -85,10 +65,8 @@ var (
 	bodyArgs = mustArgs("bytes32", "uint256", "int8", "uint64", "bytes32", "bytes32")
 )
 
-// Decode splits ActionResult.Data and decodes the signed body.
-//
-// It verifies the domain separator, so a payload built for another schema is
-// rejected here rather than silently misread as a price.
+// Decode splits ActionResult.Data and decodes the signed body, verifying the
+// domain separator so another schema is rejected rather than misread.
 func Decode(data []byte) (Report, error) {
 	var r Report
 
@@ -140,18 +118,15 @@ func Decode(data []byte) (Report, error) {
 	}, nil
 }
 
-// Signer recovers the TEE identity that signed the report, exactly as
-// UsdxPriceStore._recover does: EIP-191 over keccak256(body), with v in
-// {27, 28}. Recovering it off-chain is what lets a relayer say *which* machine
-// a rejected report came from.
+// Signer recovers the TEE identity exactly as UsdxPriceStore._recover does, so
+// a relayer can say WHICH machine a rejected report came from.
 func (r Report) Signer() (common.Address, error) {
 	if len(r.Signature) != 65 {
 		return common.Address{}, errors.Errorf(
 			"BadSignatureLength: %d bytes, the store requires 65", len(r.Signature))
 	}
 
-	// go-ethereum recovers with v in {0,1}; the store requires the {27,28} form
-	// that the extension normalises to. Copied rather than mutated in place:
+	// go-ethereum recovers with v in {0,1}. Copied rather than mutated in place:
 	// Signature is relayed verbatim and must not be disturbed.
 	sig := make([]byte, 65)
 	copy(sig, r.Signature)
@@ -180,8 +155,7 @@ func EIP191Digest(body []byte) []byte {
 	)
 }
 
-// Human renders the fixed-point price for display only. The uint256 is the
-// value; this is never fed back into anything.
+// Human renders the fixed-point price for display only.
 func (r Report) Human() string {
 	if r.Price == nil || r.Decimals < 0 || r.Decimals > 36 {
 		return "?"

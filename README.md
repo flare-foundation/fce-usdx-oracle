@@ -25,9 +25,15 @@ Live on Coston2 and returning `$1.00000000`:
 All three are verified, so you can call `latest()` from the explorer's Read Contract tab.
 
 > **Design docs:** [plan & TODO](docs/usdx-oracle-plan.md) · [spec](docs/usdx-oracle-spec.md) ·
+> [rationale](docs/usdx-oracle-rationale.md) ·
 > **[implementation findings](docs/usdx-oracle-findings.md)** — read the findings before touching
 > the extension. It records the security issues found while building, each pinned by a named
 > test, plus the two constraints that only surfaced on-chain (§22, §23).
+>
+> The [rationale doc](docs/usdx-oracle-rationale.md) explains *why* the code is shaped the way it
+> is — the supply quorum and how it pins a block, the closed error vocabulary, what is compiled in
+> rather than configurable. The code keeps a one-line pointer wherever that reasoning is
+> load-bearing.
 
 ## How it works
 

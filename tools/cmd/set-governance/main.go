@@ -1,12 +1,9 @@
-// set-governance: register the TEE governance signer set + threshold for this
-// extension on-chain.
+// set-governance registers the TEE governance signer set + threshold for this
+// extension on-chain, from GOVERNANCE_SIGNERS and GOVERNANCE_THRESHOLD
+// (defaulting to the deployer alone, threshold 1).
 //
-// Reads the signer set from GOVERNANCE_SIGNERS (comma-separated 0x addresses)
-// and the threshold from GOVERNANCE_THRESHOLD. Both default to "the deployer
-// alone, threshold 1" when unset, so a developer who configures nothing still
-// gets a working setup. These MUST match the same env vars passed to the TEE
-// node (it derives its governanceHash from them), or register-tee fails with
-// InvalidGovernanceHash.
+// These MUST match the env vars passed to the TEE node, which derives its
+// governanceHash from them, or register-tee fails with InvalidGovernanceHash.
 package main
 
 import (
@@ -50,9 +47,8 @@ func main() {
 	}
 	deployer := crypto.PubkeyToAddress(privKey.PublicKey)
 
-	// Default governance signer: INITIAL_OWNER if set (this is what the node's
-	// compose env defaults to), else the deployer. Keeping both sides on the
-	// same default is what makes the node's governanceHash match the chain.
+	// INITIAL_OWNER if set (the node's compose default), else the deployer:
+	// matching defaults are what make the node's governanceHash match the chain.
 	defaultSigner := deployer
 	if io := strings.TrimSpace(os.Getenv("INITIAL_OWNER")); io != "" {
 		defaultSigner = common.HexToAddress(io)

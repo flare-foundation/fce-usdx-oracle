@@ -1,20 +1,13 @@
-// Command mocknode is a local stand-in for tee-node's signing service.
-//
-// It implements the three endpoints the extension actually uses, with a key
-// held in this process instead of an enclave:
+// Command mocknode is a local stand-in for tee-node's signing service, holding
+// the key in-process instead of an enclave so the provisioning flow can be
+// exercised without Confidential Space:
 //
 //	POST /sign      sign with the identity key (EIP-191, exactly as tee-node does)
 //	POST /decrypt   ECIES-decrypt to the identity key
 //	GET  /info      publish the public key, mirroring the TEE proxy's shape
 //
-// This exists so the provisioning flow can be exercised without Confidential
-// Space: SET_SECRET carries a ciphertext that must be decrypted in-enclave, so
-// without a decrypt endpoint the path cannot be tested at all.
-//
-// NOT SECURE AND NOT FOR DEPLOYMENT. The key is derived from a fixed seed so
-// runs are reproducible, which is the opposite of what a real TEE guarantees.
-// Nothing here is compiled into the production image — that is ./cmd/docker,
-// which talks to a real tee-node.
+// NOT SECURE AND NOT FOR DEPLOYMENT. The key comes from a fixed seed so runs
+// are reproducible, which is the opposite of what a real TEE guarantees.
 package main
 
 import (
@@ -89,12 +82,10 @@ func main() {
 	}
 }
 
-// signHandler reproduces tee-node's signWithTeeHandler exactly:
+// signHandler reproduces tee-node's signWithTeeHandler exactly — EIP-191
+// prefixing and the 0/1 recovery id both behave as in production:
 //
-//	msgHash := crypto.Keccak256(message)
-//	sig     := crypto.Sign(accounts.TextHash(msgHash), key)
-//
-// so the EIP-191 prefixing and the 0/1 recovery id both behave as production.
+//	sig := crypto.Sign(accounts.TextHash(crypto.Keccak256(message)), key)
 func signHandler(key *ecdsa.PrivateKey) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req signRequest

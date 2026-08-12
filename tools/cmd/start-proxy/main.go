@@ -1,6 +1,5 @@
-// TEMPORARY: This command starts the extension proxy as a Go process.
-// It will be replaced by a Docker container once the Dockerfile is implemented.
-// See EXTENSION-TEMPLATE-SPEC.md §5 for the Docker approach.
+// TEMPORARY: starts the extension proxy as a Go process. To be replaced by a
+// Docker container once the Dockerfile is implemented.
 package main
 
 import (

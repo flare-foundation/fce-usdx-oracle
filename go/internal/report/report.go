@@ -1,63 +1,12 @@
 // Package report encodes the signed price payload.
 //
-// # What is signed, and why each field is in it
-//
-//	struct PriceReport {
-//	    bytes32 domain;         // keccak256("USDX_ORACLE_PRICE_V1")
-//	    uint256 price;
-//	    int8    decimals;
-//	    uint64  observedAt;
-//	    bytes32 instructionId;
-//	    bytes32 endpointsHash;  // keccak256 of the active SET_ENDPOINTS payload
-//	}
-//
-//	body = abi.encode(report)
+//	body = abi.encode(domain, price, decimals, observedAt, instructionId, endpointsHash)
 //	data = abi.encode(body, signature)
 //
-// FCC is explicitly "fire and forget": no ordering guarantee, no delivery
-// guarantee, no replay protection beyond what a payload arranges for itself.
-//
-//   - **domain** separates this signature from any other thing the TEE identity
-//     key ever signs. Without it, a signature produced for some future USDX
-//     instruction could be replayed as a price.
-//   - **observedAt** is the store's monotonicity key, so it MUST be inside the
-//     signed body. If it were outside, a relayer could rewrite it and either
-//     replay an old price as fresh or push a real price out of order.
-//   - **instructionId** ties the report to the instruction that requested it.
-//   - **endpointsHash** commits to the configuration this price was computed
-//     under. UsdxPriceStore compares it against what setEndpoints published for
-//     this machine, so a machine running a stale or divergent configuration
-//     cannot submit at all. Without it the on-chain config is advisory: it
-//     records what was *sent*, never what a machine is actually *running*, and
-//     with several machines a missed setEndpoints call leaves one publishing
-//     perfectly valid prices from the wrong configuration.
-//
-// # No target binding, by decision
-//
-// The payload carries no chain id, store address or feed id. WHERE a report is
-// accepted is settled by the store's trust anchor instead: a signature is only
-// ever accepted from a TEE machine currently registered to the store's
-// extension (UsdxPriceStore._requireRegisteredTee). The payload binds WHAT was
-// observed; the registry check plus governance bind where it lands. The
-// trade — a genuinely-signed report can be replayed into another deployment
-// registered under the same extension, though nobody can forge a price — was
-// made deliberately before launch; see the findings doc.
-//
-// # Carry the body, never re-encode it
-//
-// data carries `body` as raw bytes rather than the struct's fields. The store
-// verifies the signature over exactly the bytes it received, then decodes them.
-// Re-encoding on the way in would make verification depend on the encoder
-// agreeing byte-for-byte with the TEE's, and any future divergence — a field
-// reordering, a padding difference — would present as an invalid signature
-// rather than as the encoding bug it is.
-//
-// # Price only
-//
-// Supply and backing components are excluded: they may be commercially
-// sensitive to Hex (spec §4.1), and this payload is public and permanent. The
-// consequence, recorded in the spec, is that consumers cannot recompute
-// min(1, B/S) from on-chain data.
+// FCC is fire-and-forget, so the payload arranges its own replay protection:
+// domain separates this signature from anything else the identity key signs,
+// observedAt is the store's monotonicity key, endpointsHash commits to the
+// configuration the price was computed under. See docs/usdx-oracle-rationale.md.
 package report
 
 import (
@@ -70,36 +19,26 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// DomainName is the domain separator's preimage. Versioned: a change to the
-// payload layout must change this string, so that old signatures cannot be
-// reinterpreted under the new schema.
+// DomainName is versioned: a change to the payload layout must change this
+// string so old signatures cannot be reinterpreted under the new schema.
 const DomainName = "USDX_ORACLE_PRICE_V1"
 
 // BodyLength is the encoded body's length: six static ABI words.
 const BodyLength = 6 * 32
 
-// Domain returns keccak256(DomainName).
 func Domain() common.Hash { return crypto.Keccak256Hash([]byte(DomainName)) }
 
-// PriceReport is the signed observation.
 type PriceReport struct {
 	Price         *big.Int
 	Decimals      int8
 	ObservedAt    uint64
 	InstructionID common.Hash
 
-	// EndpointsHash is keccak256 of the raw SET_ENDPOINTS payload currently in
-	// force. Hashed as received, never re-serialised: json.Marshal will not
-	// reproduce byte-identical input, so a re-encode could never match
-	// keccak256(_config) from the transaction.
+	// keccak256 of the raw SET_ENDPOINTS payload as received, never
+	// re-serialised: json.Marshal will not reproduce byte-identical input.
 	EndpointsHash common.Hash
 }
 
-// bodyArgs is the ABI layout of the struct's fields, in declaration order.
-//
-// Every field is a static type, so the encoding is five 32-byte words with no
-// offsets — which is what makes the golden-vector test in this package able to
-// assert the layout word by word.
 var bodyArgs = mustArgs(
 	"bytes32", // domain
 	"uint256", // price
@@ -109,7 +48,6 @@ var bodyArgs = mustArgs(
 	"bytes32", // endpointsHash
 )
 
-// dataArgs is the outer envelope: (bytes body, bytes signature).
 var dataArgs = mustArgs("bytes", "bytes")
 
 func mustArgs(types ...string) abi.Arguments {
@@ -117,8 +55,6 @@ func mustArgs(types ...string) abi.Arguments {
 	for i, t := range types {
 		ty, err := abi.NewType(t, "", nil)
 		if err != nil {
-			// Only reachable via a typo in the literals above, which the
-			// package's tests would catch immediately.
 			panic("report: invalid ABI type " + t + ": " + err.Error())
 		}
 		args[i] = abi.Argument{Type: ty}
@@ -134,15 +70,12 @@ func EncodeBody(r PriceReport) ([]byte, error) {
 	if r.Decimals < 0 {
 		return nil, failure.Internal
 	}
+	// Zero observedAt and zero endpointsHash are the store's "never seen" and
+	// "no configuration published" sentinels; neither could ever be accepted.
 	if r.ObservedAt == 0 {
-		// Zero is the store's "never seen" sentinel; a report carrying it could
-		// never satisfy strict monotonicity.
 		return nil, failure.Internal
 	}
-
 	if r.EndpointsHash == (common.Hash{}) {
-		// Zero is the store's "no configuration published" sentinel, so a report
-		// carrying it could never be accepted.
 		return nil, failure.Internal
 	}
 
@@ -160,8 +93,9 @@ func EncodeBody(r PriceReport) ([]byte, error) {
 	return body, nil
 }
 
-// EncodeData wraps a signed body into the ActionResult payload:
-// abi.encode(body, signature).
+// EncodeData wraps a signed body into the ActionResult payload. body is carried
+// as raw bytes so the store verifies the signature over exactly what it
+// received; re-encoding would surface an encoder divergence as a bad signature.
 func EncodeData(body, signature []byte) ([]byte, error) {
 	if len(body) != BodyLength || len(signature) == 0 {
 		return nil, failure.Internal
@@ -174,7 +108,6 @@ func EncodeData(body, signature []byte) ([]byte, error) {
 }
 
 // DecodeData splits an ActionResult payload back into body and signature.
-// Used by tests and tooling; the store does the equivalent on-chain.
 func DecodeData(data []byte) (body, signature []byte, err error) {
 	values, err := dataArgs.Unpack(data)
 	if err != nil || len(values) != 2 {
@@ -191,9 +124,8 @@ func DecodeData(data []byte) (body, signature []byte, err error) {
 	return body, signature, nil
 }
 
-// DecodeBody reverses EncodeBody. It verifies the domain separator, so a
-// payload signed for a different schema is rejected here rather than silently
-// misread.
+// DecodeBody reverses EncodeBody, verifying the domain separator so a payload
+// signed for a different schema is rejected rather than silently misread.
 func DecodeBody(body []byte) (PriceReport, error) {
 	values, err := bodyArgs.Unpack(body)
 	if err != nil || len(values) != 6 {

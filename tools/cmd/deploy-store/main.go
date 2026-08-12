@@ -1,18 +1,13 @@
-// Command deploy-store deploys UsdxPriceStore and UsdxCustomFeed.
-//
-// It runs from scripts/extension-setup.sh, which sits between pre-build.sh
-// (which registers the extension and produces EXTENSION_ID) and the image
-// build:
+// Command deploy-store deploys UsdxPriceStore and UsdxCustomFeed. It runs from
+// scripts/extension-setup.sh:
 //
 //	pre-build.sh        deploy InstructionSender, register extension -> EXTENSION_ID
 //	extension-setup.sh  THIS: deploy store + feed -> record addresses
 //	start-services.sh   build image -> code hash
 //	post-build.sh       register the TEE machine
 //
-// The signed price report carries no target binding — acceptance is anchored
-// by the store's registered-machine check — so the store address is NOT part
-// of the extension image; it is recorded in the deployed-addresses file for
-// the setup script's redeploy detection and for operators.
+// The signed report carries no target binding, so the store address is NOT part
+// of the extension image — only the deployed-addresses file.
 package main
 
 import (
@@ -137,10 +132,8 @@ func main() {
 	logger.Infof("Register the feed with Flare governance via addCustomFeeds — " +
 		"that is a proposal with a timelock, not a deploy step.")
 
-	// Record both addresses so extension-setup.sh can detect the deployment on
-	// a re-run instead of resetting the stored price with a fresh one. A
-	// failure here is not fatal: the contracts are deployed, the script just
-	// loses its reuse detection.
+	// So extension-setup.sh detects the deployment on a re-run instead of
+	// resetting the stored price. Not fatal: the contracts are already deployed.
 	if err := recordAddresses(*af, []support.RawContract{
 		{Name: "UsdxPriceStore", ContractName: "UsdxPriceStore.sol", Address: storeAddr.Hex()},
 		{Name: "UsdxCustomFeed", ContractName: "UsdxCustomFeed.sol", Address: feedAddr.Hex()},
@@ -148,15 +141,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "WARNING: could not record addresses into %s: %v\n", *af, err)
 	}
 
-	// Last line is the store address, so the calling script can capture it the
-	// same way pre-build.sh captures the instruction sender.
+	// Last line is the store address, for the calling script to capture.
 	fmt.Println(storeAddr.Hex())
 }
 
-// recordAddresses merges the deployed addresses into the addresses file,
-// preserving the entries the scaffold already wrote there. The file uses
-// Flare's standard array format ([{name, contractName, address}, ...]):
-// entries are matched by name and updated in place, or appended when new.
+// recordAddresses merges into the addresses file, preserving existing entries.
+// Flare's array format ([{name, contractName, address}, ...]): matched by name
+// and updated in place, or appended.
 func recordAddresses(path string, add []support.RawContract) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {

@@ -59,10 +59,13 @@ matters.
 
 **What to be prepared for.**
 
-- The conservative double-read (`max(S₁, S₂)`) covers a burn *or* a mint landing
-  between the two supply reads. It does **not** cover a gap that contains the whole
-  observation: burn before `S₁`, mint after `S₂`. Our read window is seconds; the gap
-  is tens of seconds to minutes — so an entire update can sit inside one gap.
+- Supply is read once, pinned to one agreed block per chain, so there is no
+  intra-observation supply race left to cover: the figure is supply *as of block N*.
+  The earlier conservative double-read (`max(S₁, S₂)`) covered a burn or mint landing
+  between two supply reads, and was dropped along with them — see rationale §2.
+- Neither scheme covers the case that actually matters here: a gap containing the
+  whole observation — burn before the read, mint after. Our read window is seconds;
+  the gap is tens of seconds to minutes, so an entire update can sit inside one gap.
 - A large transfer moves the ratio proportionally: 1M USDX ≈ 4% of current supply.
   Bridges cluster in exactly the market conditions where the price matters.
 - Failed-then-retried delivery stretches the gap from minutes to hours. Nothing on our
@@ -72,8 +75,8 @@ matters.
 
 1. *Accept and document* (minimum). The exposure is bounded by transfer size, and the
    error direction is only dangerous when already under-backed.
-2. *Cross-update supply hold* (recommended companion to the double-read — see
-   Preparedness P2). If supply drops between observations while reserves are
+2. *Cross-update supply hold* (recommended — see Preparedness P2; now the only
+   supply-timing defence). If supply drops between observations while reserves are
    unchanged, publish against the **higher** recent supply. The mint restores supply
    within minutes, so the hold self-corrects; while active it can only understate the
    price, never overstate it. Note this signature (`S` down, `B` flat) is shared with
@@ -326,7 +329,7 @@ Verification is one `balanceOf` sweep once Hex provides the controller/burn addr
 
 | # | Case | Supply | Reserves | Price bias | Duration | Covered by current design? |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Bridge in flight | ↓ | flat | toward $1 (up) | sec–min; unbounded if delivery fails | partial — double-read misses gap-inside-window |
+| 1 | Bridge in flight | ↓ | flat | toward $1 (up) | sec–min; unbounded if delivery fails | **no** — gap-inside-window was never covered, and the double-read is gone |
 | 2 | Mint | ↑ (lagged) | ↑ first | capped at 1 | hours–days | yes — par cap |
 | 3 | Redemption escrow→wire→burn | flat, then ↓ | ↓ first | below $1 (down), false | hours–days | **no** — reserves side; S reads are "correct" |
 | 4 | Old ETH contract | understated | n/a | up, persistent | forever | no — population question |
@@ -335,9 +338,9 @@ Verification is one `balanceOf` sweep once Hex provides the controller/burn addr
 | 7 | Non-circulating balances | overstated | n/a | down, persistent | forever | yes if in `E`; conservative either way |
 
 **What the current design already absorbs:** the par cap (Cases 2, 7-safe), truncation
-(always biased down), the conservative double-read `max(S₁, S₂)` (same-chain burn/mint
-timing), the configurable exclusion list `E` (3-alt, 7), and "every pinned chain must
-be present" (integrity of the configured set).
+(always biased down), the single block-pinned supply read (no intra-observation supply
+race — the figure is supply as of one block), the configurable exclusion list `E`
+(3-alt, 7), and "every pinned chain must be present" (integrity of the configured set).
 
 **What it does not absorb:** any reserves-side movement (Cases 3, 6 — the supply reads
 are correct there; nothing to bracket), cross-chain gaps fully inside the observation

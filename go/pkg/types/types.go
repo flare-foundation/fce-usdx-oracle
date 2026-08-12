@@ -5,81 +5,51 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// GetPriceResponse is the JSON payload returned in ActionResult.Data for a
-// GET_PRICE action.
-//
-// SCAFFOLD: this is the Phase 2 stub shape. The final wire format is the
-// ABI-encoded PriceReport plus a tee-node signature (spec §WP3):
-//
-//	data = abi.encode(abi.encode(report), signature)
-//
-// That lands with the real oracle logic, together with UsdxPriceStore which has
-// to decode it. Anything consuming this shape today should expect it to change.
+// GetPriceResponse is the stub shape returned in ActionResult.Data. The real
+// wire format is abi.encode(abi.encode(report), signature) — see internal/report.
 type GetPriceResponse struct {
-	// Price is truncate(price * 10^Decimals), as a decimal string.
-	//
-	// A string, not a number: the on-chain type is uint256, which does not fit a
-	// float64, and JSON numbers are float64 in most parsers. At $1.00 and 8
-	// decimals it would fit today — encoding it as a string anyway keeps the
-	// contract honest for every consumer that later reads a real uint256.
+	// truncate(price * 10^Decimals) as a decimal string, not a number: the
+	// on-chain type is uint256 and JSON numbers are float64 in most parsers.
 	Price string `json:"price"`
 
-	// Decimals is the fixed-point scale of Price.
 	Decimals int8 `json:"decimals"`
 
-	// ObservedAt is when the TEE observed the inputs, as a Unix timestamp. This
-	// is the price store's monotonicity key, so it must be part of the signed
-	// body once signing is wired up.
+	// Unix timestamp of the observation; the price store's monotonicity key.
 	ObservedAt uint64 `json:"observedAt"`
 }
 
-// State holds the extension's observable state, returned by GET /state.
-//
-// This struct is PUBLIC. tee-node polls GET /state and folds the response into
-// TEEState.state, which is attested and then republished by the TEE proxy at
-// GET /info (spec §4.1). Nothing here may carry raw supply figures, reserve
-// components, API responses, credentials or endpoint URLs — only the derived
-// price and non-sensitive operational health.
+// State is PUBLIC: tee-node polls GET /state, folds it into TEEState.state, and
+// the proxy republishes it at GET /info. Nothing here may carry raw supply
+// figures, reserve components, API responses, credentials or endpoint URLs.
 type State struct {
-	// LastPrice is the most recently published price, same encoding as
-	// GetPriceResponse.Price. Empty string when nothing has been published yet.
-	LastPrice string `json:"lastPrice"`
+	LastPrice    string `json:"lastPrice"`
+	LastDecimals int8   `json:"lastDecimals"`
 
-	// LastDecimals is the scale of LastPrice.
-	LastDecimals int8 `json:"lastDecimals"`
-
-	// LastObservedAt is the observation timestamp of LastPrice. Consumers use
-	// this to detect a frozen feed: a price that stops advancing is the designed
-	// failure mode, not an outage (spec §7.15).
+	// Consumers use this to detect a frozen feed, which is the designed failure
+	// mode rather than an outage.
 	LastObservedAt uint64 `json:"lastObservedAt"`
 
-	// UpdateCount and FailureCount are cumulative since process start.
 	UpdateCount  int `json:"updateCount"`
 	FailureCount int `json:"failureCount"`
 
-	// LastErrorClass is one of the config.ErrClass* constants — a closed
-	// taxonomy, never a raw error string, because this field is world-readable.
+	// One of the failure.Class constants — a closed taxonomy, never a raw error
+	// string, because this field is world-readable.
 	LastErrorClass string `json:"lastErrorClass"`
 
-	// Readiness reports provisioning state. Credentials are memory-only, so the
-	// extension returns to unprovisioned after every restart and this is what
-	// distinguishes "never configured" from "configured but a source is down".
-	// It names secret refs, never their values.
+	// Names secret refs, never their values. Credentials are memory-only, so
+	// this is what distinguishes "never configured" from "source is down".
 	Readiness Readiness `json:"readiness"`
 
-	// SourceHealth maps an upstream's stable name to one of config.Health*.
-	// Names are identifiers like "hex_bonds" or "rpc_flare" — never URLs, which
-	// would disclose which providers and API keys are in use.
+	// Stable names like "hex_bonds" or "rpc_flare" — never URLs, which would
+	// disclose which providers and API keys are in use.
 	SourceHealth map[string]string `json:"sourceHealth"`
 }
 
-// Readiness is the provisioning state reported by GET /state.
 type Readiness struct {
 	EndpointsSet bool `json:"endpointsSet"`
 
-	// EndpointsHash is keccak256 of the active SET_ENDPOINTS payload. Compare it
-	// against the EndpointsSet event from setEndpoints to confirm this machine
-	// is running exactly what was published. Empty until endpoints arrive.
+	// keccak256 of the active SET_ENDPOINTS payload. Compare against the
+	// EndpointsSet event to confirm this machine runs what was published.
 	EndpointsHash string `json:"endpointsHash"`
 
 	Ready       bool     `json:"ready"`

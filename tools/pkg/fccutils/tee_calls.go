@@ -68,11 +68,9 @@ func TeeProxyId(teeInfo *types.SignedTeeInfoResponse) (common.Address, common.Ad
 	if err != nil {
 		return common.Address{}, common.Address{}, errors.Errorf("%s", err)
 	}
-	// The proxy signs the TEE info over a domain-separated, chain-ID-bound
-	// payload (Payload{ProxyTeeInfo, chainID, infoHash}) — see tee-proxy
-	// external.go. Recover the proxy address over the SAME preimage, or the
-	// proxyId comes out garbage and the on-chain availability check is rejected
-	// by the verifier with "proxy signer does not match".
+	// The proxy signs over Payload{ProxyTeeInfo, chainID, infoHash}. Recover
+	// against the SAME preimage, or proxyId comes out garbage and the on-chain
+	// availability check is rejected with "proxy signer does not match".
 	infoSignHash, err := csigning.NewPayload(csigning.ProxyTeeInfo, teeInfo.TeeInfo.ChainID, common.BytesToHash(hash)).Hash()
 	if err != nil {
 		return common.Address{}, common.Address{}, errors.Errorf("%s", err)
