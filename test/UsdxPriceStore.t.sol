@@ -663,6 +663,140 @@ contract UsdxPriceStoreTest is Test {
         }
         assertEq(store.observedAt() == 0 || store.observedAt() == 1_700_000_000, true);
     }
+
+    // --- per-machine config proof ---
+    //
+    // expectedConfigHash records what was SENT to a machine. These record what a
+    // machine PROVED it was running, which is the half that was missing: a
+    // config can be rejected by the extension or never delivered at all, and
+    // with several machines each needs its own setEndpoints call.
+
+    function test_LandingAPriceRecordsTheMachine() public {
+        _submit(PAR, 1_700_000_000);
+
+        (bytes32 configHash, uint64 obsAt, uint64 acceptedAt, uint32 submissions) = store.lastReport(teeId);
+        assertEq(configHash, CONFIG_HASH);
+        assertEq(obsAt, 1_700_000_000);
+        assertEq(acceptedAt, uint64(block.timestamp));
+        assertEq(submissions, 1);
+
+        assertTrue(store.isProvenConfigured(teeId));
+        assertEq(store.seenTeeCount(), 1);
+        assertEq(store.seenTees(0), teeId);
+    }
+
+    function test_FirstSightingEmitsTeeSeen() public {
+        vm.expectEmit(true, true, false, false);
+        emit UsdxPriceStore.TeeSeen(teeId, CONFIG_HASH);
+        _submit(PAR, 1_700_000_000);
+    }
+
+    /// seenTees is append-only, so a machine that submits repeatedly appears
+    /// once. Otherwise the array grows without bound and teeReports() eventually
+    /// runs out of gas.
+    function test_MachineIsRecordedOnceButCounted() public {
+        // Chain time advances with the reports: observedAt may lead block
+        // timestamp by at most MAX_FUTURE_SKEW, so three fixed stamps would trip
+        // TooFarAhead rather than exercise the counter.
+        _submit(PAR, 1_700_000_000);
+        vm.warp(1_700_000_100);
+        _submit(PAR - 1, 1_700_000_100);
+        vm.warp(1_700_000_200);
+        _submit(PAR - 2, 1_700_000_200);
+
+        assertEq(store.seenTeeCount(), 1);
+
+        (,,, uint32 submissions) = store.lastReport(teeId);
+        assertEq(submissions, 3);
+    }
+
+    /// An unknown machine is not "configured", it is unproven. The distinction
+    /// matters: this is the state a machine sits in between being registered and
+    /// being commissioned.
+    function test_UnseenMachineIsNotProven() public view {
+        assertFalse(store.isProvenConfigured(address(0xDEAD)));
+    }
+
+    /// Re-publishing a config withdraws the proof until that machine lands a
+    /// price under the new one. Self-announcing by design — it is the signal to
+    /// re-run commissioning.
+    function test_RepublishingConfigWithdrawsTheProof() public {
+        _submit(PAR, 1_700_000_000);
+        assertTrue(store.isProvenConfigured(teeId));
+
+        configSource.setExpected(teeId, keccak256("endpoints-v2"));
+        assertFalse(store.isProvenConfigured(teeId));
+
+        // The record still says what the machine last proved, which is what
+        // tells an operator it is running the OLD config rather than nothing.
+        (bytes32 configHash,,,) = store.lastReport(teeId);
+        assertEq(configHash, CONFIG_HASH);
+    }
+
+    /// A config source that has gone away must read as unproven, not revert and
+    /// not accidentally report true.
+    function test_BrokenConfigSourceIsNotProven() public {
+        _submit(PAR, 1_700_000_000);
+
+        // Deployed before the prank: `new` is itself a call and would consume it.
+        RevertingConfigSource broken = new RevertingConfigSource();
+        vm.prank(governance);
+        store.setExtension(EXTENSION_ID, IUsdxConfigSource(address(broken)));
+
+        assertFalse(store.isProvenConfigured(teeId));
+    }
+
+    /// The whole fleet in one call, so a dashboard needs no indexer.
+    function test_TeeReportsEnumeratesTheFleet() public {
+        uint256 secondKey = 0xB0B;
+        address secondTee = vm.addr(secondKey);
+        registry.setMachine(secondTee, EXTENSION_ID, PRODUCTION);
+        configSource.setExpected(secondTee, CONFIG_HASH);
+
+        _submit(PAR, 1_700_000_000);
+
+        bytes memory body = _goodBody(PAR - 1, 1_700_000_100);
+        store.submitPrice(body, _sign(body, secondKey));
+
+        (address[] memory tees, UsdxPriceStore.TeeReport[] memory reports) = store.teeReports();
+        assertEq(tees.length, 2);
+        assertEq(reports.length, 2);
+        assertEq(tees[0], teeId);
+        assertEq(tees[1], secondTee);
+        assertEq(reports[0].observedAt, 1_700_000_000);
+        assertEq(reports[1].observedAt, 1_700_000_100);
+    }
+
+    /// A rejected submission must leave no trace. Recording an unproven machine
+    /// would make the fleet view claim a commissioning that never happened.
+    function test_RejectedSubmissionRecordsNothing() public {
+        bytes memory body = _bodyWithConfig(PAR, 1_700_000_000, DECIMALS, keccak256("wrong-config"));
+
+        vm.expectRevert(UsdxPriceStore.StaleConfig.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+
+        assertEq(store.seenTeeCount(), 0);
+        assertFalse(store.isProvenConfigured(teeId));
+    }
+
+    /// The losing side of a race records nothing either — which is exactly why
+    /// commissioning has to target a chosen machine rather than hope it wins.
+    function test_MachineLosingTheRaceIsNotRecorded() public {
+        uint256 secondKey = 0xB0B;
+        address secondTee = vm.addr(secondKey);
+        registry.setMachine(secondTee, EXTENSION_ID, PRODUCTION);
+        configSource.setExpected(secondTee, CONFIG_HASH);
+
+        _submit(PAR, 1_700_000_100);
+
+        // An older report from the second machine: valid, but not newer.
+        bytes memory body = _goodBody(PAR - 1, 1_700_000_000);
+        vm.expectRevert(UsdxPriceStore.NotNewer.selector);
+        store.submitPrice(body, _sign(body, secondKey));
+
+        assertEq(store.seenTeeCount(), 1);
+        assertFalse(store.isProvenConfigured(secondTee));
+    }
 }
 
 contract UsdxCustomFeedTest is Test {
