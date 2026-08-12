@@ -145,11 +145,98 @@ refund goes to the keeper's own wallet.
   redundancy at the machine level as well as at the keeper level. That is a feature, and it is
   the reason the wasted gas from losing a race is worth paying.
 
+What several machines buy today is **availability, not integrity**. `UsdxPriceStore` accepts a
+signed price from any `PRODUCTION` machine registered to the extension; the first valid newer
+report wins and the rest revert `NotNewer`. There is no cross-machine agreement, so a second
+machine covers the first being down — it does not corroborate its number. Quorum across machines
+would be a real change to the store, and worth being clear about what it would and would not fix:
+every machine takes its configuration from the same owner key (findings §15), so it would defend
+against one machine being compromised or malfunctioning, not against a hostile configuration
+pointing all of them at the same bad provider.
+
+### The direct channel
+
+`keeper -direct` raises the action on the proxy (`POST <proxy>/direct`) instead of on-chain. It
+saves the registry fee and one transaction per cycle.
+
+It costs nothing in trust, and the reason is worth stating precisely: `GET_PRICE` grants no
+authority. It signs the observation the enclave already made on its own timer — the enclave does
+not observe on request — and `submitPrice` verifies that signature against `TeeMachineRegistry`
+however the signature was asked for. A caller holding `DIRECT_API_KEY` can make a machine sign
+its own latest observation more often than usual. It cannot make it sign anything else.
+
+What it does cost is permissionlessness, which is why **both channels stay**:
+
+| | instruction | direct |
+| --- | --- | --- |
+| Who can call it | anyone, by paying the registry fee | whoever holds `DIRECT_API_KEY` |
+| Cost per cycle | fee + trigger tx + submit tx | submit tx |
+| Which machine serves it | random, via `getRandomTeeIds` | the one behind the proxy URL |
+| Result submission tag | `threshold` | `submit` |
+
+The last two rows matter more than they look:
+
+- **Machine selection.** With N machines an on-chain request goes to a random one, and its result
+  is retrievable only from *that machine's* proxy. A keeper polling a single URL therefore misses
+  roughly (N−1)/N of its own requests and reports `no_result`. The direct channel removes the
+  ambiguity — you address a machine by addressing its proxy — which is what makes per-machine
+  commissioning possible at all.
+- **Submission tag.** A direct action is filed under `submit`, an instruction under `threshold`,
+  and `GET /action/result/{id}` defaults to `threshold`. Ask for the wrong one and the endpoint
+  returns 404 for the whole poll window; the cycle then reports a timeout that looks exactly like
+  a dropped instruction.
+
+---
+
+## Commissioning a machine
+
+A machine is *commissioned* once it has landed one price on-chain, which is what writes
+`lastReport[teeId]` in `UsdxPriceStore` and makes `isProvenConfigured(teeId)` true.
+
+This is deliberately a manual step rather than a contract mechanism. `submitPrice` already proves
+both facts it needs — it recovered the signer, and it checked that signer's config hash against
+the published one — so recording them costs three storage writes on a path that already runs. A
+separate attestation entry point would be more machinery for something an operator does a handful
+of times.
+
+Order matters, because each step is what makes the next one possible:
+
+1. Register the machine and get it to `PRODUCTION` in `TeeMachineRegistry`.
+2. `send-endpoints -p <that machine's proxy>` — publishes its config and waits until the machine
+   reports the matching `endpointsHash`. It will not report success until the machine is actually
+   running what was published.
+3. `usdxprov` — deposit its credentials. Each machine has its own TEE key, so envelopes are per
+   machine and cannot be reused.
+4. Confirm `ready: true` and an empty `missingSecretRefs` in `fleet-status`.
+5. Land one price from *this* machine:
+   ```
+   go run ./cmd/submit-price -direct -p <that machine's proxy> -instructionSender 0x…
+   ```
+6. `fleet-status` should now show `commissioned yes` for it.
+
+Two things to expect at step 5:
+
+- **`NotNewer` when commissioning several machines back to back.** `observedAt` must strictly
+  increase, and each machine stamps its own from its own observation timer. If machine B's cached
+  observation is older than the one machine A just landed, B is rejected. Space the runs by about
+  one `ObservationInterval` and retry. The cycle record distinguishes the two cases:
+  `race_lost` means the store is ahead of B, `stale_submission` means B relayed something old.
+- **Re-pushing a config decommissions the machine.** `isProvenConfigured` goes false the moment
+  `setEndpoints` publishes something new, because the machine has not yet proven it runs the new
+  config. That is correct and self-announcing — repeat step 5. `send-endpoints` prints the command
+  on success for this reason.
+
+`lastReport` is a record of **commissioning, not liveness**. Only the machine that wins a given
+cycle updates its entry, so a stale `acceptedAt` means "has not won lately", not "unhealthy". For
+liveness, read each machine's `GET /state` — which is what `fleet-status` does.
+
 ---
 
 ## Step 2 — collect
 
-Poll `GET <proxy>/action/result/<instructionId>` until the status is terminal.
+Poll `GET <proxy>/action/result/<instructionId>?submissionTag=<tag>` until the status is terminal.
+The tag is `threshold` for an instruction and `submit` for a direct action; it is not optional,
+because the endpoint's default silently 404s for the other kind.
 
 | `status` | Meaning | Keeper action |
 | --- | --- | --- |

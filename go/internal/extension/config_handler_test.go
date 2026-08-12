@@ -11,8 +11,6 @@ import (
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/pkg/types"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
@@ -22,52 +20,109 @@ type fakeProvisioner struct {
 	endpointCall int
 	secretCall   int
 	readiness    types.Readiness
+
+	// What the provisioner was actually handed. Recorded because a call count
+	// alone cannot tell a delivered payload from an empty one, which is exactly
+	// the failure the direct envelope produced.
+	lastEndpoints []byte
+	lastSecret    []byte
 }
 
 func (f *fakeProvisioner) ApplyEndpoints(payload []byte) error {
 	f.endpointCall++
+	f.lastEndpoints = payload
 	return f.endpointsErr
 }
 
 func (f *fakeProvisioner) ApplySecret(ctx context.Context, message []byte) error {
 	f.secretCall++
+	f.lastSecret = message
 	return f.secretErr
 }
 
 func (f *fakeProvisioner) Readiness() types.Readiness { return f.readiness }
 
-// configAction builds a USDX_CONFIG action over a chosen channel.
+// configAction builds a USDX_CONFIG action over a chosen channel, in the
+// envelope that channel really uses: a DataFixed for an instruction, a
+// DirectInstruction for a direct action. Building both as DataFixed is what hid
+// the fact that the extension could not read a real direct payload.
 func configAction(command string, actionType teetypes.ActionType, payload []byte) teetypes.Action {
-	type dataFixed struct {
-		InstructionID      common.Hash    `json:"instructionId"`
-		TeeID              common.Address `json:"teeId"`
-		Timestamp          uint64         `json:"timestamp"`
-		RewardEpochID      uint32         `json:"rewardEpochId"`
-		OPType             common.Hash    `json:"opType"`
-		OPCommand          common.Hash    `json:"opCommand"`
-		Cosigners          []string       `json:"cosigners"`
-		CosignersThreshold uint64         `json:"cosignersThreshold"`
-		OriginalMessage    hexutil.Bytes  `json:"originalMessage"`
+	opType, opCommand := toHash(config.OPTypeUsdxConfig), toHash(command)
+
+	if actionType == teetypes.Direct {
+		return buildDirectAction(opType, opCommand, payload)
 	}
-	msg, _ := json.Marshal(dataFixed{
-		InstructionID:   testInstructionID,
-		Timestamp:       testTimestamp,
-		OPType:          toHash(config.OPTypeUsdxConfig),
-		OPCommand:       toHash(command),
-		OriginalMessage: payload,
-	})
-	return teetypes.Action{
-		Data: teetypes.ActionData{
-			ID: common.HexToHash("0x1234"), Type: actionType,
-			SubmissionTag: "submit", Message: msg,
-		},
-	}
+
+	a := buildTestAction(opType, opCommand, payload)
+	a.Data.Type = actionType
+	return a
 }
 
 func newProvisionedExtension(p Provisioner) *Extension {
 	e := newTestExtension()
 	e.provisioner = p
 	return e
+}
+
+// --- direct envelope ---
+
+// The regression test for the envelope confusion. A direct action carries a
+// DirectInstruction, whose payload field is "message"; DataFixed calls it
+// "originalMessage". Reading one as the other does not error — encoding/json
+// discards the unknown field — so SET_SECRET reached ApplySecret with nil and
+// the only visible symptom was a rejected envelope.
+func TestSetSecret_DirectEnvelopeDeliversThePayload(t *testing.T) {
+	p := &fakeProvisioner{}
+	e := newProvisionedExtension(p)
+
+	envelope := []byte("the-signed-envelope")
+	status, body := e.processAction(
+		configAction(config.OPCommandSetSecret, teetypes.Direct, envelope))
+	result := mustResult(t, status, body, http.StatusOK)
+
+	if result.Status != 1 {
+		t.Fatalf("expected success, got %d: %s", result.Status, result.Log)
+	}
+	if string(p.lastSecret) != string(envelope) {
+		t.Errorf("provisioner received %q, want %q", p.lastSecret, envelope)
+	}
+}
+
+// A direct action has no instruction id, so the proxy's action id has to stand
+// in. Left zero, every direct price would land on-chain with the same
+// observedAtInstructionID and none could be traced back to its request.
+func TestParseActionData_DirectBindsTheActionID(t *testing.T) {
+	a := buildDirectAction(toHash(config.OPTypeUsdxOracle), toHash(config.OPCommandGetPrice),
+		[]byte{config.GetPriceRequestV1})
+
+	df, err := parseActionData(a)
+	if err != nil {
+		t.Fatalf("parseActionData: %v", err)
+	}
+	if df.InstructionID != testDirectActionID {
+		t.Errorf("instruction id = %s, want the action id %s",
+			df.InstructionID.Hex(), testDirectActionID.Hex())
+	}
+	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.GetPriceRequestV1 {
+		t.Errorf("payload = %v, want the one-byte request envelope", df.OriginalMessage)
+	}
+}
+
+// The instruction envelope must keep parsing as it always did.
+func TestParseActionData_InstructionUnchanged(t *testing.T) {
+	a := buildTestAction(toHash(config.OPTypeUsdxOracle), toHash(config.OPCommandGetPrice),
+		[]byte{config.GetPriceRequestV1})
+
+	df, err := parseActionData(a)
+	if err != nil {
+		t.Fatalf("parseActionData: %v", err)
+	}
+	if df.InstructionID != testInstructionID {
+		t.Errorf("instruction id = %s, want %s", df.InstructionID.Hex(), testInstructionID.Hex())
+	}
+	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.GetPriceRequestV1 {
+		t.Errorf("payload = %v, want the one-byte request envelope", df.OriginalMessage)
+	}
 }
 
 // --- channel enforcement ---

@@ -35,3 +35,15 @@ cycle_queue_response_wait ="2s"
 [voting]
 proposal_expiration = "12s"
 max_pending_request = 10000
+
+# GET_PRICE over POST /direct: no registry fee, no trigger transaction, and the
+# request reaches THIS machine rather than a random one. See tools/cmd/keeper
+# -direct.
+#
+# The key is mandatory on a reachable proxy. /direct is on the PUBLIC external
+# port, and on this extension it carries SET_SECRET as well as GET_PRICE, so an
+# unauthenticated one is both a way to flood the enclave and the only thing
+# standing in front of credential provisioning.
+[direct]
+enable = true
+api_key_variable = "DIRECT_API_KEY"

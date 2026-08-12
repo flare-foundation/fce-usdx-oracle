@@ -24,31 +24,18 @@ import (
 	"github.com/flare-foundation/tee-node/pkg/processorutils"
 )
 
-// Observer returns a signed price report for one instruction, built from the
-// most recent background observation.
-//
-// It is Report, not Observe, because the observation does not happen here: a
-// complete one takes longer than the 2 seconds tee-node allows an extension to
-// answer an action, so it runs on a timer in internal/observe and this call
-// costs one signing round trip. The extension depends on the interface rather
-// than on that package directly, so the handler's own tests need no RPC
-// endpoints, no credentials and no signing service.
+// Observer returns a signed price report built from the most recent background
+// observation. Report, not Observe: observing takes longer than the 2s
+// tee-node allows, so it runs on a timer in internal/observe.
 type Observer interface {
 	Report(ctx context.Context, instructionID common.Hash) (oracle.Observation, error)
 }
 
-// Provisioner applies verified configuration. The extension depends on this
-// interface so its tests need no signing service and no live endpoints.
+// Provisioner applies verified configuration. An interface so the extension's
+// tests need no signing service and no live endpoints.
 type Provisioner interface {
-	// ApplyEndpoints installs an endpoint configuration from an on-chain
-	// instruction.
 	ApplyEndpoints(payload []byte) error
-
-	// ApplySecret verifies a signed envelope and installs the credential it
-	// carries. The envelope's ciphertext is decrypted in-enclave.
 	ApplySecret(ctx context.Context, message []byte) error
-
-	// Readiness reports what provisioning is still outstanding.
 	Readiness() types.Readiness
 }
 
@@ -56,13 +43,12 @@ type Extension struct {
 	mu     sync.RWMutex
 	Server *http.Server
 
-	// signPort is where tee-node exposes POST /sign and POST /decrypt.
 	signPort int
 
-	// observer is nil in stub mode, when no oracle configuration was supplied.
+	// nil in stub mode, when no oracle configuration was supplied.
 	observer Observer
 
-	// provisioner is nil in stub mode. When set, USDX_CONFIG is routed to it.
+	// nil in stub mode. When set, USDX_CONFIG is routed to it.
 	provisioner Provisioner
 
 	lastPrice      string
@@ -74,16 +60,10 @@ type Extension struct {
 	sourceHealth   map[string]string
 }
 
-// NewWithObserver builds an Extension backed by a live observer.
-//
-// A nil observer panics, and that is deliberate. The scaffold's New(port,
-// signPort) was first removed because it read as the ordinary way to build an
-// extension while silently producing a stub — which is how the production
-// entrypoint ended up serving a hard-coded price (findings doc §12). The next
-// defence logged a banner at startup, which is useless inside a TEE: the logs
-// cannot be read from outside, and a feed frozen at $1.00 looks exactly like a
-// healthy fully-backed one. So there is no way left to build a stub by
-// accident — the only stub path is NewStub, named at its single call site.
+// NewWithObserver builds an Extension backed by a live observer. A nil observer
+// panics: the scaffold's New() silently produced a stub, which is how the
+// production entrypoint once served a hard-coded price. NewStub is now the only
+// way to a stub, and it is named at its single call site.
 func NewWithObserver(extensionPort, signPort int, observer Observer) *Extension {
 	return NewWithProvisioner(extensionPort, signPort, observer, nil)
 }
@@ -99,13 +79,9 @@ func NewWithProvisioner(
 	return newExtension(extensionPort, signPort, observer, provisioner)
 }
 
-// NewStub builds a wire-contract conformance extension that answers GET_PRICE
-// with an unsigned $1.00. It exists because scripts/test-conformance.sh
-// exercises the extension alone — no tee-node, no chain, no credentials — and
-// a real observation needs all of those.
-//
-// It must never be called outside that harness. Every production constructor
-// panics on a nil observer precisely so this named path is the only way in.
+// NewStub answers GET_PRICE with an unsigned $1.00, for
+// scripts/test-conformance.sh, which runs the extension with no tee-node, no
+// chain and no credentials. It must never be called outside that harness.
 func NewStub(extensionPort, signPort int) *Extension {
 	return newExtension(extensionPort, signPort, nil, nil)
 }
@@ -129,12 +105,11 @@ func newExtension(
 	return e
 }
 
-// StubMode reports whether this extension is serving a hard-coded price rather
-// than a real observation. Callers should surface it in health checks: it is
-// otherwise indistinguishable from a healthy, fully-backed feed.
+// StubMode reports whether this extension is serving a hard-coded price.
+// Surface it in health checks: it is otherwise indistinguishable from a
+// healthy, fully-backed feed.
 func (e *Extension) StubMode() bool { return e.observer == nil }
 
-// stateHandler() structure is boilerplate but update the State field mapping to match your Extension fields.
 func (e *Extension) stateHandler(w http.ResponseWriter, r *http.Request) {
 	// Read readiness outside the lock: the provisioner has its own.
 	readiness := types.Readiness{MissingRefs: []string{}}
@@ -171,8 +146,40 @@ func (e *Extension) stateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// parseActionData extracts the operation identifiers and the payload, which
+// arrive in two different envelopes depending on how the action was raised.
+//
+// An on-chain instruction carries an instruction.DataFixed. A direct action
+// carries a types.DirectInstruction, whose payload field is "message" and not
+// "originalMessage". Parsing one as the other does not fail — encoding/json
+// drops unknown fields — it silently yields an EMPTY payload, so the envelope
+// has to be chosen from Data.Type rather than guessed at. Reading a direct
+// action as DataFixed is what made SET_SECRET over the production /direct path
+// receive nothing at all.
+func parseActionData(action teetypes.Action) (*instruction.DataFixed, error) {
+	if action.Data.Type != teetypes.Direct {
+		return processorutils.Parse[instruction.DataFixed](action.Data.Message)
+	}
+
+	di, err := processorutils.Parse[teetypes.DirectInstruction](action.Data.Message)
+	if err != nil {
+		return nil, err
+	}
+
+	// A direct action has no on-chain instruction behind it, so the proxy's
+	// action id stands in as the correlator bound into the signed report. It
+	// must not be left zero: the store records it as observedAtInstructionID,
+	// and a zero there would make every direct price indistinguishable.
+	return &instruction.DataFixed{
+		InstructionID:   action.Data.ID,
+		OPType:          di.OPType,
+		OPCommand:       di.OPCommand,
+		OriginalMessage: di.Message,
+	}, nil
+}
+
 func (e *Extension) processAction(action teetypes.Action) (int, []byte) {
-	dataFixed, err := processorutils.Parse[instruction.DataFixed](action.Data.Message)
+	dataFixed, err := parseActionData(action)
 	if err != nil {
 		return http.StatusBadRequest, []byte(fmt.Sprintf("decoding fixed data: %v", err))
 	}
@@ -192,10 +199,27 @@ func (e *Extension) processAction(action teetypes.Action) (int, []byte) {
 	}
 }
 
-// processUsdxOracle routes USDX_ORACLE instructions by OPCommand.
 func (e *Extension) processUsdxOracle(action teetypes.Action, df *instruction.DataFixed) (int, []byte) {
 	switch {
 	case df.OPCommand == teeutils.ToHash(config.OPCommandGetPrice):
+		// Valid over BOTH channels, unlike the USDX_CONFIG commands, and the
+		// asymmetry is deliberate. Those two are authorised by the channel
+		// itself — the sender's owner-only check, or M-of-N admin signatures —
+		// so the channel is load-bearing. GET_PRICE is authorised by nothing,
+		// because it grants nothing: it signs the observation the enclave
+		// already made on its own timer, and UsdxPriceStore verifies that
+		// signature against the machine registry however it was requested.
+		//
+		// So the instruction channel is the permissionless path (anyone can pay
+		// the registry fee) and the direct channel is the operator's cheap one
+		// (no fee, no transaction). The worst a direct caller with the proxy's
+		// API key can do is ask too often — an availability cost, not a
+		// correctness one. Listed explicitly rather than left open so a future
+		// action type cannot quietly acquire a signed price.
+		if action.Data.Type != teetypes.Instruction && action.Data.Type != teetypes.Direct {
+			return respond(e, action, df, failure.WrongActionType)
+		}
+
 		ar := e.processGetPrice(action, df)
 		b, _ := json.Marshal(ar)
 		return http.StatusOK, b
@@ -209,33 +233,14 @@ func (e *Extension) processUsdxOracle(action teetypes.Action, df *instruction.Da
 	}
 }
 
-// processGetPrice handles GET_PRICE instructions: observes the USDX backing
-// ratio, signs the result, and returns the payload.
-//
-// Fail closed. If a source is down, a value is implausible, or the observation
-// window is exceeded, this returns status 0 and publishes nothing. It never
-// guesses and never falls back to a cached price — a frozen feed with an ageing
-// timestamp is the designed failure mode (spec §7.15), and consumers are
-// required to check the timestamp.
-//
-// With no observer the extension is in stub mode and returns $1.00 unsigned.
-// That path is reachable only through NewStub, which the wire-contract
-// conformance server calls by name; the production constructors panic on a nil
-// observer rather than ever reaching here.
+// processGetPrice signs the latest observation and returns the payload. Fails
+// closed: never guesses, never falls back to a cached price. A frozen feed with
+// an ageing timestamp is the designed failure mode.
 func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
-	// requestPriceUpdate() sends a fixed one-byte request envelope: everything
-	// the observation needs is pinned in extension config, so there is nothing
-	// to decode. It is not empty only because the registry rejects an empty
-	// message outright (MessageEmpty), found the first time the instruction path
-	// ran on Coston2 — see config.GetPriceRequestV1.
-	//
-	// Require exactly that envelope rather than ignoring whatever arrives, so a
-	// caller cannot come to depend on a field the extension silently drops, and
-	// an unrecognised version is refused rather than guessed at.
-	//
-	// Note neither the length nor the content is reported: ActionResult.Log is
-	// public, and echoing attacker-supplied dimensions back out is free
-	// reconnaissance.
+	// Require exactly the pinned one-byte envelope, so an unrecognised version
+	// is refused rather than guessed at. Neither the length nor the content is
+	// reported back: ActionResult.Log is public, and echoing attacker-supplied
+	// dimensions is free reconnaissance.
 	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.GetPriceRequestV1 {
 		return e.fail(action, df, failure.UnexpectedPayload)
 	}
@@ -246,16 +251,13 @@ func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.Data
 
 	obs, err := e.observer.Report(context.Background(), df.InstructionID)
 
-	// Health is reported whether or not the observation succeeded: on failure it
-	// is what tells an operator WHICH source broke.
+	// Health is reported either way: on failure it is what tells an operator
+	// WHICH source broke.
 	e.mu.Lock()
 	e.sourceHealth = obs.Health
 	e.mu.Unlock()
 
 	if err != nil {
-		// err is always a failure.Failure from the observation path. asFailure
-		// is belt and braces: anything else becomes a generic internal error
-		// rather than reaching the public Log.
 		return e.fail(action, df, asFailure(err))
 	}
 
@@ -281,11 +283,8 @@ func (e *Extension) stubPrice(action teetypes.Action, df *instruction.DataFixed)
 		ObservedAt: df.Timestamp,
 	}
 
-	// GetPriceResponse is string/int8/uint64 only, so encoding/json cannot fail
-	// here — it errors only on unsupported types or cycles. Handled anyway, and
-	// mapped to the vocabulary rather than wrapped: the uniform rule is that no
-	// raw error ever reaches Log, which is easier to audit than a per-site
-	// judgement about which errors happen to be safe today.
+	// Cannot fail for these field types, but handled anyway and mapped to the
+	// vocabulary: the uniform rule is that no raw error ever reaches Log.
 	data, err := json.Marshal(resp)
 	if err != nil {
 		logger.Errorf("encoding GET_PRICE response: %v", err)
@@ -303,8 +302,7 @@ func (e *Extension) stubPrice(action teetypes.Action, df *instruction.DataFixed)
 	return buildResult(action, df, data, 1, nil)
 }
 
-// asFailure passes a Failure through unchanged and replaces anything else with
-// a generic internal error. Nothing that is not already vocabulary reaches Log.
+// asFailure keeps anything outside the vocabulary out of the public Log.
 func asFailure(err error) failure.Failure {
 	var f failure.Failure
 	if errors.As(err, &f) {
@@ -313,12 +311,9 @@ func asFailure(err error) failure.Failure {
 	return failure.Internal
 }
 
-// fail records a failed observation and returns a status-0 result.
-//
-// It takes a failure.Failure, not an error, and that is the safety property:
-// ActionResult.Log and GET /state are both world-readable, and a Failure's text
-// is a compile-time constant from a closed vocabulary. A raw error cannot be
-// passed here even by accident — see internal/failure for why that matters.
+// fail records a failed observation and returns a status-0 result. It takes a
+// failure.Failure, not an error, and that is the safety property: a raw error
+// cannot reach the world-readable Log even by accident.
 func (e *Extension) fail(
 	action teetypes.Action, df *instruction.DataFixed, f failure.Failure,
 ) teetypes.ActionResult {

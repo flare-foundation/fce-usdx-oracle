@@ -70,8 +70,36 @@ func buildTestAction(opType, opCommand common.Hash, originalMessage []byte) teet
 	return teetypes.Action{
 		Data: teetypes.ActionData{
 			ID:            common.HexToHash("0x1234"),
+			Type:          teetypes.Instruction,
 			SubmissionTag: "submit",
 			Message:       msg,
+		},
+	}
+}
+
+// testDirectActionID is the proxy-generated action id for a direct action. It
+// stands in for the instruction id, which a direct action does not have.
+var testDirectActionID = common.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222")
+
+// buildDirectAction constructs the envelope the PROXY actually delivers for a
+// direct action: Data.Message is a JSON types.DirectInstruction, whose payload
+// field is "message". It is deliberately not a DataFixed — building it that way
+// is what let a real direct action arrive with an empty payload unnoticed, since
+// encoding/json drops the unknown field rather than failing.
+func buildDirectAction(opType, opCommand common.Hash, message []byte) teetypes.Action {
+	di := teetypes.DirectInstruction{
+		OPType:    opType,
+		OPCommand: opCommand,
+		Message:   message,
+	}
+	raw, _ := json.Marshal(di)
+
+	return teetypes.Action{
+		Data: teetypes.ActionData{
+			ID:            testDirectActionID,
+			Type:          teetypes.Direct,
+			SubmissionTag: "submit",
+			Message:       raw,
 		},
 	}
 }
