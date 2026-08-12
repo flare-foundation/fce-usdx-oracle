@@ -1,82 +1,16 @@
-// Package oracle orchestrates one price observation.
+// Package oracle orchestrates one price observation: the ordering and the
+// deadlines. Arithmetic lives in package price, parsing in package decimal,
+// I/O in packages backing and supply.
 //
-// It is the only place that touches every other package, and the only place
-// where timing matters. The arithmetic lives in package price, the parsing in
-// package decimal, the I/O in packages backing and supply; what is here is the
-// ordering and the deadlines.
+// Supply and reserves are each read once. Neither has an internal race worth
+// bracketing: the quorum procedure pins every provider to one agreed block, so
+// a supply figure is "supply as of block N", and the reserve figure moves on
+// Hex's ~10 minute tick, so it is effectively constant across a 20s
+// observation. checkWindow bounds the read skew between the two.
 //
-// # The conservative double-read
-//
-// Supply reads and reserve reads are not atomic, and a redemption landing
-// between them changes both sides of the ratio. Read reserves first (high) and
-// supply after the burn (low) and the price is over-stated — the direction that
-// matters, because an over-stated price hides a shortfall.
-//
-// This is not hypothetical at the observed scale. Spec §6.1 records a single
-// 1,000,000 USDX burn on Flare at 07:10:58Z on 31 Jul 2026: 4.8% of supply in
-// one event, far larger than any plausible deviation threshold. And a stress
-// event is exactly when redemptions cluster and the price matters most.
-//
-// So the observation brackets the reserve read between two supply reads and
-// takes the LARGER supply:
-//
-//	S₁ ← supply        B ← reserves        S₂ ← supply
-//	S  = max(S₁, S₂)
-//	price = min(1, B / S)
-//
-// A larger denominator is a lower price. Any timing skew therefore biases the
-// result downward, never upward: the error is always in the safe direction.
-// The cost is one extra round of RPC reads per observation.
-//
-// # Fail closed, always
-//
-// Any source down, any value implausible, any window exceeded: publish nothing
-// and return a failure. Never guess, never interpolate, never fall back to a
-// cached figure. A frozen feed with an ageing timestamp is the designed failure
-// mode (spec §7.15) and consumers are required to check the timestamp; a
-// confidently wrong price is not recoverable downstream.
-//
-// # Observing on a timer, signing on demand
-//
-// Observe is slow — five upstream sources, two of them multi-provider — and
-// tee-node gives an extension **2 seconds** to answer an action
-// (`settings.ProxyTimeout`, a const in its internal package). Measured against
-// live sources on 5 Aug 2026 an observation takes 2.0–2.9s, so running one
-// inside the request handler timed out every time, and the extension's answer
-// never reached the chain at all.
-//
-// So the two halves are separate calls. internal/observe runs Observe on a
-// timer and keeps the latest result; the handler calls Sign, which binds that
-// result to the requesting instruction id and returns in one signing round
-// trip. The instruction id is why signing cannot happen in advance, and the
-// upstream latency is why observing cannot happen on demand.
-//
-// What is signed is always the observation's own figures — its price, its
-// observedAt, its EndpointsHash. Nothing is resampled at signing time, because
-// a fresh timestamp over stale inputs is exactly the lie the freshness guards
-// exist to prevent. Staleness is bounded by the caller instead:
-// config.MaxObservationAge, enforced in internal/observe.
-//
-// # Observing without cash
-//
-// The cash figure is the one input with a single unredundant source — Hex's
-// restricted endpoint, one URL, gated by one credential. Cfg.Cash is therefore
-// allowed to be nil (no credential provisioned), and a fetch failure is not
-// automatically fatal.
-//
-// What is NOT permitted is publishing a different number when it is missing.
-// docs/usdx-oracle-availability.md settles that: dropping cash from the
-// numerator would suppress exactly the buffer that decides whether a depeg
-// prints, and nothing in the signed payload could say the value was computed
-// that way. So the observation takes the one case where the missing figure
-// cannot matter — cash is non-negative and the price is capped at par, so a
-// bonds-only price that already reaches par is the answer — and fails closed
-// everywhere else. price.ComputeWithoutCash is that rule; the equality it
-// relies on is pinned by TestComputeWithoutCash_MatchesTheFullComputation.
-//
-// Health still reports the source as down or unconfigured, so an operator can
-// tell a par-from-bonds observation from a complete one even though the
-// published price is identical by construction.
+// Observing and signing are separate calls: an observation takes 2-3s and
+// tee-node allows 2s per action, so internal/observe runs Observe on a timer
+// and the handler only calls Sign. See docs/usdx-oracle-rationale.md.
 package oracle
 
 import (
@@ -101,31 +35,20 @@ type Signer interface {
 	Sign(ctx context.Context, message []byte) ([]byte, error)
 }
 
-// Config is a complete observation configuration.
-//
-// It carries no target binding: where a signed report lands is settled by the
-// store's registered-machine check, not by the payload (see internal/report).
+// Config carries no target binding: where a signed report lands is settled by
+// the store's registered-machine check, not by the payload.
 type Config struct {
 	Chains []supply.ChainConfig
 	Bonds  backing.Source
 
-	// Cash is nil when no credential for the restricted endpoint has been
-	// provisioned. The observation then runs through
-	// price.ComputeWithoutCash, which publishes only when the missing figure
-	// provably cannot change the answer — see "Observing without cash" above.
+	// Nil when no credential for the restricted endpoint has been provisioned;
+	// the observation then runs through price.ComputeWithoutCash.
 	Cash backing.Source
 
-	// EndpointsHash commits the signed report to the configuration it was
-	// computed under, so UsdxPriceStore can refuse a price from a machine
-	// running something other than what setEndpoints published.
+	// Commits the signed report to the configuration it was computed under, so
+	// the store can refuse a price from a machine running something else.
 	EndpointsHash common.Hash
 }
-
-// The observation's timing bounds and output scale are constants in
-// internal/config, not fields here. They are safety properties rather than
-// knobs: widening the window silently weakens the TOCTOU guarantee the
-// conservative double-read provides, and the decimals are what the store and
-// every consumer agree on.
 
 // Validate checks a configuration at startup.
 func (c Config) Validate() error {
@@ -137,34 +60,29 @@ func (c Config) Validate() error {
 			return err
 		}
 	}
-	// Cash is optional; Bonds is not. Without the bond figure there is no
-	// numerator at all, and no rule that can recover one.
+	// Cash is optional; without bonds there is no numerator at all.
 	if c.Bonds == nil {
 		return errors.New("oracle: the bonds backing source is required")
 	}
 	return nil
 }
 
-// Observation is the result of one successful price observation.
-//
-// It carries no signature. Signing is a separate step because the signed body
-// binds the instruction id, which is not known when the observation runs — see
-// Sign and the "Observing on a timer" note in the package doc.
+// Observation is the result of one successful price observation. It carries no
+// signature: the signed body binds an instruction id that is not known yet.
 type Observation struct {
 	Price      *big.Int
 	Decimals   int8
 	ObservedAt uint64
 
-	// EndpointsHash is the configuration this price was computed under, carried
-	// so a later Sign commits to the config actually in force at observation
-	// time rather than whatever is current when the request arrives.
+	// The configuration this price was computed under, so a later Sign commits
+	// to the config in force at observation time, not at request time.
 	EndpointsHash common.Hash
 
 	// Health maps each source identifier to a config.Health* value.
 	Health map[string]string
 
-	// Data is the ActionResult payload, abi.encode(body, signature). Empty until
-	// Sign fills it in for a specific instruction.
+	// Data is the ActionResult payload, abi.encode(body, signature). Empty
+	// until Sign fills it in for a specific instruction.
 	Data []byte
 }
 
@@ -173,55 +91,38 @@ func (o Observation) Age(now time.Time) time.Duration {
 	return now.Sub(time.Unix(int64(o.ObservedAt), 0))
 }
 
-// Observe performs one complete observation.
-//
-// The returned error is always a failure.Failure, safe to publish.
+// Observe performs one complete observation. The returned error is always a
+// failure.Failure, safe to publish.
 func Observe(ctx context.Context, cfg Config) (Observation, error) {
 	ctx, cancel := context.WithTimeout(ctx, config.ObservationDeadline)
 	defer cancel()
 
 	health := newHealth(cfg)
 
-	// S₁ — supply before the reserve read.
-	first, err := readAllChains(ctx, cfg, health)
+	// S — supply, one pass, each chain pinned to its own agreed block.
+	supplies, err := readAllChains(ctx, cfg, health)
 	if err != nil {
 		return Observation{Health: health}, err
 	}
 
-	// B — reserves, bracketed. cashOK is false when the source is unconfigured
-	// or failed; that is not fatal here, it narrows what may be published.
+	// B — reserves.
 	bonds, cash, cashOK, err := readBacking(ctx, cfg, health)
 	if err != nil {
 		return Observation{Health: health}, err
 	}
 
-	// S₂ — supply after. Any redemption that landed mid-observation shows up
-	// here as a lower supply; taking the max keeps the earlier, higher figure.
-	second, err := readAllChains(ctx, cfg, health)
-	if err != nil {
-		return Observation{Health: health}, err
-	}
-
-	// The consistency window spans every input, including both supply passes.
-	// A cash reading that was never taken carries a zero timestamp, which
-	// checkWindow ignores; it is excluded explicitly so that stays deliberate.
+	// Cash that was never read carries a zero timestamp, which checkWindow
+	// ignores; excluded explicitly so that stays deliberate.
 	readings := []backing.Reading{bonds}
 	if cashOK {
 		readings = append(readings, cash)
 	}
-	if err := checkWindow(config.ObservationWindow, first, second, readings...); err != nil {
+	if err := checkWindow(config.ObservationWindow, supplies, readings...); err != nil {
 		return Observation{Health: health}, err
 	}
 
-	s1, s2 := supply.Total(first), supply.Total(second)
-	total := s1
-	if s2.Cmp(s1) > 0 {
-		total = s2
-	}
+	total := supply.Total(supplies)
 
-	// Without cash, only a price that cannot depend on it may be published.
-	// ComputeWithoutCash returns an error rather than a degraded number in
-	// every other case.
 	var value *big.Int
 	if cashOK {
 		value, err = price.Compute(price.Inputs{
@@ -236,15 +137,10 @@ func Observe(ctx context.Context, cfg Config) (Observation, error) {
 		return Observation{Health: health}, err
 	}
 
-	// observedAt is wall-clock completion time, not the oldest input timestamp.
-	//
-	// The store requires strict monotonicity, and an input timestamp can stall:
-	// the public reserves endpoint ticks on a ~10 minute cadence, so two
-	// observations minutes apart could share one, and the second would be
-	// rejected as a replay. Freshness of the underlying data is guarded
-	// separately and earlier — a stale reserve figure fails the observation
-	// outright in package backing, so a published price is never built on data
-	// older than MaxAge.
+	// Wall-clock completion time, not the oldest input timestamp: the store
+	// requires strict monotonicity and the reserves endpoint ticks every ~10
+	// minutes, so two observations could share one and the second be rejected
+	// as a replay. Input freshness is guarded earlier, in package backing.
 	observedAt := uint64(time.Now().UTC().Unix())
 
 	return Observation{
@@ -257,16 +153,8 @@ func Observe(ctx context.Context, cfg Config) (Observation, error) {
 }
 
 // Sign binds an observation to one instruction and returns the ActionResult
-// payload, abi.encode(body, signature).
-//
-// Separate from Observe because the two happen at different times: the
-// observation runs on a timer, and the instruction id only exists when a
-// request arrives. What is signed is the observation's own figures and the
-// configuration hash it was computed under — never anything resampled at
-// signing time, which would put a fresh timestamp on stale inputs.
-//
-// The returned Observation is the input with Data filled in; the caller hands
-// that straight to buildResult.
+// payload, abi.encode(body, signature). Nothing is resampled at signing time,
+// which would put a fresh timestamp on stale inputs.
 func Sign(
 	ctx context.Context, signer Signer, obs Observation, instructionID common.Hash,
 ) (Observation, error) {
@@ -278,7 +166,6 @@ func Sign(
 	return obs, nil
 }
 
-// signPayload builds the report, signs the body, and wraps it into the payload.
 func signPayload(
 	ctx context.Context, signer Signer, obs Observation, instructionID common.Hash,
 ) ([]byte, error) {
@@ -298,8 +185,7 @@ func signPayload(
 		return nil, err
 	}
 
-	// body is carried verbatim; see package report on why it is never
-	// re-encoded on the way in.
+	// body is carried verbatim; see package report on why it is never re-encoded.
 	return report.EncodeData(body, signature)
 }
 
@@ -322,6 +208,14 @@ func readAllChains(ctx context.Context, cfg Config, health map[string]string) ([
 	var firstErr error
 	for i, err := range errs {
 		name := chainHealthKey(cfg.Chains[i].Name)
+
+		// Reported whether or not the chain read succeeded. Quorum lets a chain
+		// stay "ok" while one of its providers is dead, dissenting or lagging,
+		// and that state is invisible without this.
+		for provider, status := range readings[i].Providers {
+			health[provider] = status
+		}
+
 		if err != nil {
 			health[name] = config.HealthDown
 			if firstErr == nil {
@@ -337,13 +231,9 @@ func readAllChains(ctx context.Context, cfg Config, health map[string]string) ([
 	return readings, nil
 }
 
-// readBacking reads the reserve figures concurrently.
-//
-// Only the bonds error is fatal. A cash source that is absent or fails returns
-// cashOK false, and the caller decides whether the observation can still
-// produce a price — see "Observing without cash" in the package doc. That
-// asymmetry is the whole difference between the two sources: bonds has no
-// substitute, and cash has one narrow case where it is not needed.
+// readBacking reads the reserve figures concurrently. Only the bonds error is
+// fatal: bonds has no substitute, cash has one narrow case where it is not
+// needed.
 func readBacking(
 	ctx context.Context, cfg Config, health map[string]string,
 ) (bonds backing.Reading, cash backing.Reading, cashOK bool, err error) {
@@ -370,9 +260,8 @@ func readBacking(
 	if cfg.Cash != nil {
 		health[cfg.Cash.Name()] = healthOf(cashErr)
 	} else {
-		// Distinct from "down": nothing is broken, the credential was never
-		// provisioned. An operator reading GET /state needs to tell those
-		// apart — one is an outage, the other is a missing SET_SECRET.
+		// Distinct from "down": an outage and a missing SET_SECRET need
+		// different responses from whoever reads GET /state.
 		health[config.HexCashName] = config.HealthNotConfigured
 	}
 
@@ -390,8 +279,10 @@ func healthOf(err error) string {
 }
 
 // checkWindow rejects an observation whose inputs are spread too far apart in
-// time. This is what bounds the TOCTOU exposure the double-read biases.
-func checkWindow(window time.Duration, first, second []supply.Reading, readings ...backing.Reading) error {
+// time. With a single supply pass this is the only bound on read skew between
+// the supply and reserve figures; the reserve figure's own lag behind chain
+// state is bounded separately, by config.BackingMaxAge.
+func checkWindow(window time.Duration, supplies []supply.Reading, readings ...backing.Reading) error {
 	var earliest, latest time.Time
 
 	note := func(t time.Time) {
@@ -406,10 +297,7 @@ func checkWindow(window time.Duration, first, second []supply.Reading, readings 
 		}
 	}
 
-	for _, r := range first {
-		note(r.RetrievedAt)
-	}
-	for _, r := range second {
+	for _, r := range supplies {
 		note(r.RetrievedAt)
 	}
 	for _, r := range readings {
@@ -425,15 +313,18 @@ func checkWindow(window time.Duration, first, second []supply.Reading, readings 
 	return nil
 }
 
-// newHealth seeds every known source as unknown.
-//
-// Absence must never read as health: an empty map is indistinguishable from
-// "everything fine" to anyone reading GET /state, and that is exactly the state
-// where a source has silently stopped being polled.
+// newHealth seeds every known source as unknown. Absence must never read as
+// health: an empty map looks like "everything fine" on GET /state.
 func newHealth(cfg Config) map[string]string {
-	h := make(map[string]string, len(cfg.Chains)+2)
+	h := make(map[string]string, len(cfg.Chains)*3+2)
 	for _, ch := range cfg.Chains {
 		h[chainHealthKey(ch.Name)] = config.HealthUnknown
+		// Seeded so a provider that was never reached still appears. An absent
+		// key reads as "fine" to anything consuming /state, which is the one
+		// thing this map must never do.
+		for _, p := range ch.Providers {
+			h[p.Name] = config.HealthUnknown
+		}
 	}
 	if cfg.Bonds != nil {
 		h[cfg.Bonds.Name()] = config.HealthUnknown
@@ -441,9 +332,6 @@ func newHealth(cfg Config) map[string]string {
 	if cfg.Cash != nil {
 		h[cfg.Cash.Name()] = config.HealthUnknown
 	} else {
-		// Seeded by its pinned name so the source never simply vanishes from
-		// /state when it is unconfigured. An absent key reads as "no such
-		// source", which is the one thing this map must never say.
 		h[config.HexCashName] = config.HealthNotConfigured
 	}
 	return h
@@ -452,7 +340,7 @@ func newHealth(cfg Config) map[string]string {
 func chainHealthKey(chain string) string { return "rpc_" + chain }
 
 // asFailure passes a Failure through and replaces anything else with a safe
-// default. Nothing that is not already vocabulary reaches a public surface.
+// default, so nothing outside the vocabulary reaches a public surface.
 func asFailure(err error, fallback failure.Failure) error {
 	var f failure.Failure
 	if errors.As(err, &f) {
@@ -461,22 +349,15 @@ func asFailure(err error, fallback failure.Failure) error {
 	return fallback
 }
 
-// Runner binds a Config and a Signer together so a caller can observe and sign
-// without assembling either.
-//
-// It is now a convenience for tests and one-shot use. Production goes through
-// internal/observe, which owns the timer and the staleness bound — see the
-// package doc.
+// Runner binds a Config and a Signer together. A convenience for tests and
+// one-shot use; production goes through internal/observe.
 type Runner struct {
 	cfg    Config
 	signer Signer
 }
 
-// NewRunner validates cfg and returns a Runner.
-//
-// Validation happens here rather than per observation: a misconfiguration is a
-// fault that must surface at once, not one that shows up later as a
-// mysteriously unavailable feed.
+// NewRunner validates cfg so a misconfiguration surfaces at startup rather
+// than later as a mysteriously unavailable feed.
 func NewRunner(cfg Config, signer Signer) (*Runner, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -487,10 +368,8 @@ func NewRunner(cfg Config, signer Signer) (*Runner, error) {
 	return &Runner{cfg: cfg, signer: signer}, nil
 }
 
-// Observe performs one observation and signs it for instructionID.
-//
-// Both halves back to back, which is what the handler used to do and what no
-// longer fits inside tee-node's 2s action timeout. Kept for tests and tooling.
+// Observe performs one observation and signs it, back to back. Does not fit
+// inside tee-node's 2s action timeout; kept for tests and tooling.
 func (r *Runner) Observe(ctx context.Context, instructionID common.Hash) (Observation, error) {
 	obs, err := Observe(ctx, r.cfg)
 	if err != nil {

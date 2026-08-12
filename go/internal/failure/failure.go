@@ -1,49 +1,16 @@
 // Package failure defines the extension's complete public error vocabulary.
 //
-// # Why this package exists
+// ActionResult.Log and GET /state are both world-readable, and ordinary Go
+// error strings carry exactly what must not appear there — API keys inside
+// *url.Error, reserve figures inside parse errors. A Failure has unexported
+// fields and no exported constructor, so it can only be one of the values
+// declared below: the compiler, not review, keeps runtime data out.
 //
-// Two of the extension's outputs are world-readable:
-//
-//   - ActionResult.Log — returned to the TEE proxy and served from its
-//     action-result endpoint (docs/extension-contract.md §4.6).
-//   - GET /state — polled by tee-node, folded into TEEState.state, attested,
-//     and republished by the proxy at GET /info (spec §4.1).
-//
-// Go error strings routinely carry exactly what must not appear on either.
-// Both of the following are real, and both are among the likeliest failures in
-// this extension:
-//
-//	// *url.Error embeds the full request URL, credentials included:
-//	Get "https://api.htdigitalassets.com/...?apikey=SECRET": dial tcp: ...
-//
-//	// A decimal parse error embeds the value it could not parse — and the
-//	// public endpoint really does return commas, so this path WILL be taken:
-//	parsing reserves "25,452,544.52": not a decimal
-//
-// The second is the sharper one: spec §4.1 excludes reserve figures from every
-// public surface, and a naive `fmt.Errorf("parsing %q: %w", raw, err)` would
-// publish the exact number the design is built to withhold.
-//
-// # How it is enforced
-//
-// A Failure carries unexported fields and there is no exported constructor, so
-// a Failure can only be one of the package-level values declared below. There
-// is no code path that puts a runtime value into a public string — not by
-// convention or review, but because the compiler rejects it.
-//
-// Adding a failure mode means adding a value here, which is the point: the
-// entire public error surface is one reviewable file.
-//
-// Detail for debugging does not belong in a Failure. Log it separately, and
-// keep to values known to be safe — source name, HTTP status, duration. Never
-// the upstream error, its response body, or any parsed figure. Spec §4.1 leaves
-// where Confidential Space logs land, and who can read them, unresolved; until
-// that is answered, treat logs as disclosing too.
+// Debug detail does not belong in a Failure. Log it separately, and only
+// values known to be safe — source name, HTTP status, duration.
 package failure
 
 // Class is the coarse taxonomy reported by GET /state as lastErrorClass.
-// Deliberately coarse: it tells an operator which subsystem failed without
-// describing the data that caused it.
 type Class string
 
 const (
@@ -55,64 +22,42 @@ const (
 	ClassSignFailed    Class = "sign_failed"
 	ClassInternal      Class = "internal"
 
-	// ClassNotConfigured means the extension has not been provisioned. Distinct
-	// from every other class on purpose: it is an operational state to be
-	// resolved by re-provisioning, not a fault in a data source, and monitoring
-	// must be able to route it differently.
+	// Not a fault in a data source but an operational state, so monitoring can route it differently.
 	ClassNotConfigured Class = "not_configured"
 )
 
-// Failure is a fault that is safe to describe publicly.
-//
-// It implements error so it can flow through ordinary Go control flow, but its
-// Error() text is a compile-time constant, never formatted from runtime data.
+// Failure is a fault that is safe to describe publicly. Error() text is always
+// a compile-time constant, never formatted from runtime data.
 type Failure struct {
 	class  Class
 	reason string
 }
 
-// Error implements the error interface. The returned string is a constant
-// declared in this package and is safe to publish.
 func (f Failure) Error() string { return f.reason }
 
-// Class returns the taxonomy bucket for GET /state.
 func (f Failure) Class() Class { return f.class }
 
-// IsZero reports whether f is the zero Failure, which is not a real failure.
 func (f Failure) IsZero() bool { return f.class == ClassNone && f.reason == "" }
 
-// The complete public error vocabulary.
-//
-// Wording rule: name the subsystem and the nature of the fault, never the
-// value, the endpoint, or the threshold that was crossed. "backing source
-// returned an implausible value" is publishable; "backing 25452544.52 exceeds
-// cap 30000000" is not — it discloses both a reserve figure and a bound worth
-// knowing to anyone probing the oracle.
+// The complete public error vocabulary. Wording rule: name the subsystem and
+// the nature of the fault, never the value, the endpoint, or the threshold.
 var (
 	// --- instruction handling ---
 
 	UnexpectedPayload = Failure{ClassSourceInvalid, "instruction carries an unexpected payload"}
 
-	// WrongActionType is returned when a command arrives over the wrong channel.
-	// SET_SECRET is direct-only and SET_ENDPOINTS is instruction-only; accepting
+	// SET_SECRET is direct-only and SET_ENDPOINTS instruction-only; accepting
 	// either over the other channel would bypass its authorisation path.
 	WrongActionType = Failure{ClassSourceInvalid, "command arrived over the wrong action type"}
 
 	// --- provisioning ---
 
-	// ProvisionRejected is the ONLY failure a provisioning command may report.
-	//
-	// Deliberately one reason for every cause — bad signature, too few distinct
-	// signers, unknown signer, stale issuedAt, replayed version, wrong teeId,
-	// wrong chain, wrong domain, undecryptable ciphertext, disallowed host. A
-	// caller learns whether provisioning succeeded, never which check failed;
-	// distinguishing them would turn the endpoint into an oracle for probing the
-	// admin set and the freshness window.
+	// The ONLY failure a provisioning command may report. One reason for every
+	// cause, so the endpoint cannot be used to probe the admin set or the
+	// freshness window.
 	ProvisionRejected = Failure{ClassSourceInvalid, "provisioning envelope rejected"}
 
-	// NotConfigured means a price was requested before provisioning completed.
-	// Credentials are memory-only, so this is the expected state after every
-	// restart until the keeper re-submits.
+	// Credentials are memory-only, so this is the expected state after every restart.
 	NotConfigured = Failure{ClassNotConfigured, "extension is not provisioned"}
 
 	// --- backing sources (Hex APIs) ---
@@ -132,20 +77,26 @@ var (
 	SupplyNoQuorum    = Failure{ClassQuorumFailed, "supply providers did not reach quorum"}
 	SupplyImplausible = Failure{ClassImplausible, "supply read produced an implausible value"}
 
+	// The block every provider was asked about is too far behind wall-clock.
+	//
+	// Distinct from the quorum failures because the reads all SUCCEED and all
+	// AGREE — a read at a fixed block is deterministic, so honest providers
+	// corroborate an old block perfectly. This is the only check that catches a
+	// provider lying about which block to read rather than about what is in it,
+	// and the only one that works at all when a chain has a single provider.
+	SupplyBlockStale = Failure{ClassSourceInvalid, "supply block is too far behind"}
+
 	// --- observation consistency ---
 
 	WindowExceeded = Failure{ClassSourceInvalid, "observation window exceeded"}
 	Deadline       = Failure{ClassSourceDown, "observation deadline exceeded"}
 
-	// NoObservation is returned when a price is requested before the background
-	// loop has completed one. Distinct from NotConfigured: provisioning may be
-	// complete and the first observation simply not finished yet.
+	// Distinct from NotConfigured: provisioning may be complete and the first
+	// observation simply not finished yet.
 	NoObservation = Failure{ClassSourceDown, "no observation available yet"}
 
-	// ObservationStale is returned when the newest observation is older than
-	// config.MaxObservationAge. Signing it anyway would publish a price whose
-	// timestamp says it is fresh; failing closed lets the on-chain value age
-	// visibly instead, which is the designed failure mode.
+	// Signing a stale observation would publish a price whose timestamp says it
+	// is fresh; failing closed lets the on-chain value age visibly instead.
 	ObservationStale = Failure{ClassSourceDown, "no recent observation"}
 
 	// --- price computation ---
@@ -171,7 +122,7 @@ var All = []Failure{
 	BackingUnavailable, BackingTimeout, BackingMalformed,
 	BackingStale, BackingCurrency, BackingImplausible,
 	SupplyUnavailable, SupplyTimeout, SupplyMalformed,
-	SupplyNoQuorum, SupplyImplausible,
+	SupplyNoQuorum, SupplyImplausible, SupplyBlockStale,
 	WindowExceeded, Deadline,
 	NoObservation, ObservationStale,
 	SupplyZero, PriceImplausible,

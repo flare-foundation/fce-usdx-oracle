@@ -1,58 +1,51 @@
 // Package supply reads USDX circulating supply across chains via RPC.
 //
-// # The quorum procedure
+// Providers disagree about what "latest" resolves to, so the read is pinned to
+// an explicit block: ask every provider for its head, take the Quorum-th
+// HIGHEST, then query every provider at that exact number and require Quorum
+// IDENTICAL results. Identical, not median: a read at a fixed block is
+// deterministic, so disagreement means one provider is wrong or lying.
 //
-// Reading totalSupply() from a single provider makes that provider able to
-// dictate the published price. Reading it from three at "latest" does not fix
-// it: providers disagree about what "latest" is, so three honest providers
-// routinely return three different numbers and the disagreement is
-// indistinguishable from an attack.
+// # Why the Quorum-th highest head and not the minimum
 //
-// Measured 31 Jul 2026, the same is true of "finalized": every live Ethereum
-// endpoint supports it and sits ~83 blocks behind head, but 1rpc.io resolved it
-// 32 blocks earlier than the others. A tag is not a shared truth.
+// The minimum is the block every responding provider can serve, which is the
+// right instinct and the wrong rule, because nothing was checking the heads
+// themselves. One provider answering "what block are you at?" with a number
+// from two weeks ago dragged the minimum back with it, and then every HONEST
+// provider answered the supply query at that old block identically and
+// correctly. Quorum passed. The enclave signed a stale supply figure.
 //
-// So the read is pinned to an explicit block, uniformly across chains:
+// The sharp part is that the malicious provider never lies about the supply. It
+// lies about which question to ask, and the honest majority corroborates the
+// answer. Rewinding to when supply was lower understates supply, which
+// OVERSTATES the price.
 //
-//  1. ask every provider to resolve its finality reference to a block NUMBER
-//  2. take the MINIMUM across providers — the block all of them have
-//  3. subtract the per-chain margin
-//  4. query every provider at that exact number
-//  5. require Quorum identical results, else fail the whole observation
+// The Quorum-th highest keeps the property the minimum was reaching for — at
+// least Quorum providers can serve the pinned block — while making the choice
+// obey the same rule as the values: Quorum-1 liars cannot move it. Providers
+// below it simply fail their calls and do not contribute, which is what Quorum
+// < len(Providers) exists to absorb.
 //
-// Identical, not median. A read at a fixed block is deterministic: two honest
-// providers cannot disagree, so disagreement means one is wrong or lying and
-// there is no safe way to average that.
+// It cannot help a chain configured with a single provider, or with Quorum
+// equal to the provider count. MaxBlockAge covers that case and every case the
+// head-selection rule cannot: it bounds how old the pinned block may be in
+// wall-clock terms, so an ancient block is refused however it was chosen. It is
+// also the only check here that notices a chain that has simply stopped.
 //
-// # Constraints worth knowing
-//
-// The margin must stay inside the shallowest provider's state window or that
-// provider drops out of quorum on every round. Measured retention ranges from
-// latest-only to full archive (publicnode/1rpc ~64 blocks, blockrazor ~128,
-// drpc/mevblocker ≥100k). eth.merkle.io cannot serve explicit-block queries at
-// all and is unusable here despite being reachable.
-//
-// Only eth_call and block lookups are used — never eth_getLogs. Worth recording
-// because Flare's public RPC caps log ranges at 30 blocks, which looks like a
-// blocker until you notice this package does not need it.
-//
-// # No exclusions
-//
-// Supply is the plain sum of totalSupply() over the configured contracts. There
-// is no exclusion list and no balanceOf call: the contract list IS the policy,
-// and it is pinned in configuration covered by the code hash. The set must
-// match the basis on which Hex reports reserves, or the ratio compares two
-// different populations — see the note on the pre-migration Ethereum contract
-// in docs/usdx-oracle-spec.md §3.1.
+// Supply is the plain sum of totalSupply() over the pinned contracts — no
+// exclusion list, no balanceOf. The set must match the basis on which Hex
+// reports reserves. See docs/usdx-oracle-rationale.md.
 package supply
 
 import (
 	"context"
 	"errors"
 	"math/big"
+	"sort"
 	"sync"
 	"time"
 
+	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
 
 	"github.com/ethereum/go-ethereum"
@@ -60,108 +53,87 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-// ERC-20 selectors. Hand-built rather than generated: two four-byte constants
-// are easier for a reviewer to confirm than a code-generated binding.
+// ERC-20 selectors, hand-built: two four-byte constants are easier to confirm
+// than a code-generated binding.
 var (
 	selectorTotalSupply = []byte{0x18, 0x16, 0x0d, 0xdd} // totalSupply()
 	selectorDecimals    = []byte{0x31, 0x3c, 0xe5, 0x67} // decimals()
 )
 
-// maxDecimals bounds a decimals() response. USDX is 6 on Flare/Songbird and 18
-// on Ethereum; anything beyond 36 is a broken or hostile contract.
 const maxDecimals = 36
 
-// Caller is the subset of an Ethereum RPC client this package needs.
-//
-// Narrow on purpose: it is the seam the tests substitute, and it documents that
-// this package can only read — there is no path here that signs or sends.
+// Caller is the subset of an Ethereum RPC client this package needs. Narrow on
+// purpose: it is the test seam, and it shows there is no path here that signs.
 type Caller interface {
-	// HeaderByNumber resolves a block. A nil number means the client's latest;
-	// negative rpc.BlockNumber sentinels select tags such as finalized.
 	HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error)
-
-	// CallContract performs eth_call at an explicit block.
 	CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
 }
 
 // Provider is one RPC endpoint for a chain.
 type Provider struct {
-	// Name identifies the provider in GET /state health, e.g. "rpc_flare_1".
 	// Never a URL: /state is public and endpoint URLs may embed API keys.
 	Name string
 
 	Client Caller
 }
 
-// ChainConfig describes one chain's supply read.
 type ChainConfig struct {
-	// Name identifies the chain in health reporting, e.g. "flare".
-	Name string
-
-	// Token is the USDX contract on this chain.
+	Name  string
 	Token common.Address
 
-	// Providers are the independent RPC endpoints to query.
 	Providers []Provider
 
-	// Quorum is how many providers must return identical results. Must be at
-	// least 1 and at most len(Providers).
-	//
-	// Songbird is the awkward case: exactly one working public RPC exists, so a
-	// 3-provider rule cannot be met there for free. Setting Quorum to 1 is a
-	// deliberate acceptance of single-provider risk for that chain's share of
-	// supply, not an oversight — see spec §2.8.
+	// How many providers(RPCs) must return identical results
 	Quorum int
 
-	// FinalityTag is the reference each provider resolves before the minimum is
-	// taken: "finalized" on Ethereum, "latest" on Flare and Songbird.
-	FinalityTag BlockTag
-
-	// FinalityMargin is subtracted from the agreed block. Per-chain, not
-	// global: measured block times are Flare 1.11s, Songbird 1.07s, Ethereum
-	// 12.01s, so 60s of margin is ~54 blocks on Flare but ~5 on Ethereum.
-	FinalityMargin uint64
-}
-
-// BlockTag is a finality reference.
-type BlockTag string
-
-const (
-	TagLatest    BlockTag = "latest"
-	TagFinalized BlockTag = "finalized"
-)
-
-// blockNumArg converts a tag to the sentinel ethclient expects.
-func (t BlockTag) blockNumArg() *big.Int {
-	switch t {
-	case TagFinalized:
-		return big.NewInt(-3) // rpc.FinalizedBlockNumber
-	default:
-		return nil // latest
-	}
+	// MaxBlockAge refuses a pinned block whose own header timestamp is older
+	// than this. Zero disables the check.
+	//
+	// This is the backstop the agreement rules cannot provide. Every other
+	// freshness bound in the system is wall-clock: checkWindow compares when the
+	// HTTP calls happened, and the store compares the report timestamp against
+	// block.timestamp. Reading two-week-old chain state one second ago passes
+	// all of them. Only a comparison against the BLOCK's own timestamp catches
+	// it, and unlike the head-selection rule it still works at Quorum 1.
+	MaxBlockAge time.Duration
 }
 
 // Reading is one chain's supply, normalised out of the token's own decimals.
 type Reading struct {
 	Chain string
 
-	// Amount is the supply as a USD-denominated quantity: totalSupply scaled
-	// down by 10^decimals. 1 USDX = 1 unit, so this is directly comparable
-	// across chains despite their differing decimals.
+	// totalSupply scaled down by 10^decimals, so chains with differing decimals
+	// are directly comparable.
 	Amount *big.Rat
 
 	// Block is the height every provider was queried at.
 	Block uint64
 
-	// Decimals is what decimals() returned, recorded so a silent change is
-	// visible in logs.
+	// BlockTime is that block's own header timestamp — when the chain state
+	// being reported actually existed, as opposed to when it was fetched.
+	//
+	// Deliberately NOT folded into oracle.checkWindow: that window is 30s and
+	// measures read skew between RetrievedAt stamps, while Ethereum's head is
+	// routinely 12s or more behind wall-clock. Mixing the two would spend most
+	// of the budget on ordinary block age and reject healthy observations.
+	// MaxBlockAge bounds this quantity directly instead.
+	BlockTime time.Time
+
+	// Recorded so a silent change is visible in logs.
 	Decimals uint8
 
 	RetrievedAt time.Time
+
+	// Providers maps each provider's name to its status for this read.
+	//
+	// Quorum lets a chain stay healthy while one provider is dead, dissenting or
+	// lagging, so without this the failing provider is invisible right up until
+	// enough of them fail at once.
+	Providers map[string]string
 }
 
-// Validate checks a chain configuration. Returns an ordinary error: a bad
-// config must stop startup, not surface through the feed.
+// Validate returns an ordinary error: a bad config must stop startup, not
+// surface through the feed.
 func (c ChainConfig) Validate() error {
 	if c.Name == "" {
 		return errors.New("supply: chain name is required")
@@ -186,27 +158,45 @@ func (c ChainConfig) Validate() error {
 	return nil
 }
 
-// Read returns the chain's supply, or a publishable failure.
+// Read returns the chain's supply, or a publishable failure. Either way the
+// Reading carries per-provider standing.
 func Read(ctx context.Context, cfg ChainConfig) (Reading, error) {
-	block, err := agreedBlock(ctx, cfg)
+	// Everyone starts healthy and is demoted by the calls below. Sound because
+	// agreedBlock contacts every provider before anything else can fail.
+	health := make(map[string]string, len(cfg.Providers))
+	for _, p := range cfg.Providers {
+		health[p.Name] = config.HealthOK
+	}
+	failed := func(err error) (Reading, error) {
+		return Reading{Chain: cfg.Name, Providers: health}, err
+	}
+
+	block, err := agreedBlock(ctx, cfg, health)
 	if err != nil {
-		return Reading{}, err
+		return failed(err)
 	}
 
 	at := new(big.Int).SetUint64(block)
 
-	decimals, err := readDecimals(ctx, cfg, at)
+	blockTime, err := agreedBlockTime(ctx, cfg, at, health)
 	if err != nil {
-		return Reading{}, err
+		return failed(err)
+	}
+	if cfg.MaxBlockAge > 0 && time.Since(blockTime) > cfg.MaxBlockAge {
+		return failed(failure.SupplyBlockStale)
 	}
 
-	raw, err := readTotalSupply(ctx, cfg, at)
+	decimals, err := readDecimals(ctx, cfg, at, health)
 	if err != nil {
-		return Reading{}, err
+		return failed(err)
 	}
 
-	// Scale out of the token's own decimals so chains with different decimals
-	// are summable. Exact: a big.Rat division by a power of ten loses nothing.
+	raw, err := readTotalSupply(ctx, cfg, at, health)
+	if err != nil {
+		return failed(err)
+	}
+
+	// Exact: a big.Rat division by a power of ten loses nothing.
 	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
 	amount := new(big.Rat).SetFrac(raw, scale)
 
@@ -214,19 +204,18 @@ func Read(ctx context.Context, cfg ChainConfig) (Reading, error) {
 		Chain:       cfg.Name,
 		Amount:      amount,
 		Block:       block,
+		BlockTime:   blockTime,
 		Decimals:    decimals,
 		RetrievedAt: time.Now().UTC(),
+		Providers:   health,
 	}, nil
 }
 
-// agreedBlock resolves every provider's finality reference and returns the
-// minimum, less the margin.
+// agreedBlock returns the Quorum-th highest head across the providers — the
+// highest block at least Quorum of them can serve.
 //
-// The minimum, not the maximum or the median: it is the only choice guaranteed
-// to name a block that every provider can actually serve. A higher block would
-// make the laggard fail its query every round, silently reducing the effective
-// provider count to those that happen to be ahead.
-func agreedBlock(ctx context.Context, cfg ChainConfig) (uint64, error) {
+// See the package comment for why this is not the minimum.
+func agreedBlock(ctx context.Context, cfg ChainConfig, health map[string]string) (uint64, error) {
 	type result struct {
 		n   uint64
 		err error
@@ -238,7 +227,8 @@ func agreedBlock(ctx context.Context, cfg ChainConfig) (uint64, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			h, err := p.Client.HeaderByNumber(ctx, cfg.FinalityTag.blockNumArg())
+			// nil is the latest block.
+			h, err := p.Client.HeaderByNumber(ctx, nil)
 			if err != nil {
 				results[i] = result{err: err}
 				return
@@ -256,48 +246,112 @@ func agreedBlock(ctx context.Context, cfg ChainConfig) (uint64, error) {
 		return 0, failure.SupplyTimeout
 	}
 
-	var min uint64
-	var ok int
-	for _, r := range results {
+	heads := make([]uint64, 0, len(results))
+	for i, r := range results {
 		if r.err != nil {
+			health[cfg.Providers[i].Name] = config.HealthDown
 			continue
 		}
-		if ok == 0 || r.n < min {
-			min = r.n
+		heads = append(heads, r.n)
+	}
+
+	// Fewer than Quorum providers answered at all, so no block can reach Quorum
+	// agreement later either.
+	if len(heads) < cfg.Quorum {
+		return 0, failure.SupplyUnavailable
+	}
+
+	// Descending, then the Quorum-th: exactly Quorum providers reported a head
+	// at or above it, so at least that many hold the state.
+	sort.Slice(heads, func(i, j int) bool { return heads[i] > heads[j] })
+	pinned := heads[cfg.Quorum-1]
+
+	// Block 0 is a freshly reset devnet, not a chain with USDX on it.
+	if pinned == 0 {
+		return 0, failure.SupplyUnavailable
+	}
+
+	// A provider below the pinned block cannot serve it and will fail its calls.
+	// That is tolerated — it is what Quorum < len(Providers) is for — but it is
+	// also the shape a provider takes when it tries to rewind the observation,
+	// and nothing else would record it.
+	for i, r := range results {
+		if r.err == nil && r.n < pinned && health[cfg.Providers[i].Name] == config.HealthOK {
+			health[cfg.Providers[i].Name] = config.HealthLagging
 		}
-		ok++
 	}
 
-	// Every provider that will be asked for the supply must also have
-	// contributed a head, or the minimum is not a block they all have.
-	if ok < cfg.Quorum {
-		return 0, failure.SupplyUnavailable
-	}
-
-	if min < cfg.FinalityMargin {
-		// A chain shallower than the margin means a misconfiguration or a
-		// freshly reset devnet. Either way there is no safe block to read.
-		return 0, failure.SupplyUnavailable
-	}
-	return min - cfg.FinalityMargin, nil
+	return pinned, nil
 }
 
-// readTotalSupply queries every provider at an explicit block and requires
-// Quorum identical answers.
-func readTotalSupply(ctx context.Context, cfg ChainConfig, at *big.Int) (*big.Int, error) {
-	results, failures := callAll(ctx, cfg, selectorTotalSupply, at)
+// agreedBlockTime returns the pinned block's own header timestamp, agreed by
+// Quorum providers.
+//
+// Agreement is required rather than trusting whichever provider proposed the
+// block. Taking the timestamp from that one provider would hand a liar both
+// halves of the lie: an ancient block number paired with a fresh timestamp,
+// which passes MaxBlockAge and leaves the honest providers corroborating the
+// stale supply at that block. A header at a fixed height is deterministic, so
+// honest providers agree exactly and one liar is outvoted.
+func agreedBlockTime(
+	ctx context.Context, cfg ChainConfig, at *big.Int, health map[string]string,
+) (time.Time, error) {
+	stamps := make([]uint64, len(cfg.Providers))
+	okAt := make([]bool, len(cfg.Providers))
 
-	if len(results) < cfg.Quorum {
-		if failures > 0 && len(results) == 0 {
+	var wg sync.WaitGroup
+	for i, p := range cfg.Providers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h, err := p.Client.HeaderByNumber(ctx, at)
+			if err != nil || h == nil {
+				return
+			}
+			stamps[i], okAt[i] = h.Time, true
+		}()
+	}
+	wg.Wait()
+
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, failure.SupplyTimeout
+	}
+
+	answers := make([][]byte, len(cfg.Providers))
+	for i, ok := range okAt {
+		if !ok {
+			continue
+		}
+		answers[i] = new(big.Int).SetUint64(stamps[i]).Bytes()
+	}
+
+	best, agreed, answered := vote(cfg, answers, health)
+	if answered < cfg.Quorum {
+		return time.Time{}, failure.SupplyUnavailable
+	}
+	if agreed < cfg.Quorum {
+		return time.Time{}, failure.SupplyNoQuorum
+	}
+
+	seconds := new(big.Int).SetBytes(best)
+	if !seconds.IsInt64() || seconds.Sign() <= 0 {
+		return time.Time{}, failure.SupplyMalformed
+	}
+	return time.Unix(seconds.Int64(), 0).UTC(), nil
+}
+
+func readTotalSupply(
+	ctx context.Context, cfg ChainConfig, at *big.Int, health map[string]string,
+) (*big.Int, error) {
+	best, agreed, answered := vote(cfg, callAll(ctx, cfg, selectorTotalSupply, at), health)
+
+	if answered < cfg.Quorum {
+		if answered == 0 {
 			return nil, failure.SupplyUnavailable
 		}
 		return nil, failure.SupplyNoQuorum
 	}
-
-	// Tally identical values. At a fixed block these are deterministic, so any
-	// spread is a fault rather than noise to be averaged away.
-	best, count := agreement(results)
-	if count < cfg.Quorum {
+	if agreed < cfg.Quorum {
 		return nil, failure.SupplyNoQuorum
 	}
 
@@ -308,19 +362,17 @@ func readTotalSupply(ctx context.Context, cfg ChainConfig, at *big.Int) (*big.In
 	return value, nil
 }
 
-// readDecimals reads decimals() at the same block, requiring the same quorum.
-//
-// Read every time rather than hard-coded: USDX is 6 on Flare and Songbird but
-// 18 on Ethereum, which is normal for a LayerZero OFT and a live footgun.
-// Assuming a value would silently misprice a chain by 10^12.
-func readDecimals(ctx context.Context, cfg ChainConfig, at *big.Int) (uint8, error) {
-	results, _ := callAll(ctx, cfg, selectorDecimals, at)
-	if len(results) < cfg.Quorum {
+// readDecimals reads decimals() at the same block. Read every time rather than
+// hard-coded: USDX is 6 on Flare and Songbird but 18 on Ethereum, and assuming
+// a value would misprice a chain by 10^12.
+func readDecimals(
+	ctx context.Context, cfg ChainConfig, at *big.Int, health map[string]string,
+) (uint8, error) {
+	best, agreed, answered := vote(cfg, callAll(ctx, cfg, selectorDecimals, at), health)
+	if answered < cfg.Quorum {
 		return 0, failure.SupplyUnavailable
 	}
-
-	best, count := agreement(results)
-	if count < cfg.Quorum {
+	if agreed < cfg.Quorum {
 		return 0, failure.SupplyNoQuorum
 	}
 
@@ -331,14 +383,12 @@ func readDecimals(ctx context.Context, cfg ChainConfig, at *big.Int) (uint8, err
 	return uint8(d.Uint64()), nil
 }
 
-// callAll performs the same eth_call against every provider concurrently and
-// returns the successful 32-byte results plus a count of failures.
-func callAll(ctx context.Context, cfg ChainConfig, selector []byte, at *big.Int) ([][]byte, int) {
-	type result struct {
-		data []byte
-		err  error
-	}
-	out := make([]result, len(cfg.Providers))
+// callAll performs the same eth_call against every provider concurrently. The
+// result is index-aligned with cfg.Providers; nil means that provider gave no
+// usable answer. Index-aligned rather than compacted so the caller can still
+// say WHICH provider failed.
+func callAll(ctx context.Context, cfg ChainConfig, selector []byte, at *big.Int) [][]byte {
+	answers := make([][]byte, len(cfg.Providers))
 
 	call := ethereum.CallMsg{To: &cfg.Token, Data: selector}
 
@@ -347,54 +397,62 @@ func callAll(ctx context.Context, cfg ChainConfig, selector []byte, at *big.Int)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// The block number is passed explicitly on every call. This is the
-			// whole point of the procedure: never a tag, never nil.
+			// Always an explicit block number: never a tag, never nil.
 			data, err := p.Client.CallContract(ctx, call, at)
-			out[i] = result{data: data, err: err}
+			// A single ABI word. Anything else is a wrong address, a proxy
+			// without an implementation, or a provider missing that block.
+			if err != nil || len(data) != 32 {
+				return
+			}
+			answers[i] = data
 		}()
 	}
 	wg.Wait()
 
-	var results [][]byte
-	failures := 0
-	for _, r := range out {
-		// A single ABI word. Anything else is a wrong address, a proxy without
-		// an implementation, or a provider that silently returned empty for a
-		// block it does not have.
-		if r.err != nil || len(r.data) != 32 {
-			failures++
-			continue
-		}
-		results = append(results, r.data)
-	}
-	return results, failures
+	return answers
 }
 
-// agreement returns the most common value and how many providers returned it.
-func agreement(results [][]byte) ([]byte, int) {
-	best, bestCount := []byte(nil), 0
-	for i, a := range results {
+// vote returns the most common answer, how many providers gave it, and how many
+// answered at all — and records each provider's standing in health. Demote
+// only: a provider already marked down or lagging by an earlier call must not be
+// promoted back to merely disagreeing by a later one.
+func vote(cfg ChainConfig, answers [][]byte, health map[string]string) (best []byte, agreed, answered int) {
+	for _, a := range answers {
+		if a == nil {
+			continue
+		}
+		answered++
 		count := 0
-		for _, b := range results {
-			if string(a) == string(b) {
+		for _, b := range answers {
+			if b != nil && string(a) == string(b) {
 				count++
 			}
 		}
-		if count > bestCount {
-			best, bestCount = results[i], count
+		if count > agreed {
+			best, agreed = a, count
 		}
 	}
-	return best, bestCount
+
+	for i, a := range answers {
+		name := cfg.Providers[i].Name
+		switch {
+		case a == nil:
+			// A lagging provider is EXPECTED to fail here — it does not hold the
+			// pinned block. Keeping "lagging" names the actual cause; "down"
+			// would send someone looking for an outage that is not there.
+			if health[name] != config.HealthLagging {
+				health[name] = config.HealthDown
+			}
+		case string(a) != string(best) && health[name] == config.HealthOK:
+			health[name] = config.HealthDisagree
+		}
+	}
+	return best, agreed, answered
 }
 
-// Total sums per-chain readings.
-//
-// A plain sum is correct only because USDX is a native burn-and-mint LayerZero
-// OFT on every chain read: token() returns the contract's own address on both
-// Flare and current Ethereum, which is the native pattern rather than a
-// lock-and-mint adapter. Bridging therefore burns on the source and mints on
-// the destination, and no balance is counted twice. If a lock-and-mint adapter
-// exists on any chain, this sum double-counts and the price is overstated.
+// Total sums per-chain readings. A plain sum is correct only because USDX is a
+// native burn-and-mint LayerZero OFT on every chain read; a lock-and-mint
+// adapter anywhere would make this double-count and overstate the price.
 func Total(readings []Reading) *big.Rat {
 	sum := new(big.Rat)
 	for _, r := range readings {

@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"sync"
 	"testing"
+	"time"
 
 	"fce-usdx-oracle/internal/failure"
 
@@ -28,15 +29,51 @@ type fakeClient struct {
 	// badLen returns a result that is not a single ABI word.
 	badLen bool
 
+	// blockTime is the header timestamp served for the PINNED block. Zero means
+	// "now", which is what a healthy chain looks like; set it to backdate a
+	// block and exercise MaxBlockAge.
+	blockTime time.Time
+
+	// blockTimeErr fails only the pinned-block header read, leaving the head
+	// read healthy — how a provider that cannot serve the pinned block behaves.
+	blockTimeErr error
+
 	mu           sync.Mutex
 	calledBlocks []*big.Int
 }
 
+// HeaderByNumber serves the head when number is nil and the pinned block
+// otherwise. Both carry a timestamp: a real chain has no blocks without one, and
+// agreedBlockTime rejects a zero stamp as malformed.
 func (c *fakeClient) HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error) {
-	if c.headErr != nil {
-		return nil, c.headErr
+	if number == nil {
+		if c.headErr != nil {
+			return nil, c.headErr
+		}
+		return &types.Header{
+			Number: new(big.Int).SetUint64(c.head),
+			Time:   uint64(c.stampFor(c.head).Unix()),
+		}, nil
 	}
-	return &types.Header{Number: new(big.Int).SetUint64(c.head)}, nil
+
+	if c.blockTimeErr != nil {
+		return nil, c.blockTimeErr
+	}
+	// A provider whose head is below the requested block does not hold it.
+	if number.IsUint64() && number.Uint64() > c.head {
+		return nil, errors.New("unknown block")
+	}
+	return &types.Header{
+		Number: new(big.Int).Set(number),
+		Time:   uint64(c.stampFor(number.Uint64()).Unix()),
+	}, nil
+}
+
+func (c *fakeClient) stampFor(uint64) time.Time {
+	if c.blockTime.IsZero() {
+		return time.Now()
+	}
+	return c.blockTime
 }
 
 func (c *fakeClient) CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
@@ -72,7 +109,7 @@ func cfg(t *testing.T, quorum int, clients ...*fakeClient) ChainConfig {
 	}
 	return ChainConfig{
 		Name: "testchain", Token: testToken, Providers: providers,
-		Quorum: quorum, FinalityTag: TagLatest, FinalityMargin: 10,
+		Quorum: quorum,
 	}
 }
 
@@ -92,8 +129,8 @@ func TestRead_Agreement(t *testing.T) {
 	if want := "20620459.685024"; got.Amount.FloatString(6) != want {
 		t.Errorf("amount = %s, want %s", got.Amount.FloatString(6), want)
 	}
-	if got.Block != 990 {
-		t.Errorf("block = %d, want 990 (head 1000 less margin 10)", got.Block)
+	if got.Block != 1000 {
+		t.Errorf("block = %d, want the agreed head 1000", got.Block)
 	}
 }
 
@@ -132,16 +169,17 @@ func TestRead_NeverQueriesATag(t *testing.T) {
 		for _, blk := range c.calledBlocks {
 			if blk == nil {
 				t.Error("a call was made with a nil block, i.e. the latest tag")
-			} else if blk.Uint64() != 990 {
-				t.Errorf("call at block %s, want the agreed 990", blk)
+			} else if blk.Uint64() != 1000 {
+				t.Errorf("call at block %s, want the agreed 1000", blk)
 			}
 		}
 	}
 }
 
-// The agreed block is the minimum head, so it names a block every provider has.
-func TestRead_UsesMinimumHead(t *testing.T) {
-	// One provider lags 50 blocks behind the others.
+// The pinned block is the Quorum-th highest head: the highest block at least
+// Quorum providers can serve. A provider behind it is left behind rather than
+// followed — which is the whole change from the old minimum rule.
+func TestRead_PinsTheQuorumThHighestHead(t *testing.T) {
 	a := client(1000, "100", 6)
 	b := client(1000, "100", 6)
 	lagging := client(950, "100", 6)
@@ -150,8 +188,153 @@ func TestRead_UsesMinimumHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Block != 940 {
-		t.Errorf("block = %d, want 940 (minimum head 950 less margin 10)", got.Block)
+	if got.Block != 1000 {
+		t.Errorf("block = %d, want 1000 — the highest block quorum 2 can serve", got.Block)
+	}
+	if got.Providers["rpc_test_c"] != "lagging" {
+		t.Errorf("the lagging provider is %q, want %q — being ignored must still leave a trace",
+			got.Providers["rpc_test_c"], "lagging")
+	}
+}
+
+// The attack the old minimum rule allowed, and the reason for this whole change.
+//
+// One provider claims a head from two weeks ago. Under min(heads) everyone was
+// then queried at that block, the HONEST providers answered identically and
+// correctly, quorum passed, and the enclave signed a stale supply figure —
+// understating supply, which overstates the price. The liar never lies about
+// the supply; it lies about which question to ask.
+func TestRead_OneProviderCannotRewindTheObservation(t *testing.T) {
+	honestA := client(1_000_000, "5000000", 6)
+	honestB := client(1_000_000, "5000000", 6)
+
+	// Two weeks back, and it reports the supply as it was then.
+	rewinder := client(900_000, "1000000", 6)
+
+	got, err := Read(context.Background(), cfg(t, 2, honestA, honestB, rewinder))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Block != 1_000_000 {
+		t.Fatalf("block = %d, want 1000000 — one liar must not move the pinned block", got.Block)
+	}
+	if want := "5.000000"; got.Amount.FloatString(6) != want {
+		t.Errorf("amount = %s, want %s — the current supply, not the rewound one",
+			got.Amount.FloatString(6), want)
+	}
+}
+
+// At quorum == provider count the order statistic degenerates to the minimum,
+// so head selection cannot help. Stated as a test because it is the case
+// MaxBlockAge exists to cover, and someone will otherwise assume the new rule
+// protects every configuration.
+func TestRead_UnanimityStillFollowsTheLowestHead(t *testing.T) {
+	got, err := Read(context.Background(), cfg(t, 2,
+		client(1000, "100", 6),
+		client(950, "100", 6),
+	))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Block != 950 {
+		t.Errorf("block = %d, want 950: with quorum == provider count there is no slack", got.Block)
+	}
+}
+
+// MaxBlockAge is the backstop that works at any quorum, including one provider.
+// Every other freshness check in the system is wall-clock, so reading ancient
+// state one second ago passes all of them.
+func TestRead_RejectsAStaleBlock(t *testing.T) {
+	old := client(1000, "100", 6)
+	old.blockTime = time.Now().Add(-2 * time.Hour)
+
+	c := cfg(t, 1, old)
+	c.MaxBlockAge = 5 * time.Minute
+
+	_, err := Read(context.Background(), c)
+	if !errors.Is(err, failure.SupplyBlockStale) {
+		t.Fatalf("expected SupplyBlockStale, got %v", err)
+	}
+}
+
+func TestRead_AcceptsAFreshBlock(t *testing.T) {
+	fresh := client(1000, "100", 6)
+	fresh.blockTime = time.Now().Add(-30 * time.Second)
+
+	c := cfg(t, 1, fresh)
+	c.MaxBlockAge = 5 * time.Minute
+
+	got, err := Read(context.Background(), c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.BlockTime.IsZero() {
+		t.Error("BlockTime was not recorded")
+	}
+}
+
+// Zero disables the check, so an existing deployment that has not set a value
+// behaves exactly as before rather than failing closed on every read.
+func TestRead_ZeroMaxBlockAgeDisablesTheCheck(t *testing.T) {
+	old := client(1000, "100", 6)
+	old.blockTime = time.Now().Add(-30 * 24 * time.Hour)
+
+	if _, err := Read(context.Background(), cfg(t, 1, old)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// The block timestamp is voted on, not taken from whichever provider proposed
+// the block. Otherwise a liar supplies both halves — an ancient block number
+// with a fresh timestamp — and MaxBlockAge is defeated while the honest
+// providers corroborate the stale supply at that block.
+func TestRead_BlockTimeMustReachQuorum(t *testing.T) {
+	honestA := client(1000, "100", 6)
+	honestA.blockTime = time.Now().Add(-90 * time.Minute)
+	honestB := client(1000, "100", 6)
+	honestB.blockTime = time.Now().Add(-90 * time.Minute)
+
+	// Same block, but claims it is fresh.
+	liar := client(1000, "100", 6)
+	liar.blockTime = time.Now()
+
+	c := cfg(t, 2, honestA, honestB, liar)
+	c.MaxBlockAge = 5 * time.Minute
+
+	_, err := Read(context.Background(), c)
+	if !errors.Is(err, failure.SupplyBlockStale) {
+		t.Fatalf("expected SupplyBlockStale — the honest majority's timestamp must win, got %v", err)
+	}
+}
+
+// A provider that answered but lost the vote is visible, so it can be replaced
+// before enough of them drift to break quorum.
+func TestRead_DisagreeingProviderIsRecorded(t *testing.T) {
+	got, err := Read(context.Background(), cfg(t, 2,
+		client(1000, "1000000", 6),
+		client(1000, "1000000", 6),
+		client(1000, "9999999", 6),
+	))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Providers["rpc_test_c"] != "disagree" {
+		t.Errorf("outvoted provider is %q, want %q", got.Providers["rpc_test_c"], "disagree")
+	}
+	if got.Providers["rpc_test_a"] != "ok" {
+		t.Errorf("agreeing provider is %q, want %q", got.Providers["rpc_test_a"], "ok")
+	}
+}
+
+// A failed read still carries per-provider standing: on failure that map is the
+// only thing that says WHICH provider broke.
+func TestRead_FailureStillReportsProviders(t *testing.T) {
+	down := client(1000, "100", 6)
+	down.headErr = errors.New("connection refused")
+
+	got, _ := Read(context.Background(), cfg(t, 2, down, client(1000, "100", 6)))
+	if got.Providers["rpc_test_a"] != "down" {
+		t.Errorf("failed provider is %q, want %q", got.Providers["rpc_test_a"], "down")
 	}
 }
 
@@ -257,9 +440,9 @@ func TestRead_ImplausibleDecimalsRejected(t *testing.T) {
 	}
 }
 
-func TestRead_ChainShallowerThanMarginRejected(t *testing.T) {
-	c := cfg(t, 1, client(5, "100", 6))
-	c.FinalityMargin = 100
+// Head 0 is a freshly reset devnet, not a chain carrying USDX.
+func TestRead_ZeroHeadRejected(t *testing.T) {
+	c := cfg(t, 1, client(0, "100", 6))
 	if _, err := Read(context.Background(), c); !errors.Is(err, failure.SupplyUnavailable) {
 		t.Errorf("expected SupplyUnavailable, got %v", err)
 	}

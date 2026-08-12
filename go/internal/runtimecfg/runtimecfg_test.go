@@ -113,9 +113,17 @@ func TestPinnedPolicyIsUsed(t *testing.T) {
 		if ch.Token != common.HexToAddress(pinnedChain.Token) {
 			t.Errorf("chain %q token = %s, want the pinned %s", ch.Name, ch.Token, pinnedChain.Token)
 		}
-		if ch.FinalityMargin != pinnedChain.FinalityMargin {
-			t.Errorf("chain %q margin = %d, want the pinned %d",
-				ch.Name, ch.FinalityMargin, pinnedChain.FinalityMargin)
+
+		// MaxBlockAge is the check that stops a hostile provider rewinding the
+		// observation. Letting the key that chooses the providers also choose
+		// how stale a block may be would hand over the check with the attack, so
+		// it has to come from the pinned policy and be non-zero there.
+		if ch.MaxBlockAge != pinnedChain.MaxBlockAge {
+			t.Errorf("chain %q maxBlockAge = %s, want the pinned %s",
+				ch.Name, ch.MaxBlockAge, pinnedChain.MaxBlockAge)
+		}
+		if ch.MaxBlockAge <= 0 {
+			t.Errorf("chain %q has no maxBlockAge, so a rewound block would be accepted", ch.Name)
 		}
 	}
 }
