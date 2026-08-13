@@ -21,20 +21,37 @@ import (
 
 // --- fakes ---
 
-// fakeChain serves totalSupply from a script: one entry per call round, so a
-// test can make supply change between the two passes of the double-read.
+// fakeChain serves totalSupply from a script: one entry per call. Any entry
+// past the first is only reached if something reads supply more than once,
+// which is what TestObserve_ReadsSupplyOncePerChain pins down.
 type fakeChain struct {
 	mu       sync.Mutex
 	supplies []string // consumed one per totalSupply call
+	calls    int      // totalSupply calls served
 	decimals uint8
 	err      error
 }
 
+// supplyCalls reports how many totalSupply calls this chain has served.
+func (f *fakeChain) supplyCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// HeaderByNumber serves both the head (n == nil) and the pinned block. The
+// timestamp is "now" rather than zero because no real chain produces a block
+// without one, and supply.agreedBlockTime treats a zero stamp as a malformed
+// response.
 func (f *fakeChain) HeaderByNumber(ctx context.Context, n *big.Int) (*types.Header, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &types.Header{Number: big.NewInt(1000)}, nil
+	number := big.NewInt(1000)
+	if n != nil {
+		number = new(big.Int).Set(n)
+	}
+	return &types.Header{Number: number, Time: uint64(time.Now().Unix())}, nil
 }
 
 func (f *fakeChain) CallContract(ctx context.Context, call ethereum.CallMsg, block *big.Int) ([]byte, error) {
@@ -48,6 +65,7 @@ func (f *fakeChain) CallContract(ctx context.Context, call ethereum.CallMsg, blo
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
 	s := f.supplies[0]
 	if len(f.supplies) > 1 {
 		f.supplies = f.supplies[1:]
@@ -116,7 +134,7 @@ func testConfig(t *testing.T, chain *fakeChain, bonds, cash *fakeSource) Config 
 			Providers: []supply.Provider{
 				{Name: "rpc_flare_1", Client: chain},
 			},
-			Quorum: 1, FinalityTag: supply.TagLatest, FinalityMargin: 10,
+			Quorum: 1,
 		}},
 		Bonds:         bonds,
 		Cash:          cashSource(cash),
@@ -152,19 +170,25 @@ func observeWith(t *testing.T, cfg Config, signer Signer, id common.Hash) (Obser
 	return Sign(context.Background(), signer, obs, id)
 }
 
-// --- the double-read ---
+// --- the single supply pass ---
 
-// The headline safety property. A redemption landing mid-observation reduces
-// supply; taking max(S₁, S₂) keeps the LARGER supply, so the price is biased
-// DOWN. An over-stated price would hide a shortfall.
-func TestObserve_DoubleReadBiasesPriceDown(t *testing.T) {
-	// 1,000,000 USDX burned between the two passes — the real event from
-	// spec §6.1, 4.8% of supply.
+// Supply is read once per chain per observation. The conservative double-read
+// that used to bracket the reserve read was dropped: each pass is already
+// pinned to one agreed block, and the reserve figure moves on Hex's ~10 minute
+// tick, so a second pass changed the answer only when a burn or mint landed in
+// the few seconds between the two pinned blocks — while doubling the supply-side
+// fail-closed surface.
+//
+// The call count is asserted rather than inferred from the price, so a
+// reintroduced bracket fails here instead of showing up as a latency
+// regression.
+func TestObserve_ReadsSupplyOncePerChain(t *testing.T) {
+	// The real event from spec §6.1: 1,000,000 USDX burned, 4.8% of supply. A
+	// second pass would consume the post-burn figure; one pass never sees it.
 	chain := &fakeChain{
 		supplies: []string{"21620459685024", "20620459685024"},
 		decimals: 6,
 	}
-	// Reserves matching the POST-burn supply, as Hex's figure eventually does.
 	bonds := &fakeSource{name: "hex_bonds", amount: "20620459.685024"}
 	cash := &fakeSource{name: "hex_cash", amount: "0"}
 
@@ -173,12 +197,8 @@ func TestObserve_DoubleReadBiasesPriceDown(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Naive (post-burn supply only) would give exactly par. The conservative
-	// read uses the pre-burn supply, so the price must come out BELOW par.
-	par := big.NewInt(100_000_000)
-	if got.Price.Cmp(par) >= 0 {
-		t.Errorf("price %s is at or above par; the double-read must bias downward "+
-			"when supply falls mid-observation", got.Price)
+	if n := chain.supplyCalls(); n != 1 {
+		t.Errorf("totalSupply called %d times, want 1", n)
 	}
 
 	// 20620459.685024 / 21620459.685024 = 0.9537475144114222...
@@ -186,26 +206,6 @@ func TestObserve_DoubleReadBiasesPriceDown(t *testing.T) {
 	// rational arithmetic, not derived from this implementation.
 	if want := big.NewInt(95_374_751); got.Price.Cmp(want) != 0 {
 		t.Errorf("price = %s, want %s", got.Price, want)
-	}
-}
-
-// Mirror case: if supply RISES between passes, max() picks the later, larger
-// figure — still the conservative direction.
-func TestObserve_TakesLargerSupplyWhenSupplyRises(t *testing.T) {
-	chain := &fakeChain{
-		supplies: []string{"1000000", "2000000"}, // supply doubles mid-read
-		decimals: 6,
-	}
-	bonds := &fakeSource{name: "hex_bonds", amount: "1.0"}
-	cash := &fakeSource{name: "hex_cash", amount: "0"}
-
-	got, err := observe(t, testConfig(t, chain, bonds, cash))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// 1.0 backing / 2.0 supply = 0.5, not 1.0.
-	if want := big.NewInt(50_000_000); got.Price.Cmp(want) != 0 {
-		t.Errorf("price = %s, want %s (the larger supply must be used)", got.Price, want)
 	}
 }
 

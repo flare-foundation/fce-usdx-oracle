@@ -104,27 +104,64 @@ func SetExtensionId(s *support.Support, instructionSenderAddress common.Address)
 	return nil
 }
 
-// priceUpdateFee returns the registry's current fee for one GET_PRICE instruction.
-//
-// Read, never hard-coded. The fee is governance-settable, and a stale constant
-// fails closed in the worst way: every request reverts, no price is published,
-// and nothing in this repo changed to explain it. The op type and command come
-// from the deployed contract's own constants rather than being re-derived here,
-// so the fee lookup cannot drift from the instruction actually sent.
-//
-// calculateFeeByTeeIds is not used: requestPriceUpdate picks its machine
-// internally via getRandomTeeIds, so the caller cannot know the tee id in
-// advance. getOperationFee is the per-operation price for the single machine
-// that call dispatches to; getDefaultFee covers an operation with no specific
-// fee configured.
+// priceUpdateFee returns the registry's current fee for one GET_PRICE
+// instruction. Read, never hard-coded: the fee is governance-settable and a
+// stale constant would revert every request with nothing in this repo changed
+// to explain it. The op type and command come from the deployed contract's own
+// constants, so the lookup cannot drift from the instruction actually sent.
 func priceUpdateFee(s *support.Support, senderAddress common.Address) (*big.Int, error) {
 	return instructionFee(s, senderAddress, opGetPrice)
 }
 
-// endpointsFee is the same lookup for a SET_ENDPOINTS instruction, which is
-// charged under a different op type and command.
+// endpointsFee is the same lookup for SET_ENDPOINTS, charged under a different
+// op type and command.
 func endpointsFee(s *support.Support, senderAddress common.Address) (*big.Int, error) {
 	return instructionFee(s, senderAddress, opSetEndpoints)
+}
+
+// GetPriceRequest is everything needed to raise a GET_PRICE action off-chain,
+// read from the deployed sender rather than restated here.
+//
+// The direct channel does not touch the sender contract at all, so nothing would
+// stop a hand-written constant here from drifting away from the one
+// requestPriceUpdate() actually emits — and the failure would be a rejected
+// request envelope with no hint that the two channels disagree. Reading them
+// from the same source makes that impossible.
+type GetPriceRequest struct {
+	OPType    common.Hash
+	OPCommand common.Hash
+	Message   []byte
+}
+
+// ReadGetPriceRequest fetches the op pair and request envelope for GET_PRICE.
+func ReadGetPriceRequest(s *support.Support, senderAddress common.Address) (GetPriceRequest, error) {
+	caller, err := usdxoracle.NewUsdxOracleInstructionSenderCaller(senderAddress, s.ChainClient)
+	if err != nil {
+		return GetPriceRequest{}, errors.Errorf("binding instruction sender: %s", err)
+	}
+
+	opts := &bind.CallOpts{Context: context.Background()}
+	opType, opCommand, err := opGetPrice(caller, opts)
+	if err != nil {
+		return GetPriceRequest{}, err
+	}
+
+	message, err := caller.GETPRICEREQUESTV1(opts)
+	if err != nil {
+		return GetPriceRequest{}, errors.Errorf("reading GET_PRICE_REQUEST_V1: %s", err)
+	}
+	if len(message) == 0 {
+		// The registry rejects an empty message with MessageEmpty(), and the
+		// extension requires exactly the pinned envelope. Either way an empty
+		// one cannot succeed, so stop here rather than send it.
+		return GetPriceRequest{}, errors.New("the sender reports an empty GET_PRICE request envelope")
+	}
+
+	return GetPriceRequest{
+		OPType:    common.BytesToHash(opType[:]),
+		OPCommand: common.BytesToHash(opCommand[:]),
+		Message:   message,
+	}, nil
 }
 
 // opSelector reads one (opType, opCommand) pair off the deployed sender.
@@ -181,13 +218,10 @@ func instructionFee(s *support.Support, senderAddress common.Address, sel opSele
 	return def, nil
 }
 
-// RequestPriceUpdate calls requestPriceUpdate() on the instruction sender and
-// returns the resulting instruction ID and transaction hash.
-//
-// The call takes no arguments: the observation needs nothing from the caller,
-// and where the signed report is accepted is settled by the store's
-// registered-machine check rather than by the payload
-// (see contracts/InstructionSender.sol).
+// RequestPriceUpdate calls requestPriceUpdate() and returns the instruction ID
+// and transaction hash. It takes no arguments: the observation needs nothing
+// from the caller, and acceptance is settled by the store's registered-machine
+// check rather than by the payload.
 func RequestPriceUpdate(s *support.Support, instructionSenderAddress common.Address) (common.Hash, common.Hash, error) {
 	sender, err := usdxoracle.NewUsdxOracleInstructionSender(instructionSenderAddress, s.ChainClient)
 	if err != nil {
@@ -246,17 +280,10 @@ func RequestPriceUpdate(s *support.Support, instructionSenderAddress common.Addr
 		return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status: %d", receipt.Status)
 	}
 
-	// Read the id off our own PriceUpdateRequested event.
-	//
-	// The registry's TeeInstructionsSent carries the same value, but parsing it
-	// couples every caller to the registry's event ABI for a value our own
-	// contract already has. requestPriceUpdate returns the id to contract callers
-	// and emits it here for off-chain ones, since a transaction returns nothing
-	// to an off-chain caller.
-	//
-	// Scanned rather than indexed by position: the receipt also contains the
-	// registry's logs, and a positional assumption would break the moment the
-	// emit order changes.
+	// Read the id off our own PriceUpdateRequested event rather than the
+	// registry's, which would couple every caller to the registry's event ABI.
+	// Scanned, not indexed by position: the receipt also holds the registry's
+	// logs and the emit order can change.
 	for _, l := range receipt.Logs {
 		if l == nil {
 			continue
@@ -274,16 +301,13 @@ func RequestPriceUpdate(s *support.Support, instructionSenderAddress common.Addr
 // endpointsSetTopic is keccak256("EndpointsSet(address,bytes32)").
 var endpointsSetTopic = crypto.Keccak256Hash([]byte("EndpointsSet(address,bytes32)"))
 
-// setEndpointsABI is the minimal ABI of setEndpoints. The generated usdxoracle
-// binding predates the provisioning surface and has no SetEndpoints method, so
-// the call goes through a bound contract over this ABI instead.
+// setEndpointsABI is the minimal ABI of setEndpoints: the generated usdxoracle
+// binding predates the provisioning surface and has no SetEndpoints method.
 const setEndpointsABI = `[{"name":"setEndpoints","type":"function","stateMutability":"payable","inputs":[{"name":"teeId","type":"address"},{"name":"config","type":"bytes"}],"outputs":[]}]`
 
-// SetEndpoints publishes an endpoint configuration on-chain through the
-// instruction sender and returns the resulting instruction ID and transaction
-// hash. The config bytes are delivered verbatim to the addressed machine as a
-// SET_ENDPOINTS instruction; they go into calldata and are publicly readable,
-// so credentials must never be part of them.
+// SetEndpoints publishes an endpoint configuration through the instruction
+// sender. The config bytes go into calldata and are publicly readable, so
+// credentials must never be part of them.
 func SetEndpoints(s *support.Support, instructionSenderAddress, teeID common.Address, config []byte) (common.Hash, common.Hash, error) {
 	parsed, err := abi.JSON(strings.NewReader(setEndpointsABI))
 	if err != nil {

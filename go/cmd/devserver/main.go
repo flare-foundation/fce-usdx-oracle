@@ -1,16 +1,10 @@
-// Command devserver runs the extension with real provisioning, no chain.
-//
-// It exists so SET_ENDPOINTS and SET_SECRET can be exercised before
-// setEndpoints() is deployed and before a TEE machine is running. The store,
-// the provisioner and the readiness state are the production ones — only the
-// delivery path is short-circuited, by POSTing actions straight at /action.
+// Command devserver runs the extension with real provisioning, no chain, so
+// SET_ENDPOINTS and SET_SECRET can be exercised before anything is deployed.
+// Only the delivery path is short-circuited — actions are POSTed at /action.
 //
 //	go run ./cmd/mocknode &
 //	go run ./cmd/devserver &
 //	./scripts/set-endpoints.sh testdata/endpoints/coston2.json
-//
-// SET_SECRET needs a tee-node (or ./cmd/mocknode) on SIGN_PORT, since the
-// envelope's payload is decrypted in-enclave.
 //
 // NOT a production entrypoint. Production is ./cmd/docker.
 package main

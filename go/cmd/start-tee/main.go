@@ -1,14 +1,9 @@
 // Command start-tee runs the tee-node and the Go extension as a single host
 // process, without Docker. It backs `./scripts/start-services.sh --local`.
 //
-// This lives in the extension module (not tools/) because it links the Go
-// extension in-process — it is a Go-path development convenience, not
-// deployment tooling. tools/ must stay independent of any one language
-// implementation so that it can deploy and test all of them; see
-// docs/extension-contract.md.
-//
-// Consequently `--local` mode is Go-only. start-services.sh rejects it for
-// other languages and points at Docker Compose instead.
+// It lives in the extension module rather than tools/ because it links the Go
+// extension in-process; tools/ must stay independent of any one language
+// implementation. So `--local` is Go-only.
 package main
 
 import (

@@ -11,6 +11,7 @@
     "09-get-action-not-allowed",
     "10-post-state-not-allowed",
     "11-unknown-path",
-    "12-get-state"
+    "12-get-state",
+    "13-get-price-direct"
   ]
 }

@@ -1,23 +1,15 @@
 // Command usdxprov builds, signs and submits provisioning envelopes.
 //
-// A credential reaches the enclave encrypted to its public key, authorised by
-// M-of-N admin signatures. Assembling that by hand means ECIES encryption, a
-// seven-field ABI body, and signatures collected from different people — so it
-// needs a tool.
-//
-// It lives here, in the extension's own module, so it imports
-// internal/provision directly. That is deliberate: the bytes this produces and
-// the bytes the verifier recomputes come from the same EncodeBody, so they
-// cannot drift.
-//
-// Three subcommands, because step 2 involves different people:
-//
 //	usdxprov build   fetch the TEE key, encrypt, emit an unsigned envelope
 //	usdxprov sign    one admin signs the envelope body
 //	usdxprov submit  combine signatures and POST
 //
-// The unsigned envelope is safe to pass around: the credential inside it is
-// already ciphertext that only the target enclave can open.
+// Three subcommands because signing involves different people. The unsigned
+// envelope is safe to pass around: the credential inside is already ciphertext
+// only the target enclave can open.
+//
+// It lives in the extension's module so it imports internal/provision directly
+// — this and the verifier share one EncodeBody and cannot drift.
 package main
 
 import (
@@ -337,20 +329,18 @@ func postDirect(proxyURL, apiKey string, message []byte) error {
 
 // postAction delivers straight to an extension, bypassing proxy and chain.
 // Local testing only; the production path is postDirect.
+//
+// The inner envelope is a DirectInstruction, byte for byte what the proxy puts
+// in Data.Message for a direct action — NOT a DataFixed. This used to wrap a
+// DataFixed, which meant the local path exercised a shape production never
+// sends and hid the fact that the extension could not read a real one.
 func postAction(actionURL string, message []byte) error {
-	df := map[string]any{
-		"instructionId":          "0x" + strings.Repeat("bb", 32),
-		"teeId":                  "0x" + strings.Repeat("22", 20),
-		"timestamp":              time.Now().Unix(),
-		"rewardEpochId":          0,
-		"opType":                 b32("USDX_CONFIG"),
-		"opCommand":              b32("SET_SECRET"),
-		"cosigners":              []string{},
-		"cosignersThreshold":     0,
-		"originalMessage":        "0x" + hex.EncodeToString(message),
-		"additionalFixedMessage": "0x",
+	di := map[string]any{
+		"opType":    b32("USDX_CONFIG"),
+		"opCommand": b32("SET_SECRET"),
+		"message":   "0x" + hex.EncodeToString(message),
 	}
-	dfRaw, _ := json.Marshal(df)
+	diRaw, _ := json.Marshal(di)
 
 	action := map[string]any{
 		"data": map[string]any{
@@ -360,7 +350,7 @@ func postAction(actionURL string, message []byte) error {
 			// and public.
 			"type":          "direct",
 			"submissionTag": "submit",
-			"message":       "0x" + hex.EncodeToString(dfRaw),
+			"message":       "0x" + hex.EncodeToString(diRaw),
 		},
 		"additionalVariableMessages": []string{},
 		"timestamps":                 []int{},

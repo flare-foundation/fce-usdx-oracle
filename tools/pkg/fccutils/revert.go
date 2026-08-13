@@ -15,18 +15,15 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
-// DecodeRevertReason attempts to extract and decode the revert reason from
-// an error returned by eth_call or eth_estimateGas. Returns the decoded
-// reason string, or empty string if no revert data could be extracted.
+// DecodeRevertReason extracts the revert reason from an eth_call or
+// eth_estimateGas error, or "" when no revert data could be extracted.
 func DecodeRevertReason(err error) string {
 	if err == nil {
 		return ""
 	}
 
-	// go-ethereum wraps JSON-RPC errors with a type that exposes the
-	// error's "data" field via ErrorData(). The data field contains the
-	// ABI-encoded revert reason even when the error message is just
-	// "execution reverted".
+	// ErrorData() carries the ABI-encoded revert reason even when the message
+	// is just "execution reverted".
 	type dataError interface {
 		ErrorData() interface{}
 	}
@@ -43,10 +40,9 @@ func DecodeRevertReason(err error) string {
 	return ""
 }
 
-// SimulateAndDecodeRevert replays a call via eth_call and attempts to decode
-// the revert reason. Use this as a fallback when DecodeRevertReason on the
-// original error returns empty — some RPC nodes strip revert data from
-// eth_estimateGas errors but include it in eth_call responses.
+// SimulateAndDecodeRevert replays a call via eth_call to decode the revert
+// reason. A fallback for nodes that strip revert data from eth_estimateGas
+// errors but include it in eth_call responses.
 func SimulateAndDecodeRevert(
 	client *ethclient.Client,
 	from common.Address,
@@ -80,11 +76,9 @@ func SimulateAndDecodeRevert(
 	return ""
 }
 
-// MatchCustomError maps a raw revert payload (as returned by
-// SimulateAndDecodeRevert for undecodable reverts, e.g. "0xabcdef12...") to the
-// custom error name declared in parsedABI whose 4-byte selector matches. If the
-// error carries arguments they are appended, e.g. "InvalidGovernanceHash(0x..)".
-// Returns "" when no error in the ABI matches the selector.
+// MatchCustomError maps a raw revert payload to the custom error in parsedABI
+// whose 4-byte selector matches, appending arguments when present. Returns ""
+// when nothing matches.
 func MatchCustomError(parsedABI *abi.ABI, revertHex string) string {
 	revertHex = strings.TrimPrefix(revertHex, "0x")
 	data, err := hex.DecodeString(revertHex)

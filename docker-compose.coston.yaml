@@ -11,6 +11,11 @@ services:
   ext-proxy:
     volumes:
       - ./config/proxy/extension_proxy.coston.docker.toml:/app/config/config.toml:ro
+    environment:
+      # The coston TOML enables [direct] with api_key_variable = "DIRECT_API_KEY",
+      # so the proxy refuses to start without it rather than exposing an
+      # unauthenticated /direct on the public external port.
+      - DIRECT_API_KEY=${DIRECT_API_KEY:?direct mode is enabled in the coston proxy config — set DIRECT_API_KEY in .env}
 
   extension-tee:
     environment:

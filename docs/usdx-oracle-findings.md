@@ -1,6 +1,6 @@
 # USDX Oracle — Implementation Findings
 
-**Status:** living document · **Last updated:** 2026-08-05
+**Status:** living document · **Last updated:** 2026-08-12
 
 Findings discovered while implementing the extension, each with the evidence
 that established it and the test that now pins it. Design intent lives in
@@ -18,7 +18,7 @@ quietly mispublished.
 | 3 | Blind comma-stripping overstates reserves 100× | **High** | `TestParseAmount_LocaleCommaIsNotSilentlyStripped` |
 | 4 | tee-node returns `v` as 0/1; OpenZeppelin requires 27/28 | **High** | `TestClaim1_TeeNodeReturnsRecoveryIDNotV` |
 | 5 | tee-node applies EIP-191; verifying the bare hash silently misrecovers | **High** | `TestClaim2_MustRecoverAgainstPrefixedHash` |
-| 6 | Rounding instead of truncating reports full backing for an under-backed token | **Medium** | `TestCompute_TruncatesNeverRounds` |
+| 6 | Rounding instead of truncating reports full backing for an under-backed token | **Medium** | `TestCompute_RoundsHalfUp`, `TestCompute_RoundingCannotHideAMaterialShortfall` |
 | 7 | The sign wire is base64, not hex | **Medium** | `TestClaim3_WireIsBase64NotHex` |
 | 8 | An empty `sourceHealth` map reads as healthy | **Low** | `config.HealthUnknown` |
 | 9 | ~~The TEE machine status enum's numeric values are not published~~ **RESOLVED** | **High** | `REQUIRED_TEE_STATUS = TeeStatus.PRODUCTION` (constant) |
@@ -31,6 +31,7 @@ quietly mispublished.
 | 18 | The report's target binding was removed pre-launch — deliberate | Info | registry check + governance |
 | 19 | Concurrent provisioning bypassed the envelope replay defence entirely | **High** | `TestApplySecret_ConcurrentReplayAdmitsExactlyOne` |
 | 20 | The owner could redirect the Hex API key into a URL of their choosing | **High** | `TestSetEndpoints_RejectsBackingCredentialAsProviderSecret` |
+| 24 | One RPC provider could rewind the observation to an old block | **High** | `TestRead_OneProviderCannotRewindTheObservation` |
 
 ---
 
@@ -233,7 +234,7 @@ condition the feed exists to surface.
 
 Truncation makes every representable error conservative — the published price is
 understated by at most one unit in the last place, never overstated.
-`TestCompute_TruncatesNeverRounds` uses that exact value.
+`TestCompute_RoundingBoundaryIsExact` uses that exact value.
 
 The par cap is the mirror image: USDX redeems at $1.00, so over-collateralisation
 does not make it worth more, and publishing 1.02 would be wrong in a way that
@@ -1112,12 +1113,12 @@ live contracts, excluding the pre-migration Ethereum contract (`0x7A48…D56c`,
 150,000 USDX). Including it would compare two different populations and publish
 a spurious ~0.6% depeg on day one. Adding it later is a one-line config change.
 
-**Minimum head, not maximum or median.** Each provider resolves its own finality
-reference to a block *number*; the minimum is taken, less a per-chain margin,
-and every provider is queried at that explicit number. The minimum is the only
-choice guaranteed to name a block all providers can serve — a higher one would
-make the laggard fail every round, silently shrinking the effective provider
-count to whichever endpoints happen to be ahead.
+**Quorum-th highest head, not the minimum.** *(Superseded the minimum rule; see
+finding 17 below.)* Each provider reports its head, the Quorum-th highest is
+taken, and every provider is queried at that explicit number. It names the
+highest block at least `Quorum` providers can serve. The original argument for
+the minimum — that it is the only choice every provider can serve — was a
+liveness argument, and correct as far as it went; it assumed honest heads.
 
 **Identical results, not median.** A read at a fixed block is deterministic, so
 two honest providers cannot disagree. Disagreement means one is wrong or lying,
@@ -1154,12 +1155,16 @@ since `Log` is public.
 stop and look, not to keep publishing prices derived from a response we no
 longer fully understand.
 
-**The conservative double-read brackets reserves between two supply reads** and
-takes `max(S₁, S₂)`. A larger denominator is a lower price, so any timing skew
-biases the result downward. Spec §6.1 proposed this; the implementation confirms
-the cost is one extra RPC round. `TestObserve_DoubleReadBiasesPriceDown` uses the
-real 1,000,000 USDX burn from §6.1 and asserts the price comes out below par
-where a naive single read would have printed exactly $1.00.
+**Supply is read once per chain, pinned to one agreed block.** Spec §6.1 proposed
+a conservative double-read bracketing reserves between two supply reads and
+taking `max(S₁, S₂)`, and it shipped that way. It has since been dropped: the
+quorum procedure already pins every provider to one block, so a supply figure is
+*supply as of block N* rather than a value sampled across the read, and the
+reserve figure moves on a ~10 minute tick. The second pass changed the answer
+only when a burn or mint landed in the few seconds between two pinned blocks,
+while doubling the supply-side fail-closed surface. `TestObserve_ReadsSupplyOncePerChain`
+asserts the call count directly, so a reintroduced bracket fails there rather
+than showing up as a latency regression. See rationale §2.
 
 **`observedAt` is wall-clock completion time, not the oldest input timestamp.**
 The store requires strict monotonicity, and the public reserves endpoint ticks
@@ -1208,3 +1213,80 @@ every consumer. A pause freezes the value; it does not blind the feed.
   one sets `expectedConfigHash` on-chain while the extension keeps its old
   config, halting the feed on `StaleConfig` until a correct payload is sent.
   `send-endpoints` should decode against the real schema before spending gas.
+
+---
+
+## 24. One RPC provider could rewind the observation to an old block
+
+**Severity: High. Resolved 2026-08-12.**
+
+`agreedBlock` took the **minimum** head across providers and required only that
+`Quorum` of them answered. Quorum protected the supply *value*; nothing
+protected the *block selection*.
+
+So one provider — a hijacked DNS entry, a compromised endpoint, or just a buggy
+node — answers "what block are you at?" with a number from two weeks ago. The
+minimum wins, every provider is then asked for `totalSupply()` at that old
+block, and the honest ones answer **honestly and identically**, because a read
+at a fixed block is deterministic. Quorum passes. The TEE signs a stale supply
+figure.
+
+The sharp part: the malicious provider never lies about the supply. It lies
+about *which question to ask*, and the honest majority corroborates the answer.
+
+**Nothing downstream caught it.** Every other freshness check is wall-clock.
+`checkWindow` compares `RetrievedAt` — when the HTTP calls happened — and the
+store compares `reportedAt` against `block.timestamp`. Reading ancient data one
+second ago passes all of them.
+
+**Direction of error.** Rewinding to when supply was lower understates supply,
+which **overstates** the price — the direction mint/redeem dynamics does not
+cap.
+
+**Counter-intuitively bounded by retention.** A shallow provider (publicnode
+keeps ~64 blocks) simply fails the old-block query, and if enough fail the read
+drops below quorum and fails closed. Adding archive-class providers for
+reliability quietly *widens* the attack window.
+
+### Resolution — two changes, because neither covers the other
+
+**1. The Quorum-th highest head, not the minimum.** Heads are sorted descending
+and the `Quorum`-th is pinned: the highest block at least `Quorum` providers can
+serve. Block selection now obeys the same rule as the values it precedes, so
+`Quorum-1` liars cannot move it. Providers below the pinned block fail their
+calls and do not contribute, which is exactly what `Quorum < len(Providers)`
+exists to absorb; they are recorded as `lagging` rather than silently ignored.
+
+This buys nothing when `Quorum == len(Providers)` — the order statistic
+degenerates to the minimum — which includes Songbird at quorum 1.
+
+**2. `MaxBlockAge`, a pinned per-chain bound on the pinned block's own header
+timestamp.** Flare and Songbird 2 min, Ethereum 3 min. This is the check that
+works at any quorum, including one provider, and the only one that notices a
+chain that has simply stopped. Sized as a large multiple of normal block age
+rather than a tight bound: the attack is a rewind of hours or weeks, so being
+generous costs only a little detection latency on a stalled chain, while being
+tight would reject healthy observations.
+
+It is **pinned, not configurable**. Letting the owner key that already chooses
+the providers (finding 15) also choose how stale a block from them may be would
+hand over the check together with the attack.
+
+**The timestamp is voted on.** Taking it from whichever provider proposed the
+block would give a liar both halves — an ancient block number paired with a
+fresh timestamp — defeating `MaxBlockAge` while the honest providers corroborate
+the stale supply at that block. A header at a fixed height is deterministic, so
+`Quorum` identical timestamps are required, exactly as for the values.
+
+**Not the removed `FinalityMargin`.** That was a depth *below* the head, dropped
+2026-08-11 after measurement showed it bought no availability. `MaxBlockAge`
+bounds the *freshness of the chosen block* — a different property, and one that
+measurement never covered.
+
+**Not folded into `checkWindow`.** The obvious move is to add the block
+timestamp to the observation window, and it is wrong at the current setting:
+`ObservationWindow` is 30s and measures read skew between `RetrievedAt` stamps,
+while Ethereum's head is routinely 12s or more behind wall-clock. Most of the
+budget would go on ordinary block age and healthy observations would flap.
+`Reading.BlockTime` is exposed for anything that wants it; `MaxBlockAge` bounds
+the quantity directly instead.

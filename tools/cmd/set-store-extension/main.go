@@ -1,17 +1,10 @@
 // Command set-store-extension repoints UsdxPriceStore at a new extension
-// generation.
+// generation, so a re-registration does not force a store redeploy (which would
+// reset the stored price and invalidate the addCustomFeeds registration).
 //
-// Re-registering the extension mints a new extension id and a new instruction
-// sender. Both are baked into the store's acceptance check — the signer must be
-// registered to `extensionId`, and the config hash must match what
-// `configSource` published — so without this the store would have to be
-// redeployed, which resets the stored price and, on mainnet, invalidates the
-// `addCustomFeeds` registration that points governance at the feed.
-//
-// That is why UsdxPriceStore.setExtension exists, and this is its operator.
-// Governance-only, and both values move together: a re-registration produces a
-// new id AND a new sender, so changing one without the other would leave the
-// store checking a config hash published by a contract nobody is using.
+// Governance-only. Both values move together: a re-registration mints a new id
+// AND a new sender, so changing one alone would leave the store checking a
+// config hash published by a contract nobody uses.
 //
 //	go run ./cmd/set-store-extension -store 0x… -extensionId 0x… -instructionSender 0x…
 package main
@@ -89,10 +82,9 @@ func main() {
 	logger.Infof("  extensionId:  %s -> %s", oldID, extensionID)
 	logger.Infof("  configSource: %s -> %s", oldSource.Hex(), *senderF)
 
-	// The stored price is deliberately left alone — setExtension does not touch
-	// it. It was produced by the previous generation's machines, and until the
-	// new generation publishes one it keeps ageing under the old value. Consider
-	// setInvalidated if consumers must not read it in the meantime.
+	// setExtension does not touch the stored price: it keeps ageing under the
+	// previous generation's value. Use setInvalidated if consumers must not read
+	// it in the meantime.
 	if price, err := store.Price(opts); err == nil && price.Sign() > 0 {
 		observedAt, _ := store.ObservedAt(opts)
 		logger.Warnf("The stored price %s (observedAt %d) survives this change and keeps ageing; "+

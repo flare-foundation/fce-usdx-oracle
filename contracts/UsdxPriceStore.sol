@@ -60,7 +60,38 @@ contract UsdxPriceStore {
     /// @dev Unlike paused, this withdraws the value without zeroing price (zero would read as worthless).
     bool public invalidated;
 
+    /// @notice What one machine last proved about itself by landing a price.
+    ///
+    /// `expectedConfigHash` on the sender records what was SENT to a machine.
+    /// Nothing recorded what a machine was actually RUNNING — a config can be
+    /// rejected by the extension or never delivered at all, and with several
+    /// machines each needs its own setEndpoints call. This is the other half:
+    /// submitPrice has already recovered the signer and checked its config hash
+    /// against the expected one, so writing it down turns an accepted price into
+    /// standing evidence that this machine ran that configuration.
+    struct TeeReport {
+        /// @dev The config the machine proved it was running, not the one sent to it.
+        bytes32 configHash;
+        /// @dev The report's own timestamp, from inside the enclave.
+        uint64 observedAt;
+        /// @dev Chain time when the report was accepted.
+        uint64 acceptedAt;
+        uint32 submissions;
+    }
+
+    /// @notice Per-machine record of the last price it landed.
+    mapping(address => TeeReport) public lastReport;
+
+    /// @notice Every machine that has ever landed a price, append-only.
+    /// @dev Enumerable so a dashboard can read the fleet without an indexer.
+    /// Bounded in practice by the number of machines an extension ever runs.
+    address[] public seenTees;
+
     event PriceUpdated(uint256 indexed price, uint64 indexed observedAt, address indexed teeId);
+
+    /// @notice Emitted the first time a machine lands a price — its commissioning.
+    /// @dev Only on first sighting; later submissions update lastReport silently.
+    event TeeSeen(address indexed teeId, bytes32 indexed configHash);
     event Paused(bool paused);
     event Invalidated(bool invalidated);
     event BoundsUpdated(uint256 minPrice, uint256 maxPrice);
@@ -167,7 +198,64 @@ contract UsdxPriceStore {
         observedAt = reportedAt;
         observedAtInstructionID = instructionID;
 
+        _recordTee(teeId, configHash, reportedAt);
+
         emit PriceUpdated(reportedPrice, reportedAt, teeId);
+    }
+
+    /// @notice Every machine that has landed a price, with what it last proved.
+    /// @dev One call for the whole fleet; the array is machine-count sized.
+    function teeReports() external view returns (address[] memory _tees, TeeReport[] memory _reports) {
+        _tees = seenTees;
+        _reports = new TeeReport[](_tees.length);
+        for (uint256 i = 0; i < _tees.length; ++i) {
+            _reports[i] = lastReport[_tees[i]];
+        }
+    }
+
+    /// @notice How many machines have ever landed a price.
+    function seenTeeCount() external view returns (uint256) {
+        return seenTees.length;
+    }
+
+    /// @notice Whether `_teeId` has proven it runs the configuration currently published for it.
+    ///
+    /// @dev False for a machine that never landed a price, and false again as
+    /// soon as setEndpoints publishes something new for it — which is correct
+    /// and self-announcing: a re-pushed config has not been proven until that
+    /// machine lands a price under it. Re-commission with
+    /// `submit-price -direct -p <that machine's proxy>`.
+    ///
+    /// This is a record of commissioning, not of liveness. Only the machine that
+    /// wins a given cycle updates its entry, so a stale `acceptedAt` means "has
+    /// not won lately", not "unhealthy" — read GET /state per machine for that.
+    function isProvenConfigured(address _teeId) external view returns (bool) {
+        TeeReport storage report = lastReport[_teeId];
+        if (report.acceptedAt == 0) return false;
+
+        // A config source that has gone away must not read as "configured".
+        try configSource.expectedConfigHash(_teeId) returns (bytes32 expected) {
+            return expected != bytes32(0) && report.configHash == expected;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @dev Records what a machine just proved. First sighting appends to seenTees.
+    function _recordTee(address _teeId, bytes32 _configHash, uint64 _reportedAt) private {
+        TeeReport storage report = lastReport[_teeId];
+
+        // acceptedAt is the first-sighting flag: it is only ever set here, and a
+        // machine cannot reach this point without having passed every guard.
+        if (report.acceptedAt == 0) {
+            seenTees.push(_teeId);
+            emit TeeSeen(_teeId, _configHash);
+        }
+
+        report.configHash = _configHash;
+        report.observedAt = _reportedAt;
+        report.acceptedAt = uint64(block.timestamp);
+        report.submissions += 1;
     }
 
     /// @notice Returns the stored price and its observation timestamp.

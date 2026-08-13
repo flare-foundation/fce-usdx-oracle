@@ -15,10 +15,8 @@ import (
 // match the on-chain current reward epoch. Callers can test for it with errors.Is.
 var ErrPolicyOutOfSync = errors.New("FTDC proxy signing policy out of sync with on-chain reward epoch")
 
-// policyInSync reports whether the proxy's last signing policy id is acceptable
-// for the given on-chain current reward epoch. The proxy is legitimately one
-// epoch ahead during the ~2h window after a new signing policy is initialized
-// but before its reward epoch starts (same tolerance as tee-node walletutils).
+// policyInSync allows the proxy to be one epoch ahead: legitimate during the
+// ~2h window after a signing policy is initialized but before its epoch starts.
 func policyInSync(onchainEpoch, proxyPolicyID uint64) bool {
 	return proxyPolicyID == onchainEpoch || proxyPolicyID == onchainEpoch+1
 }
@@ -40,12 +38,10 @@ func outOfSyncError(onchainEpoch, proxyPolicyID uint64) error {
 }
 
 // CheckFTDCProxyPolicyConsistency compares the on-chain current reward epoch
-// (FlareSystemsManager.getCurrentRewardEpochId) against the signing policy id
-// reported by the FTDC proxy at ftdcProxyURL (TeeInfo.LastSigningPolicyID).
+// against the signing policy id the FTDC proxy reports.
 //
-// It returns a wrapped ErrPolicyOutOfSync only on a CONFIRMED mismatch. If
-// either lookup fails (RPC down, proxy not up yet) it logs a warning and
-// returns nil, so the gate never turns a transient into a blocked registration.
+// Returns ErrPolicyOutOfSync only on a CONFIRMED mismatch: if either lookup
+// fails it warns and returns nil, so a transient never blocks registration.
 func CheckFTDCProxyPolicyConsistency(s *support.Support, ftdcProxyURL string) error {
 	callOpts := &bind.CallOpts{Context: context.Background()}
 	onchain, err := s.FlareSystemManager.GetCurrentRewardEpochId(callOpts)

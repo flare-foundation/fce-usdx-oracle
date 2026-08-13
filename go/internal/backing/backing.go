@@ -1,25 +1,11 @@
 // Package backing reads USDX's reserve figures from Hex Trust's HTTP APIs.
 //
-// # Why this is an interface
+// A Source is an interface so a change of reserve methodology is a new
+// implementation and nothing downstream moves.
 //
-// Spec §3.0 recorded a premise concern, since resolved: the public endpoint's
-// current_reserves_amount is the bank-provider balance of the reserve account,
-// and its observed tracking of on-chain supply is 1:1 treasury operation, not
-// derivation from chain data.
-//
-// If a future change forces a different data source — mark-to-market bond
-// valuations, an independent custody attestation — the fix is a new Source
-// implementation. Everything downstream (supply reads, the price formula,
-// signing, the payload, the contracts) is unaffected. That containment is the
-// reason this package exists as an interface rather than as calls inlined into
-// the observation path.
-//
-// # Disclosure
-//
-// Every value read here is potentially confidential to Hex (spec §4.1), and
-// none of it may reach ActionResult.Log, GET /state, or the on-chain payload.
-// Errors returned from this package are therefore failure.Failure values from a
-// closed vocabulary: no URL, no response body, and above all no reserve figure.
+// Every value read here is potentially confidential to Hex, so errors are
+// failure.Failure values from a closed vocabulary: no URL, no response body,
+// and above all no reserve figure.
 package backing
 
 import (
@@ -37,92 +23,64 @@ import (
 	"fce-usdx-oracle/internal/failure"
 )
 
-// maxBodyBytes caps how much of a response is read. The real payloads are ~150
-// bytes; this bounds an upstream that starts streaming.
+// maxBodyBytes bounds an upstream that starts streaming; real payloads are ~150 bytes.
 const maxBodyBytes = 64 << 10
 
-// attempts is the total number of tries per fetch, including the first.
-// Deliberately small: the observation has a global deadline, and a source that
-// needs three attempts is a source to report as unhealthy rather than to wait
-// on.
+// attempts is the total tries per fetch. Small on purpose: a source that needs
+// three attempts is one to report as unhealthy rather than wait on.
 const attempts = 2
 
-// Reading is one observed backing figure.
 type Reading struct {
-	// Amount is the exact value reported by the source.
 	Amount *big.Rat
 
-	// AsOf is the source's own last_update: when Hex says the figure was
-	// computed, not when we read it. The gap between this and the supply reads
-	// is the TOCTOU exposure in spec §6.1.
+	// The source's own last_update: when Hex says the figure was computed, not
+	// when we read it. The gap against the supply reads is the TOCTOU exposure.
 	AsOf time.Time
 
-	// RetrievedAt is when the response was received.
 	RetrievedAt time.Time
 }
 
-// Source is one backing figure provider.
 type Source interface {
-	// Name is a stable identifier used for GET /state health reporting. It must
-	// never be a URL: /state is public, and endpoint paths and credentials are
-	// not (spec §4.1).
+	// Name must never be a URL: /state is public, endpoint paths are not.
 	Name() string
 
-	// Fetch returns the current reading. The error is always a
-	// failure.Failure, safe to surface publicly.
+	// Fetch returns the current reading. The error is always a failure.Failure.
 	Fetch(ctx context.Context) (Reading, error)
 }
 
-// Config describes one HTTP backing endpoint.
 type Config struct {
-	// Name is the health-reporting identifier, e.g. "hex_bonds".
 	Name string
+	URL  string
 
-	// URL is the endpoint. Must be https.
-	URL string
-
-	// AuthHeader and AuthValue are sent when both are non-empty. The private
-	// endpoint's scheme is unconfirmed (spec WP1 OPEN: it returns 404 rather
-	// than 401 without credentials, so bearer vs X-API-Key cannot be
-	// distinguished until a key is issued).
+	// Sent when both are non-empty.
 	AuthHeader string
 	AuthValue  string
 
-	// RequireCurrency asserts the response's currency field equals "USD".
-	//
-	// This MUST be false for the public endpoint. Measured 31 Jul 2026, the two
-	// endpoints return different shapes: the public one omits currency
-	// entirely. A single shared struct that asserts currency == "USD" would
-	// fail closed forever against it — the bug this flag exists to prevent.
+	// MUST be false for the public endpoint, which omits currency entirely — a
+	// shared struct asserting currency == "USD" would fail closed forever.
 	RequireCurrency bool
 
-	// MaxAge rejects a reading whose last_update is older than this. Zero
-	// disables the check. The public endpoint refreshes on a ~10 minute tick,
-	// so anything below that is noise.
+	// Rejects a reading whose last_update is older than this. Zero disables.
 	MaxAge time.Duration
 
-	// Timeout bounds a single attempt.
+	// Bounds a single attempt.
 	Timeout time.Duration
 }
 
-// httpSource is the HTTP implementation of Source.
 type httpSource struct {
 	cfg    Config
 	client *http.Client
 }
 
-// New builds a Source from cfg.
-//
-// The returned error is an ordinary error, not a failure.Failure: a bad config
-// is a startup fault that must stop the process, not a runtime condition to be
-// reported through the price feed.
+// New builds a Source from cfg. The error is an ordinary error, not a
+// failure.Failure: a bad config is a startup fault that must stop the process.
 func New(cfg Config) (Source, error) {
 	if cfg.Name == "" {
 		return nil, errors.New("backing: source name is required")
 	}
 	if strings.Contains(cfg.Name, "://") || strings.Contains(cfg.Name, ".") {
-		// A name reaches GET /state, which is public. A URL-shaped name would
-		// disclose the endpoint, and with it any key embedded in a query string.
+		// A URL-shaped name would disclose the endpoint on GET /state, and with
+		// it any key embedded in a query string.
 		return nil, errors.New("backing: source name must be an identifier, not a URL")
 	}
 
@@ -131,8 +89,6 @@ func New(cfg Config) (Source, error) {
 		return nil, errors.New("backing: source URL is not a valid URL")
 	}
 	if u.Scheme != "https" {
-		// Plaintext would expose the API key on the wire and let anyone on path
-		// dictate the reserve figure, and therefore the published price.
 		return nil, errors.New("backing: source URL must use https")
 	}
 	if (cfg.AuthHeader == "") != (cfg.AuthValue == "") {
@@ -146,14 +102,8 @@ func New(cfg Config) (Source, error) {
 		cfg: cfg,
 		client: &http.Client{
 			Timeout: cfg.Timeout,
-			// Never follow redirects.
-			//
-			// Go strips Authorization on a cross-host redirect, but it does NOT
-			// strip custom headers — and the private endpoint may well use
-			// X-API-Key (WP1 OPEN). A compromised or misconfigured upstream
-			// could then 302 to a host of its choosing and be handed the key.
-			// An API client has no legitimate need to follow redirects, so the
-			// safe behaviour is also the simple one.
+			// Never follow redirects: Go strips Authorization across hosts but
+			// not custom headers, so a 302 could hand X-API-Key to any host.
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -163,11 +113,8 @@ func New(cfg Config) (Source, error) {
 
 func (s *httpSource) Name() string { return s.cfg.Name }
 
-// response is the union of both endpoints' shapes.
-//
-// Currency is a pointer so "absent" and "present but empty" stay
-// distinguishable — the public endpoint omits it, and RequireCurrency decides
-// whether that is acceptable.
+// response is the union of both endpoints' shapes. Currency is a pointer so
+// "absent" and "present but empty" stay distinguishable.
 type response struct {
 	MetricName string  `json:"metric_name"`
 	Value      string  `json:"value"`
@@ -179,8 +126,6 @@ func (s *httpSource) Fetch(ctx context.Context) (Reading, error) {
 	var lastErr error
 	for attempt := range attempts {
 		if attempt > 0 {
-			// Give a transient fault a moment, but never outlast the caller's
-			// deadline: the observation window is what bounds TOCTOU exposure.
 			select {
 			case <-ctx.Done():
 				return Reading{}, failure.BackingTimeout
@@ -194,8 +139,8 @@ func (s *httpSource) Fetch(ctx context.Context) (Reading, error) {
 		}
 		lastErr = err
 
-		// Only transient faults are worth a second attempt. A malformed body or
-		// a rejected credential will be malformed and rejected again.
+		// A malformed body or a rejected credential will be malformed and
+		// rejected again.
 		if !isRetryable(err) {
 			return Reading{}, err
 		}
@@ -220,7 +165,7 @@ func (s *httpSource) fetchOnce(ctx context.Context) (Reading, error) {
 	resp, err := s.client.Do(req)
 	if err != nil {
 		// The underlying *url.Error embeds the full request URL, credentials
-		// included. It is deliberately dropped rather than wrapped.
+		// included. Dropped rather than wrapped.
 		if ctx.Err() != nil || isTimeout(err) {
 			return Reading{}, failure.BackingTimeout
 		}
@@ -229,7 +174,6 @@ func (s *httpSource) fetchOnce(ctx context.Context) (Reading, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// 5xx and 429 may pass; 4xx will not.
 		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
 			return Reading{}, failure.BackingUnavailable
 		}
@@ -249,16 +193,15 @@ func isTimeout(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
-// parse validates and converts a response body. Split out from the transport so
-// every validation rule is testable without a network.
+// parse turns a response body into a Reading, rejecting an unrecognised shape,
+// a non-USD figure, an unparseable amount or a stale timestamp.
 func (s *httpSource) parse(body []byte) (Reading, error) {
 	var r response
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&r); err != nil {
 		// Unknown fields are rejected rather than ignored: a shape change from
-		// Hex is a signal to stop and look, not to keep publishing prices from
-		// a response we no longer fully understand.
+		// Hex is a signal to stop and look.
 		return Reading{}, failure.BackingMalformed
 	}
 
@@ -266,23 +209,18 @@ func (s *httpSource) parse(body []byte) (Reading, error) {
 		return Reading{}, failure.BackingMalformed
 	}
 
-	// Per-endpoint currency handling. See Config.RequireCurrency.
 	if s.cfg.RequireCurrency {
 		if r.Currency == nil || *r.Currency != "USD" {
 			return Reading{}, failure.BackingCurrency
 		}
 	} else if r.Currency != nil && *r.Currency != "USD" {
-		// If it is present it must still be USD; only absence is tolerated.
+		// Present it must be USD; only absence is tolerated.
 		return Reading{}, failure.BackingCurrency
 	}
 
-	// Both formats are accepted on both endpoints regardless of which one is
-	// documented to produce which: WP1 leaves it open whether the difference is
-	// deliberate, and a format flip must not take the feed down.
 	amount, err := decimal.ParseAmount(r.Value)
 	if err != nil {
-		// err quotes nothing, but is dropped anyway — the input is the reserve
-		// figure.
+		// err is dropped: the input is the reserve figure.
 		return Reading{}, failure.BackingMalformed
 	}
 
@@ -295,8 +233,8 @@ func (s *httpSource) parse(body []byte) (Reading, error) {
 	if s.cfg.MaxAge > 0 && now.Sub(asOf) > s.cfg.MaxAge {
 		return Reading{}, failure.BackingStale
 	}
-	// A figure stamped in the future means clock skew or a broken upstream.
-	// Either way the freshness check is meaningless, so refuse it.
+	// Stamped in the future means clock skew or a broken upstream; either way
+	// the freshness check is meaningless.
 	if asOf.After(now.Add(time.Minute)) {
 		return Reading{}, failure.BackingStale
 	}

@@ -33,13 +33,22 @@ their uptime *is* our uptime.
 
 ---
 
-## Background 1 — why supply is read twice
+## Background 1 — why supply was read twice, and why it no longer is
+
+> **Resolved 12 Aug 2026 — supply is now read once.** The caveat below is what
+> settled it: the double-read tightened a 30-second bracket sitting inside a
+> staleness gap roughly twenty times larger. Since each supply read is already
+> pinned to one agreed block, the second pass changed the answer only when a burn
+> or mint landed in the few seconds between two pinned blocks, while doubling the
+> supply-side fail-closed surface. See rationale §2. The reasoning is kept because
+> it is why the bracket existed and why removing it is safe.
 
 Asked during review; recording the answer because the reasoning is not obvious from the
 code alone.
 
 Supply reads and reserve reads are not atomic, and the resulting error has a
-**direction**. `oracle.Observe` brackets the reserve read between two supply reads:
+**direction**. `oracle.Observe` used to bracket the reserve read between two supply
+reads:
 
 ```
 S₁ ← supply        B ← reserves        S₂ ← supply
@@ -74,12 +83,13 @@ tightens a 30-second bracket sitting inside a staleness gap roughly twenty times
 ago, both `S₁` and `S₂` are post-burn while `B` is pre-burn. That is the bad direction,
 and `max()` cannot see it.
 
-The double-read is still correct and worth keeping. It simply protects a smaller
-exposure than the design language implies.
+The double-read was correct; it simply protected a much smaller exposure than the
+design language implied. That is what led to dropping it — the exposure it covered
+is now closed at a different layer, by pinning each supply read to one agreed block.
 
 **OPEN:** fold `AsOf` into `checkWindow`, or state explicitly that `MaxAge` is the real
-TOCTOU bound and the consistency window only covers read skew. Right now the two
-documents disagree with the code.
+TOCTOU bound and the consistency window only covers read skew. This is the live gap
+now that the bracket is gone.
 
 ---
 

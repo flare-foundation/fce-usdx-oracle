@@ -14,22 +14,10 @@ import (
 // so the tools run flag-free from a sourced .env. Fallbacks point at the
 // coston2 deployment: the old docker/sim_dump path no longer exists.
 var (
-	// ExtensionProxyURL defaults to the port Docker Compose publishes, which is
-	// how the stack runs unless you opt into `start-services.sh --local`.
-	//
-	// The container listens on 6664 and the compose file maps 6674 -> 6664, so
-	// the two ports are the same proxy reached from different sides. The default
-	// was 6664 — the container-internal number, only correct from the host in
-	// --local mode — which meant every tool invoked without -p failed with
-	// "connect: connection refused" under the default deployment. README's
-	// environment table already documented 6674; this makes the code agree.
-	//
-	// The trade is deliberate rather than free: under `--local` the proxy binds
-	// 6664 on the host directly, so a bare `go run` there now needs
-	// EXT_PROXY_URL=http://localhost:6664 or -p. That is the narrower case —
-	// --local is opt-in and Go-only — and the scripts that matter are unaffected
-	// either way, because post-build.sh and test.sh detect the running mode and
-	// set EXT_PROXY_URL themselves. Only a hand-run tool reaches this fallback.
+	// The port Docker Compose publishes: the container listens on 6664 and
+	// compose maps 6674 -> 6664, so these are one proxy seen from two sides.
+	// Under `start-services.sh --local` the proxy binds 6664 on the host, so a
+	// hand-run tool there needs EXT_PROXY_URL=http://localhost:6664 or -p.
 	ExtensionProxyURL = envOrDefault("EXT_PROXY_URL", "http://localhost:6674")
 	ChainNodeURL      = envOrDefault("CHAIN_URL", "https://coston2-api.flare.network/ext/C/rpc")
 	AddressesFile     = envOrDefault("ADDRESSES_FILE", "../config/coston2/deployed-addresses.json")
@@ -75,16 +63,14 @@ func ReadAddresses[T any](filePath string, dest *T) error {
 }
 
 // contractEntry mirrors one entry in the deployed-addresses file. Declared here
-// rather than reusing support.RawContract because support imports this package,
-// and the reverse would be an import cycle.
+// rather than reusing support.RawContract, which would be an import cycle.
 type contractEntry struct {
 	Name    string `json:"name"`
 	Address string `json:"address"`
 }
 
-// ResolveContract prefers an explicit address and otherwise looks the contract
-// up by name in the deployed-addresses file, which is where the deploy tooling
-// records it.
+// ResolveContract prefers an explicit address, otherwise looks the contract up
+// by name in the deployed-addresses file.
 func ResolveContract(explicit, addressesFile, name string) (common.Address, error) {
 	if explicit != "" {
 		if !common.IsHexAddress(explicit) {

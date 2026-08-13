@@ -1,50 +1,17 @@
 // Package provision verifies signed configuration envelopes.
 //
-// # Why configuration is not baked in
+// RPC endpoints arrive by on-chain instruction (so which providers we read is
+// publicly verifiable); credentials arrive by direct instruction (no gas, no
+// permanent ciphertext on-chain, instant rotation). What stays baked in is the
+// admin signer set that authorises provisioning.
 //
-// Two things the extension needs are deliberately not compiled into the image:
+//	body = abi.encode(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
 //
-//   - RPC endpoints, which arrive by on-chain instruction so that *which
-//     providers we read* is publicly verifiable — that visibility is the point.
-//   - Credentials, which arrive by direct instruction: no gas, no permanent
-//     on-chain record of a ciphertext, instant rotation, and no secret-handling
-//     path in Solidity.
-//
-// What stays baked is the part that must not be substitutable: the admin signer
-// set that authorises provisioning. Note there is NO host allowlist: endpoint
-// configuration is unconstrained, so whoever can send SET_ENDPOINTS can name
-// any https host and any threshold, and the attested code will faithfully sign
-// whatever those sources return. The published price is therefore only as
-// trustworthy as the contract owner key as well as the TEE — a deliberate
-// trade for rotation without rebuilds; see the findings doc §15.
-//
-// # The envelope
-//
-//	body = abi.encode(
-//	    bytes32 domain,       keccak256("USDX_ORACLE_PROVISION_V1")
-//	    uint256 chainId,      binds to one network
-//	    address teeId,        binds to ONE machine
-//	    uint64  version,      strictly increasing, blocks in-session rollback
-//	    uint64  issuedAt,     freshness, blocks cross-session replay
-//	    string  ref,          which secret or config slot this sets
-//	    bytes32 payloadHash   keccak256 of the ciphertext or config blob
-//	)
-//
-// signed by at least Threshold DISTINCT admins from the baked set, using the
-// standard EIP-191 personal-sign convention so a hardware wallet can produce
-// them.
-//
-// version and issuedAt are complementary, not redundant. version is held in
-// memory and blocks replaying an older envelope while the process lives.
-// issuedAt survives restarts, where the version counter resets to zero and
-// would otherwise let a captured envelope be replayed indefinitely.
-//
-// # One failure reason
-//
-// Every rejection returns failure.ProvisionRejected. A caller learns whether an
-// envelope was accepted, never which check failed — otherwise the endpoint
-// becomes an oracle for probing the admin set, the freshness window, and which
-// machine is which.
+// signed by at least Threshold DISTINCT admins under EIP-191. version is
+// in-memory and blocks rollback while the process lives; issuedAt survives
+// restarts, where the version counter resets to zero. Every rejection returns
+// failure.ProvisionRejected and nothing else, so the endpoint cannot be used to
+// probe the admin set or the freshness window.
 package provision
 
 import (
@@ -61,48 +28,32 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// DomainName is the provisioning domain separator's preimage. Distinct from the
-// price report's domain so an admin signature can never be reinterpreted as a
-// price, or the reverse.
+// Distinct from the price report's domain so an admin signature can never be
+// reinterpreted as a price, or the reverse.
 const DomainName = "USDX_ORACLE_PROVISION_V1"
 
-// Freshness is how long an envelope stays valid after issuedAt.
-//
-// Fifteen minutes: long enough to collect M signatures across timezones, short
-// enough that a captured envelope expires quickly. The consequence is that
-// recovering from a restart hours later needs a freshly signed envelope — which
-// is the safe direction, and why the keeper holds ciphertext envelopes to
-// re-submit promptly rather than relying on old ones.
+// Freshness is long enough to collect M signatures across timezones, short
+// enough that a captured envelope expires quickly.
 const Freshness = 15 * time.Minute
 
-// ClockSkew tolerates an envelope stamped slightly in the future.
 const ClockSkew = 2 * time.Minute
 
 // SignatureLength is r ‖ s ‖ v.
 const SignatureLength = 65
 
-// maxSignatures bounds work before any cryptography runs. Recovery is the
-// expensive operation and this endpoint is reachable by anyone who can deliver
-// a direct action.
+// maxSignatures bounds work before any cryptography runs: recovery is expensive
+// and this endpoint is reachable by anyone who can deliver a direct action.
 const maxSignatures = 16
 
-// Threshold is how many distinct admin signatures an envelope needs.
 const Threshold = 2
 
 // Admins is the baked admin signer set — the root of trust for provisioning.
 //
 // ############################################################################
-// # DEVELOPMENT PLACEHOLDERS. These are the addresses of private keys 1, 2    #
-// # and 3 — the most widely known keys in existence. Anyone can sign as any   #
-// # of these admins. They MUST be replaced before any deployment that serves  #
-// # a live feed.                                                              #
-// #                                                                           #
-// # They are deliberately these rather than unusable literals like 0x1111…,   #
-// # so the provisioning flow can be walked end to end locally. That           #
-// # convenience is exactly why the warning is this loud.                      #
-// #                                                                           #
-// # TestAdminSetIsNotPlaceholder fails the moment they are replaced with      #
-// # anything real, at which point delete the skip and make it a hard check.   #
+// # DEVELOPMENT PLACEHOLDERS: private keys 1, 2 and 3, the most widely known  #
+// # keys in existence. Anyone can sign as any of these admins. MUST be        #
+// # replaced before any deployment serving a live feed.                       #
+// # TestAdminSetIsNotPlaceholder fails the moment they are replaced.          #
 // ############################################################################
 var Admins = []common.Address{
 	common.HexToAddress("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"), // privkey 0x01
@@ -110,7 +61,6 @@ var Admins = []common.Address{
 	common.HexToAddress("0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"), // privkey 0x03
 }
 
-// Domain returns keccak256(DomainName).
 func Domain() common.Hash { return crypto.Keccak256Hash([]byte(DomainName)) }
 
 // Envelope is a verified provisioning message.
@@ -122,8 +72,7 @@ type Envelope struct {
 	Ref         string
 	PayloadHash common.Hash
 
-	// Payload is the ciphertext or config blob the hash commits to. Verified to
-	// match PayloadHash before this is populated.
+	// Verified to match PayloadHash before this is populated.
 	Payload []byte
 }
 
@@ -165,17 +114,16 @@ func Encode(e Envelope, signatures [][]byte) ([]byte, error) {
 
 // Verifier checks envelopes against the baked admin set and tracks versions.
 //
-// NOT SAFE FOR CONCURRENT USE. Verify writes lastVersion and SetTeeID writes
-// teeID, neither synchronised. Callers must serialise: runtimecfg.Store holds
-// applyMu across every call. Do not assume the extension does it for you — its
-// /action handler is an ordinary net/http handler, so actions are served
-// concurrently, one goroutine each.
+// NOT SAFE FOR CONCURRENT USE: Verify writes lastVersion and SetTeeID writes
+// teeID, neither synchronised. runtimecfg.Store holds applyMu across every
+// call. The extension's /action handler serves actions concurrently, so it
+// does not do this for you.
 type Verifier struct {
 	chainID *big.Int
 	teeID   common.Address
 
-	// lastVersion is per-ref and in-memory. It resets on restart, which is why
-	// issuedAt freshness is also required — see the package doc.
+	// Per-ref and in-memory; resets on restart, which is why issuedAt freshness
+	// is also required.
 	lastVersion map[string]uint64
 
 	admins    []common.Address
@@ -183,14 +131,11 @@ type Verifier struct {
 	now       func() time.Time
 }
 
-// HasTeeID reports whether the verifier knows which machine it is.
 func (v *Verifier) HasTeeID() bool { return v.teeID != (common.Address{}) }
 
-// SetTeeID binds the verifier to a machine. Called once, lazily, because
-// tee-node may not be reachable when the extension starts.
+// SetTeeID is called once, lazily: tee-node may not be reachable at startup.
 func (v *Verifier) SetTeeID(id common.Address) { v.teeID = id }
 
-// NewVerifier returns a Verifier bound to one chain and one machine.
 func NewVerifier(chainID *big.Int, teeID common.Address) *Verifier {
 	return &Verifier{
 		chainID:     chainID,
@@ -202,10 +147,8 @@ func NewVerifier(chainID *big.Int, teeID common.Address) *Verifier {
 	}
 }
 
-// Verify decodes and validates a wire message.
-//
-// Every failure returns failure.ProvisionRejected and nothing else. The error
-// carries no detail by construction.
+// Verify decodes and validates a wire message. Every failure returns
+// failure.ProvisionRejected and nothing else.
 func (v *Verifier) Verify(message []byte) (Envelope, error) {
 	e, sigs, err := decode(message)
 	if err != nil {
@@ -216,14 +159,13 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 		return Envelope{}, failure.ProvisionRejected
 	}
 
-	// Binding checks first — they are cheap, and rejecting here avoids doing
-	// signature recovery for an envelope that could never apply.
+	// Binding checks first: cheap, and they avoid signature recovery for an
+	// envelope that could never apply.
 	if v.chainID == nil || e.ChainID == nil || e.ChainID.Cmp(v.chainID) != 0 {
 		return Envelope{}, failure.ProvisionRejected
 	}
+	// Bound to one machine, so a captured envelope cannot be redirected.
 	if !v.HasTeeID() || e.TeeID != v.teeID {
-		// Bound to one machine: N machines means N envelopes, so a captured one
-		// cannot be redirected to a different TEE.
 		return Envelope{}, failure.ProvisionRejected
 	}
 	if e.Ref == "" || len(e.Ref) > 64 {
@@ -232,9 +174,9 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 	if len(e.Payload) == 0 {
 		return Envelope{}, failure.ProvisionRejected
 	}
+	// The signatures cover the hash, so an unverified payload would be unsigned
+	// data smuggled past the admin set.
 	if crypto.Keccak256Hash(e.Payload) != e.PayloadHash {
-		// The signatures cover the hash, so an unverified payload would be
-		// unsigned data smuggled past the admin set.
 		return Envelope{}, failure.ProvisionRejected
 	}
 
@@ -250,9 +192,9 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 		return Envelope{}, failure.ProvisionRejected
 	}
 
+	// Strictly increasing per ref: blocks rolling a secret back within the life
+	// of the process.
 	if e.Version <= v.lastVersion[e.Ref] {
-		// Strictly increasing per ref: blocks rolling a secret back to an older
-		// value within the life of the process.
 		return Envelope{}, failure.ProvisionRejected
 	}
 
@@ -269,10 +211,8 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 }
 
 // hasThreshold reports whether at least threshold DISTINCT admins signed.
-//
-// Distinctness is the whole point of M-of-N: without deduplication, one
-// compromised key could supply the same signature M times and satisfy the
-// threshold alone.
+// Without deduplication one compromised key could supply the same signature M
+// times and satisfy the threshold alone.
 func (v *Verifier) hasThreshold(body []byte, sigs [][]byte) bool {
 	digest := accounts.TextHash(crypto.Keccak256(body))
 
@@ -318,10 +258,8 @@ func recover(digest []byte, sig []byte) (common.Address, bool) {
 		return common.Address{}, false
 	}
 
-	// Reject the high-s form. secp256k1 is malleable, so accepting both forms
-	// would let one admin signature be presented as two distinct-looking ones —
-	// which does not defeat the distinct-signer check, since both recover to the
-	// same address, but rejecting keeps one signature meaning one thing.
+	// Reject the high-s form. secp256k1 is malleable, so accepting both would
+	// let one admin signature be presented as two distinct-looking ones.
 	s := new(big.Int).SetBytes(normalised[32:64])
 	if s.Cmp(halfOrder) > 0 {
 		return common.Address{}, false

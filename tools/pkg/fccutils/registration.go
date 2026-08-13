@@ -81,10 +81,9 @@ func RegisterNode(s *support.Support, teeInfo *types.SignedTeeInfoResponse, host
 			callOpts := &bind.CallOpts{Context: context.Background()}
 			machineInfo, machineErr := s.TeeMachineRegistry.GetTeeMachine(callOpts, teeID)
 			if machineErr == nil && machineInfo.TeeId != (common.Address{}) {
-				// Already registered (e.g. a re-run): skip machine pre-registration,
-				// but the original attestation challenge is one-shot and may have
-				// expired, so request a FRESH attestation to get a valid challenge —
-				// otherwise the availability check below reverts with ChallengeExpired.
+				// Already registered (e.g. a re-run): skip pre-registration, but
+				// request a FRESH attestation — the original challenge is one-shot
+				// and an expired one reverts with ChallengeExpired.
 				logger.Infof("TEE machine %s already registered on-chain, requesting fresh attestation", teeID.Hex())
 				teeAttestInstructionID, err = RequestTeeAttestation(s, teeID)
 				if err != nil {
@@ -129,12 +128,9 @@ func RegisterNode(s *support.Support, teeInfo *types.SignedTeeInfoResponse, host
 			logger.Infof("FTDC availability check already completed, skipping (from state file)")
 			instructionID = state.InstructionID
 		} else {
-			// Pre-flight: the availability check relies on the FTDC proxy's data
-			// providers cosigning an instruction tied to the current signing policy.
-			// If the proxy's signing policy is out of sync with the on-chain reward
-			// epoch, that cosign is rejected with 404 "no round" and the FDC proof
-			// never materializes. Fail fast here with a clear message instead of
-			// after a wasted on-chain tx + ~30s of polling.
+			// The availability check needs the proxy's data providers to cosign
+			// against the current signing policy; if it is out of sync the cosign
+			// is rejected 404 "no round". Fail fast instead of after a wasted tx.
 			if err := CheckFTDCProxyPolicyConsistency(s, ftdcTeeURL); err != nil {
 				return err
 			}
@@ -190,9 +186,8 @@ func PreRegistration(
 		CodeHash:     teeInfo.MachineData.CodeHash,
 		Platform:     teeInfo.MachineData.Platform,
 		PublicKey:    machinemanager.PublicKey{X: teeInfo.MachineData.PublicKey.X, Y: teeInfo.MachineData.PublicKey.Y},
-		// Must carry the node's governanceHash: register() verifies the TEE
-		// signature over keccak(abi.encode(machineData)) including this field,
-		// so a zero value here would fail with InvalidTeePublicKeyOrSignature.
+		// register() verifies the TEE signature over keccak(abi.encode(machineData))
+		// including this field, so a zero value fails InvalidTeePublicKeyOrSignature.
 		GovernanceHash: teeInfo.MachineData.GovernanceHash,
 	}
 

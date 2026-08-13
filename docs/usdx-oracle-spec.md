@@ -734,7 +734,11 @@ Mitigations, in rough order of preference:
 2. **Conservative double-read.** Read supply → read reserves → re-read supply,
    and use `max(supply)` with `min(reserves)`. This makes any timing skew bias
    the price *downward*, never upward. Costs one extra round of RPC reads.
-   **Proposed default.**
+   **Implemented, then withdrawn 12 Aug 2026.** Each supply read is pinned to one
+   agreed block, so the bracket only covered a burn or mint landing in the few
+   seconds between two pinned blocks, while doubling the supply-side fail-closed
+   surface — see rationale §2 and availability "Background 1". Mitigation 1 is
+   the operative one; mitigation 3 remains the cheapest real fix.
 3. **Ask Hex for a consistent snapshot** — an endpoint that returns reserves with
    an explicit `as_of` timestamp (the private one already has `last_update`), and
    ideally both figures from one atomic query. Then require
@@ -745,7 +749,8 @@ Mitigations, in rough order of preference:
 240 days, and a **single 1,000,000 USDX burn landed at 07:10:58Z on 31 Jul 2026** —
 4.8% of supply in one event. A redemption of that size landing mid-update moves
 the naive ratio by ~4.8%, which is far larger than any plausible deviation
-threshold. Mitigation 2 (conservative double-read) is worth its cost.
+threshold. Mitigation 2 (conservative double-read) was judged worth its cost at
+the time; see the note above for why it was later withdrawn.
 
 **Partially answered:** the public endpoint refreshes on a ~10-minute tick
 (`last_update` advanced 12:17:21 → 12:27:21 → 12:37:21 with an unchanged value).

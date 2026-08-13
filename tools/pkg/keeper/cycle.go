@@ -1,30 +1,21 @@
-// Package keeper implements the USDX oracle keeper cycle and the timer around
-// it, as specified in docs/usdx-oracle-keeper.md.
+// Package keeper implements the USDX oracle keeper cycle and its timer.
 //
-// The keeper holds no authority. UsdxPriceStore verifies the TEE signature
-// against TeeMachineRegistry, so everything here is liveness: the worst a wrong
-// invocation can do is waste gas. Nothing in this package may compute, adjust or
-// sanity-"fix" a price, and the signed body is relayed byte for byte — the store
-// checks the signature over exactly the bytes it receives, so a re-encode would
-// surface an encoder divergence as a bad signature instead of as the encoding
-// bug it is.
+// The keeper holds no authority — the store verifies the TEE signature against
+// TeeMachineRegistry — so everything here is liveness and the worst a wrong
+// invocation can do is waste gas. Nothing here may compute or adjust a price,
+// and the signed body is relayed byte for byte.
 //
-// # Why there is no persistence
-//
-// Every partial cycle is harmless. Crash after the trigger and the instruction
-// is already dispatched, the TEE still computes, and the result sits unread —
-// one wasted fee. Crash before the submit and a co-keeper relays it, or the next
-// cycle supersedes it. Nothing is two-phase, nothing needs to be exactly-once,
-// and observedAt monotonicity makes duplicate submissions safe by construction.
-//
-// So the keeper keeps no state across cycles and needs no recovery logic. The
-// records it emits are write-only: nothing reads one back to make a decision.
+// No state is kept across cycles: every partial cycle is harmless, and
+// observedAt monotonicity makes duplicate submissions safe by construction.
 package keeper
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"fce-usdx-oracle/tools/pkg/contracts/usdxstore"
@@ -42,9 +33,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Terminal action statuses. Anything else means the instruction is still in
-// flight — pending is not an error, and treating it as one discards results
-// that were merely slow.
+// Terminal action statuses. Anything else means still in flight.
 const (
 	statusFailed    uint8 = 0
 	statusSucceeded uint8 = 1
@@ -58,10 +47,28 @@ type Config struct {
 	Store  common.Address
 	Proxy  string
 
-	// PollTimeout bounds step 2, SubmitTimeout step 3. Both are spent out of the
-	// store's maxAge budget: observedAt is stamped inside the enclave before
-	// signing, so every second here is one submitPrice will count against the
-	// report's age. See "The deadline budget must fit inside maxAge".
+	// Direct raises the GET_PRICE action on the proxy instead of on-chain,
+	// which saves the registry fee and one transaction per cycle.
+	//
+	// It costs nothing in trust. GET_PRICE grants no authority: it signs the
+	// observation the enclave already made on its own timer, and submitPrice
+	// verifies that signature against the machine registry however it was
+	// requested. What it does cost is permissionlessness — the direct channel
+	// needs the proxy's API key and network reach, so the on-chain path stays
+	// as the one anybody can use by paying the fee.
+	//
+	// It also removes an ambiguity that only appears with several machines: an
+	// on-chain request goes to a RANDOM machine via getRandomTeeIds, and the
+	// result is retrievable only from that machine's own proxy, so a keeper
+	// polling one URL misses most of them. A direct request goes to the machine
+	// whose proxy it was sent to, which is what makes per-machine commissioning
+	// possible at all.
+	Direct       bool
+	DirectAPIKey string
+
+	// Both are spent out of the store's maxAge budget: observedAt is stamped in
+	// the enclave before signing, so every second here counts against the
+	// report's age.
 	PollTimeout   time.Duration
 	SubmitTimeout time.Duration
 
@@ -69,23 +76,27 @@ type Config struct {
 	DryRun bool
 }
 
-// RunCycle performs one complete keeper cycle and returns its record.
-//
-// It never exits the process and never panics on an expected failure: a keeper
-// runs this on a timer, and a single failed cycle is noise, not a reason to
-// stop. The returned error is the same information as Record.Detail, for callers
-// that want to fail a one-shot invocation.
+// Channel names how the action was raised, for the cycle record.
+func (c Config) Channel() string {
+	if c.Direct {
+		return "direct"
+	}
+	return "instruction"
+}
+
+// RunCycle performs one complete keeper cycle. It never exits the process on an
+// expected failure: a single failed cycle is noise, not a reason to stop.
 func RunCycle(ctx context.Context, s *support.Support, cfg Config) (Record, error) {
 	rec := Record{
 		KeeperID:       cfg.KeeperID,
 		CycleStartedAt: time.Now().UTC(),
 		Outcome:        OutcomeInternal,
 		SubmitOutcome:  "not_attempted",
+		Channel:        cfg.Channel(),
 	}
 
-	// A stuck transaction consumes a nonce and blocks every later one behind it,
-	// which a one-shot never sees but a looping keeper eventually will. Recorded
-	// rather than acted on: the fix is operational, not something to retry into.
+	// A stuck transaction blocks every later one behind it. Recorded rather than
+	// acted on: the fix is operational, not something to retry into.
 	rec.PendingNonceGap = pendingNonceGap(ctx, s)
 
 	finish := func(out Outcome, err error) (Record, error) {
@@ -99,31 +110,51 @@ func RunCycle(ctx context.Context, s *support.Support, cfg Config) (Record, erro
 	}
 
 	// --- 1. trigger -----------------------------------------------------------
-	instructionID, _, err := instrutils.RequestPriceUpdate(s, cfg.Sender)
+	//
+	// Both channels yield an id and a submission tag to collect the result
+	// under; nothing downstream of here depends on which was used.
+	var (
+		actionID common.Hash
+		tag      teetypes.SubmissionTag
+		err      error
+	)
+	if cfg.Direct {
+		actionID, err = RequestDirect(ctx, s, cfg)
+		// A direct action is enqueued under the "submit" tag. The proxy's
+		// result endpoint defaults to "threshold", so asking for the wrong one
+		// polls a 404 until the deadline and reports a timeout that looks like
+		// a dropped instruction.
+		tag = teetypes.Submit
+		rec.RequestTxStatus = "not_applicable"
+	} else {
+		actionID, _, err = instrutils.RequestPriceUpdate(s, cfg.Sender)
+		tag = teetypes.Threshold
+		if err == nil {
+			rec.RequestTxStatus = "mined"
+		} else {
+			rec.RequestTxStatus = "failed"
+		}
+	}
 	if err != nil {
-		rec.RequestTxStatus = "failed"
 		return finish(OutcomeRequestFailed, err)
 	}
-	rec.RequestTxStatus = "mined"
-	rec.InstructionID = instructionID.Hex()
-	logger.Infof("[%s] instruction %s", cfg.KeeperID, instructionID.Hex())
+	rec.InstructionID = actionID.Hex()
+	logger.Infof("[%s] %s action %s", cfg.KeeperID, cfg.Channel(), actionID.Hex())
 
 	// --- 2. collect -----------------------------------------------------------
-	result, err := PollResult(ctx, cfg.Proxy, instructionID, cfg.PollTimeout)
+	result, err := PollResult(ctx, cfg.Proxy, actionID, tag, cfg.PollTimeout)
 	if err != nil {
 		rec.ResultStatus = "timeout"
 		rec.SourceHealth = sourceHealth(cfg.Proxy)
 		return finish(OutcomeNoResult, err)
 	}
 
-	// Health is recorded whether or not the observation succeeded: on failure it
-	// is what says WHICH source broke.
+	// Recorded either way: on failure it is what says WHICH source broke.
 	rec.SourceHealth = sourceHealth(cfg.Proxy)
 
 	if result.Status != statusSucceeded {
-		// Fail closed. A status-0 result is the extension declining to publish,
-		// and Log is a class from its closed vocabulary — the alert key.
-		// Relaying anything here would be inventing a price.
+		// A status-0 result is the extension declining to publish; Log is a class
+		// from its closed vocabulary. Relaying anything would invent a price.
 		rec.ResultStatus = "0"
 		rec.ErrorClass = result.Log
 		return finish(OutcomeExtensionFailed, errors.Errorf(
@@ -172,13 +203,8 @@ func RunCycle(ctx context.Context, s *support.Support, cfg Config) (Record, erro
 }
 
 // classifyRejection separates the one benign store guard from the rest.
-//
-// NotNewer is the expected outcome for every keeper that loses a race, and with
-// ≥2 keepers exactly one submission wins per cycle. But the same guard also
-// fires when our own report was stale — an old result relayed after a long
-// delay — and that is a latency problem worth seeing. Comparing against the
-// store's stamp is what separates "someone beat me by a second" from "I am
-// submitting minutes-old reports".
+// NotNewer fires both when a keeper loses a race and when its own report was
+// stale; comparing against the store's stamp tells those apart.
 func classifyRejection(rj *Rejection, r pricereport.Report) Outcome {
 	if rj.Guard != "NotNewer" {
 		return OutcomeRejected
@@ -224,19 +250,94 @@ func waitMined(ctx context.Context, s *support.Support, tx *types.Transaction, t
 	return nil
 }
 
-// PollResult waits for a terminal action result.
+// RequestDirect raises a GET_PRICE action on the proxy and returns the action id
+// the proxy assigned it.
 //
-// A bounded wall-clock deadline is what makes the cycle's duration knowable, and
-// it has to stay inside the store's maxAge. Pending is not an error: treating it
-// as one discards results that were merely slow.
+// The op pair and request envelope are read off the deployed sender rather than
+// restated here, so the two channels cannot drift apart — see
+// instrutils.ReadGetPriceRequest.
+func RequestDirect(ctx context.Context, s *support.Support, cfg Config) (common.Hash, error) {
+	if cfg.Proxy == "" {
+		return common.Hash{}, errors.New("direct mode needs a proxy URL")
+	}
+	if cfg.DirectAPIKey == "" {
+		// The proxy can be configured with api_key_optional, but a keeper that
+		// silently sends no key against a proxy that wants one gets a 401 that
+		// reads like an outage. Require it here and let the operator opt out
+		// deliberately by not using direct mode.
+		return common.Hash{}, errors.New("direct mode needs an API key (-directApiKey or DIRECT_API_KEY)")
+	}
+
+	req, err := instrutils.ReadGetPriceRequest(s, cfg.Sender)
+	if err != nil {
+		return common.Hash{}, err
+	}
+
+	return postDirectAction(ctx, cfg.Proxy, cfg.DirectAPIKey, req)
+}
+
+// postDirectAction is the HTTP half of RequestDirect, split out so it can be
+// exercised without a chain to read the op constants from.
+func postDirectAction(
+	ctx context.Context, proxyURL, apiKey string, req instrutils.GetPriceRequest,
+) (common.Hash, error) {
+	body, err := json.Marshal(map[string]string{
+		"opType":    req.OPType.Hex(),
+		"opCommand": req.OPCommand.Hex(),
+		"message":   hexutil.Encode(req.Message),
+	})
+	if err != nil {
+		return common.Hash{}, errors.Errorf("encoding the direct instruction: %s", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(proxyURL, "/")+"/direct", bytes.NewReader(body))
+	if err != nil {
+		return common.Hash{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-API-Key", apiKey)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return common.Hash{}, errors.Errorf("posting to the proxy: %s", err)
+	}
+	defer resp.Body.Close()
+
+	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// The body is the proxy's own error text; 401 here means the API key,
+		// not the extension.
+		return common.Hash{}, errors.Errorf("proxy returned %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(out)))
+	}
+
+	// The proxy echoes the action it enqueued, which is where the id comes from.
+	var action teetypes.Action
+	if err := json.Unmarshal(out, &action); err != nil {
+		return common.Hash{}, errors.Errorf("decoding the proxy response: %s", err)
+	}
+	if action.Data.ID == (common.Hash{}) {
+		return common.Hash{}, errors.New("the proxy returned no action id")
+	}
+	return action.Data.ID, nil
+}
+
+// PollResult waits for a terminal action result. The deadline is what makes the
+// cycle's duration knowable, and has to stay inside the store's maxAge.
+//
+// The tag is not optional: an instruction's result is filed under "threshold"
+// and a direct action's under "submit", and asking for the wrong one returns 404
+// forever rather than an error naming the mismatch.
 func PollResult(
-	ctx context.Context, proxyURL string, id common.Hash, timeout time.Duration,
+	ctx context.Context, proxyURL string, id common.Hash, tag teetypes.SubmissionTag,
+	timeout time.Duration,
 ) (teetypes.ActionResult, error) {
 	deadline := time.Now().Add(timeout)
 	backoff := time.Second
 
 	for attempt := 1; ; attempt++ {
-		res, ok, err := fetchResult(proxyURL, id)
+		res, ok, err := fetchResult(proxyURL, id, tag)
 		switch {
 		case err != nil:
 			logger.Warnf("attempt %d: %s", attempt, err)
@@ -269,16 +370,19 @@ func PollResult(
 }
 
 // fetchResult returns the result and whether its status is terminal.
-func fetchResult(proxyURL string, id common.Hash) (teetypes.ActionResult, bool, error) {
-	resp, err := http.Get(proxyURL + "/action/result/" + id.Hex())
+func fetchResult(
+	proxyURL string, id common.Hash, tag teetypes.SubmissionTag,
+) (teetypes.ActionResult, bool, error) {
+	url := proxyURL + "/action/result/" + id.Hex() + "?submissionTag=" + string(tag)
+
+	resp, err := http.Get(url)
 	if err != nil {
 		return teetypes.ActionResult{}, false, errors.Errorf("querying the proxy: %s", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// 404 until the TEE has answered: the result simply is not in storage
-		// yet, which is the normal early state rather than a fault.
+		// 404 until the TEE has answered — the normal early state, not a fault.
 		return teetypes.ActionResult{}, false, errors.Errorf("proxy returned %d", resp.StatusCode)
 	}
 
@@ -292,15 +396,9 @@ func fetchResult(proxyURL string, id common.Hash) (teetypes.ActionResult, bool, 
 }
 
 // sourceHealth reads the extension's per-source health map off the proxy.
-//
-// Best-effort by design: a nil map means the proxy could not be read, and the
-// caller must never read that as "the sources are fine". The map is decoded
-// generically rather than through the extension's Go types, so this stays
-// independent of any one implementation.
-//
-// Note also that the map is a snapshot written only when an observation runs. If
-// requests stop, the last values persist and keep reading "ok" — which is why
-// the alerting in the monitoring doc pages on on-chain feed age and not on this.
+// Best-effort: a nil map means the proxy could not be read, never "the sources
+// are fine". The map is only written when an observation runs, so stale "ok"
+// values persist if requests stop — alert on on-chain feed age instead.
 func sourceHealth(proxyURL string) map[string]string {
 	resp, err := http.Get(proxyURL + "/info")
 	if err != nil {

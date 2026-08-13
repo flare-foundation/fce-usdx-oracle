@@ -15,18 +15,14 @@ import (
 )
 
 // Rejection is a report the store will not accept, named by the guard that
-// rejects it.
-//
-// The guard name matters more than the message: the store's guards fail for
-// reasons needing very different responses — StaleConfig needs a setEndpoints
-// call, NotNewer usually needs nothing at all — and a bare "execution reverted"
-// with a four-byte selector distinguishes none of them.
+// rejects it. The name matters more than the message: StaleConfig needs a
+// setEndpoints call, NotNewer usually needs nothing, and "execution reverted"
+// distinguishes neither.
 type Rejection struct {
 	Guard string
 	Msg   string
 
-	// StoreObservedAt is the store's current stamp, set for NotNewer so the
-	// caller can tell a lost race from a stale submission.
+	// Set for NotNewer, so the caller can tell a lost race from a stale submission.
 	StoreObservedAt uint64
 }
 
@@ -46,10 +42,8 @@ func AsRejection(err error) (*Rejection, bool) {
 }
 
 // Preflight checks a report against every store guard before spending gas.
-//
-// Each check here duplicates one the contract makes, deliberately: it turns a
-// revert into a named, actionable reason, and it does so before a transaction
-// is paid for.
+// Each check duplicates one the contract makes, turning a revert into a named,
+// actionable reason before a transaction is paid for.
 func Preflight(s *support.Support, storeAddr common.Address, r pricereport.Report) error {
 	store, err := usdxstore.NewUsdxPriceStoreCaller(storeAddr, s.ChainClient)
 	if err != nil {
@@ -112,9 +106,8 @@ func checkBounds(store *usdxstore.UsdxPriceStoreCaller, opts *bind.CallOpts, r p
 		return errors.Errorf("reading maxPrice: %s", err)
 	}
 	if r.Price.Cmp(minPrice) < 0 || r.Price.Cmp(maxPrice) > 0 {
-		// Worth naming loudly: bounds set at par mean a genuine depeg reverts
-		// here rather than publishing, which is a governance decision and not a
-		// tooling bug.
+		// Bounds set at par mean a genuine depeg reverts here rather than
+		// publishing — a governance decision, not a tooling bug.
 		return reject("OutOfBounds", "price %s is outside the accepted band [%s, %s]",
 			r.Price, minPrice, maxPrice)
 	}
@@ -150,9 +143,8 @@ func checkAge(s *support.Support, store *usdxstore.UsdxPriceStoreCaller, opts *b
 	return nil
 }
 
-// checkSignerAndConfig recovers the signer the way the store does and asks the
-// same two questions of it: is this machine registered to our extension, and is
-// it running the configuration we published?
+// checkSignerAndConfig asks the store's two questions: is this machine
+// registered to our extension, and is it running the configuration we published?
 func checkSignerAndConfig(
 	s *support.Support, store *usdxstore.UsdxPriceStoreCaller, opts *bind.CallOpts, r pricereport.Report,
 ) error {

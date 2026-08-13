@@ -1,20 +1,20 @@
-// Command send-endpoints publishes an endpoint configuration on-chain through
-// the instruction sender, so the addressed TEE machine receives it as a
-// SET_ENDPOINTS instruction.
+// Command send-endpoints publishes an endpoint configuration on-chain, so the
+// addressed TEE machine receives it as a SET_ENDPOINTS instruction.
 //
-// Credentials never go through this path — the config is calldata and
-// therefore public; secrets travel over the direct channel via usdxprov.
+// Credentials never go this way: the config is calldata and therefore public.
+// Secrets travel over the direct channel via usdxprov.
 //
-// The machine's teeId is not a field on the proxy's /info response; it is
-// derived from the attested publicKey there (fccutils.GetTeeProxyID), the
-// same derivation the registration flow uses.
+// The teeId is derived from the attested publicKey on /info, not a field there.
 package main
 
 import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
@@ -22,6 +22,7 @@ import (
 	instrutils "fce-usdx-oracle/tools/pkg/utils"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"github.com/pkg/errors"
@@ -33,6 +34,9 @@ func main() {
 	pf := flag.String("p", configs.ExtensionProxyURL, "extension proxy url")
 	instructionSenderF := flag.String("instructionSender", "", "instructionSender address")
 	configF := flag.String("config", "", "endpoints configuration JSON file, delivered verbatim")
+	waitF := flag.Duration("wait", 90*time.Second,
+		"how long to wait for the machine to report the new config hash; 0 skips the check")
+	dryRunF := flag.Bool("dry-run", false, "validate the payload and print the hash, but send nothing")
 	flag.Parse()
 
 	if *instructionSenderF == "" || *configF == "" {
@@ -48,12 +52,27 @@ func main() {
 		fccutils.FatalWithCause(errors.Errorf("%s is not valid JSON", *configF))
 	}
 
+	// Decode against the REAL schema before spending gas. json.Valid only says
+	// the bytes are JSON; it happily passes a payload from an older schema, which
+	// then lands on-chain, sets expectedConfigHash, and is rejected by the
+	// extension — leaving the machine running its previous config and every
+	// submitPrice from it reverting StaleConfig.
+	parsed, err := parseEndpoints(configBytes)
+	if err != nil {
+		fccutils.FatalWithCause(errors.Errorf("%s: %s", *configF, err))
+	}
+	if err := validateEndpoints(parsed); err != nil {
+		fccutils.FatalWithCause(errors.Errorf("%s: %s", *configF, err))
+	}
+
 	var prettyConfig bytes.Buffer
 	if err := json.Indent(&prettyConfig, configBytes, "", "  "); err != nil {
 		fccutils.FatalWithCause(errors.Errorf("formatting config JSON: %s", err))
 	}
 	logger.Infof("Config from %s (%d bytes, delivered verbatim on-chain):", *configF, len(configBytes))
 	logger.Info(prettyConfig.String())
+	logger.Infof("Validated against the extension's schema:")
+	logger.Info("\n" + summarise(parsed))
 
 	testSupport, err := support.DefaultSupport(*af, *cf)
 	if err != nil {
@@ -66,6 +85,13 @@ func main() {
 	}
 	logger.Infof("TEE identity derived from attested publicKey: %s", teeID.Hex())
 
+	configHash := crypto.Keccak256Hash(configBytes)
+
+	if *dryRunF {
+		logger.Infof("Dry run: payload is valid. configHash would be %s", configHash.Hex())
+		return
+	}
+
 	instructionID, txHash, err := instrutils.SetEndpoints(testSupport, instructionSenderAddress, teeID, configBytes)
 	if err != nil {
 		fccutils.FatalWithCause(err)
@@ -74,7 +100,98 @@ func main() {
 	logger.Infof("Endpoints published on-chain:")
 	logger.Infof("  tx:          %s", txHash.Hex())
 	logger.Infof("  instruction: %s", instructionID.Hex())
-	logger.Infof("  configHash:  %s", crypto.Keccak256Hash(configBytes).Hex())
-	logger.Infof("The machine applies it on delivery; follow with:")
-	logger.Infof("  docker compose logs extension-tee | grep SET_ENDPOINTS")
+	logger.Infof("  configHash:  %s", configHash.Hex())
+
+	if *waitF <= 0 {
+		logger.Warnf("Skipping the delivery check (-wait 0). Until this machine reports %s, "+
+			"every price it signs is rejected with StaleConfig.", configHash.Hex())
+		return
+	}
+
+	// expectedConfigHash is now written, so from this moment the machine can only
+	// submit prices once it is actually RUNNING this config. FCC is
+	// fire-and-forget: the instruction may never be delivered, and the extension
+	// may reject it. Either way the machine keeps its old configuration and goes
+	// silent. Confirm rather than assume.
+	if err := waitForConfig(*pf, configHash, *waitF); err != nil {
+		logger.Errorf("%s", err)
+		logger.Errorf("The machine is NOT running the published config, so its prices will be " +
+			"rejected with StaleConfig until it is. Check the extension's logs:")
+		logger.Errorf("  docker compose logs extension-tee | grep SET_ENDPOINTS")
+		os.Exit(1)
+	}
+
+	logger.Infof("Confirmed: the machine reports endpointsHash %s", configHash.Hex())
+	logger.Infof("Now re-commission it, or it stays uncommissioned in fleet-status:")
+	logger.Infof("  go run ./cmd/submit-price -direct -p %s -instructionSender %s",
+		*pf, instructionSenderAddress.Hex())
+}
+
+// waitForConfig polls the machine's own /state until it reports the hash just
+// published, or the budget runs out.
+func waitForConfig(proxyURL string, want common.Hash, budget time.Duration) error {
+	deadline := time.Now().Add(budget)
+	backoff := 2 * time.Second
+
+	var last string
+	for {
+		got, err := fetchEndpointsHash(proxyURL)
+		switch {
+		case err != nil:
+			last = err.Error()
+		case strings.EqualFold(got, want.Hex()):
+			return nil
+		case got == "":
+			last = "the machine reports no endpoint configuration at all"
+		default:
+			last = "the machine reports " + got
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errors.Errorf("the machine did not report %s within %s: %s",
+				want.Hex(), budget, last)
+		}
+		if backoff > remaining {
+			backoff = remaining
+		}
+		time.Sleep(backoff)
+	}
+}
+
+// fetchEndpointsHash reads the active config hash the machine publishes on
+// GET /state, republished inside the proxy's GET /info.
+func fetchEndpointsHash(proxyURL string) (string, error) {
+	resp, err := http.Get(strings.TrimRight(proxyURL, "/") + "/info")
+	if err != nil {
+		return "", errors.Errorf("querying the proxy: %s", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", errors.Errorf("proxy returned %d", resp.StatusCode)
+	}
+
+	var info struct {
+		TeeInfo struct {
+			State struct {
+				State hexutil.Bytes `json:"state"`
+			} `json:"state"`
+		} `json:"teeInfo"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return "", errors.Errorf("decoding /info: %s", err)
+	}
+
+	var body struct {
+		State struct {
+			Readiness struct {
+				EndpointsHash string `json:"endpointsHash"`
+			} `json:"readiness"`
+		} `json:"state"`
+	}
+	if err := json.Unmarshal(info.TeeInfo.State.State, &body); err != nil {
+		return "", errors.Errorf("decoding the extension state: %s", err)
+	}
+	return body.State.Readiness.EndpointsHash, nil
 }

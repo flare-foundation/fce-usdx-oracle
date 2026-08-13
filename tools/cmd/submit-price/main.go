@@ -4,25 +4,26 @@
 //	collect   poll the TEE proxy for the ActionResult
 //	relay     abi.decode the payload and call UsdxPriceStore.submitPrice
 //
-// It is the same code the keeper runs on a timer — tools/pkg/keeper — so what it
-// proves by hand is what will happen unattended. `cmd/keeper -once` is the same
-// single cycle without the read-back; this command adds the operator-facing
-// detail: the decoded report, and what a consumer sees afterwards.
-//
-// The keeper holds no authority. The store verifies the TEE signature against
-// TeeMachineRegistry, so everything here is liveness: the worst a wrong
-// invocation can do is waste gas.
+// The same code the keeper runs on a timer, plus operator-facing detail: the
+// decoded report, and what a consumer sees afterwards.
 //
 // Usage:
 //
 //	go run ./cmd/submit-price -instructionSender 0x…            # request, wait, submit
 //	go run ./cmd/submit-price -instructionId 0x…                # relay an existing result
 //	go run ./cmd/submit-price -instructionSender 0x… -dry-run   # preflight only
+//	go run ./cmd/submit-price -instructionSender 0x… -direct -p https://machine-b/  # one named machine
+//
+// The -direct form is also the commissioning step for a new TEE machine: an
+// on-chain request goes to a random machine, so it is the only way to make a
+// CHOSEN machine sign and land a price, which is what records its config hash in
+// the store. See "Commissioning a machine" in docs/usdx-oracle-keeper.md.
 package main
 
 import (
 	"context"
 	"flag"
+	"os"
 	"time"
 
 	"fce-usdx-oracle/tools/pkg/configs"
@@ -36,6 +37,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
+	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 	"github.com/pkg/errors"
 )
 
@@ -57,11 +59,20 @@ func main() {
 		"how long to wait for the submitPrice receipt")
 	dryRunF := flag.Bool("dry-run", false,
 		"decode and run the preflight checks, but send no transaction")
+	directF := flag.Bool("direct", false,
+		"raise GET_PRICE on the proxy at -p instead of on-chain: no registry fee, no trigger "+
+			"transaction, and the request reaches THAT machine rather than a random one")
+	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
+		"proxy API key for -direct (default: $DIRECT_API_KEY)")
 	flag.Parse()
 
 	if *senderF == "" && *instructionF == "" {
 		fccutils.FatalWithCause(errors.New(
 			"one of -instructionSender (to request a price) or -instructionId (to relay one) is required"))
+	}
+	if *directF && *apiKeyF == "" {
+		fccutils.FatalWithCause(errors.New(
+			"-direct needs an API key: pass -directApiKey or set DIRECT_API_KEY"))
 	}
 
 	s, err := support.DefaultSupport(*af, *cf)
@@ -77,10 +88,16 @@ func main() {
 
 	ctx := context.Background()
 
-	// Relaying a specific instruction skips the trigger, so it does not go
-	// through the keeper's cycle — that path always requests a fresh price.
+	// Relaying a specific instruction skips the trigger, so it bypasses the
+	// keeper's cycle, which always requests a fresh price.
 	if *instructionF != "" {
-		relayExisting(ctx, s, storeAddr, *pf, common.HexToHash(*instructionF), *pollF, *submitF, *dryRunF)
+		// A direct action's result is filed under "submit", an instruction's
+		// under "threshold". Getting this wrong polls a 404 to the deadline.
+		tag := teetypes.Threshold
+		if *directF {
+			tag = teetypes.Submit
+		}
+		relayExisting(ctx, s, storeAddr, *pf, common.HexToHash(*instructionF), tag, *pollF, *submitF, *dryRunF)
 		reportStoredState(s, storeAddr, *feedF, *af)
 		return
 	}
@@ -90,6 +107,8 @@ func main() {
 		Sender:        common.HexToAddress(*senderF),
 		Store:         storeAddr,
 		Proxy:         *pf,
+		Direct:        *directF,
+		DirectAPIKey:  *apiKeyF,
 		PollTimeout:   *pollF,
 		SubmitTimeout: *submitF,
 		DryRun:        *dryRunF,
@@ -107,8 +126,7 @@ func main() {
 	}
 
 	if err != nil && !rec.Outcome.Advanced() {
-		// A lost race is not a failure: the price did land, submitted by someone
-		// else. Anything else exits non-zero so a script notices.
+		// A lost race is not a failure: the price landed, submitted by someone else.
 		fccutils.FatalWithCause(err)
 	}
 	if *dryRunF {
@@ -119,15 +137,15 @@ func main() {
 	reportStoredState(s, storeAddr, *feedF, *af)
 }
 
-// relayExisting submits the result of an instruction that was already sent,
-// which is the recovery path when a cycle was interrupted after its trigger.
+// relayExisting is the recovery path for a cycle interrupted after its trigger.
 func relayExisting(
 	ctx context.Context, s *support.Support, storeAddr common.Address, proxy string,
-	instructionID common.Hash, pollTimeout, submitTimeout time.Duration, dryRun bool,
+	instructionID common.Hash, tag teetypes.SubmissionTag,
+	pollTimeout, submitTimeout time.Duration, dryRun bool,
 ) {
-	logger.Infof("Relaying an existing instruction: %s", instructionID.Hex())
+	logger.Infof("Relaying an existing action: %s (submissionTag %s)", instructionID.Hex(), tag)
 
-	result, err := keeper.PollResult(ctx, proxy, instructionID, pollTimeout)
+	result, err := keeper.PollResult(ctx, proxy, instructionID, tag, pollTimeout)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
@@ -178,9 +196,7 @@ func relayExisting(
 	logger.Infof("Accepted in %s", tx.Hash().Hex())
 }
 
-// reportStoredState reads back what a consumer would now see. The feed is the
-// surface that matters: the store is an implementation detail to everyone
-// except this tool.
+// reportStoredState reads back what a consumer would now see.
 func reportStoredState(s *support.Support, storeAddr common.Address, feedFlag, addressesFile string) {
 	opts := &bind.CallOpts{Context: context.Background()}
 
@@ -209,9 +225,8 @@ func reportStoredState(s *support.Support, storeAddr common.Address, feedFlag, a
 		logger.Warnf("binding the feed: %s", err)
 		return
 	}
-	// getCurrentFeed is payable and therefore not a view in the binding, so it
-	// is exercised here through the feed id and the store it reads. Registration
-	// with FtsoV2 is a governance proposal, separate from this deployment.
+	// getCurrentFeed is payable and so not a view in the binding; exercised here
+	// through the feed id and the store it reads.
 	id, err := feed.FeedId(opts)
 	if err != nil {
 		logger.Warnf("reading the feed id: %s", err)
