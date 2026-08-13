@@ -1,7 +1,8 @@
 // Package pricereport decodes the USDX oracle's signed price payload.
 //
 //	body = abi.encode(bytes32 domain, uint256 price, int8 decimals,
-//	                  uint64 observedAt, bytes32 instructionId, bytes32 configHash)
+//	                  uint64 observedAt, bytes32 instructionId, bytes32 configHash,
+//	                  bytes32 adminsHash)
 //	data = abi.encode(bytes body, bytes signature)
 //
 // The layout is declared here rather than imported from go/internal/report so
@@ -24,10 +25,16 @@ import (
 
 // DomainName is the schema version the signature is bound to: a layout change
 // must change it, so an old signature cannot be reinterpreted.
+//
+// adminsHash was appended without bumping this, as a deliberate
+// development-phase exception — the extension and UsdxPriceStore are redeployed
+// together, so no mixed pair is ever live. BodyLength is what enforces it: a
+// peer still on the six-word layout fails the length check rather than having
+// its body read as one that simply omits the admin commitment.
 const DomainName = "USDX_ORACLE_PRICE_V1"
 
-// BodyLength is the encoded body: six static ABI words.
-const BodyLength = 6 * 32
+// BodyLength is the encoded body: seven static ABI words.
+const BodyLength = 7 * 32
 
 // Domain is the first word of a valid report, and UsdxPriceStore.DOMAIN.
 func Domain() common.Hash { return crypto.Keccak256Hash([]byte(DomainName)) }
@@ -40,6 +47,10 @@ type Report struct {
 	ObservedAt    uint64
 	InstructionID common.Hash
 	ConfigHash    common.Hash
+
+	// AdminsHash commits the report to the admin signer set in force when it was
+	// produced. UsdxPriceStore compares it against expectedAdminsHash.
+	AdminsHash common.Hash
 
 	// Body is the signed bytes, exactly as received. Pass this to submitPrice.
 	Body []byte
@@ -62,7 +73,7 @@ func mustArgs(types ...string) abi.Arguments {
 
 var (
 	dataArgs = mustArgs("bytes", "bytes")
-	bodyArgs = mustArgs("bytes32", "uint256", "int8", "uint64", "bytes32", "bytes32")
+	bodyArgs = mustArgs("bytes32", "uint256", "int8", "uint64", "bytes32", "bytes32", "bytes32")
 )
 
 // Decode splits ActionResult.Data and decodes the signed body, verifying the
@@ -87,7 +98,7 @@ func Decode(data []byte) (Report, error) {
 	}
 
 	fields, err := bodyArgs.Unpack(body)
-	if err != nil || len(fields) != 6 {
+	if err != nil || len(fields) != 7 {
 		return r, errors.Errorf("body is not a PriceReport: %v", err)
 	}
 
@@ -97,6 +108,7 @@ func Decode(data []byte) (Report, error) {
 	observedAt, _ := fields[3].(uint64)
 	instructionID, _ := fields[4].([32]byte)
 	configHash, _ := fields[5].([32]byte)
+	adminsHash, _ := fields[6].([32]byte)
 
 	if price == nil {
 		return r, errors.New("price did not decode as uint256")
@@ -113,6 +125,7 @@ func Decode(data []byte) (Report, error) {
 		ObservedAt:    observedAt,
 		InstructionID: instructionID,
 		ConfigHash:    configHash,
+		AdminsHash:    adminsHash,
 		Body:          body,
 		Signature:     signature,
 	}, nil

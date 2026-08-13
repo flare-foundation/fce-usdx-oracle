@@ -26,8 +26,18 @@ contract UsdxOracleInstructionSender {
     // forge-lint: disable-next-line(unsafe-typecast)
     bytes32 public constant OP_COMMAND_SET_ENDPOINTS = bytes32("SET_ENDPOINTS");
 
+    /// @notice Command for SET_ADMINS.
+    // forge-lint: disable-next-line(unsafe-typecast)
+    bytes32 public constant OP_COMMAND_SET_ADMINS = bytes32("SET_ADMINS");
+
     /// @notice Maximum endpoint configuration payload size.
     uint256 public constant MAX_ENDPOINTS_BYTES = 16384;
+
+    /// @notice Maximum admin set payload size.
+    /// @dev Far smaller than the endpoint payload: a version, a threshold and a
+    /// short address list. Sized so the cap itself bounds how many signers can
+    /// ever be named, rather than leaving that to the extension alone.
+    uint256 public constant MAX_ADMINS_BYTES = 4096;
 
     /// @notice Request envelope version carried by every GET_PRICE instruction.
     /// @dev The registry rejects an empty `message` with `MessageEmpty()`, so a
@@ -51,6 +61,13 @@ contract UsdxOracleInstructionSender {
     /// @notice keccak256 of the last published endpoint config per machine; UsdxPriceStore enforces this.
     mapping(address => bytes32) public expectedConfigHash;
 
+    /// @notice keccak256 of the last published admin set per machine; UsdxPriceStore enforces this.
+    /// @dev The admin set authorises SET_SECRET, so this records which signers
+    /// could provision a machine at the time it produced a price. Kept separate
+    /// from expectedConfigHash so admins can be rotated without republishing
+    /// endpoints, and the reverse.
+    mapping(address => bytes32) public expectedAdminsHash;
+
     /// @notice Owner-only endpoint configuration; also controls price sources (no host allowlist).
     address public owner;
 
@@ -62,6 +79,9 @@ contract UsdxOracleInstructionSender {
     /// @notice Emitted when endpoint configuration is sent to a TEE machine.
     event EndpointsSet(address indexed teeId, bytes32 indexed configHash);
 
+    /// @notice Emitted when an admin set is sent to a TEE machine.
+    event AdminsSet(address indexed teeId, bytes32 indexed adminsHash);
+
     /// @notice Emitted when ownership is transferred.
     event OwnershipTransferred(address indexed from, address indexed to);
 
@@ -69,6 +89,7 @@ contract UsdxOracleInstructionSender {
     error ZeroTeeId();
     error EmptyConfig();
     error ConfigTooLarge();
+    error AdminsTooLarge();
     error ZeroOwner();
 
     modifier onlyOwner() {
@@ -126,6 +147,43 @@ contract UsdxOracleInstructionSender {
         TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(teeIds, params);
 
         emit EndpointsSet(_teeId, configHash);
+    }
+
+    /// @notice Publishes the admin signer set to one specific TEE machine.
+    /// @dev Owner-only, one call per machine, hash recorded before dispatch —
+    /// the same shape as setEndpoints, because it carries the same kind of
+    /// authority: what is published here decides who may then authorise
+    /// SET_SECRET inside that enclave.
+    ///
+    /// The payload is opaque here and validated by the extension, which is the
+    /// only party that can meaningfully check it. This contract records the
+    /// hash so UsdxPriceStore can require that a machine landing a price was
+    /// running the admin set governance published for it.
+    function setAdmins(address _teeId, bytes calldata _config) external payable onlyOwner {
+        if (_teeId == address(0)) revert ZeroTeeId();
+        if (_config.length == 0) revert EmptyConfig();
+        if (_config.length > MAX_ADMINS_BYTES) revert AdminsTooLarge();
+
+        address[] memory teeIds = new address[](1);
+        teeIds[0] = _teeId;
+        address[] memory cosigners = new address[](0);
+
+        ITeeExtensionRegistry.TeeInstructionParams memory params = ITeeExtensionRegistry.TeeInstructionParams({
+            opType: OP_TYPE_USDX_CONFIG,
+            opCommand: OP_COMMAND_SET_ADMINS,
+            message: _config,
+            cosigners: cosigners,
+            cosignersThreshold: 0,
+            claimBackAddress: msg.sender
+        });
+
+        // Set expected hash before dispatch so undelivered instructions block stale submissions
+        bytes32 adminsHash = keccak256(_config);
+        expectedAdminsHash[_teeId] = adminsHash;
+
+        TEE_EXTENSION_REGISTRY.sendInstructions{value: msg.value}(teeIds, params);
+
+        emit AdminsSet(_teeId, adminsHash);
     }
 
     /// @notice Finds and sets this contract's extension id. Can only be set once.

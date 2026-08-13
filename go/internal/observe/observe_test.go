@@ -61,6 +61,7 @@ func observationAt(unix uint64) oracle.Observation {
 		Decimals:      8,
 		ObservedAt:    unix,
 		EndpointsHash: common.HexToHash("0x9f3c"),
+		AdminsHash:    common.HexToHash("0x5e21"),
 		Health:        map[string]string{"hex_bonds": "ok"},
 	}
 }

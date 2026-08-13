@@ -75,7 +75,9 @@ func usage() {
   usdxprov submit -in env.json -url <proxy> [-api-key <k>] [-action-url <url>]
 
 The freshness window is `+provision.Freshness.String()+`: sign and submit within it, or
-the envelope is rejected as stale. `+fmt.Sprint(provision.Threshold)+` distinct admin signatures are required.
+the envelope is rejected as stale. At least `+fmt.Sprint(provision.MinThreshold)+` DISTINCT admin signatures are
+required; the exact threshold is whatever SET_ADMINS published for the target
+machine, and only that machine can tell you whether an envelope satisfies it.
 `)
 	os.Exit(2)
 }
@@ -152,8 +154,9 @@ func build(args []string) error {
 	fmt.Printf("  expires  %s (%s from now)\n",
 		time.Unix(int64(env.IssuedAt), 0).Add(provision.Freshness).UTC().Format(time.RFC3339),
 		provision.Freshness)
-	fmt.Printf("\nNeeds %d distinct admin signatures. The credential is already encrypted,\n", provision.Threshold)
-	fmt.Printf("so this file is safe to send to the signers.\n")
+	fmt.Printf("\nNeeds at least %d distinct admin signatures — the published threshold for\n", provision.MinThreshold)
+	fmt.Printf("this machine may be higher. The credential is already encrypted, so this\n")
+	fmt.Printf("file is safe to send to the signers.\n")
 	return nil
 }
 
@@ -214,10 +217,11 @@ func sign(args []string) error {
 		return err
 	}
 
-	fmt.Printf("signed by %s (%d/%d)\n", signer.Hex(), len(f.Signatures), provision.Threshold)
-	if !isAdmin(signer) {
-		fmt.Printf("WARNING: %s is not in the baked admin set — this signature will not count\n", signer.Hex())
-	}
+	// No local admin-set check: the set is published per machine by SET_ADMINS
+	// and lives in the enclave, so this tool cannot know it without trusting a
+	// copy that would go stale on the first rotation. The machine is the
+	// authority, and it reports one rejection for everything by design.
+	fmt.Printf("signed by %s (%d signature(s) so far)\n", signer.Hex(), len(f.Signatures))
 	return nil
 }
 
@@ -238,8 +242,12 @@ func submit(args []string) error {
 	if err := readJSON(*in, &f); err != nil {
 		return err
 	}
-	if len(f.Signatures) < provision.Threshold {
-		return fmt.Errorf("have %d signatures, need %d", len(f.Signatures), provision.Threshold)
+	// The floor, not the machine's actual threshold: SetAdmins refuses to
+	// install anything below MinThreshold, so fewer than this can never be
+	// accepted anywhere and is worth catching before spending a round trip.
+	if len(f.Signatures) < provision.MinThreshold {
+		return fmt.Errorf("have %d signatures, need at least %d",
+			len(f.Signatures), provision.MinThreshold)
 	}
 
 	age := time.Since(time.Unix(int64(f.IssuedAt), 0))
@@ -433,15 +441,6 @@ func recoverSigner(body, sig []byte) (common.Address, bool) {
 		return common.Address{}, false
 	}
 	return crypto.PubkeyToAddress(*pub), true
-}
-
-func isAdmin(a common.Address) bool {
-	for _, admin := range provision.Admins {
-		if admin == a {
-			return true
-		}
-	}
-	return false
 }
 
 func b32(s string) string {

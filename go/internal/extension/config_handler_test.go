@@ -16,8 +16,10 @@ import (
 
 type fakeProvisioner struct {
 	endpointsErr error
+	adminsErr    error
 	secretErr    error
 	endpointCall int
+	adminsCall   int
 	secretCall   int
 	readiness    types.Readiness
 
@@ -25,6 +27,7 @@ type fakeProvisioner struct {
 	// alone cannot tell a delivered payload from an empty one, which is exactly
 	// the failure the direct envelope produced.
 	lastEndpoints []byte
+	lastAdmins    []byte
 	lastSecret    []byte
 }
 
@@ -32,6 +35,12 @@ func (f *fakeProvisioner) ApplyEndpoints(payload []byte) error {
 	f.endpointCall++
 	f.lastEndpoints = payload
 	return f.endpointsErr
+}
+
+func (f *fakeProvisioner) ApplyAdmins(payload []byte) error {
+	f.adminsCall++
+	f.lastAdmins = payload
+	return f.adminsErr
 }
 
 func (f *fakeProvisioner) ApplySecret(ctx context.Context, message []byte) error {
@@ -148,6 +157,28 @@ func TestSetEndpoints_RejectedOverDirectChannel(t *testing.T) {
 	}
 }
 
+// SET_ADMINS is authorised by the same owner-only check, and decides who may
+// then authorise SET_SECRET. A direct action would let anyone who can reach the
+// proxy install their own admin set and provision the machine from there.
+func TestSetAdmins_RejectedOverDirectChannel(t *testing.T) {
+	p := &fakeProvisioner{}
+	e := newProvisionedExtension(p)
+
+	status, body := e.processAction(
+		configAction(config.OPCommandSetAdmins, teetypes.Direct, []byte(`{}`)))
+	result := mustResult(t, status, body, http.StatusOK)
+
+	if result.Status != 0 {
+		t.Fatalf("expected rejection, got status %d", result.Status)
+	}
+	if result.Log != "error: "+failure.WrongActionType.Error() {
+		t.Errorf("log = %q", result.Log)
+	}
+	if p.adminsCall != 0 {
+		t.Error("the provisioner must not be reached over the wrong channel")
+	}
+}
+
 // SET_SECRET is authorised by M-of-N admin signatures. On-chain it would put a
 // credential ciphertext into permanent public storage for no benefit.
 func TestSetSecret_RejectedOverInstructionChannel(t *testing.T) {
@@ -178,6 +209,8 @@ func TestConfig_AcceptsOverCorrectChannel(t *testing.T) {
 	}{
 		{"endpoints by instruction", config.OPCommandSetEndpoints, teetypes.Instruction,
 			func(p *fakeProvisioner) int { return p.endpointCall }},
+		{"admins by instruction", config.OPCommandSetAdmins, teetypes.Instruction,
+			func(p *fakeProvisioner) int { return p.adminsCall }},
 		{"secret by direct", config.OPCommandSetSecret, teetypes.Direct,
 			func(p *fakeProvisioner) int { return p.secretCall }},
 	}

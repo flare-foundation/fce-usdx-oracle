@@ -223,13 +223,22 @@ bash ./scripts/test.sh
 Sends test instructions through the deployed TEE and verifies the round-trip.
 
 **That verifies the round-trip, not the feed.** `test.sh` stops at the proxy: it proves the
-machine produced a valid signed report, and nothing more. Getting a price on-chain needs two
-further steps — publish the endpoint configuration, then relay the signed report into
-`UsdxPriceStore`:
+machine produced a valid signed report, and nothing more. Getting a price on-chain needs three
+further steps — publish the endpoint configuration and the admin set, then relay the signed
+report into `UsdxPriceStore`. The store checks both hashes, so a machine missing either one
+cannot land a price:
 
 ```bash
 cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -config ../testdata/endpoints/public-only.json
 ```
+
+```bash
+cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../testdata/admins/dev-wellknown-keys.json
+```
+
+> `dev-wellknown-keys.json` names the addresses of private keys 1, 2 and 3. It is for local
+> and testnet work only — anyone can sign as those admins. Publish a real set before any
+> deployment serving a live feed.
 
 ```bash
 cd tools && go run ./cmd/submit-price -instructionSender <SENDER>

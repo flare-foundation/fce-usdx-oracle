@@ -242,5 +242,6 @@ func logReport(r pricereport.Report) {
 		time.Unix(int64(r.ObservedAt), 0).UTC().Format(time.RFC3339))
 	logger.Infof("  instructionId: %s", r.InstructionID.Hex())
 	logger.Infof("  configHash:    %s", r.ConfigHash.Hex())
+	logger.Infof("  adminsHash:    %s", r.AdminsHash.Hex())
 	logger.Infof("  body:          %d bytes, signature: %d bytes", len(r.Body), len(r.Signature))
 }

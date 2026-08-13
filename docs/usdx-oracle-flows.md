@@ -87,14 +87,16 @@ POST /action
        ├─ USDX_ORACLE / GET_PRICE     → processGetPrice        [Flow D]
        ├─ USDX_CONFIG / SET_ENDPOINTS → ApplyEndpoints         [Flow A]
        │     requires action type = instruction
+       ├─ USDX_CONFIG / SET_ADMINS    → ApplyAdmins            [Flow A2]
+       │     requires action type = instruction
        ├─ USDX_CONFIG / SET_SECRET    → ApplySecret            [Flow B]
        │     requires action type = direct
        └─ anything else               → HTTP 501
 ```
 
-The channel check matters: `SET_ENDPOINTS` over `direct` would skip the on-chain
-owner check, and `SET_SECRET` over `instruction` would put a credential
-ciphertext in permanent public storage.
+The channel check matters: `SET_ENDPOINTS` or `SET_ADMINS` over `direct` would
+skip the on-chain owner check, and `SET_SECRET` over `instruction` would put a
+credential ciphertext in permanent public storage.
 
 ---
 
@@ -122,6 +124,32 @@ That hash goes into every signed report, and the store compares it against
 
 ---
 
+## Flow A2 — SET_ADMINS (who may provision this machine)
+
+```
+owner → InstructionSender.setAdmins(teeId, cfg)
+          expectedAdminsHash[teeId] = keccak256(cfg)  ← recorded before dispatch
+          registry.sendInstructions(...)
+             ↓  cosigned → proxy → tee-node → POST /action
+        runtimecfg.ApplyAdmins
+          JSON decode, unknown fields rejected
+          validateAdmins():
+            · version non-zero AND strictly greater than the last applied
+            · 2 ≤ threshold ≤ admin count ≤ 32
+            · every entry parsable, non-zero and distinct
+          verifier.SetAdmins(...)                     ← replaces the live set
+          adminsHash = keccak256(payload)             ← hashed as received
+```
+
+Same enforcement as Flow A: the hash goes into every signed report and the store
+compares it against `expectedAdminsHash[teeId]`.
+
+The verifier starts with **no** admin set and rejects every envelope until one is
+installed, so Flow A2 must precede Flow B — on first provisioning and again after
+every restart, since the set is memory-only.
+
+---
+
 ## Flow B — SET_SECRET (the Hex credential)
 
 Three steps, three different people, and the chain is never touched.
@@ -140,8 +168,9 @@ enclave
     applyMu held for the whole call               ← the replay defence needs this
     teenode.TeeID()  signs a fixed probe, recovers its own address
     provision.Verify()                            provision.go:209
+       an admin set must be installed at all — else rejected outright
        chainId · teeId · payload hash · freshness · version > last
-       · ≥2 DISTINCT admin signatures
+       · ≥ threshold DISTINCT signatures from the installed set
        every failure returns the SAME error — no probing oracle
     node.Decrypt()   POST localhost:9090/decrypt  ← in-enclave
     reject a value containing  space \t \r \n / ? # &
@@ -203,7 +232,8 @@ anyone → InstructionSender.requestPriceUpdate()
     poller.Report(instructionID)                    observe.go:200
       Latest()  — fails closed if the observation is older than 10 min
       oracle.Sign()
-        body = abi(DOMAIN, price, decimals, observedAt, instructionId, endpointsHash)
+        body = abi(DOMAIN, price, decimals, observedAt, instructionId,
+                   endpointsHash, adminsHash)
         POST localhost:9090/sign  — tee-node applies EIP-191; wire is base64
         normalise v from 0/1 → 27/28
         data = abi(body, signature)
@@ -317,8 +347,11 @@ either public surface. That is a compile error, not a review item.
 
 ## Open items for the audit
 
-1. **Admin set is placeholder keys.** `provision.Admins` are private keys 1, 2
-   and 3. Flagged loudly in-code; the hard pre-production blocker.
+1. **The admin set must be published before a live feed.** Nothing is baked any
+   more: a machine starts with no admins and refuses every `SET_SECRET` until
+   `SET_ADMINS` installs one. The pre-production requirement is that the set
+   published is a real one — `testdata/admins/dev-wellknown-keys.json` names
+   private keys 1, 2 and 3 and is for local and testnet work only.
 2. **`Poller.Stats()` is dead code.** `/state` counters and `sourceHealth` are
    written only on the GET_PRICE path, so a machine nobody queries reports an
    empty health map while its poller fails every 2 minutes.

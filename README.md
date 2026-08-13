@@ -427,11 +427,19 @@ credentials. Run `cmd/mocknode` and `cmd/devserver`, apply a config with
 `./scripts/set-endpoints.sh testdata/endpoints/public-only.json 8099`, then POST a GET_PRICE
 action. Healthy output is `lastPrice: "100000000"` with `hex_cash: not_configured`.
 
-**On-chain, the full path** is four commands once the machine is registered and at PRODUCTION:
+**On-chain, the full path** is five commands once the machine is registered and at PRODUCTION:
 
 ```bash
 cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -config ../testdata/endpoints/public-only.json
 ```
+
+```bash
+cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../testdata/admins/dev-wellknown-keys.json
+```
+
+> `dev-wellknown-keys.json` names the addresses of private keys 1, 2 and 3 — fine for local
+> and testnet work, never for a live feed. The admin set is memory-only, so it must be
+> republished after every extension restart, and before any `SET_SECRET`.
 
 ```bash
 cd tools && go run ./cmd/run-test -instructionSender <SENDER>

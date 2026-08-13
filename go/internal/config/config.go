@@ -19,6 +19,7 @@ const (
 	// on-chain would be permanent and public). Enforced in extension.go.
 	OPTypeUsdxConfig      = "USDX_CONFIG"
 	OPCommandSetEndpoints = "SET_ENDPOINTS"
+	OPCommandSetAdmins    = "SET_ADMINS"
 	OPCommandSetSecret    = "SET_SECRET"
 
 	TimeoutShutdown = 5 * time.Second

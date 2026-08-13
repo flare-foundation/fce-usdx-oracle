@@ -303,6 +303,19 @@ leave every later `submitPrice` reverting `StaleConfig`:
 cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -config ../testdata/endpoints/public-only.json
 ```
 
+Then publish the admin set, which decides who may install credentials in that machine. The
+store requires both hashes, so a machine with endpoints but no admin set still cannot land a
+price — it reverts `NoAdminsPublished`:
+
+```bash
+cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../testdata/admins/dev-wellknown-keys.json
+```
+
+`dev-wellknown-keys.json` names the addresses of private keys 1, 2 and 3, so anyone can sign
+as those admins. It is for local and testnet work only. Both payloads are memory-only in the
+extension, so both must be republished after every restart — and `SET_ADMINS` must land
+before any `SET_SECRET`, since with no admin set installed nothing can authorise a credential.
+
 Confirm the machine actually applied it — this is the difference between what was *sent* and
 what is *running*:
 
@@ -310,7 +323,7 @@ what is *running*:
 docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml logs extension-tee | grep SET_ENDPOINTS
 ```
 
-Expect `SET_ENDPOINTS applied`. The `configHash` that `send-endpoints` printed must equal the
+Expect `SET_ENDPOINTS applied`, and `SET_ADMINS applied` for the admin set. The `configHash` that `send-endpoints` printed must equal the
 `endpointsHash` in `/state`.
 
 ## 5. Request a price and put it on-chain
@@ -457,6 +470,10 @@ Everything here was hit for real while bringing this up.
 | Result `status 0`, log `no recent observation` | The background loop has not produced anything inside `MaxObservationAge` (10 min). | Check `/state` `sourceHealth`; an upstream is failing. Working as designed — it fails closed. |
 | Result `status 0`, log `instruction carries an unexpected payload` | `originalMessage` was not exactly `0x01`. | Check the sender's constant matches `config.GetPriceRequestV1`. |
 | `submitPrice` reverts `StaleConfig` | The machine is running a different config than `expectedConfigHash`. | Compare `/state` `endpointsHash` against the hash `send-endpoints` printed; re-send if they differ. |
+| `submitPrice` reverts `NoAdminsPublished` | No admin set has been sent to this machine yet. | Run `send-admins` for it. |
+| `submitPrice` reverts `StaleAdmins` | The machine is running a different admin set than `expectedAdminsHash`. | Compare `/state` `adminsHash` against the hash `send-admins` printed; re-send if they differ. |
+| `submitPrice` reverts `BadBodyLength` | Extension and store disagree about the report layout. | They must be redeployed together; rebuild the image or redeploy the store. |
+| `SET_SECRET` rejected right after a restart | The admin set is memory-only and was lost. | Re-run `send-admins`, then re-submit the envelope. |
 | `submitPrice` reverts `UnknownSigner` | Machine not at status 2, **or the store still points at a previous extension generation**. Re-running `pre-build.sh` mints a new id and sender, and the store does not follow automatically. | Compare `store.extensionId()` with `getExtensionId(<TEE_ID>)`. If they differ, run `set-store-extension` (step 3e). Otherwise check `getTeeMachineStatus` and re-run `post-build.sh`. |
 | `connect: connection refused` on `localhost:6664` | Running under `--local`, where the proxy binds 6664 directly. (Before 6 Aug 2026 this was the default and Docker users hit it instead.) | `-p http://localhost:6664`, or export `EXT_PROXY_URL`. See "Which proxy port" above. |
 | `submitPrice` reverts `NotNewer` | A newer price already landed. | **Not a fault** — with ≥2 keepers exactly one submission wins per cycle. |

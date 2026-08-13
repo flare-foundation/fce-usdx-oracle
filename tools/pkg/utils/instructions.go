@@ -119,6 +119,10 @@ func endpointsFee(s *support.Support, senderAddress common.Address) (*big.Int, e
 	return instructionFee(s, senderAddress, opSetEndpoints)
 }
 
+func adminsFee(s *support.Support, senderAddress common.Address) (*big.Int, error) {
+	return instructionFee(s, senderAddress, opSetAdmins)
+}
+
 // GetPriceRequest is everything needed to raise a GET_PRICE action off-chain,
 // read from the deployed sender rather than restated here.
 //
@@ -187,6 +191,18 @@ func opSetEndpoints(c *usdxoracle.UsdxOracleInstructionSenderCaller, o *bind.Cal
 	cmd, err := c.OPCOMMANDSETENDPOINTS(o)
 	if err != nil {
 		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_COMMAND_SET_ENDPOINTS: %s", err)
+	}
+	return t, cmd, nil
+}
+
+func opSetAdmins(c *usdxoracle.UsdxOracleInstructionSenderCaller, o *bind.CallOpts) ([32]byte, [32]byte, error) {
+	t, err := c.OPTYPEUSDXCONFIG(o)
+	if err != nil {
+		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_TYPE_USDX_CONFIG: %s", err)
+	}
+	cmd, err := c.OPCOMMANDSETADMINS(o)
+	if err != nil {
+		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_COMMAND_SET_ADMINS: %s", err)
 	}
 	return t, cmd, nil
 }
@@ -301,9 +317,15 @@ func RequestPriceUpdate(s *support.Support, instructionSenderAddress common.Addr
 // endpointsSetTopic is keccak256("EndpointsSet(address,bytes32)").
 var endpointsSetTopic = crypto.Keccak256Hash([]byte("EndpointsSet(address,bytes32)"))
 
+// adminsSetTopic is keccak256("AdminsSet(address,bytes32)").
+var adminsSetTopic = crypto.Keccak256Hash([]byte("AdminsSet(address,bytes32)"))
+
 // setEndpointsABI is the minimal ABI of setEndpoints: the generated usdxoracle
 // binding predates the provisioning surface and has no SetEndpoints method.
 const setEndpointsABI = `[{"name":"setEndpoints","type":"function","stateMutability":"payable","inputs":[{"name":"teeId","type":"address"},{"name":"config","type":"bytes"}],"outputs":[]}]`
+
+// setAdminsABI is the minimal ABI of setAdmins, on the same terms.
+const setAdminsABI = `[{"name":"setAdmins","type":"function","stateMutability":"payable","inputs":[{"name":"teeId","type":"address"},{"name":"config","type":"bytes"}],"outputs":[]}]`
 
 // SetEndpoints publishes an endpoint configuration through the instruction
 // sender. The config bytes go into calldata and are publicly readable, so
@@ -385,6 +407,102 @@ func SetEndpoints(s *support.Support, instructionSenderAddress, teeID common.Add
 		return common.Hash{}, common.Hash{}, errors.Errorf(
 			"no EndpointsSet event for teeId %s with configHash %s in receipt for tx %s",
 			teeID.Hex(), configHash.Hex(), receipt.TxHash.Hex())
+	}
+	if instructionID == (common.Hash{}) {
+		return common.Hash{}, common.Hash{}, errors.Errorf(
+			"no TeeInstructionsSent event in receipt (%d logs) for tx %s", len(receipt.Logs), receipt.TxHash.Hex())
+	}
+
+	return instructionID, receipt.TxHash, nil
+}
+
+// SetAdmins publishes an admin signer set through the instruction sender. The
+// payload is addresses and a threshold — public by construction, and public on
+// purpose: who may provision a machine should be as verifiable as which
+// providers it reads.
+//
+// Deliberately a near-copy of SetEndpoints rather than a shared generic. The two
+// differ only in the ABI, the fee selector and the event topic, and folding them
+// together would hide exactly the three things that must not be confused: a
+// mistake there would publish an admin set under the endpoints hash, or charge
+// the wrong fee, and both fail late and confusingly.
+func SetAdmins(s *support.Support, instructionSenderAddress, teeID common.Address, config []byte) (common.Hash, common.Hash, error) {
+	parsed, err := abi.JSON(strings.NewReader(setAdminsABI))
+	if err != nil {
+		return common.Hash{}, common.Hash{}, errors.Errorf("failed to parse setAdmins ABI: %s", err)
+	}
+
+	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, errors.Errorf("failed to create transactor: %s", err)
+	}
+	fee, err := adminsFee(s, instructionSenderAddress)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	opts.Value = fee
+
+	simulateRevert := func() string {
+		callData, packErr := parsed.Pack("setAdmins", teeID, config)
+		if packErr != nil {
+			return ""
+		}
+		from := crypto.PubkeyToAddress(s.Prv.PublicKey)
+		return fccutils.SimulateAndDecodeRevert(
+			s.ChainClient, from, instructionSenderAddress,
+			fee, callData,
+		)
+	}
+
+	sender := bind.NewBoundContract(instructionSenderAddress, parsed, s.ChainClient, s.ChainClient, s.ChainClient)
+	tx, err := sender.Transact(opts, "setAdmins", teeID, config)
+	if err != nil {
+		reason := fccutils.DecodeRevertReason(err)
+		if reason == "" {
+			reason = simulateRevert()
+		}
+		if reason != "" {
+			return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s (revert reason: %s)", err, reason)
+		}
+		return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s", err)
+	}
+
+	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, errors.Errorf("failed waiting for transaction: %s", err)
+	}
+	if receipt.Status != 1 {
+		if reason := simulateRevert(); reason != "" {
+			return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status %d (revert reason: %s)", receipt.Status, reason)
+		}
+		return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status: %d", receipt.Status)
+	}
+
+	// AdminsSet proves the exact bytes landed on-chain: its adminsHash topic must
+	// be the keccak256 of the set that was sent.
+	adminsHash := crypto.Keccak256Hash(config)
+	teeIDTopic := common.BytesToHash(teeID.Bytes())
+	var (
+		instructionID common.Hash
+		adminsSet     bool
+	)
+	for _, l := range receipt.Logs {
+		if l == nil {
+			continue
+		}
+		if len(l.Topics) == 3 && l.Topics[0] == adminsSetTopic &&
+			l.Topics[1] == teeIDTopic && l.Topics[2] == adminsHash {
+			adminsSet = true
+			continue
+		}
+		if instructionSent, parseErr := s.TeeVerification.ParseTeeInstructionsSent(*l); parseErr == nil {
+			instructionID = instructionSent.InstructionId
+		}
+	}
+	if !adminsSet {
+		return common.Hash{}, common.Hash{}, errors.Errorf(
+			"no AdminsSet event for teeId %s with adminsHash %s in receipt for tx %s",
+			teeID.Hex(), adminsHash.Hex(), receipt.TxHash.Hex())
 	}
 	if instructionID == (common.Hash{}) {
 		return common.Hash{}, common.Hash{}, errors.Errorf(

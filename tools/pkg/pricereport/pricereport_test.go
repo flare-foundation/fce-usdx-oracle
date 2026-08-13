@@ -13,10 +13,10 @@ import (
 // EIP-191 digest of it, normalise v to the 27/28 form the store requires, then
 // wrap both halves.
 func build(t *testing.T, domain common.Hash, price *big.Int, decimals int8, observedAt uint64,
-	instructionID, configHash common.Hash) (data []byte, signer common.Address) {
+	instructionID, configHash, adminsHash common.Hash) (data []byte, signer common.Address) {
 	t.Helper()
 
-	body, err := bodyArgs.Pack(domain, price, decimals, observedAt, instructionID, configHash)
+	body, err := bodyArgs.Pack(domain, price, decimals, observedAt, instructionID, configHash, adminsHash)
 	if err != nil {
 		t.Fatalf("packing the body: %v", err)
 	}
@@ -41,7 +41,7 @@ func build(t *testing.T, domain common.Hash, price *big.Int, decimals int8, obse
 func validPayload(t *testing.T) ([]byte, common.Address) {
 	t.Helper()
 	return build(t, Domain(), big.NewInt(99_950_000), 8, 1_754_400_000,
-		common.HexToHash("0xabc"), common.HexToHash("0xdef"))
+		common.HexToHash("0xabc"), common.HexToHash("0xdef"), common.HexToHash("0x5e21"))
 }
 
 func TestDecode(t *testing.T) {
@@ -66,6 +66,9 @@ func TestDecode(t *testing.T) {
 	}
 	if r.ConfigHash != common.HexToHash("0xdef") {
 		t.Errorf("configHash = %s", r.ConfigHash.Hex())
+	}
+	if r.AdminsHash != common.HexToHash("0x5e21") {
+		t.Errorf("adminsHash = %s", r.AdminsHash.Hex())
 	}
 	if len(r.Body) != BodyLength {
 		t.Errorf("body is %d bytes, want %d", len(r.Body), BodyLength)
@@ -92,7 +95,7 @@ func TestDecode_BodyIsCarriedVerbatim(t *testing.T) {
 	}
 
 	reencoded, err := bodyArgs.Pack(r.Domain, r.Price, r.Decimals, r.ObservedAt,
-		r.InstructionID, r.ConfigHash)
+		r.InstructionID, r.ConfigHash, r.AdminsHash)
 	if err != nil {
 		t.Fatalf("re-encoding: %v", err)
 	}
@@ -110,7 +113,7 @@ func TestDecode_BodyIsCarriedVerbatim(t *testing.T) {
 // as a price. The domain is the only thing standing between the two.
 func TestDecode_RejectsWrongDomain(t *testing.T) {
 	data, _ := build(t, crypto.Keccak256Hash([]byte("USDX_ORACLE_PRICE_V2")),
-		big.NewInt(1), 8, 1, common.Hash{}, common.Hash{})
+		big.NewInt(1), 8, 1, common.Hash{}, common.Hash{}, common.Hash{})
 
 	_, err := Decode(data)
 	if err == nil || !strings.Contains(err.Error(), "domain") {

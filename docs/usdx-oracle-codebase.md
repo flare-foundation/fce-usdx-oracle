@@ -117,9 +117,11 @@ go poller.Run(ctx)                        ── the engine starts immediately
 e.Server.ListenAndServe()
 ```
 
-The extension boots **unprovisioned** and that is normal — credentials are memory-only,
-so every restart returns it to `not_configured` until `SET_ENDPOINTS` and `SET_SECRET`
-land again.
+The extension boots **unprovisioned** and that is normal — endpoints, the admin set and
+credentials are all memory-only, so every restart returns it to `not_configured` until
+`SET_ENDPOINTS`, `SET_ADMINS` and `SET_SECRET` land again. `SET_ADMINS` must precede
+`SET_SECRET`: with no admin set installed nothing can authorise a credential, and the
+verifier rejects every envelope until one is.
 
 `extension.NewWithProvisioner` panics on a nil observer. `NewStub` is the *only* way to
 get a stub, and it is named at its single call site (`cmd/main.go`) — the scaffold's
@@ -137,13 +139,16 @@ POST /action  (utils.go:16 actionHandler)
   └─ processAction
        ├─ USDX_ORACLE / GET_PRICE     → processGetPrice        [Flow D]
        ├─ USDX_CONFIG / SET_ENDPOINTS → ApplyEndpoints         [Flow A]  requires type = instruction
+       ├─ USDX_CONFIG / SET_ADMINS    → ApplyAdmins            [Flow A2] requires type = instruction
        ├─ USDX_CONFIG / SET_SECRET    → ApplySecret            [Flow B]  requires type = direct
        └─ anything else               → HTTP 501
 ```
 
-The channel check is a security control, not bookkeeping: `SET_ENDPOINTS` over `direct`
-would skip the on-chain owner check; `SET_SECRET` over `instruction` would put a
-credential ciphertext into permanent public storage.
+The channel check is a security control, not bookkeeping: `SET_ENDPOINTS` or
+`SET_ADMINS` over `direct` would skip the on-chain owner check — for `SET_ADMINS` that
+means anyone reaching the proxy could install their own admin set and provision through
+it; `SET_SECRET` over `instruction` would put a credential ciphertext into permanent
+public storage.
 
 ### Flow A — `SET_ENDPOINTS` (which RPC sources we read)
 
@@ -166,6 +171,33 @@ owner → InstructionSender.setEndpoints(teeId, cfg)          InstructionSender.
 That hash rides in every signed report, and the store compares it against
 `expectedConfigHash[teeId]`. Without it, the chain would record what was *sent*, never
 what a machine is *running*.
+
+### Flow A2 — `SET_ADMINS` (who may provision this machine)
+
+```
+owner → InstructionSender.setAdmins(teeId, cfg)             InstructionSender.sol
+          expectedAdminsHash[teeId] = keccak256(cfg)        ← recorded BEFORE dispatch
+          registry.sendInstructions(...)
+            ↓ cosigned → proxy → tee-node → POST /action
+        extension.processUsdxConfig                         config_handler.go
+        runtimecfg.ApplyAdmins                              runtimecfg.go
+          JSON decode with DisallowUnknownFields
+          validateAdmins()
+            · version must be non-zero AND strictly greater than the last applied
+            · MinThreshold (2) ≤ threshold ≤ admin count ≤ MaxAdmins (32)
+            · every entry a parsable, non-zero, distinct hex address
+          provision.Verifier.SetAdmins(...)                 ← replaces the live set
+          adminsHash = keccak256(payload AS RECEIVED)        ← never recomputed from the struct
+```
+
+Same shape as Flow A, and the same enforcement: the hash rides in every signed report
+and the store compares it against `expectedAdminsHash[teeId]`. The version counter is
+the one addition — the admin set is the root of trust for every credential that follows,
+so a captured `SET_ADMINS` must not be able to reinstate a rotated-out signer.
+
+Rotation does **not** reset the per-ref envelope versions in the verifier: those are
+anti-rollback state independent of who signs, and clearing them would let an envelope
+the outgoing admins signed be replayed against the incoming set.
 
 ### Flow B — `SET_SECRET` (the Hex credential)
 
@@ -244,7 +276,7 @@ anyone → InstructionSender.requestPriceUpdate()           InstructionSender.so
       Latest()  ─ fails closed if the observation is older than 10 min
       oracle.Sign()                                       oracle.go:158
         report.EncodeBody → abi(DOMAIN, price, decimals, observedAt,
-                                instructionId, endpointsHash)
+                                instructionId, endpointsHash, adminsHash)
         teenode.Sign → POST localhost:9090/sign   (tee-node applies EIP-191;
                                                    wire is base64, not hex)
         NormalizeV: 0/1 → 27/28, so the store can use stock OpenZeppelin
@@ -323,7 +355,7 @@ as worthless rather than absent.
 | `pkg/fccutils` | FCC registration, governance, policy-consistency, revert decoding |
 | `pkg/contracts/*` | generated bindings (`go generate ./...` after editing Solidity) |
 | `pkg/validate` | the deploy/verify check suite behind `verify-deploy` |
-| `cmd/*` | one binary per operation: `deploy-store`, `register-extension`, `register-tee`, `send-endpoints`, `set-governance`, `set-store-extension`, `submit-price`, `keeper`, `verify-deploy`, `audit-deploy`, `query-tee` … |
+| `cmd/*` | one binary per operation: `deploy-store`, `register-extension`, `register-tee`, `send-endpoints`, `send-admins`, `set-governance`, `set-store-extension`, `submit-price`, `keeper`, `verify-deploy`, `audit-deploy`, `query-tee` … |
 
 ---
 
@@ -377,8 +409,11 @@ carries the long form.
 
 ## 11. Gotchas worth knowing before you touch it
 
-- **`provision.Admins` are private keys 1, 2 and 3.** Development placeholders, flagged
-  loudly in-code. The hard pre-production blocker.
+- **The admin set is published, not baked, and is memory-only.** A machine starts with
+  none and rejects every `SET_SECRET` until `SET_ADMINS` lands, so it must be republished
+  after every restart and *before* any credential. The checked-in
+  `testdata/admins/dev-wellknown-keys.json` names private keys 1, 2 and 3 — local and
+  testnet only.
 - **`/state` counters count served `GET_PRICE` actions, not the poller.**
   `observe.Poller.Stats()` exists but is never called — a machine nobody queries reports
   an empty health map while its poller may be failing every 2 minutes. Alert on on-chain

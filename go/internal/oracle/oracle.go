@@ -48,6 +48,11 @@ type Config struct {
 	// Commits the signed report to the configuration it was computed under, so
 	// the store can refuse a price from a machine running something else.
 	EndpointsHash common.Hash
+
+	// Commits the signed report to the admin set in force when it was computed,
+	// on the same terms: the store refuses a price from a machine whose
+	// provisioning authority is not the one governance published.
+	AdminsHash common.Hash
 }
 
 // Validate checks a configuration at startup.
@@ -77,6 +82,9 @@ type Observation struct {
 	// The configuration this price was computed under, so a later Sign commits
 	// to the config in force at observation time, not at request time.
 	EndpointsHash common.Hash
+
+	// The admin set in force at observation time, on the same terms.
+	AdminsHash common.Hash
 
 	// Health maps each source identifier to a config.Health* value.
 	Health map[string]string
@@ -148,6 +156,7 @@ func Observe(ctx context.Context, cfg Config) (Observation, error) {
 		Decimals:      config.PriceDecimals,
 		ObservedAt:    observedAt,
 		EndpointsHash: cfg.EndpointsHash,
+		AdminsHash:    cfg.AdminsHash,
 		Health:        health,
 	}, nil
 }
@@ -175,6 +184,7 @@ func signPayload(
 		ObservedAt:    obs.ObservedAt,
 		InstructionID: instructionID,
 		EndpointsHash: obs.EndpointsHash,
+		AdminsHash:    obs.AdminsHash,
 	})
 	if err != nil {
 		return nil, err

@@ -1,17 +1,23 @@
 // Package provision verifies signed configuration envelopes.
 //
-// RPC endpoints arrive by on-chain instruction (so which providers we read is
-// publicly verifiable); credentials arrive by direct instruction (no gas, no
-// permanent ciphertext on-chain, instant rotation). What stays baked in is the
-// admin signer set that authorises provisioning.
+// RPC endpoints and the admin signer set arrive by on-chain instruction (so
+// both are publicly verifiable, and the owner key is the root of trust for
+// each); credentials arrive by direct instruction (no gas, no permanent
+// ciphertext on-chain, instant rotation).
 //
 //	body = abi.encode(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
 //
-// signed by at least Threshold DISTINCT admins under EIP-191. version is
-// in-memory and blocks rollback while the process lives; issuedAt survives
-// restarts, where the version counter resets to zero. Every rejection returns
-// failure.ProvisionRejected and nothing else, so the endpoint cannot be used to
-// probe the admin set or the freshness window.
+// signed by at least the configured threshold of DISTINCT admins under EIP-191.
+// version is in-memory and blocks rollback while the process lives; issuedAt
+// survives restarts, where the version counter resets to zero. Every rejection
+// returns failure.ProvisionRejected and nothing else, so the endpoint cannot be
+// used to probe the admin set or the freshness window.
+//
+// The admin set is NOT baked in. A Verifier starts with none and rejects
+// everything until SET_ADMINS installs one, so an enclave that has not been told
+// who its admins are cannot be provisioned rather than defaulting to a set an
+// attacker could guess. Because the set lives only in memory, a restart returns
+// the machine to that state and SET_ADMINS must precede SET_SECRET every time.
 package provision
 
 import (
@@ -45,21 +51,15 @@ const SignatureLength = 65
 // and this endpoint is reachable by anyone who can deliver a direct action.
 const maxSignatures = 16
 
-const Threshold = 2
+// MinThreshold is the floor on the admin threshold, enforced wherever a set is
+// installed. M-of-N with M=1 is not a threshold scheme: one key would be the
+// whole root of trust, which is the property SET_SECRET exists to avoid.
+const MinThreshold = 2
 
-// Admins is the baked admin signer set — the root of trust for provisioning.
-//
-// ############################################################################
-// # DEVELOPMENT PLACEHOLDERS: private keys 1, 2 and 3, the most widely known  #
-// # keys in existence. Anyone can sign as any of these admins. MUST be        #
-// # replaced before any deployment serving a live feed.                       #
-// # TestAdminSetIsNotPlaceholder fails the moment they are replaced.          #
-// ############################################################################
-var Admins = []common.Address{
-	common.HexToAddress("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"), // privkey 0x01
-	common.HexToAddress("0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF"), // privkey 0x02
-	common.HexToAddress("0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"), // privkey 0x03
-}
+// MaxAdmins bounds the published set. Recovery cost is linear in the signatures
+// presented, not the admins configured, but an unbounded set would still make
+// isAdmin a linear scan driven by whatever the payload named.
+const MaxAdmins = 32
 
 func Domain() common.Hash { return crypto.Keccak256Hash([]byte(DomainName)) }
 
@@ -112,12 +112,12 @@ func Encode(e Envelope, signatures [][]byte) ([]byte, error) {
 	return outerArgs.Pack(body, signatures, e.Payload)
 }
 
-// Verifier checks envelopes against the baked admin set and tracks versions.
+// Verifier checks envelopes against the installed admin set and tracks versions.
 //
-// NOT SAFE FOR CONCURRENT USE: Verify writes lastVersion and SetTeeID writes
-// teeID, neither synchronised. runtimecfg.Store holds applyMu across every
-// call. The extension's /action handler serves actions concurrently, so it
-// does not do this for you.
+// NOT SAFE FOR CONCURRENT USE: Verify writes lastVersion, SetTeeID writes teeID
+// and SetAdmins writes admins, none synchronised. runtimecfg.Store holds applyMu
+// across every call. The extension's /action handler serves actions
+// concurrently, so it does not do this for you.
 type Verifier struct {
 	chainID *big.Int
 	teeID   common.Address
@@ -126,9 +126,13 @@ type Verifier struct {
 	// is also required.
 	lastVersion map[string]uint64
 
+	// Installed by SET_ADMINS, empty until then. Nothing verifies against an
+	// empty set: hasThreshold cannot reach a threshold of at least MinThreshold
+	// with no admins to match, and HasAdmins lets callers say so explicitly.
 	admins    []common.Address
 	threshold int
-	now       func() time.Time
+
+	now func() time.Time
 }
 
 func (v *Verifier) HasTeeID() bool { return v.teeID != (common.Address{}) }
@@ -136,13 +140,51 @@ func (v *Verifier) HasTeeID() bool { return v.teeID != (common.Address{}) }
 // SetTeeID is called once, lazily: tee-node may not be reachable at startup.
 func (v *Verifier) SetTeeID(id common.Address) { v.teeID = id }
 
+// HasAdmins reports whether an admin set has been installed.
+func (v *Verifier) HasAdmins() bool { return len(v.admins) > 0 && v.threshold > 0 }
+
+// SetAdmins installs the signer set that authorises provisioning, replacing any
+// previous one. The caller validates the payload; this rechecks the invariants
+// the verifier itself depends on, because a set that reached here malformed
+// would weaken every later envelope rather than fail loudly at install time.
+//
+// lastVersion is deliberately NOT reset. Envelope versions are per-ref
+// anti-rollback state, and clearing them on rotation would let an envelope the
+// outgoing admins signed be replayed against the incoming set.
+func (v *Verifier) SetAdmins(admins []common.Address, threshold int) error {
+	if len(admins) == 0 || len(admins) > MaxAdmins {
+		return errors.New("provision: admin set size out of range")
+	}
+	if threshold < MinThreshold || threshold > len(admins) {
+		return errors.New("provision: admin threshold out of range")
+	}
+
+	seen := make(map[common.Address]bool, len(admins))
+	installed := make([]common.Address, 0, len(admins))
+	for _, a := range admins {
+		if a == (common.Address{}) {
+			return errors.New("provision: admin address is zero")
+		}
+		// A repeated address would inflate the apparent set size while the
+		// distinct-signer check still counts it once, so a 2-of-3 naming the
+		// same key twice would really be 2-of-2 with one key unusable.
+		if seen[a] {
+			return errors.New("provision: duplicate admin address")
+		}
+		seen[a] = true
+		installed = append(installed, a)
+	}
+
+	v.admins = installed
+	v.threshold = threshold
+	return nil
+}
+
 func NewVerifier(chainID *big.Int, teeID common.Address) *Verifier {
 	return &Verifier{
 		chainID:     chainID,
 		teeID:       teeID,
 		lastVersion: map[string]uint64{},
-		admins:      Admins,
-		threshold:   Threshold,
 		now:         func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -150,6 +192,13 @@ func NewVerifier(chainID *big.Int, teeID common.Address) *Verifier {
 // Verify decodes and validates a wire message. Every failure returns
 // failure.ProvisionRejected and nothing else.
 func (v *Verifier) Verify(message []byte) (Envelope, error) {
+	// No admin set installed means nothing can be authorised yet. Checked first
+	// and reported as the same rejection as everything else, so the endpoint
+	// does not reveal whether a machine has been told who its admins are.
+	if !v.HasAdmins() {
+		return Envelope{}, failure.ProvisionRejected
+	}
+
 	e, sigs, err := decode(message)
 	if err != nil {
 		return Envelope{}, failure.ProvisionRejected
