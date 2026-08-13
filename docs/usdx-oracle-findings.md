@@ -526,6 +526,18 @@ body, and the store rejects any mismatch with `StaleAdmins`. Rotating admins
 therefore withdraws a machine's commissioning until it lands a price under the
 new set — the same self-announcing behaviour republishing endpoints already had.
 
+**Two signer sets, split by exposure rather than by importance.** The envelope's
+ref selects the set: `hex_api_key` is authorised by `backing` (1-of-N permitted),
+everything else by `providers` (2-of-N minimum). The asymmetry is deliberate and
+worth restating plainly, because it looks backwards at first glance — the
+*better-protected* credential gets the *weaker* threshold. The reasoning is
+impact, not exposure: the backing endpoint is pinned and authenticated by header,
+so a wrong value degrades the feed to cash-less rather than moving the price,
+whereas a provider credential is substituted into a URL the owner key chooses.
+**If the backing endpoint ever stops being pinned, `MinBackingThreshold` must go
+back up.** The ref-to-set mapping is pinned in the build, never in the payload;
+otherwise the 1-of-1 key could claim the provider credentials.
+
 **One rejection reason for everything.** Bad signature, too few distinct signers,
 unknown signer, stale `issuedAt`, replayed version, wrong `teeId`, wrong chain,
 wrong domain, undecryptable ciphertext — all return

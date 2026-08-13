@@ -135,18 +135,31 @@ owner → InstructionSender.setAdmins(teeId, cfg)
           JSON decode, unknown fields rejected
           validateAdmins():
             · version non-zero AND strictly greater than the last applied
-            · 2 ≤ threshold ≤ admin count ≤ 32
-            · every entry parsable, non-zero and distinct
-          verifier.SetAdmins(...)                     ← replaces the live set
+            · backing:   1 ≤ threshold ≤ admin count ≤ 32
+            · providers: 2 ≤ threshold ≤ admin count ≤ 32
+            · every entry parsable, non-zero and distinct within its set
+          verifier.SetAdmins(backing, providers)      ← both, or neither
           adminsHash = keccak256(payload)             ← hashed as received
 ```
+
+The payload carries TWO signer sets and the envelope's ref picks one:
+
+```
+ref == hex_api_key   → backing set     (1-of-N allowed)
+everything else      → providers set   (2-of-N minimum)
+```
+
+The mapping is pinned in the build, never read from the payload — otherwise the
+weaker set could claim the stronger set's credentials. Signers from the other set
+do not count toward a threshold, and an unrecognised ref falls under the
+*stronger* set.
 
 Same enforcement as Flow A: the hash goes into every signed report and the store
 compares it against `expectedAdminsHash[teeId]`.
 
-The verifier starts with **no** admin set and rejects every envelope until one is
-installed, so Flow A2 must precede Flow B — on first provisioning and again after
-every restart, since the set is memory-only.
+The verifier starts with **no** admin sets and rejects every envelope until both
+are installed, so Flow A2 must precede Flow B — on first provisioning and again
+after every restart, since they are memory-only.
 
 ---
 
@@ -168,9 +181,10 @@ enclave
     applyMu held for the whole call               ← the replay defence needs this
     teenode.TeeID()  signs a fixed probe, recovers its own address
     provision.Verify()                            provision.go:209
-       an admin set must be installed at all — else rejected outright
+       admin sets must be installed at all — else rejected outright
+       set = backing if ref == hex_api_key else providers
        chainId · teeId · payload hash · freshness · version > last
-       · ≥ threshold DISTINCT signatures from the installed set
+       · ≥ set.threshold DISTINCT signatures FROM THAT SET
        every failure returns the SAME error — no probing oracle
     node.Decrypt()   POST localhost:9090/decrypt  ← in-enclave
     reject a value containing  space \t \r \n / ? # &
@@ -250,10 +264,14 @@ on every request. A request now costs one signing round trip.
 ## Flow E — the keeper relay
 
 ```
-tools/cmd/keeper → RunCycle, sequential, never overlapping     cycle.go:78
+tools/cmd/keeper → RunCycle, sequential, never overlapping     cycle.go:109
+  at start    sweep the fleet: one direct request per machine, submitted
+              oldest observation first, so every machine lands one price
   0. check for stuck transactions (a nonce gap blocks everything behind it)
-  1. TRIGGER   requestPriceUpdate() → instructionId
+  1. TRIGGER   POST proxy/direct → action id, next machine in the rotation;
+               every 2h instead: requestPriceUpdate() → instructionId
   2. COLLECT   GET proxy/action/result/<id>, backoff 1s → 16s
+                 on-chain: asked of every machine's proxy, one of them has it
                  404 = pending, not an error
                  status 0 → STOP, record the error class, invent nothing
   3. RELAY     decode → preflight (simulate, map the revert to a named guard)

@@ -438,8 +438,9 @@ cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../test
 ```
 
 > `dev-wellknown-keys.json` names the addresses of private keys 1, 2 and 3 — fine for local
-> and testnet work, never for a live feed. The admin set is memory-only, so it must be
-> republished after every extension restart, and before any `SET_SECRET`.
+> and testnet work, never for a live feed. It publishes two sets: `backing` (1-of-1, for
+> `hex_api_key`) and `providers` (2-of-3, for the RPC credentials). Both are memory-only, so
+> they must be republished after every extension restart, and before any `SET_SECRET`.
 
 ```bash
 cd tools && go run ./cmd/run-test -instructionSender <SENDER>

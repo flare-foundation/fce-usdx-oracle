@@ -237,8 +237,9 @@ cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../test
 ```
 
 > `dev-wellknown-keys.json` names the addresses of private keys 1, 2 and 3. It is for local
-> and testnet work only — anyone can sign as those admins. Publish a real set before any
-> deployment serving a live feed.
+> and testnet work only — anyone can sign as those admins. It publishes two sets: `backing`
+> (1-of-1, for `hex_api_key`) and `providers` (2-of-3, for the RPC credentials). Publish real
+> sets before any deployment serving a live feed.
 
 ```bash
 cd tools && go run ./cmd/submit-price -instructionSender <SENDER>

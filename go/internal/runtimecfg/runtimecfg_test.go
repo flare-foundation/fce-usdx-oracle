@@ -31,7 +31,7 @@ func (f *fakeNode) TeeID(ctx context.Context) (common.Address, error) { return f
 
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	return New(provision.NewVerifier(big.NewInt(114), common.Address{}), &fakeNode{})
+	return New(provision.NewVerifier(big.NewInt(114), common.Address{}, config.HexAPIKeyRef), &fakeNode{})
 }
 
 // testEndpoints covers every pinned chain, with a mix of thresholds and a
@@ -87,11 +87,23 @@ var devAdmins = []string{
 	"0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69", // privkey 0x03
 }
 
-// setAdmins installs the dev admin set through the real ApplyAdmins path, so the
-// tests exercise the same decode and validation a SET_ADMINS instruction takes.
+// testAdmins is the dev pair: 1-of-1 over the backing credential, 2-of-3 over
+// the provider credentials. The same three keys appear in both sets because the
+// envelope helpers sign with keys 1 and 2 regardless of ref.
+func testAdmins(version uint64) Admins {
+	return Admins{
+		Version:   version,
+		Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+		Providers: AdminSet{Threshold: 2, Admins: devAdmins},
+	}
+}
+
+// setAdmins installs the dev admin sets through the real ApplyAdmins path, so
+// the tests exercise the same decode and validation a SET_ADMINS instruction
+// takes.
 func setAdmins(t *testing.T, s *Store, version uint64) {
 	t.Helper()
-	raw, err := json.Marshal(Admins{Version: version, Threshold: 2, Admins: devAdmins})
+	raw, err := json.Marshal(testAdmins(version))
 	if err != nil {
 		t.Fatalf("marshal admins: %v", err)
 	}
@@ -551,7 +563,7 @@ var concurrentChainID = big.NewInt(114)
 func concurrentStore(t *testing.T) *Store {
 	t.Helper()
 	s := New(
-		provision.NewVerifier(concurrentChainID, concurrentTeeID),
+		provision.NewVerifier(concurrentChainID, concurrentTeeID, config.HexAPIKeyRef),
 		&fakeNode{teeID: concurrentTeeID},
 	)
 	// envelopeFor signs with private keys 1 and 2, so the matching set has to be
@@ -715,6 +727,12 @@ func TestApplySecret_ConcurrentReplayAdmitsExactlyOne(t *testing.T) {
 // adminsPayload marshals a set for the table-driven cases. It takes no
 // *testing.T because it is called while building the table, where there is no
 // live test to fail; Admins is plain data and cannot fail to marshal.
+// withVersion returns a copy at a chosen version, for cases that vary only that.
+func withVersion(a Admins, version uint64) Admins {
+	a.Version = version
+	return a
+}
+
 func adminsPayload(a Admins) []byte {
 	raw, err := json.Marshal(a)
 	if err != nil {
@@ -755,8 +773,10 @@ func TestApplyAdmins_HashesThePayloadAsReceived(t *testing.T) {
 	s := newStore(t)
 
 	// Deliberately not canonical JSON: extra whitespace and reordered keys.
-	raw := []byte("{\n  \"threshold\" : 2,\n  \"version\": 4,\n" +
-		"  \"admins\": [\"" + devAdmins[0] + "\", \"" + devAdmins[1] + "\"]\n}")
+	raw := []byte("{\n  \"version\": 4,\n" +
+		"  \"providers\" : {\"threshold\": 2, \"admins\": [\"" +
+		devAdmins[0] + "\", \"" + devAdmins[1] + "\"]},\n" +
+		"  \"backing\": {\"threshold\": 1, \"admins\": [\"" + devAdmins[0] + "\"]}\n}")
 	if err := s.ApplyAdmins(raw); err != nil {
 		t.Fatalf("ApplyAdmins: %v", err)
 	}
@@ -776,20 +796,38 @@ func TestApplyAdmins_RejectsBadPayloads(t *testing.T) {
 		{"not JSON", []byte("nonsense")},
 		// An unrecognised field means publisher and build disagree about the
 		// schema; applying the subset we understand is worse than stopping.
-		{"unknown field", []byte(`{"version":1,"threshold":2,"admins":["` + devAdmins[0] +
-			`","` + devAdmins[1] + `"],"quorum":2}`)},
-		{"zero version", adminsPayload(Admins{Version: 0, Threshold: 2, Admins: devAdmins})},
-		{"threshold below the floor", adminsPayload(
-			Admins{Version: 1, Threshold: 1, Admins: devAdmins})},
-		{"threshold above the set size", adminsPayload(
-			Admins{Version: 1, Threshold: 4, Admins: devAdmins})},
-		{"empty set", adminsPayload(Admins{Version: 1, Threshold: 2})},
-		{"not an address", adminsPayload(
-			Admins{Version: 1, Threshold: 2, Admins: []string{devAdmins[0], "nope"}})},
-		{"zero address", adminsPayload(Admins{Version: 1, Threshold: 2,
-			Admins: []string{devAdmins[0], "0x0000000000000000000000000000000000000000"}})},
-		{"duplicate admin", adminsPayload(Admins{Version: 1, Threshold: 2,
-			Admins: []string{devAdmins[0], devAdmins[0]}})},
+		{"unknown field", []byte(`{"version":1,"backing":{"threshold":1,"admins":["` +
+			devAdmins[0] + `"]},"providers":{"threshold":2,"admins":["` + devAdmins[0] +
+			`","` + devAdmins[1] + `"]},"quorum":2}`)},
+		{"zero version", adminsPayload(withVersion(testAdmins(1), 0))},
+		// The old single-set schema: both sets are required now, so a payload
+		// naming neither must not install anything.
+		{"legacy flat schema", []byte(`{"version":1,"threshold":2,"admins":["` +
+			devAdmins[0] + `","` + devAdmins[1] + `"]}`)},
+		{"missing backing", adminsPayload(Admins{
+			Version: 1, Providers: AdminSet{Threshold: 2, Admins: devAdmins}})},
+		{"missing providers", adminsPayload(Admins{
+			Version: 1, Backing: AdminSet{Threshold: 1, Admins: devAdmins[:1]}})},
+		// 1-of-N is legal for backing and illegal for providers.
+		{"providers below the floor", adminsPayload(Admins{Version: 1,
+			Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 1, Admins: devAdmins}})},
+		{"backing threshold of zero", adminsPayload(Admins{Version: 1,
+			Backing:   AdminSet{Threshold: 0, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 2, Admins: devAdmins}})},
+		{"providers threshold above set size", adminsPayload(Admins{Version: 1,
+			Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 4, Admins: devAdmins}})},
+		{"not an address", adminsPayload(Admins{Version: 1,
+			Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 2, Admins: []string{devAdmins[0], "nope"}}})},
+		{"zero address", adminsPayload(Admins{Version: 1,
+			Backing: AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 2, Admins: []string{
+				devAdmins[0], "0x0000000000000000000000000000000000000000"}}})},
+		{"duplicate admin", adminsPayload(Admins{Version: 1,
+			Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 2, Admins: []string{devAdmins[0], devAdmins[0]}}})},
 	}
 
 	for _, c := range cases {
@@ -814,7 +852,7 @@ func TestApplyAdmins_RejectsNonIncreasingVersion(t *testing.T) {
 	installed := s.Readiness().AdminsHash
 
 	for _, version := range []uint64{1, 4, 5} {
-		raw := adminsPayload(Admins{Version: version, Threshold: 2, Admins: devAdmins[:2]})
+		raw := adminsPayload(withVersion(testAdmins(1), version))
 		if err := s.ApplyAdmins(raw); err == nil {
 			t.Errorf("version %d must be rejected as not newer than 5", version)
 		}
@@ -826,7 +864,7 @@ func TestApplyAdmins_RejectsNonIncreasingVersion(t *testing.T) {
 
 	// Strictly greater is fine, and gaps are allowed: versions come from the
 	// publisher, not from a counter this side controls.
-	raw := adminsPayload(Admins{Version: 9, Threshold: 2, Admins: devAdmins[:2]})
+	raw := adminsPayload(withVersion(testAdmins(1), 9))
 	if err := s.ApplyAdmins(raw); err != nil {
 		t.Fatalf("version 9 must be accepted: %v", err)
 	}
@@ -841,8 +879,11 @@ func TestApplyAdmins_RejectedRotationKeepsTheWorkingSet(t *testing.T) {
 	s := provisioned(t)
 	before := s.Readiness()
 
-	if err := s.ApplyAdmins([]byte(`{"version":99,"threshold":1,"admins":["` + devAdmins[0] + `"]}`)); err == nil {
-		t.Fatal("a threshold below the floor must be rejected")
+	bad := adminsPayload(Admins{Version: 99,
+		Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+		Providers: AdminSet{Threshold: 1, Admins: devAdmins}})
+	if err := s.ApplyAdmins(bad); err == nil {
+		t.Fatal("a providers threshold below the floor must be rejected")
 	}
 
 	after := s.Readiness()

@@ -184,16 +184,24 @@ owner → InstructionSender.setAdmins(teeId, cfg)             InstructionSender.
           JSON decode with DisallowUnknownFields
           validateAdmins()
             · version must be non-zero AND strictly greater than the last applied
-            · MinThreshold (2) ≤ threshold ≤ admin count ≤ MaxAdmins (32)
-            · every entry a parsable, non-zero, distinct hex address
-          provision.Verifier.SetAdmins(...)                 ← replaces the live set
+            · backing:   MinBackingThreshold (1)  ≤ threshold ≤ count ≤ 32
+            · providers: MinProviderThreshold (2) ≤ threshold ≤ count ≤ 32
+            · every entry a parsable, non-zero hex address, distinct within its set
+          provision.Verifier.SetAdmins(backing, providers)   ← both, or neither
           adminsHash = keccak256(payload AS RECEIVED)        ← never recomputed from the struct
 ```
 
-Same shape as Flow A, and the same enforcement: the hash rides in every signed report
-and the store compares it against `expectedAdminsHash[teeId]`. The version counter is
-the one addition — the admin set is the root of trust for every credential that follows,
-so a captured `SET_ADMINS` must not be able to reinstate a rotated-out signer.
+The payload carries **two** signer sets. `config.HexAPIKeyRef` is authorised by the
+`backing` set (1-of-N allowed, because it authenticates a pinned endpoint by header);
+every other ref by the `providers` set (2-of-N minimum, because those credentials are
+substituted into URLs `SET_ENDPOINTS` chooses). The ref-to-set mapping is pinned at
+`NewVerifier` and never read from the payload, and a signer from one set does not count
+toward the other's threshold — see rationale §9.
+
+Same shape as Flow A otherwise, and the same enforcement: the hash rides in every signed
+report and the store compares it against `expectedAdminsHash[teeId]`. The version counter
+is the one addition — the admin sets are the root of trust for every credential that
+follows, so a captured `SET_ADMINS` must not be able to reinstate a rotated-out signer.
 
 Rotation does **not** reset the per-ref envelope versions in the verifier: those are
 anti-rollback state independent of who signs, and clearing them would let an envelope
@@ -288,10 +296,16 @@ anyone → InstructionSender.requestPriceUpdate()           InstructionSender.so
 ### Flow E — the keeper relay (`tools/`)
 
 ```
-tools/cmd/keeper → keeper.Run (timer, single-flight) → keeper.RunCycle   cycle.go:59
+tools/cmd/keeper → keeper.Run (timer, single-flight) → keeper.RunCycle   cycle.go:109
+  at start:  keeper.Sweep — one direct request per registered machine,     sweep.go:30
+             submitted in ascending observedAt order so they all land
   0. pendingNonceGap  — a stuck tx blocks everything behind its nonce
-  1. TRIGGER   instrutils.RequestPriceUpdate() → instructionId
-  2. COLLECT   PollResult: GET proxy/action/result/<id>, backoff 1s → 16s
+  1. TRIGGER   direct by default: POST proxy/direct → action id (no fee, no tx),
+                 rotating over the fleet, one machine per cycle;
+                 every -onChainEvery (2h) instead:
+                 instrutils.RequestPriceUpdate() → instructionId
+  2. COLLECT   PollResultAny: GET proxy/action/result/<id>, backoff 1s → 16s
+                 on-chain: every machine's proxy, since the registry chose one
                  404 = pending, not an error
                  status 0 → STOP and record the error class; inventing a price
                  is the one thing the keeper must never do
@@ -409,11 +423,12 @@ carries the long form.
 
 ## 11. Gotchas worth knowing before you touch it
 
-- **The admin set is published, not baked, and is memory-only.** A machine starts with
-  none and rejects every `SET_SECRET` until `SET_ADMINS` lands, so it must be republished
-  after every restart and *before* any credential. The checked-in
-  `testdata/admins/dev-wellknown-keys.json` names private keys 1, 2 and 3 — local and
-  testnet only.
+- **The admin sets are published, not baked, and are memory-only.** A machine starts with
+  none and rejects every `SET_SECRET` until `SET_ADMINS` lands, so they must be republished
+  after every restart and *before* any credential. There are TWO sets and the envelope's
+  ref picks one: `hex_api_key` → `backing` (1-of-N allowed), everything else → `providers`
+  (2-of-N minimum). The checked-in `testdata/admins/dev-wellknown-keys.json` names private
+  keys 1, 2 and 3 — local and testnet only.
 - **`/state` counters count served `GET_PRICE` actions, not the poller.**
   `observe.Poller.Stats()` exists but is never called — a machine nobody queries reports
   an empty health map while its poller may be failing every 2 minutes. Alert on on-chain

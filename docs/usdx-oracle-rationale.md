@@ -474,12 +474,55 @@ historical report. A baked set answered that question only for whoever compared
 code hashes.
 
 The bootstrap works because there is no default. A verifier starts with **no**
-admin set and rejects every envelope until one is installed, so there is no
-guessable set and no first-come window to race for. The set is memory-only like
+admin sets and rejects every envelope until they are installed, so there is no
+guessable set and no first-come window to race for. They are memory-only like
 everything else here, which means a restart returns the machine to that state:
 `SET_ADMINS` must precede `SET_SECRET` every time. That ordering is the cost of
 the design, and it is the safe direction — a machine that has forgotten who its
 admins are refuses to be provisioned rather than trusting whoever asks first.
+
+### Two sets, because the two credential classes differ
+
+`SET_ADMINS` publishes **two** signer sets, and the envelope's `ref` decides
+which one authorises it:
+
+| set | governs | floor |
+|---|---|---|
+| `backing` | `config.HexAPIKeyRef` only | 1 signer |
+| `providers` | every other ref | 2 distinct signers |
+
+The split follows the exposure, which is genuinely asymmetric:
+
+- A **provider** credential is substituted into a URL that `SET_ENDPOINTS`
+  chooses. Since there is no host allowlist (§15), the owner key can already
+  publish `https://attacker.example/{secret}` and collect that credential on the
+  next observation. It is also the class an operator rotates routinely, and a
+  rogue value denies service on every chain naming it.
+- The **backing** credential cannot be routed anywhere: `validate` refuses to let
+  `hex_api_key` be named as a provider secret, and it is only ever an auth header
+  on a pinned URL. It is therefore the one credential the owner key cannot obtain
+  by other means — and, because the endpoint is pinned, a wrong value degrades
+  the feed to cash-less rather than moving the price.
+
+A single signer is accepted for `backing` on that impact argument: the blast
+radius of a wrong value is denial, not a forged reserve figure. It is worth being
+explicit that this is the *narrower* of the two protections applied to the
+*better-protected* credential — the reasoning is impact, not exposure, and if the
+backing endpoint ever stops being pinned the floor must go back up.
+
+Two properties make the split mean anything:
+
+- **The ref-to-set mapping is pinned in the build, never carried in the payload.**
+  If the published document could name its own refs, whoever held the 1-of-1
+  backing key could claim the provider credentials and the split would authorise
+  nothing.
+- **A signer from the other set does not count.** Each envelope is verified
+  against exactly one set, so the backing key cannot help satisfy a provider
+  threshold or the reverse. A ref this build has never heard of falls under the
+  *stronger* set, so a new credential name cannot be slipped in on one signature.
+
+The sets may overlap — the same person can hold both roles — since that changes
+nothing about which set authorises which envelope.
 
 ### The envelope
 
@@ -495,8 +538,8 @@ body = abi.encode(
 )
 ```
 
-signed by at least the published threshold of **distinct** admins from the
-installed set, using the
+signed by at least the published threshold of **distinct** admins from the set
+that governs `ref`, using the
 standard EIP-191 personal-sign convention so a hardware wallet can produce them.
 Distinctness is the whole point of M-of-N: without deduplication, one compromised
 key could supply the same signature M times and satisfy the threshold alone.

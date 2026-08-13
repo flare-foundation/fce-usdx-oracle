@@ -312,7 +312,9 @@ cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../test
 ```
 
 `dev-wellknown-keys.json` names the addresses of private keys 1, 2 and 3, so anyone can sign
-as those admins. It is for local and testnet work only. Both payloads are memory-only in the
+as those admins. It is for local and testnet work only. It publishes two sets: `backing`
+(1-of-1, governing `hex_api_key`) and `providers` (2-of-3, governing the RPC credentials).
+`send-admins` prints both, with the credentials each governs — check that before spending gas. Both payloads are memory-only in the
 extension, so both must be republished after every restart — and `SET_ADMINS` must land
 before any `SET_SECRET`, since with no admin set installed nothing can authorise a credential.
 
