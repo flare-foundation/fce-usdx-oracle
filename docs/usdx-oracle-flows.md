@@ -57,7 +57,16 @@ redis            the proxy's action queue
 | `go/cmd/start-tee` | `start-services.sh --local` | no Docker |
 | `go/cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
 | `tools/cmd/keeper` | ops | the relay timer |
+| `tools/cmd/verify-tee` | ops | gate before a credential: is this proxy fronting an accepted enclave? |
 | `tools/cmd/*` | deploy & one-shot ops | deploy, register, verify, submit-price… |
+
+### Scripts
+
+| Script | For |
+| --- | --- |
+| `scripts/upload-hex-key.sh` | install `hex_api_key` — backing set, ≥1 signature |
+| `scripts/upload-rpc-keys.sh` | install the RPC credentials — providers set, ≥2 signatures |
+| `scripts/oracle-*.sh` | observe, cycle, status — the operator commands |
 
 ### HTTP — exactly two ways into the extension
 
@@ -163,9 +172,23 @@ after every restart, since they are memory-only.
 
 ---
 
-## Flow B — SET_SECRET (the Hex credential)
+## Flow B — SET_SECRET (the credentials)
 
 Three steps, three different people, and the chain is never touched.
+
+Run twice, by different parties, because the ref decides which admin set
+authorises the envelope and the two sets are held by different people:
+
+```
+scripts/upload-hex-key.sh    hex_api_key      backing set,   ≥1 signature
+scripts/upload-rpc-keys.sh   every other ref  providers set, ≥2 signatures
+```
+
+Both gate on `tools/cmd/verify-tee` before anything is encrypted, and take every
+secret from the environment rather than argv. The RPC script uploads whatever
+the machine reports as `missingSecretRefs`, one envelope per ref, and hands the
+envelope off to a second admin when it cannot meet the threshold itself. Under
+the scripts it is the same three commands:
 
 ```
 admin laptop
@@ -173,7 +196,7 @@ admin laptop
                     ciphertext = ECIES.Encrypt(pubkey, secret)
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, hash)
   usdxprov sign     admin #1   (refuses a duplicate signer)
-  usdxprov sign     admin #2
+  usdxprov sign     admin #2   (providers set only; backing can be 1-of-N)
   usdxprov submit   POST proxy/direct     ← must be within 15 min of issuedAt
      ↓  tee-node polls the direct queue → POST /action (type = direct)
 enclave

@@ -94,14 +94,15 @@ func build(args []string) error {
 	proxyURL := fs.str("url", "", "proxy or mocknode base URL")
 	chainID := fs.i64("chain-id", 0, "target chain id")
 	ref := fs.str("ref", "", "secret name, e.g. hex_api_key")
-	value := fs.str("value", "", "the credential itself")
+	value := fs.secret("value", "USDXPROV_VALUE", "the credential itself")
 	version := fs.u64("version", 1, "must strictly increase per ref")
 	out := fs.str("out", "envelope.json", "output file")
 	teeIDFlag := fs.str("tee", "", "override the teeId from /info")
 	if err := fs.parse(); err != nil {
 		return err
 	}
-	if *proxyURL == "" || *ref == "" || *value == "" || *chainID == 0 {
+	credential := value()
+	if *proxyURL == "" || *ref == "" || credential == "" || *chainID == 0 {
 		return fmt.Errorf("-url, -chain-id, -ref and -value are required")
 	}
 
@@ -118,7 +119,7 @@ func build(args []string) error {
 
 	// Encrypt to the enclave. From here the credential exists in plaintext only
 	// inside the target TEE.
-	ciphertext, err := ecies.Encrypt(cryptoRand(), ecies.ImportECDSAPublic(pub), []byte(*value), nil, nil)
+	ciphertext, err := ecies.Encrypt(cryptoRand(), ecies.ImportECDSAPublic(pub), []byte(credential), nil, nil)
 	if err != nil {
 		return fmt.Errorf("encrypting to the TEE key: %w", err)
 	}
@@ -171,12 +172,13 @@ func build(args []string) error {
 func sign(args []string) error {
 	fs := flags("sign", args, nil, nil)
 	in := fs.str("in", "envelope.json", "envelope file")
-	keyHex := fs.str("key", "", "admin private key, hex")
+	keyHex := fs.secret("key", "USDXPROV_KEY", "admin private key, hex")
 	out := fs.str("out", "", "output file (defaults to -in)")
 	if err := fs.parse(); err != nil {
 		return err
 	}
-	if *keyHex == "" {
+	adminKey := keyHex()
+	if adminKey == "" {
 		return fmt.Errorf("-key is required")
 	}
 
@@ -185,7 +187,7 @@ func sign(args []string) error {
 		return err
 	}
 
-	key, err := crypto.HexToECDSA(strings.TrimPrefix(*keyHex, "0x"))
+	key, err := crypto.HexToECDSA(strings.TrimPrefix(adminKey, "0x"))
 	if err != nil {
 		return fmt.Errorf("bad admin key")
 	}
@@ -237,7 +239,7 @@ func submit(args []string) error {
 	fs := flags("submit", args, nil, nil)
 	in := fs.str("in", "envelope.json", "envelope file")
 	proxyURL := fs.str("url", "", "proxy base URL; POSTs to /direct")
-	apiKey := fs.str("api-key", "", "proxy API key")
+	apiKey := fs.secret("api-key", "USDXPROV_API_KEY", "proxy API key")
 	actionURL := fs.str("action-url", "",
 		"post straight to an extension's /action instead of the proxy (local testing)")
 	if err := fs.parse(); err != nil {
@@ -307,7 +309,7 @@ func submit(args []string) error {
 	if *proxyURL == "" {
 		return fmt.Errorf("-url or -action-url is required")
 	}
-	return postDirect(*proxyURL, *apiKey, message)
+	return postDirect(*proxyURL, apiKey(), message)
 }
 
 // postDirect submits through the proxy, which is the production path.

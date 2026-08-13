@@ -241,6 +241,34 @@ cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../test
 > (1-of-1, for `hex_api_key`) and `providers` (2-of-3, for the RPC credentials). Publish real
 > sets before any deployment serving a live feed.
 
+Then install the credentials. **Two uploads, by two different parties, under two different
+admin sets** — the split is the point, so whoever holds the Hex credential never needs an RPC
+key and neither of them needs this repo's deployment context:
+
+```bash
+./scripts/upload-hex-key.sh
+```
+
+```bash
+./scripts/upload-rpc-keys.sh
+```
+
+Both verify the machine against the chain before encrypting anything to it, read every secret
+from the environment or a hidden prompt rather than argv, and confirm afterwards from the
+machine's own published state. `upload-rpc-keys.sh` uploads whatever the machine reports as
+`missingSecretRefs`, and hands the envelope off when it does not hold enough admin keys to
+meet the `providers` threshold.
+
+> **For a live feed, follow [usdx-oracle-production-setup.md](usdx-oracle-production-setup.md)
+> instead of the commands above** — it covers who holds which key, the multi-admin signing
+> handoff, and what to do on restart and rotation. [testing.md](testing.md) is the same flow
+> with throwaway keys.
+
+> **Per machine, and lost on restart.** Each machine has its own TEE key, so an envelope
+> built for one cannot be replayed into another — run both scripts once per machine, with
+> that machine's proxy URL. Credentials live in memory only, so a restarted machine needs
+> them again. `fleet-status` shows `missingSecretRefs` for the whole fleet at once.
+
 ```bash
 cd tools && go run ./cmd/submit-price -instructionSender <SENDER>
 ```

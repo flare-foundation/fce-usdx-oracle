@@ -641,6 +641,7 @@ Sends instructions on-chain via your deployed `InstructionSender` and polls the 
 **The oracle**
 
 - **[Implementation findings](docs/usdx-oracle-findings.md)** — every issue found while building, each pinned by a named test. Read this first
+- **[Production setup runbook](docs/usdx-oracle-production-setup.md)** — configuration on-chain, credentials under two admin sets, and starting the feed. Who holds what, and in which order
 - [Plan & TODO](docs/usdx-oracle-plan.md) — decisions, open questions, milestones, and the current Coston2 deployment
 - [Spec](docs/usdx-oracle-spec.md) — price definition, inputs, verified addresses, work packages
 - [Keeper specification](docs/usdx-oracle-keeper.md) — the cycle and its reliability semantics

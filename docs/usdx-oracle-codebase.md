@@ -57,7 +57,7 @@ redis              the proxy's action queue
 | `go/` | the extension implementation (the only language checked in) |
 | `contracts/` | `InstructionSender`, `UsdxPriceStore`, `UsdxCustomFeed` + interfaces |
 | `tools/` | deployment, registration and the keeper — **language-neutral**, talks wire format only |
-| `scripts/` | setup, start/stop, and the four `oracle-*.sh` operator commands |
+| `scripts/` | setup, start/stop, the four `oracle-*.sh` operator commands, and the two `upload-*.sh` credential uploads |
 | `test/` | Foundry tests for the store |
 | `docs/` | spec, rationale, findings, flows, deployment |
 | `testing/` | agent-driven chaos / smoke / edge-case harness |
@@ -207,9 +207,14 @@ Rotation does **not** reset the per-ref envelope versions in the verifier: those
 anti-rollback state independent of who signs, and clearing them would let an envelope
 the outgoing admins signed be replayed against the incoming set.
 
-### Flow B — `SET_SECRET` (the Hex credential)
+### Flow B — `SET_SECRET` (the credentials)
 
-Three steps, three different people, chain never touched.
+Three steps, three different people, chain never touched. Two uploads, because
+the ref selects the admin set and the two sets are held by different parties:
+`scripts/upload-hex-key.sh` for `hex_api_key` (backing, ≥1 signature) and
+`scripts/upload-rpc-keys.sh` for every RPC credential (providers, ≥2). Both gate
+on `tools/cmd/verify-tee` first, and read every secret from the environment
+rather than argv, where `ps` would expose it.
 
 ```
 admin laptop (go/cmd/usdxprov)
@@ -369,7 +374,7 @@ as worthless rather than absent.
 | `pkg/fccutils` | FCC registration, governance, policy-consistency, revert decoding |
 | `pkg/contracts/*` | generated bindings (`go generate ./...` after editing Solidity) |
 | `pkg/validate` | the deploy/verify check suite behind `verify-deploy` |
-| `cmd/*` | one binary per operation: `deploy-store`, `register-extension`, `register-tee`, `send-endpoints`, `send-admins`, `set-governance`, `set-store-extension`, `submit-price`, `keeper`, `verify-deploy`, `audit-deploy`, `query-tee` … |
+| `cmd/*` | one binary per operation: `deploy-store`, `register-extension`, `register-tee`, `send-endpoints`, `send-admins`, `verify-tee`, `set-governance`, `set-store-extension`, `submit-price`, `keeper`, `verify-deploy`, `audit-deploy`, `query-tee` … |
 
 ---
 

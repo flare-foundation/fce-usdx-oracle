@@ -10,6 +10,12 @@ relays the body verbatim. It preflights every store guard so a rejection arrives
 in the timer; `tools/cmd/submit-price` runs the same code once by hand, so what an operator
 proves interactively is what runs unattended._
 
+_The timer requests over the **direct channel** and rotates over the registered machines, raising
+one on-chain instruction every `-onChainEvery` (default 2h) to keep the permissionless path
+exercised. Before the first cycle it **sweeps** the fleet — one direct request per machine, then
+their submissions ordered by ascending `observedAt` — so every machine is commissioned on-chain
+without an operator running `submit-price` per machine._
+
 _**Not built, and tracked below:** replace-by-fee bumping, the ≥2-instance deployment, and the
 chain-age watcher — which by design must run outside this process's failure domain._
 
@@ -24,9 +30,13 @@ working plan in `usdx-oracle-plan.md`. Google-Doc-ready: `usdx-oracle-keeper.htm
 The keeper is the only moving part between an instruction and a stored price. It does three
 things, on a timer:
 
-1. **Trigger** — call `requestPriceUpdate()` on `InstructionSender`.
+1. **Trigger** — raise `GET_PRICE`, on the chosen machine's proxy or, on a slow cadence,
+   through `requestPriceUpdate()` on `InstructionSender`.
 2. **Collect** — poll the TEE proxy for the resulting `ActionResult`.
 3. **Relay** — decode the signed payload and call `submitPrice()` on `UsdxPriceStore`.
+
+Plus one thing before the timer starts — the **sweep**: one direct request to every machine the
+registry lists for the extension, so each lands a price and is commissioned on-chain.
 
 Plus the keeper-side half of the alerting specified in `usdx-oracle-monitoring.md`.
 
@@ -49,15 +59,29 @@ never:
 ## The cycle
 
 ```
+at start:                                 # the sweep — see "Commissioning a machine"
+    fleet   = machineRegistry.getActiveTeeMachines(store.extensionId())
+    reports = parallel(collect(m) for m in fleet)         # no transaction yet
+    for r in sorted(reports, key = observedAt):           # ascending, or all but one revert
+        relay(r)
+
 every T:                                  # single-flight — never overlap cycles
     # 1. trigger
-    fee     = operationFees.getOperationFee(USDX_ORACLE, GET_PRICE)
-    tx      = sender.requestPriceUpdate{value: fee}()
-    receipt = waitMined(tx, deadline = T_request)
-    id      = receipt.logs.first(PriceUpdateRequested).instructionId
+    if now - lastOnChain >= T_onchain:                    # default 2h
+        fee     = operationFees.getOperationFee(USDX_ORACLE, GET_PRICE)
+        tx      = sender.requestPriceUpdate{value: fee}()
+        receipt = waitMined(tx, deadline = T_request)
+        id      = receipt.logs.first(PriceUpdateRequested).instructionId
+        proxies = every machine's url                     # the registry chose the machine
+        tag     = "threshold"
+    else:                                                 # every other cycle: no fee, no tx
+        machine = fleet[next++ % len(fleet)]
+        id      = POST machine.url + "/direct" {opType, opCommand, message}
+        proxies = [machine.url]
+        tag     = "submit"
 
     # 2. collect
-    result  = poll(proxy, "/action/result/" + id.hex(),
+    result  = poll(proxies, "/action/result/" + id.hex() + "?submissionTag=" + tag,
                    deadline = T_poll, backoff = exponential,
                    until    = result.status in {0, 1})    # anything else is pending
     if result.status != 1:
@@ -76,21 +100,43 @@ every T:                                  # single-flight — never overlap cycl
 | Concern | Code |
 | --- | --- |
 | One cycle, trigger → collect → relay | `keeper.RunCycle` — `tools/pkg/keeper/cycle.go` |
+| Trigger and collect, sending nothing | `keeper.Collect` — `tools/pkg/keeper/cycle.go` |
+| Preflight and submit | `keeper.Relay` — `tools/pkg/keeper/cycle.go` |
 | Store guards, named before gas is spent | `keeper.Preflight` — `tools/pkg/keeper/preflight.go` |
-| Timer, single-flight, overrun handling | `keeper.Run` — `tools/pkg/keeper/keeper.go` |
+| Timer, channel schedule, rotation | `keeper.Run` — `tools/pkg/keeper/keeper.go` |
+| The startup sweep, and its ordering | `keeper.Sweep` — `tools/pkg/keeper/sweep.go` |
+| Listing the fleet, whose turn it is | `keeper.ActiveMachines`, `fleet` — `tools/pkg/keeper/fleet.go` |
 | Cycle records and the outcome taxonomy | `keeper.Record`, `keeper.Outcome` — `tools/pkg/keeper/record.go` |
 | Long-running process, signals, flags | `tools/cmd/keeper` |
 | One cycle by hand, with read-back | `tools/cmd/submit-price` |
 
 `RunCycle` never exits the process and returns a `Record` for every outcome, which is what
-lets the same code serve a one-shot and a timer. Run it:
+lets the same code serve a one-shot and a timer. It is `Collect` then `Relay`; the two are split
+so the sweep can hold reports from several machines and choose the order it submits them in.
+Run it:
 
 ```
 go run ./cmd/keeper -instructionSender 0x… -interval 10m -keeperId keeper-a
 ```
 
-`-once` runs a single cycle and exits, for a cron-driven deployment. `-records <file>` appends
-the JSON records somewhere other than stdout.
+`-once` runs a single cycle and exits, for a cron-driven deployment — it picks a machine at
+random rather than rotating, since the process is what repeats, and it does not sweep unless
+`-sweep` is passed. `-records <file>` appends the JSON records somewhere other than stdout.
+
+### Flags that decide the channel
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `-direct` | `true` | Request over the proxy. `-direct=false` puts every cycle on-chain and disables the sweep. |
+| `-onChainEvery` | `2h` | How often a cycle goes on-chain anyway. `0` never does. |
+| `-sweep` | `true` | Land a price from every machine before the first cycle. Off by default under `-once`. |
+| `-sweepAttempts` | `3` | Retries for a machine that did not land a price. |
+| `-sweepRetryDelay` | `2m` | Wait before a retry — one `ObservationInterval`, or the retry has nothing newer to offer. |
+| `-p` | `$EXT_PROXY_URL` | Given explicitly, overrides *every* machine's registered url. Right only with one machine. |
+
+`DIRECT_API_KEY` (or `-directApiKey`) is required unless `-direct=false`, and is checked at
+startup rather than at the first cycle: a keeper that starts and then fails every tick on a
+missing key looks like an outage.
 
 ---
 
@@ -156,8 +202,9 @@ pointing all of them at the same bad provider.
 
 ### The direct channel
 
-`keeper -direct` raises the action on the proxy (`POST <proxy>/direct`) instead of on-chain. It
-saves the registry fee and one transaction per cycle.
+The keeper raises the action on a machine's proxy (`POST <proxy>/direct`) instead of on-chain,
+which saves the registry fee and one transaction per cycle. That is the default, and at a
+10-minute interval it is the difference between paying the fee ~144 times a day and ~12.
 
 It costs nothing in trust, and the reason is worth stating precisely: `GET_PRICE` grants no
 authority. It signs the observation the enclave already made on its own timer — the enclave does
@@ -178,13 +225,47 @@ The last two rows matter more than they look:
 
 - **Machine selection.** With N machines an on-chain request goes to a random one, and its result
   is retrievable only from *that machine's* proxy. A keeper polling a single URL therefore misses
-  roughly (N−1)/N of its own requests and reports `no_result`. The direct channel removes the
-  ambiguity — you address a machine by addressing its proxy — which is what makes per-machine
-  commissioning possible at all.
+  roughly (N−1)/N of its own requests and reports `no_result` — which is why an on-chain cycle
+  polls **every** machine's proxy (`Config.ResultProxies`, filled from the registry) and the
+  record names whichever one answered. The direct channel has no such ambiguity: you address a
+  machine by addressing its proxy, which is what makes per-machine commissioning possible at all.
 - **Submission tag.** A direct action is filed under `submit`, an instruction under `threshold`,
   and `GET /action/result/{id}` defaults to `threshold`. Ask for the wrong one and the endpoint
   returns 404 for the whole poll window; the cycle then reports a timeout that looks exactly like
   a dropped instruction.
+
+### Why the on-chain path stays on a timer
+
+Both channels produce the same signed report, so the on-chain one buys exactly one thing: it is
+the permissionless path. Anyone can pay the registry fee and get a price published, with no API
+key and no network reach to the proxy. That property is only worth anything if it still works,
+and the way to know it still works is to use it — so the keeper spends the fee on a slow cadence
+(`-onChainEvery`, default 2h) rather than on every cycle or never.
+
+The clock starts at launch, so the first cycle after the sweep is a direct one and a restart does
+not pay the fee. A keeper restarting more often than `-onChainEvery` therefore never exercises
+the on-chain path, which is the right trade: a crash loop must not also burn fees. The stamp is
+also taken *before* the cycle runs, not after it succeeds, so a failing on-chain request is not
+retried — at a fee each time — on every tick.
+
+### Rotation
+
+A direct cycle addresses the next machine in the registry's list, round-robin. Two reasons:
+
+- **Commissioning stays current.** `isProvenConfigured` goes false the moment a new config or
+  admin set is published for a machine. A keeper that only ever talked to one machine would
+  leave the others silently decommissioned until someone read `fleet-status`.
+- **One broken machine costs one cycle in N**, not all of them.
+
+The list is re-read every tick, so machines added or suspended mid-run are picked up without a
+restart; a registry read that fails keeps the previous list, because an empty fleet would stop
+the feed. The rotation index is the only state the timer keeps, and it is deliberately not
+correctness-bearing — any registered machine may serve any cycle, so a restart that resets it
+costs nothing.
+
+Machines the registry lists **without a URL are dropped**, with a warning. Substituting another
+machine's URL would send a request meant for one enclave to another and record the wrong machine
+as commissioned.
 
 ---
 
@@ -193,20 +274,41 @@ The last two rows matter more than they look:
 A machine is *commissioned* once it has landed one price on-chain, which is what writes
 `lastReport[teeId]` in `UsdxPriceStore` and makes `isProvenConfigured(teeId)` true.
 
-This is deliberately a manual step rather than a contract mechanism. `submitPrice` already proves
-both facts it needs — it recovered the signer, and it checked that signer's config hash against
-the published one — so recording them costs three storage writes on a path that already runs. A
-separate attestation entry point would be more machinery for something an operator does a handful
-of times.
+This is deliberately not a contract mechanism. `submitPrice` already proves both facts it needs —
+it recovered the signer, and it checked that signer's config hash against the published one — so
+recording them costs three storage writes on a path that already runs. A separate attestation
+entry point would be more machinery for something that falls out of the normal one.
 
-Order matters, because each step is what makes the next one possible:
+**The keeper sweeps the fleet at startup**, so in the ordinary case this happens by itself: one
+direct request to every registered machine, then one `submitPrice` each. It runs at every start,
+not only for machines that have never landed a price, because a re-pushed config or admin set
+decommissions a machine silently and a start is the cheapest moment to find out.
+
+The sweep collects from every machine **concurrently and submits strictly sequentially, oldest
+observation first**. Both halves are load-bearing. Collection sends no transaction, so it is safe
+to run at once; two in-flight submissions would take two nonces and could land out of order. And
+`observedAt` must strictly increase, so submitting in registry order lands one report and rejects
+every other as `NotNewer` — the sweep would commission one machine per pass however often it ran.
+Ascending, the whole fleet lands in one pass. A machine still rejected is retried after
+`-sweepRetryDelay`, which needs to be at least one `ObservationInterval` or the retry has nothing
+newer to offer.
+
+A sweep entry that reports `race_lost` did **not** commission its machine — someone else's report
+landed. That is the opposite of what the same outcome means on a timed cycle, which is why sweep
+records carry `phase: "bootstrap"`.
+
+The manual path below is still what an operator runs for one machine — during commissioning, or
+when the sweep reports one machine still failing. Order matters, because each step is what makes
+the next one possible:
 
 1. Register the machine and get it to `PRODUCTION` in `TeeMachineRegistry`.
 2. `send-endpoints -p <that machine's proxy>` — publishes its config and waits until the machine
    reports the matching `endpointsHash`. It will not report success until the machine is actually
    running what was published.
-3. `usdxprov` — deposit its credentials. Each machine has its own TEE key, so envelopes are per
-   machine and cannot be reused.
+3. `upload-hex-key.sh` and `upload-rpc-keys.sh` — deposit its credentials. Two uploads under
+   two admin sets: the backing set governs `hex_api_key`, the providers set governs the RPC
+   credentials. Each machine has its own TEE key, so envelopes are per machine and cannot be
+   reused.
 4. Confirm `ready: true` and an empty `missingSecretRefs` in `fleet-status`.
 5. Land one price from *this* machine:
    ```
@@ -219,12 +321,14 @@ Two things to expect at step 5:
 - **`NotNewer` when commissioning several machines back to back.** `observedAt` must strictly
   increase, and each machine stamps its own from its own observation timer. If machine B's cached
   observation is older than the one machine A just landed, B is rejected. Space the runs by about
-  one `ObservationInterval` and retry. The cycle record distinguishes the two cases:
-  `race_lost` means the store is ahead of B, `stale_submission` means B relayed something old.
+  one `ObservationInterval` and retry — or let the keeper's sweep do it, which is precisely the
+  problem its ascending-`observedAt` ordering solves. The cycle record distinguishes the two
+  cases: `race_lost` means the store is ahead of B, `stale_submission` means B relayed something
+  old.
 - **Re-pushing a config decommissions the machine.** `isProvenConfigured` goes false the moment
   `setEndpoints` publishes something new, because the machine has not yet proven it runs the new
-  config. That is correct and self-announcing — repeat step 5. `send-endpoints` prints the command
-  on success for this reason.
+  config. That is correct and self-announcing — repeat step 5, or restart the keeper and let the
+  sweep do it. `send-endpoints` prints the command on success for this reason.
 
 `lastReport` is a record of **commissioning, not liveness**. Only the machine that wins a given
 cycle updates its entry, so a stale `acceptedAt` means "has not won lately", not "unhealthy". For
@@ -397,18 +501,26 @@ owes it is one **cycle record per tick**, emitted regardless of outcome — impl
 | Field | Emitted after |
 | --- | --- |
 | `keeperId`, `cycleStartedAt`, `cycleEndedAt` | always |
+| `channel` (`direct` / `instruction`), `phase` (`bootstrap` on sweep entries) | always |
 | `requestTxStatus`, `instructionId` | step 1 |
 | `resultStatus` (`1` / `0` / `timeout`), `errorClass` | step 2 |
+| `proxy`, `teeId` — which machine served the cycle | step 2 |
 | `sourceHealth` | step 2, from proxy `GET /info` |
 | `submitOutcome` (`accepted` / revert name / not attempted) | step 3 |
 | `storeObservedAtAfter` | step 3 |
+
+`teeId` is recovered from the report's own signature, so on the instruction channel it is the
+only thing that names the machine the registry routed to. With a rotating keeper, `proxy` and
+`teeId` are what attribute a failure to one machine rather than to the feed.
 
 Two constraints carried over from the monitoring doc, because they are keeper-side:
 
 - **The keeper must not be the only thing watching.** The page comes from on-chain feed age,
   evaluated by a process outside the keepers' failure domain — a dead keeper reports nothing,
   and its silence is indistinguishable from health.
-- **`NotNewer` must never alert.** It is the designed outcome of the ≥2-instance topology.
+- **`NotNewer` must never alert** on a timed cycle. It is the designed outcome of the ≥2-instance
+  topology. On a `phase: "bootstrap"` entry it means the opposite — that machine was not
+  commissioned — so the two must not be collapsed.
 
 ---
 

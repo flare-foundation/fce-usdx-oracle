@@ -66,6 +66,24 @@ type Record struct {
 	// registry happened to pick.
 	Channel string `json:"channel,omitempty"`
 
+	// Phase is "bootstrap" for the startup sweep and empty for a timed cycle.
+	// The two have different success criteria — a sweep entry that reports
+	// race_lost did not commission its machine, while a cycle that reports it
+	// worked exactly as designed — so alerting has to be able to tell them apart.
+	Phase string `json:"phase,omitempty"`
+
+	// Proxy is the machine's proxy this cycle used: the direct target, or on the
+	// instruction channel whichever of the fleet's proxies actually held the
+	// result. With a rotating keeper this is what says which machine a failure
+	// belongs to.
+	Proxy string `json:"proxy,omitempty"`
+
+	// TeeID is the machine that signed the report, recovered from the signature.
+	// On the instruction channel it is the only thing that names the machine the
+	// registry routed to. Falls back to the machine the cycle addressed when no
+	// report was produced.
+	TeeID string `json:"teeId,omitempty"`
+
 	// InstructionID is the on-chain instruction id, or the proxy's action id on
 	// the direct channel. Empty when the trigger never landed.
 	InstructionID string `json:"instructionId,omitempty"`

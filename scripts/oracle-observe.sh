@@ -123,4 +123,9 @@ fi
 # key. The feed still publishes at par, because a bonds-only price that already
 # reaches par is provably what the full computation would give. It will not
 # publish anything below par.
+#
+# Any OTHER missing ref is an RPC credential, and those are not optional in the
+# same way: a provider that cannot authenticate drops out of its chain's quorum.
+# Install them with ./scripts/upload-rpc-keys.sh, and hex_api_key with
+# ./scripts/upload-hex-key.sh — two uploads, two admin sets.
 echo ""

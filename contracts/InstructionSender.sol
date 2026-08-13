@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
-// TODO: Replace local interfaces with imports from flare-smart-contracts-v2 once published as a package.
 import { ITeeExtensionRegistry } from "./interfaces/ITeeExtensionRegistry.sol";
 import { ITeeMachineRegistry } from "./interfaces/ITeeMachineRegistry.sol";
 
@@ -34,19 +33,12 @@ contract UsdxOracleInstructionSender {
     uint256 public constant MAX_ENDPOINTS_BYTES = 16384;
 
     /// @notice Maximum admin set payload size.
-    /// @dev Far smaller than the endpoint payload: a version, a threshold and a
-    /// short address list. Sized so the cap itself bounds how many signers can
-    /// ever be named, rather than leaving that to the extension alone.
+    /// @dev Also bounds how many signers can ever be named.
     uint256 public constant MAX_ADMINS_BYTES = 4096;
 
     /// @notice Request envelope version carried by every GET_PRICE instruction.
-    /// @dev The registry rejects an empty `message` with `MessageEmpty()`, so a
-    /// price request cannot carry nothing — found on Coston2, 5 Aug 2026, the
-    /// first time this path ran on-chain. A single version byte is the smallest
-    /// payload that satisfies it while staying checkable: the extension requires
-    /// exactly this value and rejects anything else, so no caller can come to
-    /// depend on a field the extension silently drops. Bump it when the request
-    /// envelope changes; the extension pins the same constant.
+    /// @dev The registry rejects an empty `message`, so a request must carry
+    /// something; the extension pins this same constant and rejects anything else.
     bytes public constant GET_PRICE_REQUEST_V1 = hex"01";
 
     /// @notice TEE extension registry.
@@ -62,18 +54,13 @@ contract UsdxOracleInstructionSender {
     mapping(address => bytes32) public expectedConfigHash;
 
     /// @notice keccak256 of the last published admin set per machine; UsdxPriceStore enforces this.
-    /// @dev The admin set authorises SET_SECRET, so this records which signers
-    /// could provision a machine at the time it produced a price. Kept separate
-    /// from expectedConfigHash so admins can be rotated without republishing
-    /// endpoints, and the reverse.
+    /// @dev Separate from expectedConfigHash so admins and endpoints rotate independently.
     mapping(address => bytes32) public expectedAdminsHash;
 
     /// @notice Owner-only endpoint configuration; also controls price sources (no host allowlist).
     address public owner;
 
-    /// @notice Emitted when a price update is requested.
-    /// @dev Carries the instruction id so a keeper can fetch the result from the
-    /// TEE proxy without parsing the registry's own event out of the receipt.
+    /// @notice Emitted when a price update is requested; the id lets a keeper fetch the result.
     event PriceUpdateRequested(address indexed requester, bytes32 indexed instructionId);
 
     /// @notice Emitted when endpoint configuration is sent to a TEE machine.
@@ -150,15 +137,8 @@ contract UsdxOracleInstructionSender {
     }
 
     /// @notice Publishes the admin signer set to one specific TEE machine.
-    /// @dev Owner-only, one call per machine, hash recorded before dispatch —
-    /// the same shape as setEndpoints, because it carries the same kind of
-    /// authority: what is published here decides who may then authorise
-    /// SET_SECRET inside that enclave.
-    ///
-    /// The payload is opaque here and validated by the extension, which is the
-    /// only party that can meaningfully check it. This contract records the
-    /// hash so UsdxPriceStore can require that a machine landing a price was
-    /// running the admin set governance published for it.
+    /// @dev Same shape as setEndpoints. The payload is opaque here and validated
+    /// by the extension; this contract only records its hash.
     function setAdmins(address _teeId, bytes calldata _config) external payable onlyOwner {
         if (_teeId == address(0)) revert ZeroTeeId();
         if (_config.length == 0) revert EmptyConfig();
@@ -203,11 +183,7 @@ contract UsdxOracleInstructionSender {
 
     /// @notice Requests a fresh price observation from a random registered TEE machine.
     /// @dev Open to anyone; registry fee bounds spam, price store verifies the TEE signature.
-    /// The observation needs nothing from the caller, so the message is the fixed
-    /// `GET_PRICE_REQUEST_V1` envelope rather than caller-supplied data.
-    /// @return _instructionId Id of the dispatched instruction, also emitted in
-    /// `PriceUpdateRequested`. The return value serves contract callers; the event
-    /// is what an off-chain keeper reads, since a transaction returns nothing to it.
+    /// @return _instructionId Id of the dispatched instruction, also emitted in `PriceUpdateRequested`.
     function requestPriceUpdate() external payable returns (bytes32 _instructionId) {
         address[] memory teeIds = TEE_MACHINE_REGISTRY.getRandomTeeIds(_getExtensionId(), 1);
         address[] memory cosigners = new address[](0);

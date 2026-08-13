@@ -1,35 +1,20 @@
 // Package provision verifies signed configuration envelopes.
 //
-// RPC endpoints and the admin signer set arrive by on-chain instruction (so
-// both are publicly verifiable, and the owner key is the root of trust for
-// each); credentials arrive by direct instruction (no gas, no permanent
-// ciphertext on-chain, instant rotation).
-//
 //	body = abi.encode(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
 //
 // signed by at least the configured threshold of DISTINCT admins under EIP-191.
-// version is in-memory and blocks rollback while the process lives; issuedAt
-// survives restarts, where the version counter resets to zero. Every rejection
-// returns failure.ProvisionRejected and nothing else, so the endpoint cannot be
-// used to probe the admin sets or the freshness window.
+// version blocks rollback while the process lives; issuedAt survives restarts,
+// where the version counter resets to zero. Every rejection returns
+// failure.ProvisionRejected and nothing else, so the endpoint cannot be used to
+// probe the admin sets or the freshness window.
 //
-// There are TWO signer sets, selected by the envelope's ref:
+// The envelope's ref selects one of two signer sets: backing governs the pinned
+// backing credential, providers governs every other one. Neither is baked in — a
+// Verifier starts with none and rejects everything until SET_ADMINS installs
+// both, and they live only in memory, so SET_ADMINS must precede SET_SECRET
+// after every restart.
 //
-//	backing    governs the pinned backing credential   (floor: 1 signer)
-//	providers  governs every other credential          (floor: 2 signers)
-//
-// They are split because the two classes have different exposure. A provider
-// credential is named by SET_ENDPOINTS, which the owner key controls, so the
-// owner can already route one to a host it chooses; the backing credential
-// cannot be named that way and authenticates a pinned endpoint by header. The
-// ref-to-set mapping is pinned by the caller, never read from the payload —
-// otherwise the weaker set could claim the stronger set's credentials.
-//
-// Neither set is baked in. A Verifier starts with none and rejects everything
-// until SET_ADMINS installs both, so an enclave that has not been told who its
-// admins are cannot be provisioned rather than defaulting to a set an attacker
-// could guess. Because they live only in memory, a restart returns the machine
-// to that state and SET_ADMINS must precede SET_SECRET every time.
+// See docs/usdx-oracle-rationale.md §9 for the reasoning behind all of this.
 package provision
 
 import (
@@ -47,8 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// Distinct from the price report's domain so an admin signature can never be
-// reinterpreted as a price, or the reverse.
+// Distinct from the price report's domain so the two signatures cannot cross.
 const DomainName = "USDX_ORACLE_PROVISION_V1"
 
 // Freshness is long enough to collect M signatures across timezones, short
@@ -60,34 +44,22 @@ const ClockSkew = 2 * time.Minute
 // SignatureLength is r ‖ s ‖ v.
 const SignatureLength = 65
 
-// maxSignatures bounds work before any cryptography runs: recovery is expensive
-// and this endpoint is reachable by anyone who can deliver a direct action.
+// maxSignatures bounds recovery work before any cryptography runs; this
+// endpoint is reachable by anyone who can deliver a direct action.
 const maxSignatures = 16
 
-// Credentials fall into two classes with different exposure, so each has its own
-// signer set and its own floor.
-//
-// MinProviderThreshold stays a real threshold. Provider credentials are the ones
-// an operator adds and removes routinely, and a rogue value denies service on
-// every chain that names it.
-//
-// MinBackingThreshold is 1 by decision. The backing credential authenticates a
-// PINNED endpoint by header, so a wrong value degrades the feed to cash-less
-// rather than moving the price, and it is the one credential the owner key
-// cannot obtain by other means — see docs/usdx-oracle-rationale.md §9.
+// Floors per signer set. Backing is 1 by decision: it authenticates a pinned
+// endpoint, so a wrong value degrades the feed rather than moving the price.
 const (
 	MinBackingThreshold  = 1
 	MinProviderThreshold = 2
 )
 
-// MaxAdmins bounds each published set. Recovery cost is linear in the signatures
-// presented, not the admins configured, but an unbounded set would still make
-// isAdmin a linear scan driven by whatever the payload named.
+// MaxAdmins keeps isAdmin's linear scan from being sized by the payload.
 const MaxAdmins = 32
 
 // MinThresholdFor returns the floor for whichever set governs ref. Exported so
-// the provisioning CLI applies the same rule the enclave does — the mapping is
-// security-relevant, and a second copy of it is a copy that drifts.
+// the provisioning CLI applies the same rule the enclave does.
 func MinThresholdFor(ref, backingRef string) int {
 	if ref == backingRef {
 		return MinBackingThreshold
@@ -156,10 +128,9 @@ func Encode(e Envelope, signatures [][]byte) ([]byte, error) {
 
 // Verifier checks envelopes against the installed admin set and tracks versions.
 //
-// NOT SAFE FOR CONCURRENT USE: Verify writes lastVersion, SetTeeID writes teeID
-// and SetAdmins writes admins, none synchronised. runtimecfg.Store holds applyMu
-// across every call. The extension's /action handler serves actions
-// concurrently, so it does not do this for you.
+// NOT SAFE FOR CONCURRENT USE: Verify, SetTeeID and SetAdmins all write
+// unsynchronised state, and the extension's /action handler serves actions
+// concurrently. runtimecfg.Store holds applyMu across every call.
 type Verifier struct {
 	chainID *big.Int
 	teeID   common.Address
@@ -168,16 +139,13 @@ type Verifier struct {
 	// is also required.
 	lastVersion map[string]uint64
 
-	// Installed by SET_ADMINS, empty until then. Nothing verifies against an
-	// empty set: hasThreshold cannot reach a positive threshold with no admins
-	// to match, and HasAdmins lets callers say so explicitly.
+	// Installed by SET_ADMINS, empty until then.
 	backing   AdminSet
 	providers AdminSet
 
-	// Which ref the backing set governs. Pinned by the caller at construction,
-	// NEVER read from the payload: if the published admin document could name
-	// its own refs, whoever holds the weaker set could claim the stronger set's
-	// credentials, and the split would authorise nothing.
+	// Pinned by the caller at construction, NEVER read from the payload: a
+	// payload that named its own refs would let the weaker set claim the
+	// stronger set's credentials.
 	backingRef string
 
 	now func() time.Time
@@ -189,14 +157,12 @@ func (v *Verifier) HasTeeID() bool { return v.teeID != (common.Address{}) }
 func (v *Verifier) SetTeeID(id common.Address) { v.teeID = id }
 
 // HasAdmins reports whether both signer sets have been installed. All or
-// nothing: a machine holding only one of them could provision one class of
-// credential and not the other, which is a half-configured state no operator
-// asked for.
+// nothing, so a machine cannot provision one class of credential and not the other.
 func (v *Verifier) HasAdmins() bool { return v.backing.installed() && v.providers.installed() }
 
-// setFor selects the signer set that governs a ref. The backing ref is pinned at
-// construction; everything else is a provider credential, so a ref this build
-// has never heard of falls under the STRONGER set rather than the weaker one.
+// setFor selects the signer set that governs a ref. Anything but the pinned
+// backing ref falls under the STRONGER set, including refs this build has never
+// heard of.
 func (v *Verifier) setFor(ref string) AdminSet {
 	if ref == v.backingRef {
 		return v.backing
@@ -204,17 +170,12 @@ func (v *Verifier) setFor(ref string) AdminSet {
 	return v.providers
 }
 
-// SetAdmins installs both signer sets, replacing any previous pair. The caller
-// validates the payload; this rechecks the invariants the verifier itself
-// depends on, because a set that reached here malformed would weaken every later
-// envelope rather than fail loudly at install time.
+// SetAdmins installs both signer sets together or not at all, replacing any
+// previous pair. The caller validates the payload; this rechecks the invariants
+// the verifier itself depends on.
 //
-// Both sets are installed together or not at all, so a rejected half cannot
-// leave the machine running a mixture of old and new authorities.
-//
-// lastVersion is deliberately NOT reset. Envelope versions are per-ref
-// anti-rollback state, and clearing them on rotation would let an envelope the
-// outgoing admins signed be replayed against the incoming set.
+// lastVersion is deliberately NOT reset: clearing it on rotation would let an
+// envelope the outgoing admins signed be replayed against the incoming set.
 func (v *Verifier) SetAdmins(backing, providers AdminSet) error {
 	if err := checkSet(backing, MinBackingThreshold); err != nil {
 		return fmt.Errorf("provision: backing set: %w", err)
@@ -241,9 +202,8 @@ func checkSet(s AdminSet, floor int) error {
 		if a == (common.Address{}) {
 			return errors.New("admin address is zero")
 		}
-		// A repeated address would inflate the apparent set size while the
-		// distinct-signer check still counts it once, so a 2-of-3 naming the
-		// same key twice would really be 2-of-2 with one key unusable.
+		// A 2-of-3 naming the same key twice is really 2-of-2, since the
+		// distinct-signer check counts it once.
 		if seen[a] {
 			return errors.New("duplicate admin address")
 		}
@@ -267,9 +227,8 @@ func NewVerifier(chainID *big.Int, teeID common.Address, backingRef string) *Ver
 // Verify decodes and validates a wire message. Every failure returns
 // failure.ProvisionRejected and nothing else.
 func (v *Verifier) Verify(message []byte) (Envelope, error) {
-	// No admin set installed means nothing can be authorised yet. Checked first
-	// and reported as the same rejection as everything else, so the endpoint
-	// does not reveal whether a machine has been told who its admins are.
+	// Reported as the same rejection as everything else, so the endpoint does
+	// not reveal whether a machine has been told who its admins are.
 	if !v.HasAdmins() {
 		return Envelope{}, failure.ProvisionRejected
 	}
@@ -279,13 +238,10 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 		return Envelope{}, failure.ProvisionRejected
 	}
 
-	// Bounds work before any cryptography runs. The lower bound depends on which
-	// set governs this ref, so it is applied once that is known.
 	if len(sigs) > maxSignatures {
 		return Envelope{}, failure.ProvisionRejected
 	}
 
-	// Which signer set applies is decided by the ref, against the pinned mapping.
 	set := v.setFor(e.Ref)
 	if len(sigs) < set.Threshold {
 		return Envelope{}, failure.ProvisionRejected
@@ -306,8 +262,7 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 	if len(e.Payload) == 0 {
 		return Envelope{}, failure.ProvisionRejected
 	}
-	// The signatures cover the hash, so an unverified payload would be unsigned
-	// data smuggled past the admin set.
+	// The signatures cover the hash, not the payload.
 	if crypto.Keccak256Hash(e.Payload) != e.PayloadHash {
 		return Envelope{}, failure.ProvisionRejected
 	}
@@ -324,8 +279,7 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 		return Envelope{}, failure.ProvisionRejected
 	}
 
-	// Strictly increasing per ref: blocks rolling a secret back within the life
-	// of the process.
+	// Strictly increasing per ref, for the life of the process.
 	if e.Version <= v.lastVersion[e.Ref] {
 		return Envelope{}, failure.ProvisionRejected
 	}
@@ -344,11 +298,7 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 
 // hasThreshold reports whether at least set.Threshold DISTINCT members of set
 // signed. Without deduplication one compromised key could supply the same
-// signature M times and satisfy the threshold alone.
-//
-// Signers from the OTHER set do not count: they are not members here, so a
-// provider admin cannot help authorise a backing credential or the reverse.
-// That is the whole point of publishing two sets.
+// signature M times. Signers from the other set do not count.
 func hasThreshold(body []byte, sigs [][]byte, set AdminSet) bool {
 	digest := accounts.TextHash(crypto.Keccak256(body))
 
@@ -394,8 +344,7 @@ func recover(digest []byte, sig []byte) (common.Address, bool) {
 		return common.Address{}, false
 	}
 
-	// Reject the high-s form. secp256k1 is malleable, so accepting both would
-	// let one admin signature be presented as two distinct-looking ones.
+	// Reject the high-s form, so one signature means one thing.
 	s := new(big.Int).SetBytes(normalised[32:64])
 	if s.Cmp(halfOrder) > 0 {
 		return common.Address{}, false
