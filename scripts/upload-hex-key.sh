@@ -153,20 +153,32 @@ echo
 # The enclave accepted the envelope; confirm it actually installed the value by
 # reading its own published state rather than trusting the submit result.
 missing=""
+confirmed=false
 if command -v jq >/dev/null 2>&1 && command -v xxd >/dev/null 2>&1; then
-  missing="$(curl -fsS "${PROXY_URL%/}/info" \
+  # The state body is read on its own before the ref list is taken from it. An
+  # empty body and a body naming nothing both yield an empty list, and treating
+  # them alike reported "no longer missing" for a machine that had said nothing
+  # at all — a success claim resting on no evidence.
+  state_json="$(curl -fsS "${PROXY_URL%/}/info" \
     | jq -r '.teeInfo.state.state' \
     | sed 's/^0x//' \
-    | xxd -r -p \
-    | jq -r '.state.readiness.missingSecretRefs[]?' 2>/dev/null || true)"
+    | xxd -r -p 2>/dev/null || true)"
 
-  if printf '%s\n' "$missing" | grep -qx "$REF"; then
-    die "the machine still reports $REF as missing"
-  fi
-  echo "  ok    the machine no longer reports $REF as missing"
-  if [ -n "$missing" ]; then
-    echo "  note  still outstanding, for whoever holds those credentials:"
-    printf '        %s\n' $missing
+  if [ -z "$state_json" ]; then
+    echo "  ?     this machine publishes no readable state, so whether $REF was installed"
+    echo "        cannot be confirmed here. The upload above was accepted by the proxy;"
+    echo "        that is not the same as the enclave holding the credential."
+  else
+    missing="$(printf '%s' "$state_json" | jq -r '.state.readiness.missingSecretRefs[]?' 2>/dev/null || true)"
+    if printf '%s\n' "$missing" | grep -qx "$REF"; then
+      die "the machine still reports $REF as missing"
+    fi
+    confirmed=true
+    echo "  ok    the machine no longer reports $REF as missing"
+    if [ -n "$missing" ]; then
+      echo "  note  still outstanding, for whoever holds those credentials:"
+      printf '        %s\n' $missing
+    fi
   fi
 else
   echo "  skipped (needs jq and xxd) — check manually:"
@@ -174,5 +186,10 @@ else
 fi
 
 echo
-echo "Done. The credential is installed in this machine only, and only in memory:"
-echo "it is lost on restart and must be uploaded again."
+if [ "$confirmed" = true ]; then
+  echo "Done. The credential is installed in this machine only, and only in memory:"
+  echo "it is lost on restart and must be uploaded again."
+else
+  echo "Submitted, but not confirmed installed. Whatever this machine holds is in"
+  echo "memory only: it is lost on restart and must be uploaded again."
+fi

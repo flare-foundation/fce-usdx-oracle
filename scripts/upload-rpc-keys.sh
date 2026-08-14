@@ -234,20 +234,31 @@ fi
 echo
 echo "--- 2/4  Working out which refs to upload -------------------------"
 echo
+# Ordered so that only the branch which genuinely needs the machine's state is
+# gated on reading it. --refs and --all both name the refs from something the
+# operator already holds, so requiring a state read there would fail a run that
+# never had a question to ask.
 if [ -n "$REFS_ARG" ]; then
   OLD_IFS="$IFS"; IFS=','; read -r -a REFS <<< "$REFS_ARG"; IFS="$OLD_IFS"
   echo "  from --refs: ${REFS[*]}"
-elif ! readMachineState; then
-  die "cannot read ${PROXY_URL%/}/info — without it there is no way to know which \
-credentials this machine wants; pass --refs to say explicitly"
 elif [ "$ALL" = true ]; then
   [ -f "$ENDPOINTS_FILE" ] || die "no endpoints configuration at $ENDPOINTS_FILE — pass ENDPOINTS_FILE or --refs"
   # shellcheck disable=SC2207
   REFS=($(configuredRefs))
   echo "  every ref named in $ENDPOINTS_FILE (rotation)"
-  echo "  the machine is running endpointsHash $(liveEndpointsHash)"
-  echo "  confirm that is this file's hash before trusting the list:"
+  # Best effort: the list came from the file, so a machine that publishes no
+  # state costs the cross-check but not the run.
+  if readMachineState && [ -n "$(liveEndpointsHash)" ]; then
+    echo "  the machine is running endpointsHash $(liveEndpointsHash)"
+    echo "  confirm that is this file's hash before trusting the list:"
+  else
+    echo "  the machine publishes no state, so it cannot be asked which config it runs;"
+    echo "  confirm this file is the published one before trusting the list:"
+  fi
   echo "    cd tools && go run ./cmd/send-endpoints -dry-run -config $ENDPOINTS_FILE"
+elif ! readMachineState; then
+  die "this machine publishes no readable state, so it cannot be asked which credentials it \
+wants — name them with --refs <a,b>, or --all to take every ref from ENDPOINTS_FILE"
 else
   # shellcheck disable=SC2207
   REFS=($(missingRefs))
@@ -287,7 +298,7 @@ done
 echo
 echo "--- 3/4  Building, signing and submitting --------------------------"
 
-submitted=(); need_signers=(); rejected=()
+submitted=(); need_signers=(); rejected=(); proxy_refused=()
 for ref in "${REFS[@]}"; do
   echo
   echo "  $ref"
@@ -332,17 +343,37 @@ for ref in "${REFS[@]}"; do
     continue
   fi
 
-  if "$BIN_DIR/usdxprov" submit -in "$envelope" -url "$PROXY_URL"; then
+  submit_out=""; submit_rc=0
+  submit_out="$("$BIN_DIR/usdxprov" submit -in "$envelope" -url "$PROXY_URL" 2>&1)" || submit_rc=$?
+  printf '%s\n' "$submit_out"
+  if [ "$submit_rc" -eq 0 ]; then
     submitted+=("$ref")
     continue
   fi
 
-  # Enough signatures to be worth sending, and it was still refused. The enclave
-  # reports one reason for every rejection by design, so the cause is not in this
-  # output: the usual ones are a threshold higher than the floor, an admin key
-  # that is not in the published set, and a wrong proxy API key.
-  echo "        submitted with $sigs signature(s) and refused."
-  rejected+=("$ref")
+  # A refusal by the PROXY and a refusal by the ENCLAVE are different failures
+  # with disjoint causes, and reporting both as "refused by the machine" sends
+  # an operator to audit thresholds, admin sets and versions when the envelope
+  # never got past the front door.
+  case "$submit_out" in
+    *"proxy returned 401"*|*unauthorized*)
+      echo "        the PROXY refused this before the enclave saw it: the proxy API key is wrong."
+      echo "        Nothing about the signatures or the admin set is implicated."
+      proxy_refused+=("$ref")
+      ;;
+    *"proxy returned"*)
+      echo "        the PROXY refused this before the enclave saw it — see the status above."
+      proxy_refused+=("$ref")
+      ;;
+    *)
+      # Enough signatures to be worth sending, and the enclave still refused. It
+      # reports one reason for every rejection by design, so the cause is not in
+      # this output: the usual ones are a threshold higher than the floor, an
+      # admin key that is not in the published set, and a stale version.
+      echo "        submitted with $sigs signature(s) and refused by the machine."
+      rejected+=("$ref")
+      ;;
+  esac
   keep
 done
 
@@ -378,6 +409,10 @@ for ref in "${rejected[@]:-}"; do
   [ -n "$ref" ] || continue
   echo "  FAIL  $ref was refused by the machine — $OUT_DIR/$ref.json"
 done
+for ref in "${proxy_refused[@]:-}"; do
+  [ -n "$ref" ] || continue
+  echo "  FAIL  $ref never reached the machine — the proxy refused it, check the proxy API key — $OUT_DIR/$ref.json"
+done
 
 if [ -n "$still_missing" ]; then
   echo
@@ -389,5 +424,13 @@ if [ -n "$still_missing" ]; then
 fi
 
 echo
-echo "Done. These credentials are installed in this machine only, and only in"
-echo "memory: they are lost on restart and must be uploaded again."
+# Only claimed when something actually landed. Printing it unconditionally told
+# an operator whose every upload was refused that their credentials were
+# installed, which is the one thing the run had just disproved.
+if [ "${#submitted[@]}" -gt 0 ]; then
+  echo "Done. What was accepted is installed in this machine only, and only in"
+  echo "memory: it is lost on restart and must be uploaded again."
+else
+  echo "Nothing was installed: every upload above failed. The credentials this"
+  echo "machine holds are unchanged."
+fi

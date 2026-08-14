@@ -135,24 +135,39 @@ envelope on rather than submitting one the machine will refuse.
 **Admin A — holds the credentials, builds, signs, hands off:**
 
 ```bash
-./scripts/upload-rpc-keys.sh --threshold 3
+ENDPOINTS_FILE=<ENDPOINTS_JSON> ./scripts/upload-rpc-keys.sh --threshold 3 --all
 ```
+
+`--all` takes the ref list from the endpoints file — every `secret` it names — so the machine is
+never asked what it is missing. Use the file the machine is actually **running**: confirm with
+`send-endpoints -dry-run` that its hash matches `expectedConfigHash`, or the list describes a
+configuration nobody is on. `--refs <a,b>` names them by hand for the same result.
+
+That uploads every configured ref rather than only the absent ones. The difference costs nothing:
+credentials are memory-only and each envelope carries a higher version, so a re-upload supersedes
+whatever was there. It is the same command used for rotation.
 
 It prompts for everything it needs, and every secret is prompted **hidden**. Prefer that to
 presetting the variables: a `VAR=value ./script` line is not in argv where `ps` can read it, but
 it is in the shell history. Preset only for an unattended run, from a file you control:
 
 ```bash
-set -a; . ./provisioning.env; set +a; ./scripts/upload-rpc-keys.sh --threshold 3
+set -a; . ./provisioning.env; set +a; ENDPOINTS_FILE=<ENDPOINTS_JSON> ./scripts/upload-rpc-keys.sh --threshold 3 --all
 ```
 
-It verifies the machine against the chain, asks it which refs it is missing, encrypts each
-credential to the attested key, signs with whatever keys are in `USDXPROV_KEYS`, and writes what
-it cannot finish to `OUT_DIR` (default `$TMPDIR/usdx-envelopes`). Each file holds ciphertext and
-signatures only — safe to send over any channel.
+It verifies the machine against the chain, encrypts each credential to the attested key, signs
+with whatever keys are in `USDXPROV_KEYS`, and writes what it cannot finish to `OUT_DIR` (default
+`$TMPDIR/usdx-envelopes`). Each file holds ciphertext and signatures only — safe to send over any
+channel.
 
 Admin A is not asked for `DIRECT_API_KEY`: holding fewer keys than the threshold, this run can
 only hand off, and it says so before it starts.
+
+> Run without `--all` or `--refs`, the script instead asks the machine which refs it is missing,
+> by reading `/state` out of the proxy's `/info`. That only works where tee-node folds the
+> extension's state into the attested payload, which it does not do today — so the read comes back
+> empty and the step dies with `cannot read <proxy>/info`, blaming an endpoint that answered
+> perfectly well. Name the refs and the question never arises.
 
 **Admin B — signs, passes on:**
 
@@ -280,7 +295,11 @@ which the scripts get right by using wall-clock seconds.
    served; a proxy that lied about that key receives the plaintext. Verification closes the loop
    against the chain — the `teeId` is derived from the attested key, and the chain says whether
    that `teeId` is registered and whether its extension accepts that code hash. `--no-verify`
-   exists for a local mocknode and nothing else.
+   exists for a machine that has no attestation to check — a local mocknode, or one built with
+   `SIMULATED_TEE=true`, which serves the literal string `magic_pass` and fails verification with
+   `token contains an invalid number of segments`. Never for a machine holding a real credential:
+   without it, nothing has established that the key the credential is sealed to belongs to a
+   registered enclave rather than to whoever answered the port.
 3. **Obtain the expected code hash out of band.** Without `-code-hash`, verification proves the
    machine is *some* accepted machine, not that it runs the build you reviewed.
 4. **Never put real credentials in `.env`.** Every tool in this repo reads it, and it outlives
@@ -292,7 +311,8 @@ which the scripts get right by using wall-clock seconds.
 
 ---
 
-_Companion docs: [deployment-steps.md](deployment-steps.md) (getting the machine registered) ·
+_Companion docs: [usdx-oracle-tooling.md](usdx-oracle-tooling.md) (what every script and command
+does) · [deployment-steps.md](deployment-steps.md) (getting the machine registered) ·
 [testing.md](testing.md) (the same flow on a testnet) ·
 [usdx-oracle-keeper.md](usdx-oracle-keeper.md) (the feed) ·
 [usdx-oracle-flows.md](usdx-oracle-flows.md) (what each instruction does inside the enclave) ·

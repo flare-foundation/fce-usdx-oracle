@@ -26,6 +26,13 @@ const (
 	// The trigger transaction never landed.
 	OutcomeRequestFailed Outcome = "request_failed"
 
+	// The machine said it would refuse to sign, so no paid request was made.
+	// Distinct from request_failed: nothing was attempted and nothing was spent,
+	// which is a saving rather than a fault. Alerting on it as an error would
+	// page someone for the keeper working correctly — what deserves attention is
+	// the observation age it names, and that is already on the record.
+	OutcomeRequestSkipped Outcome = "request_skipped"
+
 	// The poll expired with no terminal status. FCC is fire-and-forget, so this
 	// is expected, not exceptional.
 	OutcomeNoResult Outcome = "no_result"

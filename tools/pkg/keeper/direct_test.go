@@ -47,7 +47,8 @@ func TestPostDirectAction_SendsTheDirectInstructionShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id, err := postDirectAction(context.Background(), srv.URL, "the-key", testGetPrice)
+	id, err := postDirectAction(context.Background(), srv.URL, "the-key",
+		testGetPrice.OPType, testGetPrice.OPCommand, testGetPrice.Message)
 	if err != nil {
 		t.Fatalf("postDirectAction: %v", err)
 	}
@@ -84,7 +85,8 @@ func TestPostDirectAction_ReportsProxyRejection(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := postDirectAction(context.Background(), srv.URL, "wrong", testGetPrice)
+	_, err := postDirectAction(context.Background(), srv.URL, "wrong",
+		testGetPrice.OPType, testGetPrice.OPCommand, testGetPrice.Message)
 	if err == nil {
 		t.Fatal("expected an error for a 401")
 	}
@@ -101,7 +103,8 @@ func TestPostDirectAction_RejectsMissingActionID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := postDirectAction(context.Background(), srv.URL, "k", testGetPrice); err == nil {
+	if _, err := postDirectAction(context.Background(), srv.URL, "k",
+		testGetPrice.OPType, testGetPrice.OPCommand, testGetPrice.Message); err == nil {
 		t.Fatal("expected an error when the proxy returns no action id")
 	}
 }

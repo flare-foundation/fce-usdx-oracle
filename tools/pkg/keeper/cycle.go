@@ -162,6 +162,21 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) (pricereport.R
 		tag = teetypes.Submit
 		rec.RequestTxStatus = "not_applicable"
 	} else {
+		// Ask before paying. The on-chain path costs a registry fee and a
+		// transaction, and a machine whose newest observation has aged out will
+		// refuse to sign whatever it is asked — so the fee buys a failure that
+		// was predictable for the price of one direct action.
+		//
+		// Only on this path: the direct channel is already free, so pre-checking
+		// there would spend a round trip to save an equally cheap one.
+		//
+		// Best effort throughout. A machine that cannot answer readiness is not
+		// thereby known to be unhealthy — this build may predate the command —
+		// and refusing to try would turn a diagnostic into an outage.
+		if skip, why := wouldRefuse(ctx, cfg); skip {
+			return fail(OutcomeRequestSkipped, errors.New(why))
+		}
+
 		actionID, _, err = instrutils.RequestPriceUpdate(s, cfg.Sender)
 		tag = teetypes.Threshold
 		if err == nil {
@@ -365,18 +380,22 @@ func RequestDirect(ctx context.Context, s *support.Support, cfg Config) (common.
 		return common.Hash{}, err
 	}
 
-	return postDirectAction(ctx, cfg.Proxy, cfg.DirectAPIKey, req)
+	return postDirectAction(ctx, cfg.Proxy, cfg.DirectAPIKey,
+		req.OPType, req.OPCommand, req.Message)
 }
 
 // postDirectAction is the HTTP half of RequestDirect, split out so it can be
-// exercised without a chain to read the op constants from.
+// exercised without a chain to read the op constants from. Takes the op pair
+// loose rather than a GetPriceRequest because GET_READINESS uses the same
+// envelope and has no on-chain counterpart to read constants from.
 func postDirectAction(
-	ctx context.Context, proxyURL, apiKey string, req instrutils.GetPriceRequest,
+	ctx context.Context, proxyURL, apiKey string,
+	opType, opCommand common.Hash, message []byte,
 ) (common.Hash, error) {
 	body, err := json.Marshal(map[string]string{
-		"opType":    req.OPType.Hex(),
-		"opCommand": req.OPCommand.Hex(),
-		"message":   hexutil.Encode(req.Message),
+		"opType":    opType.Hex(),
+		"opCommand": opCommand.Hex(),
+		"message":   hexutil.Encode(message),
 	})
 	if err != nil {
 		return common.Hash{}, errors.Errorf("encoding the direct instruction: %s", err)

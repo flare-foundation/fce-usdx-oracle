@@ -14,6 +14,13 @@ const (
 	OPTypeUsdxOracle  = "USDX_ORACLE"
 	OPCommandGetPrice = "GET_PRICE"
 
+	// GET_READINESS is direct-only, and needs no counterpart in the sender: a
+	// price must be requestable permissionlessly because feed liveness is a
+	// public good, whereas readiness is operational detail whose answer is
+	// stale within minutes. On-chain it would spend a fee per poll to write
+	// ephemeral state into permanent public calldata. Enforced in extension.go.
+	OPCommandGetReadiness = "GET_READINESS"
+
 	// SET_ENDPOINTS is instruction-only (its authorisation is the owner-only
 	// check in the on-chain sender); SET_SECRET is direct-only (a ciphertext
 	// on-chain would be permanent and public). Enforced in extension.go.
@@ -27,6 +34,11 @@ const (
 	// The observation needs no input, but the registry rejects an empty message
 	// with MessageEmpty(), so GET_PRICE carries one version byte.
 	GetPriceRequestV1 = byte(0x01)
+
+	// Same shape for GET_READINESS, and checked just as strictly: a request
+	// that carries anything else is rejected rather than ignored, so no caller
+	// can come to depend on a field the extension silently drops.
+	ReadinessRequestV1 = byte(0x01)
 
 	PriceDecimals int8 = 8
 )

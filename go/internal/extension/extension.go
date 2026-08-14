@@ -29,6 +29,14 @@ import (
 // tee-node allows, so it runs on a timer in internal/observe.
 type Observer interface {
 	Report(ctx context.Context, instructionID common.Hash) (oracle.Observation, error)
+
+	// ReadinessReport answers GET_READINESS. It takes the provisioning half
+	// because the observer does not own it, and returns the finished
+	// ActionResult payload — assembling and signing happen behind the poller's
+	// lock, where the observation state and the signer both live.
+	ReadinessReport(
+		ctx context.Context, instructionID common.Hash, provisioning types.Readiness,
+	) ([]byte, error)
 }
 
 // Provisioner applies verified configuration. An interface so the extension's
@@ -225,6 +233,17 @@ func (e *Extension) processUsdxOracle(action teetypes.Action, df *instruction.Da
 		b, _ := json.Marshal(ar)
 		return http.StatusOK, b
 
+	case df.OPCommand == teeutils.ToHash(config.OPCommandGetReadiness):
+		// Direct only. See config.OPCommandGetReadiness: a price is worth making
+		// permissionless, an operational status report is not.
+		if action.Data.Type != teetypes.Direct {
+			return respond(e, action, df, failure.WrongActionType)
+		}
+
+		ar := e.processGetReadiness(action, df)
+		b, _ := json.Marshal(ar)
+		return http.StatusOK, b
+
 	default:
 		return http.StatusNotImplemented, []byte(fmt.Sprintf(
 			"unsupported op command: received %s, expected %s (%s)",
@@ -271,6 +290,41 @@ func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.Data
 	e.mu.Unlock()
 
 	return buildResult(action, df, obs.Data, 1, nil)
+}
+
+// processGetReadiness answers with the machine's own account of itself, signed.
+//
+// Unlike processGetPrice this never fails closed: an unprovisioned or stale
+// machine returns a report saying so, because "nothing is configured" is the
+// answer rather than a failure to produce one. Only an encoding or signing
+// fault is an error here, and that is a machine broken in a way no readiness
+// report could describe anyway.
+//
+// It deliberately does not touch the GET /state counters. Those describe
+// prices served, and a status query is not one — incrementing them would make
+// polling look like production.
+func (e *Extension) processGetReadiness(
+	action teetypes.Action, df *instruction.DataFixed,
+) teetypes.ActionResult {
+	// Same strictness as GET_PRICE: the pinned envelope or nothing, and neither
+	// the length nor the content is echoed back into the public log.
+	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.ReadinessRequestV1 {
+		return e.fail(action, df, failure.UnexpectedPayload)
+	}
+
+	// Both halves are needed, and in stub mode neither exists. Reporting
+	// NotConfigured is honest: a stub has no configuration to describe.
+	if e.observer == nil || e.provisioner == nil {
+		return e.fail(action, df, failure.NotConfigured)
+	}
+
+	data, err := e.observer.ReadinessReport(
+		context.Background(), df.InstructionID, e.provisioner.Readiness())
+	if err != nil {
+		return e.fail(action, df, asFailure(err))
+	}
+
+	return buildResult(action, df, data, 1, nil)
 }
 
 // stubPrice returns an unsigned $1.00 so the wire contract can be exercised

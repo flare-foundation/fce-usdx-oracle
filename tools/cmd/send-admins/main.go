@@ -11,6 +11,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
+	"fce-usdx-oracle/tools/pkg/keeper"
 	"fce-usdx-oracle/tools/pkg/support"
 	instrutils "fce-usdx-oracle/tools/pkg/utils"
 
@@ -36,6 +38,9 @@ func main() {
 	pf := flag.String("p", configs.ExtensionProxyURL, "extension proxy url")
 	instructionSenderF := flag.String("instructionSender", "", "instructionSender address")
 	configF := flag.String("config", "", "admin set JSON file, delivered verbatim")
+	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
+		"proxy API key, used to confirm delivery via a signed GET_READINESS when the "+
+			"proxy publishes no attested state (default: $DIRECT_API_KEY)")
 	waitF := flag.Duration("wait", 90*time.Second,
 		"how long to wait for the machine to report the new admins hash; 0 skips the check")
 	dryRunF := flag.Bool("dry-run", false, "validate the payload and print the hash, but send nothing")
@@ -104,8 +109,11 @@ func main() {
 	logger.Infof("  adminsHash:  %s", adminsHash.Hex())
 
 	if *waitF <= 0 {
-		logger.Warnf("Skipping the delivery check (-wait 0). Until this machine reports %s, "+
-			"every price it signs is rejected with StaleAdmins.", adminsHash.Hex())
+		// Stated as a conditional, not a fact: whether the machine applied this
+		// is exactly what skipping the check leaves unknown.
+		logger.Warnf("Skipping the delivery check (-wait 0), so whether the machine applied %s "+
+			"is unknown. If it did not, every price it signs is rejected with StaleAdmins.",
+			adminsHash.Hex())
 		return
 	}
 
@@ -115,7 +123,15 @@ func main() {
 	// may reject it — a replayed or non-increasing version is rejected outright.
 	// Either way the machine keeps its previous set and goes silent. Confirm
 	// rather than assume.
-	if err := waitForAdmins(*pf, adminsHash, *waitF); err != nil {
+	// Two outcomes are possible here and they call for opposite reactions, so
+	// they are never reported with the same words: the machine contradicting the
+	// published hash is a failure, whereas the machine publishing no state at all
+	// leaves the question open.
+	if err := waitForAdmins(*pf, *apiKeyF, adminsHash, *waitF); err != nil {
+		if errors.Is(err, fccutils.ErrNoAttestedState) {
+			logger.Infof("Delivery not confirmed: %s", err)
+			return
+		}
 		logger.Errorf("%s", err)
 		logger.Errorf("The machine is NOT running the published admin set, so its prices will be " +
 			"rejected with StaleAdmins until it is, and SET_SECRET signed by these admins will " +
@@ -132,7 +148,7 @@ func main() {
 
 // waitForAdmins polls the machine's own /state until it reports the hash just
 // published, or the budget runs out.
-func waitForAdmins(proxyURL string, want common.Hash, budget time.Duration) error {
+func waitForAdmins(proxyURL, apiKey string, want common.Hash, budget time.Duration) error {
 	deadline := time.Now().Add(budget)
 	backoff := 2 * time.Second
 
@@ -140,6 +156,26 @@ func waitForAdmins(proxyURL string, want common.Hash, budget time.Duration) erro
 	for {
 		got, err := fetchAdminsHash(proxyURL)
 		switch {
+		case errors.Is(err, fccutils.ErrNoAttestedState):
+			// Ask the machine instead of giving up. GET_READINESS carries the
+			// same hash, signed, over a channel that does not depend on
+			// tee-node folding /state into /info.
+			if h, qerr := queryAdminsHash(proxyURL, apiKey, budget); qerr == nil {
+				got = h
+				if strings.EqualFold(got, want.Hex()) {
+					return nil
+				}
+				last = "the machine reports " + adminsOrNone(got)
+				break
+			} else if apiKey != "" {
+				last = "readiness query failed: " + qerr.Error()
+				break
+			}
+			// Nothing will appear later: this tee-node version never publishes
+			// state and there is no key to ask directly with. Returning
+			// immediately keeps the operator from watching a budget expire on a
+			// question that cannot be answered.
+			return err
 		case err != nil:
 			last = err.Error()
 		case strings.EqualFold(got, want.Hex()):
@@ -160,6 +196,27 @@ func waitForAdmins(proxyURL string, want common.Hash, budget time.Duration) erro
 		}
 		time.Sleep(backoff)
 	}
+}
+
+// queryAdminsHash asks the machine directly, for deployments whose tee-node
+// publishes no attested state. Signed by the enclave, so it is the same claim
+// the attested path would have carried — only the transport differs.
+func queryAdminsHash(proxyURL, apiKey string, budget time.Duration) (string, error) {
+	if apiKey == "" {
+		return "", errors.New("no API key to query readiness with")
+	}
+	report, err := keeper.QueryReadiness(context.Background(), proxyURL, apiKey, budget)
+	if err != nil {
+		return "", err
+	}
+	return report.Payload.Readiness.AdminsHash, nil
+}
+
+func adminsOrNone(h string) string {
+	if h == "" {
+		return "no admin set at all"
+	}
+	return h
 }
 
 // fetchAdminsHash reads the active admin set hash the machine publishes on
@@ -184,6 +241,13 @@ func fetchAdminsHash(proxyURL string) (string, error) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return "", errors.Errorf("decoding /info: %s", err)
+	}
+
+	// Distinguished before unmarshalling: an empty state would otherwise fail as
+	// "unexpected end of JSON input", which reads like a corrupt response rather
+	// than an absent one.
+	if len(info.TeeInfo.State.State) == 0 {
+		return "", fccutils.ErrNoAttestedState
 	}
 
 	var body struct {

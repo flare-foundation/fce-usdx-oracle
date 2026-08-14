@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "backing": {
+    "threshold": 1,
+    "admins": ["0xb0E38de6e935E98881BbDb5c77A5A0DfAA595e15"]
+  },
+  "providers": {
+    "threshold": 2,
+    "admins": ["0x82C2A31C76bdF5917037c494e8DF701aFD867273", "0x7BcCb7b7b98e04730C0eE425aFb5AAf1A64eD32a", "0xAa9A54005dC08a42194Ee4dF8e4e0a344aADc1EA"]
+  }
+}

@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
+	"fce-usdx-oracle/tools/pkg/keeper"
 	"fce-usdx-oracle/tools/pkg/support"
 	instrutils "fce-usdx-oracle/tools/pkg/utils"
 
@@ -34,6 +36,9 @@ func main() {
 	pf := flag.String("p", configs.ExtensionProxyURL, "extension proxy url")
 	instructionSenderF := flag.String("instructionSender", "", "instructionSender address")
 	configF := flag.String("config", "", "endpoints configuration JSON file, delivered verbatim")
+	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
+		"proxy API key, used to confirm delivery via a signed GET_READINESS when the "+
+			"proxy publishes no attested state (default: $DIRECT_API_KEY)")
 	waitF := flag.Duration("wait", 90*time.Second,
 		"how long to wait for the machine to report the new config hash; 0 skips the check")
 	dryRunF := flag.Bool("dry-run", false, "validate the payload and print the hash, but send nothing")
@@ -103,8 +108,11 @@ func main() {
 	logger.Infof("  configHash:  %s", configHash.Hex())
 
 	if *waitF <= 0 {
-		logger.Warnf("Skipping the delivery check (-wait 0). Until this machine reports %s, "+
-			"every price it signs is rejected with StaleConfig.", configHash.Hex())
+		// Stated as a conditional, not a fact: whether the machine applied this
+		// is exactly what skipping the check leaves unknown.
+		logger.Warnf("Skipping the delivery check (-wait 0), so whether the machine applied %s "+
+			"is unknown. If it did not, every price it signs is rejected with StaleConfig.",
+			configHash.Hex())
 		return
 	}
 
@@ -113,7 +121,15 @@ func main() {
 	// fire-and-forget: the instruction may never be delivered, and the extension
 	// may reject it. Either way the machine keeps its old configuration and goes
 	// silent. Confirm rather than assume.
-	if err := waitForConfig(*pf, configHash, *waitF); err != nil {
+	// Two outcomes are possible here and they call for opposite reactions, so
+	// they are never reported with the same words: the machine contradicting the
+	// published hash is a failure, whereas the machine publishing no state at all
+	// leaves the question open.
+	if err := waitForConfig(*pf, *apiKeyF, configHash, *waitF); err != nil {
+		if errors.Is(err, fccutils.ErrNoAttestedState) {
+			logger.Infof("Delivery not confirmed: %s", err)
+			return
+		}
 		logger.Errorf("%s", err)
 		logger.Errorf("The machine is NOT running the published config, so its prices will be " +
 			"rejected with StaleConfig until it is. Check the extension's logs:")
@@ -129,7 +145,7 @@ func main() {
 
 // waitForConfig polls the machine's own /state until it reports the hash just
 // published, or the budget runs out.
-func waitForConfig(proxyURL string, want common.Hash, budget time.Duration) error {
+func waitForConfig(proxyURL, apiKey string, want common.Hash, budget time.Duration) error {
 	deadline := time.Now().Add(budget)
 	backoff := 2 * time.Second
 
@@ -137,6 +153,26 @@ func waitForConfig(proxyURL string, want common.Hash, budget time.Duration) erro
 	for {
 		got, err := fetchEndpointsHash(proxyURL)
 		switch {
+		case errors.Is(err, fccutils.ErrNoAttestedState):
+			// Ask the machine instead of giving up. GET_READINESS carries the
+			// same hash, signed, over a channel that does not depend on
+			// tee-node folding /state into /info.
+			if h, qerr := queryEndpointsHash(proxyURL, apiKey, budget); qerr == nil {
+				got = h
+				if strings.EqualFold(got, want.Hex()) {
+					return nil
+				}
+				last = "the machine reports " + shortOrNone(got)
+				break
+			} else if apiKey != "" {
+				last = "readiness query failed: " + qerr.Error()
+				break
+			}
+			// Nothing will appear later: this tee-node version never publishes
+			// state and there is no key to ask directly with. Returning
+			// immediately keeps the operator from watching a budget expire on a
+			// question that cannot be answered.
+			return err
 		case err != nil:
 			last = err.Error()
 		case strings.EqualFold(got, want.Hex()):
@@ -157,6 +193,27 @@ func waitForConfig(proxyURL string, want common.Hash, budget time.Duration) erro
 		}
 		time.Sleep(backoff)
 	}
+}
+
+// queryEndpointsHash asks the machine directly, for deployments whose tee-node
+// publishes no attested state. Signed by the enclave, so it is the same claim
+// the attested path would have carried — only the transport differs.
+func queryEndpointsHash(proxyURL, apiKey string, budget time.Duration) (string, error) {
+	if apiKey == "" {
+		return "", errors.New("no API key to query readiness with")
+	}
+	report, err := keeper.QueryReadiness(context.Background(), proxyURL, apiKey, budget)
+	if err != nil {
+		return "", err
+	}
+	return report.Payload.Readiness.EndpointsHash, nil
+}
+
+func shortOrNone(h string) string {
+	if h == "" {
+		return "no endpoint configuration at all"
+	}
+	return h
 }
 
 // fetchEndpointsHash reads the active config hash the machine publishes on
@@ -181,6 +238,13 @@ func fetchEndpointsHash(proxyURL string) (string, error) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return "", errors.Errorf("decoding /info: %s", err)
+	}
+
+	// Distinguished before unmarshalling: an empty state would otherwise fail as
+	// "unexpected end of JSON input", which reads like a corrupt response rather
+	// than an absent one.
+	if len(info.TeeInfo.State.State) == 0 {
+		return "", fccutils.ErrNoAttestedState
 	}
 
 	var body struct {

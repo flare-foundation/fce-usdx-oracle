@@ -32,6 +32,7 @@ import (
 	"fce-usdx-oracle/tools/pkg/contracts/usdxoracle"
 	"fce-usdx-oracle/tools/pkg/contracts/usdxstore"
 	"fce-usdx-oracle/tools/pkg/fccutils"
+	"fce-usdx-oracle/tools/pkg/keeper"
 	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -62,11 +63,16 @@ type machineStatus struct {
 	// --- live, from the machine's own proxy ---
 	// Empty when the proxy could not be reached, which is never the same as
 	// "healthy": Reachable says which.
-	Reachable    bool              `json:"reachable"`
-	LiveHash     string            `json:"liveConfigHash,omitempty"`
-	Ready        bool              `json:"ready"`
-	MissingRefs  []string          `json:"missingSecretRefs,omitempty"`
-	SourceHealth map[string]string `json:"sourceHealth,omitempty"`
+	Reachable bool `json:"reachable"`
+	// NoAttestedState separates "the proxy did not answer" from "it answered and
+	// carried no state". Both leave Reachable false, but only the first is a
+	// connectivity fault; reporting the second as unreachable sends an operator
+	// to check a tunnel that is working.
+	NoAttestedState bool              `json:"noAttestedState"`
+	LiveHash        string            `json:"liveConfigHash,omitempty"`
+	Ready           bool              `json:"ready"`
+	MissingRefs     []string          `json:"missingSecretRefs,omitempty"`
+	SourceHealth    map[string]string `json:"sourceHealth,omitempty"`
 
 	// Notes are the derived problems — the reason to run this at all.
 	Notes []string `json:"notes,omitempty"`
@@ -81,6 +87,9 @@ func main() {
 	proxyF := flag.String("p", "",
 		"override the proxy URL for every machine; default is each machine's registered url")
 	timeoutF := flag.Duration("timeout", 10*time.Second, "per-machine budget for the live /info read")
+	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
+		"proxy API key, used to fall back to a signed GET_READINESS when the proxy "+
+			"publishes no attested state (default: $DIRECT_API_KEY)")
 	jsonF := flag.Bool("json", false, "emit JSON instead of a table")
 	flag.Parse()
 
@@ -101,7 +110,7 @@ func main() {
 		fccutils.FatalWithCause(err)
 	}
 
-	statuses, err := collect(s, common.HexToAddress(*senderF), storeAddr, *proxyF, *timeoutF)
+	statuses, err := collect(s, common.HexToAddress(*senderF), storeAddr, *proxyF, *apiKeyF, *timeoutF)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
@@ -118,7 +127,7 @@ func main() {
 }
 
 func collect(
-	s *support.Support, senderAddr, storeAddr common.Address, proxyOverride string, timeout time.Duration,
+	s *support.Support, senderAddr, storeAddr common.Address, proxyOverride string, apiKey string, timeout time.Duration,
 ) ([]machineStatus, error) {
 	opts := &bind.CallOpts{Context: context.Background()}
 
@@ -172,7 +181,7 @@ func collect(
 	out := make([]machineStatus, 0, len(order))
 	for _, id := range order {
 		out = append(out, inspect(
-			opts, machines, sender, store, id, urls[id], proxyOverride, inRegistry[id], timeout))
+			opts, machines, sender, store, id, urls[id], proxyOverride, inRegistry[id], apiKey, timeout))
 	}
 	return out, nil
 }
@@ -182,7 +191,7 @@ func inspect(
 	machines *machinemanager.MachineManager,
 	sender *usdxoracle.UsdxOracleInstructionSenderCaller,
 	store *usdxstore.UsdxPriceStoreCaller,
-	teeID common.Address, registeredURL, proxyOverride string, inRegistry bool, timeout time.Duration,
+	teeID common.Address, registeredURL, proxyOverride string, inRegistry bool, apiKey string, timeout time.Duration,
 ) machineStatus {
 	m := machineStatus{TeeID: teeID.Hex(), URL: registeredURL}
 	if proxyOverride != "" {
@@ -230,13 +239,53 @@ func inspect(
 				"current config — re-run: submit-price -direct -p "+orPlaceholder(m.URL))
 	}
 
-	readLive(&m, timeout)
+	readLive(&m, apiKey, timeout)
 	return m
+}
+
+// readLiveByQuery fills m from a signed GET_READINESS, returning whether it
+// managed to. Used only when the attested state is absent — it costs a round
+// trip and an API key, so it is not the first choice, but the answer is the
+// enclave's own and carries strictly more than /state does.
+//
+// The signer is checked against the machine this row is about: a proxy serving
+// a valid report signed by a different enclave would otherwise be believed.
+func readLiveByQuery(m *machineStatus, apiKey string, timeout time.Duration) bool {
+	if apiKey == "" {
+		m.Notes = append(m.Notes,
+			"no API key, so the machine could not be asked directly — pass -directApiKey or set DIRECT_API_KEY")
+		return false
+	}
+
+	report, err := keeper.QueryReadinessSigner(
+		context.Background(), m.URL, apiKey, common.HexToAddress(m.TeeID), timeout)
+	if err != nil {
+		m.Notes = append(m.Notes, "readiness query failed: "+err.Error())
+		return false
+	}
+
+	m.Reachable = true
+	m.LiveHash = report.Payload.Readiness.EndpointsHash
+	m.Ready = report.Payload.Readiness.Ready
+	m.MissingRefs = report.Payload.Readiness.MissingRefs
+	m.SourceHealth = report.Payload.SourceHealth
+
+	// Only readiness carries these: /state reports what the last served price
+	// saw, so a machine that has served none says nothing about its own loop.
+	if !report.Payload.WouldSign {
+		m.Notes = append(m.Notes, fmt.Sprintf(
+			"would NOT sign right now — newest observation is %ds old (class %q)",
+			report.Payload.ObservationAge, report.Payload.LastErrorClass))
+	}
+	for name, health := range report.UnhealthySources() {
+		m.Notes = append(m.Notes, fmt.Sprintf("source %s is %s", name, health))
+	}
+	return true
 }
 
 // readLive fills in what the machine says about itself. Best effort: an
 // unreachable proxy leaves Reachable false rather than reading as healthy.
-func readLive(m *machineStatus, timeout time.Duration) {
+func readLive(m *machineStatus, apiKey string, timeout time.Duration) {
 	if m.URL == "" {
 		m.Notes = append(m.Notes, "no proxy url registered — pass -p to read its live state")
 		return
@@ -244,6 +293,18 @@ func readLive(m *machineStatus, timeout time.Duration) {
 
 	state, err := fetchState(m.URL, timeout)
 	if err != nil {
+		if errors.Is(err, fccutils.ErrNoAttestedState) {
+			// Ask the machine directly instead. GET_READINESS carries the same
+			// facts over the direct channel and is signed by the enclave, so
+			// nothing is given up on trust — only the dependency on tee-node
+			// folding /state into /info, which this version does not do.
+			if readLiveByQuery(m, apiKey, timeout) {
+				return
+			}
+			m.NoAttestedState = true
+			m.Notes = append(m.Notes, "live state unavailable: "+err.Error())
+			return
+		}
 		m.Notes = append(m.Notes, "proxy unreachable: "+err.Error())
 		return
 	}
@@ -314,7 +375,7 @@ func fetchState(proxyURL string, timeout time.Duration) (liveState, error) {
 		return liveState{}, errors.Errorf("decoding /info: %s", err)
 	}
 	if len(info.TeeInfo.State.State) == 0 {
-		return liveState{}, errors.New("/info carried no extension state")
+		return liveState{}, fccutils.ErrNoAttestedState
 	}
 
 	var body struct {
@@ -368,6 +429,12 @@ func provenSuffix(m machineStatus) string {
 }
 
 func liveSummary(m machineStatus) string {
+	if m.NoAttestedState {
+		// Not "unreachable": the proxy answered. Only the state is missing, and
+		// the distinction decides whether an operator debugs the network or
+		// simply commissions the machine instead.
+		return "not published"
+	}
 	if !m.Reachable {
 		return "unreachable"
 	}

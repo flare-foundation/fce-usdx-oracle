@@ -8,6 +8,7 @@ package observe
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -15,8 +16,11 @@ import (
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/oracle"
+	"fce-usdx-oracle/internal/readiness"
+	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 )
 
@@ -144,6 +148,92 @@ func (p *Poller) Report(ctx context.Context, instructionID common.Hash) (oracle.
 		return obs, err
 	}
 	return oracle.Sign(ctx, p.signer, obs, instructionID)
+}
+
+// ReadinessReport answers GET_READINESS: it assembles what the poller knows
+// about itself, binds it to one instruction, and signs it.
+//
+// Assembled here rather than in the extension because everything but the
+// provisioning half lives behind this mutex, and the signer does too. The
+// caller supplies the provisioning half, which it owns.
+//
+// No I/O beyond the one signing call: tee-node allows two seconds per action,
+// which is the whole reason observation runs on a timer. Nothing here observes,
+// resolves configuration, or dials an upstream.
+func (p *Poller) ReadinessReport(
+	ctx context.Context, instructionID common.Hash, provisioning types.Readiness,
+) ([]byte, error) {
+	p.mu.RLock()
+	now := p.now()
+
+	// Only the class escapes, never the error's text. lastErr is already
+	// vocabulary by construction; anything that somehow is not becomes
+	// ClassInternal rather than reaching a public surface in its own words.
+	var lastClass failure.Class
+	if p.lastErr != nil {
+		var f failure.Failure
+		if errors.As(p.lastErr, &f) {
+			lastClass = f.Class()
+		} else {
+			lastClass = failure.ClassInternal
+		}
+	}
+
+	rep := types.ReadinessReport{
+		Readiness:      provisioning,
+		Observations:   p.observations,
+		Failures:       p.failures,
+		LastErrorClass: string(lastClass),
+		ChainID:        config.ChainID,
+	}
+
+	if p.haveLast {
+		age := p.last.Age(now)
+		rep.LastObservedAt = p.last.ObservedAt
+		// Clamped at zero: a clock that has gone backwards should read as fresh
+		// rather than as an enormous unsigned age.
+		if age > 0 {
+			rep.ObservationAge = uint64(age.Seconds())
+		}
+		rep.WouldSign = age <= p.maxAge
+	}
+
+	// Copied under the lock: the map is replaced wholesale by record(), and
+	// handing the live reference out would race with the next observation.
+	if p.last.Health != nil {
+		rep.SourceHealth = make(map[string]string, len(p.last.Health))
+		for k, v := range p.last.Health {
+			rep.SourceHealth[k] = v
+		}
+	}
+	p.mu.RUnlock()
+
+	payload, err := json.Marshal(rep)
+	if err != nil {
+		return nil, failure.Internal
+	}
+
+	body, err := readiness.EncodeBody(readiness.Report{
+		InstructionID: instructionID,
+		Timestamp:     uint64(now.Unix()),
+		PayloadHash:   crypto.Keccak256Hash(payload),
+	})
+	if err != nil {
+		return nil, asFailure(err)
+	}
+
+	// asFailure, not the raw error: a signer's own words can name the endpoint
+	// it failed to reach. The one in production already returns vocabulary, and
+	// this must not depend on that staying true — the same reason record() does
+	// it for lastErr.
+	signature, err := p.signer.Sign(ctx, body)
+	if err != nil {
+		return nil, asFailure(err)
+	}
+
+	// payload verbatim: the signature commits to these exact bytes, and
+	// re-serialising would not reproduce them.
+	return readiness.EncodeData(body, signature, payload)
 }
 
 // Stats reports cumulative counters for GET /state.

@@ -62,6 +62,57 @@ type Readiness struct {
 	MissingRefs []string `json:"missingSecretRefs"`
 }
 
+// ReadinessReport is the JSON payload of a signed GET_READINESS answer, carried
+// inside abi.encode(body, signature, payload) — see internal/readiness.
+//
+// PUBLIC on the same terms as State: it reaches whoever can reach the direct
+// channel, so it may name a secret ref but never a value, and may report a
+// failure.Class but never an upstream's own words.
+//
+// It is deliberately NOT a copy of State. State's counters and source map are
+// written by the GET_PRICE handler, so a machine that has never served a
+// request reports zeroes while its loop runs perfectly. Everything here comes
+// from the poller, and describes the engine rather than the last request
+// served.
+type ReadinessReport struct {
+	// --- provisioning, from the runtime configuration store ---
+	Readiness Readiness `json:"readiness"`
+
+	// --- observation, from the poller ---
+
+	// LastObservedAt is when the inputs behind the newest observation were
+	// read; zero if there has never been one.
+	LastObservedAt uint64 `json:"lastObservedAt"`
+
+	// ObservationAge is seconds since LastObservedAt at the moment of
+	// answering. The number to alert on: the feed's designed failure mode is
+	// freezing, not erroring.
+	ObservationAge uint64 `json:"observationAge"`
+
+	// WouldSign reports whether a GET_PRICE issued now would succeed — the
+	// newest observation exists and is inside MaxObservationAge. A keeper can
+	// skip a cycle it would otherwise pay for.
+	WouldSign bool `json:"wouldSign"`
+
+	// Observations and Failures are the poller's cumulative counters.
+	Observations int `json:"observations"`
+	Failures     int `json:"failures"`
+
+	// LastErrorClass is a failure.Class constant, empty when the newest
+	// observation succeeded. A closed taxonomy, never a raw error.
+	LastErrorClass string `json:"lastErrorClass"`
+
+	// SourceHealth maps each positional source name to a config.Health* value.
+	// Positional so nothing an endpoint author supplies reaches this surface.
+	SourceHealth map[string]string `json:"sourceHealth"`
+
+	// --- identity ---
+
+	// ChainID is the network the machine binds its signatures to. The machine
+	// itself is identified by recovering the signature, not by a field here.
+	ChainID uint64 `json:"chainId"`
+}
+
 // --- DO NOT MODIFY below this line. ---
 
 // StateResponse is the envelope returned by GET /state.

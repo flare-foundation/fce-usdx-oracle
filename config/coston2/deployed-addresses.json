@@ -517,11 +517,11 @@
   {
     "name": "UsdxPriceStore",
     "contractName": "UsdxPriceStore.sol",
-    "address": "0x786307b2bd21A5BfE4524Ff14C0B80F9c618cD60"
+    "address": "0x4E2f462cfB6CC8567D6A918666B15c04E03B73aE"
   },
   {
     "name": "UsdxCustomFeed",
     "contractName": "UsdxCustomFeed.sol",
-    "address": "0x00c22a4e5f915de82C30aa6cd74E9d722D1e8028"
+    "address": "0x56c5F1b72DCA580F7b2B0c07c63973C58627a12D"
   }
 ]

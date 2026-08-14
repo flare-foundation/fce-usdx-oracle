@@ -1,0 +1,24 @@
+{
+  "flare": {
+    "threshold": 2,
+    "providers": [
+      { "url": "https://flare-api.flare.network/ext/C/rpc" },
+      { "url": "https://rpc.ftso.au/flare" },
+      { "url": "https://flare.public-rpc.com" },
+      { "url": "https://rpc.ankr.com/flare/{secret}", "secret": "ankr_flare_key" }
+    ]
+  },
+  "ethereum": {
+    "threshold": 2,
+    "providers": [
+      { "url": "https://ethereum-rpc.publicnode.com" },
+      { "url": "https://cool-intensive-snowflake.ethereum-mainnet.quiknode.pro/{secret}/", "secret": "quicknode_eth_key" }
+    ]
+  },
+  "songbird": {
+    "threshold": 1,
+    "providers": [
+      { "url": "https://songbird-api.flare.network/ext/C/rpc" }
+    ]
+  }
+}

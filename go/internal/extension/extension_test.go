@@ -463,9 +463,34 @@ type fakeObserver struct {
 	obs oracle.Observation
 	err error
 
-	mu     sync.Mutex
-	calls  int
-	lastID common.Hash
+	// readiness is returned verbatim as the signed payload would be; the
+	// handler's job is routing and envelope checking, not encoding, which
+	// internal/readiness covers on its own.
+	readiness    []byte
+	readinessErr error
+
+	mu               sync.Mutex
+	calls            int
+	lastID           common.Hash
+	readinessCalls   int
+	lastProvisioning types.Readiness
+}
+
+func (f *fakeObserver) ReadinessReport(
+	_ context.Context, instructionID common.Hash, provisioning types.Readiness,
+) ([]byte, error) {
+	f.mu.Lock()
+	f.readinessCalls++
+	f.lastID = instructionID
+	f.lastProvisioning = provisioning
+	f.mu.Unlock()
+	if f.readinessErr != nil {
+		return nil, f.readinessErr
+	}
+	if f.readiness == nil {
+		return []byte("readiness-payload"), nil
+	}
+	return f.readiness, nil
 }
 
 func (f *fakeObserver) Report(ctx context.Context, instructionID common.Hash) (oracle.Observation, error) {
