@@ -35,6 +35,7 @@ type Observer interface {
 // tests need no signing service and no live endpoints.
 type Provisioner interface {
 	ApplyEndpoints(payload []byte) error
+	ApplyAdmins(payload []byte) error
 	ApplySecret(ctx context.Context, message []byte) error
 	Readiness() types.Readiness
 }

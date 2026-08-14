@@ -303,6 +303,101 @@ leave every later `submitPrice` reverting `StaleConfig`:
 cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -config ../testdata/endpoints/public-only.json
 ```
 
+Then publish the admin set, which decides who may install credentials in that machine. The
+store requires both hashes, so a machine with endpoints but no admin set still cannot land a
+price — it reverts `NoAdminsPublished`:
+
+```bash
+cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../testdata/admins/dev-wellknown-keys.json
+```
+
+### Handing the Hex credential to the machine
+
+The credential holder does not need this repo's deployment context, only the proxy URL
+and three secrets. One script covers the whole flow:
+
+```bash
+./scripts/upload-hex-key.sh
+```
+
+It prompts for the proxy URL, the chain id, the expected code hash, and then — hidden —
+the backing admin private key, the proxy API key, and the Hex API key. Everything can be
+preset in the environment (`PROXY_URL`, `CHAIN_ID`, `EXPECTED_CODE_HASH`, `USDXPROV_KEY`,
+`USDXPROV_API_KEY`, `USDXPROV_VALUE`) to run it unattended.
+
+The five steps are: verify the machine, read its attested key, encrypt to it, sign once,
+submit over the direct channel, then confirm from the machine's own published state.
+Verification gates the rest — if it fails, nothing is sent.
+
+**Why the verification step is not optional.** The next step encrypts a credential to a
+public key the proxy served. A proxy that lied about that key would receive the plaintext.
+Reading a code hash from the same proxy proves nothing on its own, so `verify-tee` closes
+the loop against the chain instead:
+
+```bash
+cd tools && go run ./cmd/verify-tee -p <PROXY_URL> -code-hash 0x<EXPECTED>
+```
+
+It parses the code hash out of the **attestation** (not the self-reported JSON), derives
+the teeId from the **attested public key**, then checks on-chain that the derived teeId is
+registered at PRODUCTION and that its extension accepts that code hash on that platform.
+Substitute the key and the derived teeId stops matching a registered machine; substitute
+the attestation and the code hash stops matching what governance accepts. Pass
+`-code-hash` obtained **out of band** — without it the tool only proves the machine is
+*some* accepted machine, not that it runs the build you reviewed, and it says so.
+
+**Secrets never go in argv.** `usdxprov` reads its three credentials from `USDXPROV_VALUE`,
+`USDXPROV_KEY` and `USDXPROV_API_KEY`, and warns if you use the equivalent flag — a value
+in argv is readable by any other local process through `ps` and lands in shell history.
+
+Only one signature is needed here: `hex_api_key` falls under the `backing` set, which is
+1-of-N. A provider credential would need two distinct signers from the `providers` set.
+
+### Handing the RPC credentials to the machine
+
+The RPC keys are a separate upload, by a separate party, under a separate admin set:
+
+```bash
+./scripts/upload-rpc-keys.sh
+```
+
+Same five steps, three differences that follow from the split:
+
+- **Several credentials.** Every `{secret}` named in the published endpoint configuration is
+  its own ref, its own envelope and its own version. Which refs get uploaded comes from the
+  **machine** — it publishes `missingSecretRefs` — so the script cannot disagree with the
+  configuration actually applied. Each credential is read from an environment variable named
+  after its ref: `ankr_flare_key` → `ANKR_FLARE_KEY`.
+- **Two signatures.** The `providers` set is at least 2-of-N, so one laptop usually cannot
+  finish. The script signs with every key in `USDXPROV_KEYS` (comma-separated), submits if it
+  has enough, and otherwise **hands off**: the envelope goes to `OUT_DIR` for the next admin
+  to sign and submit. It holds ciphertext and signatures only, so it is safe to send over any
+  channel — but it expires 15 minutes after it was built.
+- **Rotation is explicit.** The default uploads only what the machine says is missing, which
+  makes a re-run after a partial failure safe. `--all` re-uploads every ref named in
+  `ENDPOINTS_FILE` — that is the rotation path, and the only one that needs a local copy of
+  the configuration, because `/state` publishes what is *missing* and never the full list.
+
+```bash
+./scripts/upload-rpc-keys.sh --refs ankr_eth_key      # one ref
+./scripts/upload-rpc-keys.sh --all                    # rotate everything
+```
+
+For a local mocknode, which has no attestation and no on-chain registration, both scripts
+take `--no-verify`. Never use it against a machine that will hold a real credential: it turns
+off the only check that the key being encrypted to belongs to an enclave at all.
+
+> Everything in this section uses throwaway keys anyone can sign with. For a live feed, follow
+> [usdx-oracle-production-setup.md](usdx-oracle-production-setup.md): same commands, but with
+> the keys genuinely separated across parties and the multi-admin handoff spelled out.
+
+`dev-wellknown-keys.json` names the addresses of private keys 1, 2 and 3, so anyone can sign
+as those admins. It is for local and testnet work only. It publishes two sets: `backing`
+(1-of-1, governing `hex_api_key`) and `providers` (2-of-3, governing the RPC credentials).
+`send-admins` prints both, with the credentials each governs — check that before spending gas. Both payloads are memory-only in the
+extension, so both must be republished after every restart — and `SET_ADMINS` must land
+before any `SET_SECRET`, since with no admin set installed nothing can authorise a credential.
+
 Confirm the machine actually applied it — this is the difference between what was *sent* and
 what is *running*:
 
@@ -310,7 +405,7 @@ what is *running*:
 docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml logs extension-tee | grep SET_ENDPOINTS
 ```
 
-Expect `SET_ENDPOINTS applied`. The `configHash` that `send-endpoints` printed must equal the
+Expect `SET_ENDPOINTS applied`, and `SET_ADMINS applied` for the admin set. The `configHash` that `send-endpoints` printed must equal the
 `endpointsHash` in `/state`.
 
 ## 5. Request a price and put it on-chain
@@ -457,6 +552,10 @@ Everything here was hit for real while bringing this up.
 | Result `status 0`, log `no recent observation` | The background loop has not produced anything inside `MaxObservationAge` (10 min). | Check `/state` `sourceHealth`; an upstream is failing. Working as designed — it fails closed. |
 | Result `status 0`, log `instruction carries an unexpected payload` | `originalMessage` was not exactly `0x01`. | Check the sender's constant matches `config.GetPriceRequestV1`. |
 | `submitPrice` reverts `StaleConfig` | The machine is running a different config than `expectedConfigHash`. | Compare `/state` `endpointsHash` against the hash `send-endpoints` printed; re-send if they differ. |
+| `submitPrice` reverts `NoAdminsPublished` | No admin set has been sent to this machine yet. | Run `send-admins` for it. |
+| `submitPrice` reverts `StaleAdmins` | The machine is running a different admin set than `expectedAdminsHash`. | Compare `/state` `adminsHash` against the hash `send-admins` printed; re-send if they differ. |
+| `submitPrice` reverts `BadBodyLength` | Extension and store disagree about the report layout. | They must be redeployed together; rebuild the image or redeploy the store. |
+| `SET_SECRET` rejected right after a restart | The admin set is memory-only and was lost. | Re-run `send-admins`, then re-submit the envelope. |
 | `submitPrice` reverts `UnknownSigner` | Machine not at status 2, **or the store still points at a previous extension generation**. Re-running `pre-build.sh` mints a new id and sender, and the store does not follow automatically. | Compare `store.extensionId()` with `getExtensionId(<TEE_ID>)`. If they differ, run `set-store-extension` (step 3e). Otherwise check `getTeeMachineStatus` and re-run `post-build.sh`. |
 | `connect: connection refused` on `localhost:6664` | Running under `--local`, where the proxy binds 6664 directly. (Before 6 Aug 2026 this was the default and Docker users hit it instead.) | `-p http://localhost:6664`, or export `EXT_PROXY_URL`. See "Which proxy port" above. |
 | `submitPrice` reverts `NotNewer` | A newer price already landed. | **Not a fault** — with ≥2 keepers exactly one submission wins per cycle. |

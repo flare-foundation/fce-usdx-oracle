@@ -52,6 +52,12 @@ type Readiness struct {
 	// EndpointsSet event to confirm this machine runs what was published.
 	EndpointsHash string `json:"endpointsHash"`
 
+	AdminsSet bool `json:"adminsSet"`
+
+	// keccak256 of the active SET_ADMINS payload. Compare against the AdminsSet
+	// event the same way. Addresses, never keys — nothing here is secret.
+	AdminsHash string `json:"adminsHash"`
+
 	Ready       bool     `json:"ready"`
 	MissingRefs []string `json:"missingSecretRefs"`
 }

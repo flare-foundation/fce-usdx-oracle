@@ -57,7 +57,16 @@ redis            the proxy's action queue
 | `go/cmd/start-tee` | `start-services.sh --local` | no Docker |
 | `go/cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
 | `tools/cmd/keeper` | ops | the relay timer |
+| `tools/cmd/verify-tee` | ops | gate before a credential: is this proxy fronting an accepted enclave? |
 | `tools/cmd/*` | deploy & one-shot ops | deploy, register, verify, submit-price… |
+
+### Scripts
+
+| Script | For |
+| --- | --- |
+| `scripts/upload-hex-key.sh` | install `hex_api_key` — backing set, ≥1 signature |
+| `scripts/upload-rpc-keys.sh` | install the RPC credentials — providers set, ≥2 signatures |
+| `scripts/oracle-*.sh` | observe, cycle, status — the operator commands |
 
 ### HTTP — exactly two ways into the extension
 
@@ -87,14 +96,16 @@ POST /action
        ├─ USDX_ORACLE / GET_PRICE     → processGetPrice        [Flow D]
        ├─ USDX_CONFIG / SET_ENDPOINTS → ApplyEndpoints         [Flow A]
        │     requires action type = instruction
+       ├─ USDX_CONFIG / SET_ADMINS    → ApplyAdmins            [Flow A2]
+       │     requires action type = instruction
        ├─ USDX_CONFIG / SET_SECRET    → ApplySecret            [Flow B]
        │     requires action type = direct
        └─ anything else               → HTTP 501
 ```
 
-The channel check matters: `SET_ENDPOINTS` over `direct` would skip the on-chain
-owner check, and `SET_SECRET` over `instruction` would put a credential
-ciphertext in permanent public storage.
+The channel check matters: `SET_ENDPOINTS` or `SET_ADMINS` over `direct` would
+skip the on-chain owner check, and `SET_SECRET` over `instruction` would put a
+credential ciphertext in permanent public storage.
 
 ---
 
@@ -122,9 +133,62 @@ That hash goes into every signed report, and the store compares it against
 
 ---
 
-## Flow B — SET_SECRET (the Hex credential)
+## Flow A2 — SET_ADMINS (who may provision this machine)
+
+```
+owner → InstructionSender.setAdmins(teeId, cfg)
+          expectedAdminsHash[teeId] = keccak256(cfg)  ← recorded before dispatch
+          registry.sendInstructions(...)
+             ↓  cosigned → proxy → tee-node → POST /action
+        runtimecfg.ApplyAdmins
+          JSON decode, unknown fields rejected
+          validateAdmins():
+            · version non-zero AND strictly greater than the last applied
+            · backing:   1 ≤ threshold ≤ admin count ≤ 32
+            · providers: 2 ≤ threshold ≤ admin count ≤ 32
+            · every entry parsable, non-zero and distinct within its set
+          verifier.SetAdmins(backing, providers)      ← both, or neither
+          adminsHash = keccak256(payload)             ← hashed as received
+```
+
+The payload carries TWO signer sets and the envelope's ref picks one:
+
+```
+ref == hex_api_key   → backing set     (1-of-N allowed)
+everything else      → providers set   (2-of-N minimum)
+```
+
+The mapping is pinned in the build, never read from the payload — otherwise the
+weaker set could claim the stronger set's credentials. Signers from the other set
+do not count toward a threshold, and an unrecognised ref falls under the
+*stronger* set.
+
+Same enforcement as Flow A: the hash goes into every signed report and the store
+compares it against `expectedAdminsHash[teeId]`.
+
+The verifier starts with **no** admin sets and rejects every envelope until both
+are installed, so Flow A2 must precede Flow B — on first provisioning and again
+after every restart, since they are memory-only.
+
+---
+
+## Flow B — SET_SECRET (the credentials)
 
 Three steps, three different people, and the chain is never touched.
+
+Run twice, by different parties, because the ref decides which admin set
+authorises the envelope and the two sets are held by different people:
+
+```
+scripts/upload-hex-key.sh    hex_api_key      backing set,   ≥1 signature
+scripts/upload-rpc-keys.sh   every other ref  providers set, ≥2 signatures
+```
+
+Both gate on `tools/cmd/verify-tee` before anything is encrypted, and take every
+secret from the environment rather than argv. The RPC script uploads whatever
+the machine reports as `missingSecretRefs`, one envelope per ref, and hands the
+envelope off to a second admin when it cannot meet the threshold itself. Under
+the scripts it is the same three commands:
 
 ```
 admin laptop
@@ -132,7 +196,7 @@ admin laptop
                     ciphertext = ECIES.Encrypt(pubkey, secret)
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, hash)
   usdxprov sign     admin #1   (refuses a duplicate signer)
-  usdxprov sign     admin #2
+  usdxprov sign     admin #2   (providers set only; backing can be 1-of-N)
   usdxprov submit   POST proxy/direct     ← must be within 15 min of issuedAt
      ↓  tee-node polls the direct queue → POST /action (type = direct)
 enclave
@@ -140,8 +204,10 @@ enclave
     applyMu held for the whole call               ← the replay defence needs this
     teenode.TeeID()  signs a fixed probe, recovers its own address
     provision.Verify()                            provision.go:209
+       admin sets must be installed at all — else rejected outright
+       set = backing if ref == hex_api_key else providers
        chainId · teeId · payload hash · freshness · version > last
-       · ≥2 DISTINCT admin signatures
+       · ≥ set.threshold DISTINCT signatures FROM THAT SET
        every failure returns the SAME error — no probing oracle
     node.Decrypt()   POST localhost:9090/decrypt  ← in-enclave
     reject a value containing  space \t \r \n / ? # &
@@ -203,7 +269,8 @@ anyone → InstructionSender.requestPriceUpdate()
     poller.Report(instructionID)                    observe.go:200
       Latest()  — fails closed if the observation is older than 10 min
       oracle.Sign()
-        body = abi(DOMAIN, price, decimals, observedAt, instructionId, endpointsHash)
+        body = abi(DOMAIN, price, decimals, observedAt, instructionId,
+                   endpointsHash, adminsHash)
         POST localhost:9090/sign  — tee-node applies EIP-191; wire is base64
         normalise v from 0/1 → 27/28
         data = abi(body, signature)
@@ -220,10 +287,14 @@ on every request. A request now costs one signing round trip.
 ## Flow E — the keeper relay
 
 ```
-tools/cmd/keeper → RunCycle, sequential, never overlapping     cycle.go:78
+tools/cmd/keeper → RunCycle, sequential, never overlapping     cycle.go:109
+  at start    sweep the fleet: one direct request per machine, submitted
+              oldest observation first, so every machine lands one price
   0. check for stuck transactions (a nonce gap blocks everything behind it)
-  1. TRIGGER   requestPriceUpdate() → instructionId
+  1. TRIGGER   POST proxy/direct → action id, next machine in the rotation;
+               every 2h instead: requestPriceUpdate() → instructionId
   2. COLLECT   GET proxy/action/result/<id>, backoff 1s → 16s
+                 on-chain: asked of every machine's proxy, one of them has it
                  404 = pending, not an error
                  status 0 → STOP, record the error class, invent nothing
   3. RELAY     decode → preflight (simulate, map the revert to a named guard)
@@ -317,8 +388,11 @@ either public surface. That is a compile error, not a review item.
 
 ## Open items for the audit
 
-1. **Admin set is placeholder keys.** `provision.Admins` are private keys 1, 2
-   and 3. Flagged loudly in-code; the hard pre-production blocker.
+1. **The admin set must be published before a live feed.** Nothing is baked any
+   more: a machine starts with no admins and refuses every `SET_SECRET` until
+   `SET_ADMINS` installs one. The pre-production requirement is that the set
+   published is a real one — `testdata/admins/dev-wellknown-keys.json` names
+   private keys 1, 2 and 3 and is for local and testnet work only.
 2. **`Poller.Stats()` is dead code.** `/state` counters and `sourceHealth` are
    written only on the GET_PRICE path, so a machine nobody queries reports an
    empty health map while its poller fails every 2 minutes.

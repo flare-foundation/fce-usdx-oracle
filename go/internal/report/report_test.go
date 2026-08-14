@@ -18,6 +18,7 @@ func testReport(t *testing.T) PriceReport {
 		ObservedAt:    1_700_000_000,
 		InstructionID: common.HexToHash("0x" + "11"),
 		EndpointsHash: common.HexToHash("0x" + "9f3c"),
+		AdminsHash:    common.HexToHash("0x" + "5e21"),
 	}
 }
 
@@ -26,7 +27,7 @@ func testReport(t *testing.T) PriceReport {
 // Solidity side must agree with — not a tautology asserting the encoder equals
 // itself.
 //
-// Every field is a static type, so abi.encode is five concatenated 32-byte
+// Every field is a static type, so abi.encode is seven concatenated 32-byte
 // words with no offsets and no length prefixes.
 func TestEncodeBody_GoldenLayout(t *testing.T) {
 	r := testReport(t)
@@ -47,6 +48,7 @@ func TestEncodeBody_GoldenLayout(t *testing.T) {
 	want = append(want, word(big.NewInt(1_700_000_000).Bytes())...) // uint64 observedAt
 	want = append(want, r.InstructionID.Bytes()...)                 // bytes32 instructionId
 	want = append(want, r.EndpointsHash.Bytes()...)                 // bytes32 endpointsHash
+	want = append(want, r.AdminsHash.Bytes()...)                    // bytes32 adminsHash
 
 	got, err := EncodeBody(r)
 	if err != nil {
@@ -57,7 +59,7 @@ func TestEncodeBody_GoldenLayout(t *testing.T) {
 		t.Fatalf("body length %d, want %d", len(got), BodyLength)
 	}
 	if !bytes.Equal(got, want) {
-		for i := 0; i < 6; i++ {
+		for i := 0; i < 7; i++ {
 			g := got[i*32 : (i+1)*32]
 			w := want[i*32 : (i+1)*32]
 			if !bytes.Equal(g, w) {

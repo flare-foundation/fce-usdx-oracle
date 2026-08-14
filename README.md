@@ -427,11 +427,20 @@ credentials. Run `cmd/mocknode` and `cmd/devserver`, apply a config with
 `./scripts/set-endpoints.sh testdata/endpoints/public-only.json 8099`, then POST a GET_PRICE
 action. Healthy output is `lastPrice: "100000000"` with `hex_cash: not_configured`.
 
-**On-chain, the full path** is four commands once the machine is registered and at PRODUCTION:
+**On-chain, the full path** is five commands once the machine is registered and at PRODUCTION:
 
 ```bash
 cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -config ../testdata/endpoints/public-only.json
 ```
+
+```bash
+cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../testdata/admins/dev-wellknown-keys.json
+```
+
+> `dev-wellknown-keys.json` names the addresses of private keys 1, 2 and 3 — fine for local
+> and testnet work, never for a live feed. It publishes two sets: `backing` (1-of-1, for
+> `hex_api_key`) and `providers` (2-of-3, for the RPC credentials). Both are memory-only, so
+> they must be republished after every extension restart, and before any `SET_SECRET`.
 
 ```bash
 cd tools && go run ./cmd/run-test -instructionSender <SENDER>
@@ -632,6 +641,7 @@ Sends instructions on-chain via your deployed `InstructionSender` and polls the 
 **The oracle**
 
 - **[Implementation findings](docs/usdx-oracle-findings.md)** — every issue found while building, each pinned by a named test. Read this first
+- **[Production setup runbook](docs/usdx-oracle-production-setup.md)** — configuration on-chain, credentials under two admin sets, and starting the feed. Who holds what, and in which order
 - [Plan & TODO](docs/usdx-oracle-plan.md) — decisions, open questions, milestones, and the current Coston2 deployment
 - [Spec](docs/usdx-oracle-spec.md) — price definition, inputs, verified addresses, work packages
 - [Keeper specification](docs/usdx-oracle-keeper.md) — the cycle and its reliability semantics

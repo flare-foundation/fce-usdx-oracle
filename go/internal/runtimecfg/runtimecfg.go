@@ -1,15 +1,21 @@
-// Package runtimecfg holds the two things that arrive after startup: RPC
-// provider URLs and credentials. Everything else is pinned in internal/config.
+// Package runtimecfg holds the three things that arrive after startup: RPC
+// provider URLs, the admin signer set, and credentials. Everything else is
+// pinned in internal/config.
 //
 //	ApplyEndpoints ─┐
-//	                ├─► Store ──► Resolve() ──► oracle.Config
-//	ApplySecret   ──┘
+//	ApplyAdmins    ─┼─► Store ──► Resolve() ──► oracle.Config
+//	ApplySecret    ─┘
 //
 // Provider URLs and thresholds are unconstrained by decision — no host
 // allowlist — so whoever can send SET_ENDPOINTS can choose the published price.
 // What is still enforced is https only and a credential that cannot restructure
-// the URL it lands in. Credentials are memory-only; a restart returns the
-// extension to not_configured.
+// the URL it lands in.
+//
+// All three are memory-only; a restart returns the extension to not_configured.
+// For admins that is load-bearing rather than incidental: the set cannot be
+// installed by anyone but the owner key, so a restarted machine fails closed on
+// SET_SECRET until SET_ADMINS is republished, and there is no window in which a
+// first-come envelope could claim the enclave.
 package runtimecfg
 
 import (
@@ -75,6 +81,43 @@ type Provider struct {
 	Secret string `json:"secret,omitempty"`
 }
 
+// Admins is the entire SET_ADMINS payload: two signer sets, published together.
+//
+//	{
+//	  "version": 1,
+//	  "backing":   {"threshold": 1, "admins": ["0x1111…"]},
+//	  "providers": {"threshold": 2, "admins": ["0x2222…", "0x3333…", "0x4444…"]}
+//	}
+//
+// Addresses only — never keys, and nothing secret. The whole payload is public
+// on-chain by construction, which is the point: who may provision a machine is
+// as verifiable as which providers it reads.
+//
+// Which set governs which credential is NOT in this payload. config.HexAPIKeyRef
+// is the backing credential and everything else is a provider credential, pinned
+// in the build; otherwise whoever publishes admins could move a credential under
+// whichever set they happen to hold.
+type Admins struct {
+	// Strictly increasing across the life of the process. Blocks a captured
+	// SET_ADMINS from reinstating a superseded pair of signer sets.
+	Version uint64 `json:"version"`
+
+	// Governs the pinned backing credential only.
+	Backing AdminSet `json:"backing"`
+
+	// Governs every other credential — the RPC provider keys named by
+	// SET_ENDPOINTS, and any ref this build does not recognise.
+	Providers AdminSet `json:"providers"`
+}
+
+// AdminSet is one published signer set.
+type AdminSet struct {
+	// How many DISTINCT members must sign a provisioning envelope.
+	Threshold int `json:"threshold"`
+
+	Admins []string `json:"admins"`
+}
+
 // Node is the subset of tee-node this package needs.
 type Node interface {
 	Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error)
@@ -101,6 +144,25 @@ type Store struct {
 	// from the setEndpoints transaction, so it cannot be recomputed from the
 	// decoded struct.
 	endpointsHash common.Hash
+
+	// keccak256 of the raw SET_ADMINS payload as received, on the same terms:
+	// UsdxPriceStore compares it against expectedAdminsHash.
+	adminsHash common.Hash
+
+	// adminsSet records that an admin set was installed, so Readiness can
+	// distinguish "no admins yet" from "admins installed" without reaching into
+	// the verifier, which is guarded by applyMu rather than mu.
+	adminsSet bool
+
+	// Highest SET_ADMINS version applied. The instruction channel has the
+	// registry's own replay protection, but the admin set is the root of trust
+	// for every credential that follows, so this does not rely on it: a captured
+	// SET_ADMINS must not be able to reinstate a rotated-out signer.
+	//
+	// In-memory like everything else here, which is safe in the direction that
+	// matters — a restart clears it, and the only party who can exploit that is
+	// the owner key, who can publish any set it likes anyway.
+	adminsVersion uint64
 
 	secrets map[string]string
 
@@ -143,6 +205,116 @@ func (s *Store) ApplyEndpoints(payload []byte) error {
 	s.endpointsHash = crypto.Keccak256Hash(payload)
 	s.mu.Unlock()
 	return nil
+}
+
+// ApplyAdmins installs the admin signer set from an on-chain instruction.
+// Authorisation is the owner-only check in the instruction sender, exactly as
+// for endpoints; what is checked here is content.
+//
+// The two are separate commands so either can be rotated without republishing
+// the other, and because they answer different questions: SET_ENDPOINTS decides
+// which sources a price comes from, SET_ADMINS decides who may put credentials
+// in the machine that reads them.
+func (s *Store) ApplyAdmins(payload []byte) error {
+	// Covers the verifier for the whole call, like ApplySecret: SetAdmins writes
+	// state that a concurrent Verify would read.
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if len(payload) == 0 || len(payload) > maxPayloadBytes {
+		return errors.New("runtimecfg: admin payload is empty or too large")
+	}
+
+	var a Admins
+	dec := json.NewDecoder(io.LimitReader(strings.NewReader(string(payload)), maxPayloadBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&a); err != nil {
+		return errors.New("runtimecfg: payload is not a known admin set")
+	}
+
+	backing, providers, err := validateAdmins(a)
+	if err != nil {
+		return err
+	}
+
+	// Strictly increasing: a captured envelope must not reinstate a superseded
+	// set. Checked before SetAdmins so a replay leaves the live set untouched.
+	if a.Version <= s.adminsVersion {
+		return fmt.Errorf(
+			"runtimecfg: admin version %d is not newer than %d", a.Version, s.adminsVersion)
+	}
+
+	if err := s.verifier.SetAdmins(backing, providers); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.adminsHash = crypto.Keccak256Hash(payload)
+	s.adminsVersion = a.Version
+	s.adminsSet = true
+	s.mu.Unlock()
+	return nil
+}
+
+// validateAdmins checks a payload's structure and returns both parsed sets. Pure
+// string work, so a bad admin set is rejected when sent rather than at the next
+// provisioning attempt.
+func validateAdmins(a Admins) (backing, providers provision.AdminSet, err error) {
+	// Zero is the "never applied" sentinel for adminsVersion, so it could never
+	// be accepted; saying so here beats a confusing version comparison.
+	if a.Version == 0 {
+		return backing, providers, errors.New("runtimecfg: admin version must be non-zero")
+	}
+
+	backing, err = parseAdminSet("backing", a.Backing, provision.MinBackingThreshold)
+	if err != nil {
+		return backing, providers, err
+	}
+	providers, err = parseAdminSet("providers", a.Providers, provision.MinProviderThreshold)
+	if err != nil {
+		return backing, providers, err
+	}
+
+	// The two sets MAY overlap — the same person can hold both roles — so no
+	// disjointness check. What matters is that neither set can satisfy the
+	// other's threshold, which holds because each envelope is verified against
+	// exactly one set.
+	return backing, providers, nil
+}
+
+func parseAdminSet(name string, in AdminSet, floor int) (provision.AdminSet, error) {
+	if len(in.Admins) == 0 || len(in.Admins) > provision.MaxAdmins {
+		return provision.AdminSet{}, fmt.Errorf(
+			"runtimecfg: %s admin count %d is not between 1 and %d",
+			name, len(in.Admins), provision.MaxAdmins)
+	}
+	if in.Threshold < floor || in.Threshold > len(in.Admins) {
+		return provision.AdminSet{}, fmt.Errorf(
+			"runtimecfg: %s admin threshold %d is not between %d and %d",
+			name, in.Threshold, floor, len(in.Admins))
+	}
+
+	seen := make(map[common.Address]bool, len(in.Admins))
+	out := make([]common.Address, 0, len(in.Admins))
+	for _, raw := range in.Admins {
+		text := strings.TrimSpace(raw)
+		// common.HexToAddress silently yields the zero address for anything it
+		// cannot parse, so a typo would otherwise install a signer nobody holds
+		// and quietly shrink the effective set.
+		if !common.IsHexAddress(text) {
+			return provision.AdminSet{}, fmt.Errorf("runtimecfg: %s admin is not a hex address", name)
+		}
+		addr := common.HexToAddress(text)
+		if addr == (common.Address{}) {
+			return provision.AdminSet{}, fmt.Errorf("runtimecfg: %s admin address is zero", name)
+		}
+		if seen[addr] {
+			return provision.AdminSet{}, fmt.Errorf("runtimecfg: duplicate %s admin address", name)
+		}
+		seen[addr] = true
+		out = append(out, addr)
+	}
+	return provision.AdminSet{Admins: out, Threshold: in.Threshold}, nil
 }
 
 // ApplySecret verifies a signed envelope and installs the credential it
@@ -199,8 +371,13 @@ func (s *Store) Readiness() types.Readiness {
 	return types.Readiness{
 		EndpointsSet:  s.endpoints != nil,
 		EndpointsHash: s.endpointsHash.Hex(),
-		Ready:         s.endpoints != nil && len(missing) == 0,
-		MissingRefs:   missing,
+		AdminsSet:     s.adminsSet,
+		AdminsHash:    s.adminsHash.Hex(),
+		// Admins are part of being provisioned, not merely a precondition for
+		// it: without them no credential can arrive, and the store will not
+		// accept a price that does not commit to a published set.
+		Ready:       s.endpoints != nil && s.adminsSet && len(missing) == 0,
+		MissingRefs: missing,
 	}
 }
 
@@ -229,6 +406,11 @@ func (s *Store) Resolve() (oracle.Config, error) {
 	defer s.mu.RUnlock()
 
 	if s.endpoints == nil {
+		return oracle.Config{}, failure.NotConfigured
+	}
+	// A price that cannot commit to a published admin set would be rejected by
+	// the store anyway; refusing to observe says so at the honest point.
+	if !s.adminsSet {
 		return oracle.Config{}, failure.NotConfigured
 	}
 
@@ -287,6 +469,7 @@ func (s *Store) Resolve() (oracle.Config, error) {
 	cfg := oracle.Config{
 		Chains: chains, Bonds: bonds, Cash: cash,
 		EndpointsHash: s.endpointsHash,
+		AdminsHash:    s.adminsHash,
 	}
 	if err := cfg.Validate(); err != nil {
 		return oracle.Config{}, failure.Internal

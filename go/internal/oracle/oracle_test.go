@@ -125,6 +125,10 @@ func (s *fakeSigner) Sign(ctx context.Context, message []byte) ([]byte, error) {
 // testEndpointsHash stands in for keccak256 of a SET_ENDPOINTS payload.
 var testEndpointsHash = common.HexToHash("0x9f3c")
 
+// testAdminsHash stands in for keccak256 of a SET_ADMINS payload. Distinct from
+// testEndpointsHash so a test cannot pass by carrying the wrong one through.
+var testAdminsHash = common.HexToHash("0x5e21")
+
 func testConfig(t *testing.T, chain *fakeChain, bonds, cash *fakeSource) Config {
 	t.Helper()
 	return Config{
@@ -139,6 +143,7 @@ func testConfig(t *testing.T, chain *fakeChain, bonds, cash *fakeSource) Config 
 		Bonds:         bonds,
 		Cash:          cashSource(cash),
 		EndpointsHash: testEndpointsHash,
+		AdminsHash:    testAdminsHash,
 	}
 }
 

@@ -57,7 +57,7 @@ redis              the proxy's action queue
 | `go/` | the extension implementation (the only language checked in) |
 | `contracts/` | `InstructionSender`, `UsdxPriceStore`, `UsdxCustomFeed` + interfaces |
 | `tools/` | deployment, registration and the keeper — **language-neutral**, talks wire format only |
-| `scripts/` | setup, start/stop, and the four `oracle-*.sh` operator commands |
+| `scripts/` | setup, start/stop, the four `oracle-*.sh` operator commands, and the two `upload-*.sh` credential uploads |
 | `test/` | Foundry tests for the store |
 | `docs/` | spec, rationale, findings, flows, deployment |
 | `testing/` | agent-driven chaos / smoke / edge-case harness |
@@ -117,9 +117,11 @@ go poller.Run(ctx)                        ── the engine starts immediately
 e.Server.ListenAndServe()
 ```
 
-The extension boots **unprovisioned** and that is normal — credentials are memory-only,
-so every restart returns it to `not_configured` until `SET_ENDPOINTS` and `SET_SECRET`
-land again.
+The extension boots **unprovisioned** and that is normal — endpoints, the admin set and
+credentials are all memory-only, so every restart returns it to `not_configured` until
+`SET_ENDPOINTS`, `SET_ADMINS` and `SET_SECRET` land again. `SET_ADMINS` must precede
+`SET_SECRET`: with no admin set installed nothing can authorise a credential, and the
+verifier rejects every envelope until one is.
 
 `extension.NewWithProvisioner` panics on a nil observer. `NewStub` is the *only* way to
 get a stub, and it is named at its single call site (`cmd/main.go`) — the scaffold's
@@ -137,13 +139,16 @@ POST /action  (utils.go:16 actionHandler)
   └─ processAction
        ├─ USDX_ORACLE / GET_PRICE     → processGetPrice        [Flow D]
        ├─ USDX_CONFIG / SET_ENDPOINTS → ApplyEndpoints         [Flow A]  requires type = instruction
+       ├─ USDX_CONFIG / SET_ADMINS    → ApplyAdmins            [Flow A2] requires type = instruction
        ├─ USDX_CONFIG / SET_SECRET    → ApplySecret            [Flow B]  requires type = direct
        └─ anything else               → HTTP 501
 ```
 
-The channel check is a security control, not bookkeeping: `SET_ENDPOINTS` over `direct`
-would skip the on-chain owner check; `SET_SECRET` over `instruction` would put a
-credential ciphertext into permanent public storage.
+The channel check is a security control, not bookkeeping: `SET_ENDPOINTS` or
+`SET_ADMINS` over `direct` would skip the on-chain owner check — for `SET_ADMINS` that
+means anyone reaching the proxy could install their own admin set and provision through
+it; `SET_SECRET` over `instruction` would put a credential ciphertext into permanent
+public storage.
 
 ### Flow A — `SET_ENDPOINTS` (which RPC sources we read)
 
@@ -167,9 +172,49 @@ That hash rides in every signed report, and the store compares it against
 `expectedConfigHash[teeId]`. Without it, the chain would record what was *sent*, never
 what a machine is *running*.
 
-### Flow B — `SET_SECRET` (the Hex credential)
+### Flow A2 — `SET_ADMINS` (who may provision this machine)
 
-Three steps, three different people, chain never touched.
+```
+owner → InstructionSender.setAdmins(teeId, cfg)             InstructionSender.sol
+          expectedAdminsHash[teeId] = keccak256(cfg)        ← recorded BEFORE dispatch
+          registry.sendInstructions(...)
+            ↓ cosigned → proxy → tee-node → POST /action
+        extension.processUsdxConfig                         config_handler.go
+        runtimecfg.ApplyAdmins                              runtimecfg.go
+          JSON decode with DisallowUnknownFields
+          validateAdmins()
+            · version must be non-zero AND strictly greater than the last applied
+            · backing:   MinBackingThreshold (1)  ≤ threshold ≤ count ≤ 32
+            · providers: MinProviderThreshold (2) ≤ threshold ≤ count ≤ 32
+            · every entry a parsable, non-zero hex address, distinct within its set
+          provision.Verifier.SetAdmins(backing, providers)   ← both, or neither
+          adminsHash = keccak256(payload AS RECEIVED)        ← never recomputed from the struct
+```
+
+The payload carries **two** signer sets. `config.HexAPIKeyRef` is authorised by the
+`backing` set (1-of-N allowed, because it authenticates a pinned endpoint by header);
+every other ref by the `providers` set (2-of-N minimum, because those credentials are
+substituted into URLs `SET_ENDPOINTS` chooses). The ref-to-set mapping is pinned at
+`NewVerifier` and never read from the payload, and a signer from one set does not count
+toward the other's threshold — see rationale §9.
+
+Same shape as Flow A otherwise, and the same enforcement: the hash rides in every signed
+report and the store compares it against `expectedAdminsHash[teeId]`. The version counter
+is the one addition — the admin sets are the root of trust for every credential that
+follows, so a captured `SET_ADMINS` must not be able to reinstate a rotated-out signer.
+
+Rotation does **not** reset the per-ref envelope versions in the verifier: those are
+anti-rollback state independent of who signs, and clearing them would let an envelope
+the outgoing admins signed be replayed against the incoming set.
+
+### Flow B — `SET_SECRET` (the credentials)
+
+Three steps, three different people, chain never touched. Two uploads, because
+the ref selects the admin set and the two sets are held by different parties:
+`scripts/upload-hex-key.sh` for `hex_api_key` (backing, ≥1 signature) and
+`scripts/upload-rpc-keys.sh` for every RPC credential (providers, ≥2). Both gate
+on `tools/cmd/verify-tee` first, and read every secret from the environment
+rather than argv, where `ps` would expose it.
 
 ```
 admin laptop (go/cmd/usdxprov)
@@ -244,7 +289,7 @@ anyone → InstructionSender.requestPriceUpdate()           InstructionSender.so
       Latest()  ─ fails closed if the observation is older than 10 min
       oracle.Sign()                                       oracle.go:158
         report.EncodeBody → abi(DOMAIN, price, decimals, observedAt,
-                                instructionId, endpointsHash)
+                                instructionId, endpointsHash, adminsHash)
         teenode.Sign → POST localhost:9090/sign   (tee-node applies EIP-191;
                                                    wire is base64, not hex)
         NormalizeV: 0/1 → 27/28, so the store can use stock OpenZeppelin
@@ -256,10 +301,16 @@ anyone → InstructionSender.requestPriceUpdate()           InstructionSender.so
 ### Flow E — the keeper relay (`tools/`)
 
 ```
-tools/cmd/keeper → keeper.Run (timer, single-flight) → keeper.RunCycle   cycle.go:59
+tools/cmd/keeper → keeper.Run (timer, single-flight) → keeper.RunCycle   cycle.go:109
+  at start:  keeper.Sweep — one direct request per registered machine,     sweep.go:30
+             submitted in ascending observedAt order so they all land
   0. pendingNonceGap  — a stuck tx blocks everything behind its nonce
-  1. TRIGGER   instrutils.RequestPriceUpdate() → instructionId
-  2. COLLECT   PollResult: GET proxy/action/result/<id>, backoff 1s → 16s
+  1. TRIGGER   direct by default: POST proxy/direct → action id (no fee, no tx),
+                 rotating over the fleet, one machine per cycle;
+                 every -onChainEvery (2h) instead:
+                 instrutils.RequestPriceUpdate() → instructionId
+  2. COLLECT   PollResultAny: GET proxy/action/result/<id>, backoff 1s → 16s
+                 on-chain: every machine's proxy, since the registry chose one
                  404 = pending, not an error
                  status 0 → STOP and record the error class; inventing a price
                  is the one thing the keeper must never do
@@ -323,7 +374,7 @@ as worthless rather than absent.
 | `pkg/fccutils` | FCC registration, governance, policy-consistency, revert decoding |
 | `pkg/contracts/*` | generated bindings (`go generate ./...` after editing Solidity) |
 | `pkg/validate` | the deploy/verify check suite behind `verify-deploy` |
-| `cmd/*` | one binary per operation: `deploy-store`, `register-extension`, `register-tee`, `send-endpoints`, `set-governance`, `set-store-extension`, `submit-price`, `keeper`, `verify-deploy`, `audit-deploy`, `query-tee` … |
+| `cmd/*` | one binary per operation: `deploy-store`, `register-extension`, `register-tee`, `send-endpoints`, `send-admins`, `verify-tee`, `set-governance`, `set-store-extension`, `submit-price`, `keeper`, `verify-deploy`, `audit-deploy`, `query-tee` … |
 
 ---
 
@@ -377,8 +428,12 @@ carries the long form.
 
 ## 11. Gotchas worth knowing before you touch it
 
-- **`provision.Admins` are private keys 1, 2 and 3.** Development placeholders, flagged
-  loudly in-code. The hard pre-production blocker.
+- **The admin sets are published, not baked, and are memory-only.** A machine starts with
+  none and rejects every `SET_SECRET` until `SET_ADMINS` lands, so they must be republished
+  after every restart and *before* any credential. There are TWO sets and the envelope's
+  ref picks one: `hex_api_key` → `backing` (1-of-N allowed), everything else → `providers`
+  (2-of-N minimum). The checked-in `testdata/admins/dev-wellknown-keys.json` names private
+  keys 1, 2 and 3 — local and testnet only.
 - **`/state` counters count served `GET_PRICE` actions, not the poller.**
   `observe.Poller.Stats()` exists but is never called — a machine nobody queries reports
   an empty health map while its poller may be failing every 2 minutes. Alert on on-chain

@@ -1,12 +1,23 @@
 // Package report encodes the signed price payload.
 //
-//	body = abi.encode(domain, price, decimals, observedAt, instructionId, endpointsHash)
+//	body = abi.encode(domain, price, decimals, observedAt, instructionId,
+//	                  endpointsHash, adminsHash)
 //	data = abi.encode(body, signature)
 //
 // FCC is fire-and-forget, so the payload arranges its own replay protection:
 // domain separates this signature from anything else the identity key signs,
 // observedAt is the store's monotonicity key, endpointsHash commits to the
-// configuration the price was computed under. See docs/usdx-oracle-rationale.md.
+// configuration the price was computed under, and adminsHash commits to the
+// signer set that could have installed the credentials used to compute it.
+// See docs/usdx-oracle-rationale.md.
+//
+// adminsHash was appended WITHOUT bumping DomainName, which the rule below
+// otherwise requires. That is a deliberate development-phase exception: the
+// extension and UsdxPriceStore are redeployed together, so no mixed pair is
+// ever live. BodyLength is what enforces it — a peer on the six-field layout
+// fails the length check on both sides rather than decoding a body that is
+// missing its admin commitment. Bump the domain the moment the two can ship
+// independently.
 package report
 
 import (
@@ -23,8 +34,8 @@ import (
 // string so old signatures cannot be reinterpreted under the new schema.
 const DomainName = "USDX_ORACLE_PRICE_V1"
 
-// BodyLength is the encoded body's length: six static ABI words.
-const BodyLength = 6 * 32
+// BodyLength is the encoded body's length: seven static ABI words.
+const BodyLength = 7 * 32
 
 func Domain() common.Hash { return crypto.Keccak256Hash([]byte(DomainName)) }
 
@@ -37,6 +48,9 @@ type PriceReport struct {
 	// keccak256 of the raw SET_ENDPOINTS payload as received, never
 	// re-serialised: json.Marshal will not reproduce byte-identical input.
 	EndpointsHash common.Hash
+
+	// keccak256 of the raw SET_ADMINS payload as received, on the same terms.
+	AdminsHash common.Hash
 }
 
 var bodyArgs = mustArgs(
@@ -46,6 +60,7 @@ var bodyArgs = mustArgs(
 	"uint64",  // observedAt
 	"bytes32", // instructionId
 	"bytes32", // endpointsHash
+	"bytes32", // adminsHash
 )
 
 var dataArgs = mustArgs("bytes", "bytes")
@@ -70,12 +85,16 @@ func EncodeBody(r PriceReport) ([]byte, error) {
 	if r.Decimals < 0 {
 		return nil, failure.Internal
 	}
-	// Zero observedAt and zero endpointsHash are the store's "never seen" and
-	// "no configuration published" sentinels; neither could ever be accepted.
+	// Zero observedAt, zero endpointsHash and zero adminsHash are the store's
+	// "never seen", "no configuration published" and "no admin set published"
+	// sentinels; none could ever be accepted.
 	if r.ObservedAt == 0 {
 		return nil, failure.Internal
 	}
 	if r.EndpointsHash == (common.Hash{}) {
+		return nil, failure.Internal
+	}
+	if r.AdminsHash == (common.Hash{}) {
 		return nil, failure.Internal
 	}
 
@@ -86,6 +105,7 @@ func EncodeBody(r PriceReport) ([]byte, error) {
 		r.ObservedAt,
 		r.InstructionID,
 		r.EndpointsHash,
+		r.AdminsHash,
 	)
 	if err != nil {
 		return nil, failure.Internal
@@ -127,8 +147,15 @@ func DecodeData(data []byte) (body, signature []byte, err error) {
 // DecodeBody reverses EncodeBody, verifying the domain separator so a payload
 // signed for a different schema is rejected rather than silently misread.
 func DecodeBody(body []byte) (PriceReport, error) {
+	// Length first: Unpack would accept a longer buffer and read only the words
+	// it expects, so a body from a peer on a later layout must be rejected here
+	// rather than silently truncated. See the domain note in the package doc.
+	if len(body) != BodyLength {
+		return PriceReport{}, failure.Internal
+	}
+
 	values, err := bodyArgs.Unpack(body)
-	if err != nil || len(values) != 6 {
+	if err != nil || len(values) != 7 {
 		return PriceReport{}, failure.Internal
 	}
 
@@ -142,6 +169,7 @@ func DecodeBody(body []byte) (PriceReport, error) {
 	observedAt, _ := values[3].(uint64)
 	instructionID, _ := values[4].([32]byte)
 	endpointsHash, _ := values[5].([32]byte)
+	adminsHash, _ := values[6].([32]byte)
 
 	if priceV == nil {
 		return PriceReport{}, failure.Internal
@@ -153,5 +181,6 @@ func DecodeBody(body []byte) (PriceReport, error) {
 		ObservedAt:    observedAt,
 		InstructionID: common.Hash(instructionID),
 		EndpointsHash: common.Hash(endpointsHash),
+		AdminsHash:    common.Hash(adminsHash),
 	}, nil
 }

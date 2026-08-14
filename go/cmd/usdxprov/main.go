@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/provision"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -75,7 +76,13 @@ func usage() {
   usdxprov submit -in env.json -url <proxy> [-api-key <k>] [-action-url <url>]
 
 The freshness window is `+provision.Freshness.String()+`: sign and submit within it, or
-the envelope is rejected as stale. `+fmt.Sprint(provision.Threshold)+` distinct admin signatures are required.
+the envelope is rejected as stale.
+
+Two signer sets are published per machine, and the ref decides which one applies:
+`+config.HexAPIKeyRef+` is authorised by the backing set (at least
+`+fmt.Sprint(provision.MinBackingThreshold)+` signature), every other ref by the providers set (at least
+`+fmt.Sprint(provision.MinProviderThreshold)+` DISTINCT signatures). The exact thresholds are whatever SET_ADMINS
+published, and only the target machine can tell you whether an envelope satisfies them.
 `)
 	os.Exit(2)
 }
@@ -87,14 +94,15 @@ func build(args []string) error {
 	proxyURL := fs.str("url", "", "proxy or mocknode base URL")
 	chainID := fs.i64("chain-id", 0, "target chain id")
 	ref := fs.str("ref", "", "secret name, e.g. hex_api_key")
-	value := fs.str("value", "", "the credential itself")
+	value := fs.secret("value", "USDXPROV_VALUE", "the credential itself")
 	version := fs.u64("version", 1, "must strictly increase per ref")
 	out := fs.str("out", "envelope.json", "output file")
 	teeIDFlag := fs.str("tee", "", "override the teeId from /info")
 	if err := fs.parse(); err != nil {
 		return err
 	}
-	if *proxyURL == "" || *ref == "" || *value == "" || *chainID == 0 {
+	credential := value()
+	if *proxyURL == "" || *ref == "" || credential == "" || *chainID == 0 {
 		return fmt.Errorf("-url, -chain-id, -ref and -value are required")
 	}
 
@@ -111,7 +119,7 @@ func build(args []string) error {
 
 	// Encrypt to the enclave. From here the credential exists in plaintext only
 	// inside the target TEE.
-	ciphertext, err := ecies.Encrypt(cryptoRand(), ecies.ImportECDSAPublic(pub), []byte(*value), nil, nil)
+	ciphertext, err := ecies.Encrypt(cryptoRand(), ecies.ImportECDSAPublic(pub), []byte(credential), nil, nil)
 	if err != nil {
 		return fmt.Errorf("encrypting to the TEE key: %w", err)
 	}
@@ -152,8 +160,10 @@ func build(args []string) error {
 	fmt.Printf("  expires  %s (%s from now)\n",
 		time.Unix(int64(env.IssuedAt), 0).Add(provision.Freshness).UTC().Format(time.RFC3339),
 		provision.Freshness)
-	fmt.Printf("\nNeeds %d distinct admin signatures. The credential is already encrypted,\n", provision.Threshold)
-	fmt.Printf("so this file is safe to send to the signers.\n")
+	fmt.Printf("\nRef %q is authorised by the %s set: at least %d distinct signature(s) —\n",
+		env.Ref, setNameFor(env.Ref), provision.MinThresholdFor(env.Ref, config.HexAPIKeyRef))
+	fmt.Printf("the published threshold for this machine may be higher. The credential is\n")
+	fmt.Printf("already encrypted, so this file is safe to send to the signers.\n")
 	return nil
 }
 
@@ -162,12 +172,13 @@ func build(args []string) error {
 func sign(args []string) error {
 	fs := flags("sign", args, nil, nil)
 	in := fs.str("in", "envelope.json", "envelope file")
-	keyHex := fs.str("key", "", "admin private key, hex")
+	keyHex := fs.secret("key", "USDXPROV_KEY", "admin private key, hex")
 	out := fs.str("out", "", "output file (defaults to -in)")
 	if err := fs.parse(); err != nil {
 		return err
 	}
-	if *keyHex == "" {
+	adminKey := keyHex()
+	if adminKey == "" {
 		return fmt.Errorf("-key is required")
 	}
 
@@ -176,7 +187,7 @@ func sign(args []string) error {
 		return err
 	}
 
-	key, err := crypto.HexToECDSA(strings.TrimPrefix(*keyHex, "0x"))
+	key, err := crypto.HexToECDSA(strings.TrimPrefix(adminKey, "0x"))
 	if err != nil {
 		return fmt.Errorf("bad admin key")
 	}
@@ -214,10 +225,11 @@ func sign(args []string) error {
 		return err
 	}
 
-	fmt.Printf("signed by %s (%d/%d)\n", signer.Hex(), len(f.Signatures), provision.Threshold)
-	if !isAdmin(signer) {
-		fmt.Printf("WARNING: %s is not in the baked admin set — this signature will not count\n", signer.Hex())
-	}
+	// No local admin-set check: the set is published per machine by SET_ADMINS
+	// and lives in the enclave, so this tool cannot know it without trusting a
+	// copy that would go stale on the first rotation. The machine is the
+	// authority, and it reports one rejection for everything by design.
+	fmt.Printf("signed by %s (%d signature(s) so far)\n", signer.Hex(), len(f.Signatures))
 	return nil
 }
 
@@ -227,7 +239,7 @@ func submit(args []string) error {
 	fs := flags("submit", args, nil, nil)
 	in := fs.str("in", "envelope.json", "envelope file")
 	proxyURL := fs.str("url", "", "proxy base URL; POSTs to /direct")
-	apiKey := fs.str("api-key", "", "proxy API key")
+	apiKey := fs.secret("api-key", "USDXPROV_API_KEY", "proxy API key")
 	actionURL := fs.str("action-url", "",
 		"post straight to an extension's /action instead of the proxy (local testing)")
 	if err := fs.parse(); err != nil {
@@ -238,8 +250,14 @@ func submit(args []string) error {
 	if err := readJSON(*in, &f); err != nil {
 		return err
 	}
-	if len(f.Signatures) < provision.Threshold {
-		return fmt.Errorf("have %d signatures, need %d", len(f.Signatures), provision.Threshold)
+	// The floor for the set this ref falls under, not the machine's actual
+	// threshold: SetAdmins refuses to install anything below it, so fewer than
+	// this can never be accepted anywhere and is worth catching before spending
+	// a round trip.
+	floor := provision.MinThresholdFor(f.Ref, config.HexAPIKeyRef)
+	if len(f.Signatures) < floor {
+		return fmt.Errorf("have %d signatures, need at least %d for the %s set",
+			len(f.Signatures), floor, setNameFor(f.Ref))
 	}
 
 	age := time.Since(time.Unix(int64(f.IssuedAt), 0))
@@ -291,7 +309,7 @@ func submit(args []string) error {
 	if *proxyURL == "" {
 		return fmt.Errorf("-url or -action-url is required")
 	}
-	return postDirect(*proxyURL, *apiKey, message)
+	return postDirect(*proxyURL, apiKey(), message)
 }
 
 // postDirect submits through the proxy, which is the production path.
@@ -435,13 +453,14 @@ func recoverSigner(body, sig []byte) (common.Address, bool) {
 	return crypto.PubkeyToAddress(*pub), true
 }
 
-func isAdmin(a common.Address) bool {
-	for _, admin := range provision.Admins {
-		if admin == a {
-			return true
-		}
+// setNameFor names the signer set governing a ref, for messages only. The
+// authoritative mapping is provision.MinThresholdFor and the enclave's own
+// pinned backingRef.
+func setNameFor(ref string) string {
+	if ref == config.HexAPIKeyRef {
+		return "backing"
 	}
-	return false
+	return "providers"
 }
 
 func b32(s string) string {

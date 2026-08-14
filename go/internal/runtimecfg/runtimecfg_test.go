@@ -31,7 +31,7 @@ func (f *fakeNode) TeeID(ctx context.Context) (common.Address, error) { return f
 
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	return New(provision.NewVerifier(big.NewInt(114), common.Address{}), &fakeNode{})
+	return New(provision.NewVerifier(big.NewInt(114), common.Address{}, config.HexAPIKeyRef), &fakeNode{})
 }
 
 // testEndpoints covers every pinned chain, with a mix of thresholds and a
@@ -68,12 +68,48 @@ func provisioned(t *testing.T) *Store {
 	if err := setEndpoints(s, testEndpoints()); err != nil {
 		t.Fatalf("SetEndpoints: %v", err)
 	}
+	setAdmins(t, s, 1)
 	for _, ref := range []string{
 		config.HexAPIKeyRef, "ankr_flare_key", "ankr_eth_key", "alchemy_flare_key",
 	} {
 		setSecret(t, s, ref, "value-"+ref)
 	}
 	return s
+}
+
+// devAdmins are the addresses of private keys 1, 2 and 3 — the keys the
+// envelope helpers sign with. Publicly known, which is exactly why they are
+// confined to tests and to an explicitly named fixture: nothing bakes them in
+// any more, so a machine only honours them if someone publishes them to it.
+var devAdmins = []string{
+	"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf", // privkey 0x01
+	"0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF", // privkey 0x02
+	"0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69", // privkey 0x03
+}
+
+// testAdmins is the dev pair: 1-of-1 over the backing credential, 2-of-3 over
+// the provider credentials. The same three keys appear in both sets because the
+// envelope helpers sign with keys 1 and 2 regardless of ref.
+func testAdmins(version uint64) Admins {
+	return Admins{
+		Version:   version,
+		Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+		Providers: AdminSet{Threshold: 2, Admins: devAdmins},
+	}
+}
+
+// setAdmins installs the dev admin sets through the real ApplyAdmins path, so
+// the tests exercise the same decode and validation a SET_ADMINS instruction
+// takes.
+func setAdmins(t *testing.T, s *Store, version uint64) {
+	t.Helper()
+	raw, err := json.Marshal(testAdmins(version))
+	if err != nil {
+		t.Fatalf("marshal admins: %v", err)
+	}
+	if err := s.ApplyAdmins(raw); err != nil {
+		t.Fatalf("ApplyAdmins: %v", err)
+	}
 }
 
 // setEndpoints marshals and applies, exercising the same decode path a real
@@ -355,6 +391,7 @@ func TestResolve_WithoutHexKeyYieldsNoCashSource(t *testing.T) {
 	if err := setEndpoints(s, testEndpoints()); err != nil {
 		t.Fatalf("SetEndpoints: %v", err)
 	}
+	setAdmins(t, s, 1)
 	// Every provider credential, but deliberately not the Hex key: the provider
 	// secrets are still hard requirements, because a URL with an unsubstituted
 	// {secret} cannot be dialled at all.
@@ -525,13 +562,17 @@ var concurrentChainID = big.NewInt(114)
 // verifier's, so real envelopes verify.
 func concurrentStore(t *testing.T) *Store {
 	t.Helper()
-	return New(
-		provision.NewVerifier(concurrentChainID, concurrentTeeID),
+	s := New(
+		provision.NewVerifier(concurrentChainID, concurrentTeeID, config.HexAPIKeyRef),
 		&fakeNode{teeID: concurrentTeeID},
 	)
+	// envelopeFor signs with private keys 1 and 2, so the matching set has to be
+	// installed before any envelope can verify.
+	setAdmins(t, s, 1)
+	return s
 }
 
-// envelopeFor builds a message signed by two of the baked dev admins. fakeNode
+// envelopeFor builds a message signed by two of the dev admins. fakeNode
 // echoes ciphertext back as plaintext, so the payload is the credential itself.
 func envelopeFor(t *testing.T, ref, value string, version uint64) []byte {
 	t.Helper()
@@ -553,8 +594,8 @@ func envelopeFor(t *testing.T, ref, value string, version uint64) []byte {
 	}
 	digest := accounts.TextHash(crypto.Keccak256(body))
 
-	// Private keys 1 and 2 — the baked development admin set. Threshold is 2, so
-	// two distinct signers is exactly enough.
+	// Private keys 1 and 2 — two of the dev admins setAdmins installs. Threshold
+	// is 2, so two distinct signers is exactly enough.
 	var sigs [][]byte
 	for _, raw := range []string{
 		"0000000000000000000000000000000000000000000000000000000000000001",
@@ -674,5 +715,199 @@ func TestApplySecret_ConcurrentReplayAdmitsExactlyOne(t *testing.T) {
 	}
 	if accepted != 1 {
 		t.Errorf("%d of %d replays accepted, want exactly 1", accepted, attempts)
+	}
+}
+
+// --- SET_ADMINS ---
+//
+// The admin set is the root of trust for every credential that follows, so it
+// gets the same treatment SET_ENDPOINTS does: validated on arrival, and a
+// rejected payload leaves the working set in place.
+
+// adminsPayload marshals a set for the table-driven cases. It takes no
+// *testing.T because it is called while building the table, where there is no
+// live test to fail; Admins is plain data and cannot fail to marshal.
+// withVersion returns a copy at a chosen version, for cases that vary only that.
+func withVersion(a Admins, version uint64) Admins {
+	a.Version = version
+	return a
+}
+
+func adminsPayload(a Admins) []byte {
+	raw, err := json.Marshal(a)
+	if err != nil {
+		panic("marshal admins: " + err.Error())
+	}
+	return raw
+}
+
+// Nothing can be provisioned until an admin set is published, and the machine
+// says so through Readiness rather than by silently accepting envelopes.
+func TestApplyAdmins_RequiredBeforeAnythingElse(t *testing.T) {
+	s := newStore(t)
+	if err := setEndpoints(s, testEndpoints()); err != nil {
+		t.Fatalf("SetEndpoints: %v", err)
+	}
+
+	r := s.Readiness()
+	if r.AdminsSet {
+		t.Error("a fresh store must not report an admin set")
+	}
+	if r.Ready {
+		t.Error("a store with no admin set must not be ready")
+	}
+	if _, err := s.Resolve(); err == nil {
+		t.Error("Resolve must fail without an admin set")
+	}
+
+	setAdmins(t, s, 1)
+	if !s.Readiness().AdminsSet {
+		t.Error("adminsSet must be true once a set is applied")
+	}
+}
+
+// The hash is over the payload AS RECEIVED: it must equal keccak256(_config)
+// from the setAdmins transaction, so it cannot be recomputed from the decoded
+// struct — json.Marshal will not reproduce byte-identical input.
+func TestApplyAdmins_HashesThePayloadAsReceived(t *testing.T) {
+	s := newStore(t)
+
+	// Deliberately not canonical JSON: extra whitespace and reordered keys.
+	raw := []byte("{\n  \"version\": 4,\n" +
+		"  \"providers\" : {\"threshold\": 2, \"admins\": [\"" +
+		devAdmins[0] + "\", \"" + devAdmins[1] + "\"]},\n" +
+		"  \"backing\": {\"threshold\": 1, \"admins\": [\"" + devAdmins[0] + "\"]}\n}")
+	if err := s.ApplyAdmins(raw); err != nil {
+		t.Fatalf("ApplyAdmins: %v", err)
+	}
+
+	want := crypto.Keccak256Hash(raw).Hex()
+	if got := s.Readiness().AdminsHash; got != want {
+		t.Errorf("adminsHash = %s, want %s (the bytes as received)", got, want)
+	}
+}
+
+func TestApplyAdmins_RejectsBadPayloads(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload []byte
+	}{
+		{"empty", nil},
+		{"not JSON", []byte("nonsense")},
+		// An unrecognised field means publisher and build disagree about the
+		// schema; applying the subset we understand is worse than stopping.
+		{"unknown field", []byte(`{"version":1,"backing":{"threshold":1,"admins":["` +
+			devAdmins[0] + `"]},"providers":{"threshold":2,"admins":["` + devAdmins[0] +
+			`","` + devAdmins[1] + `"]},"quorum":2}`)},
+		{"zero version", adminsPayload(withVersion(testAdmins(1), 0))},
+		// The old single-set schema: both sets are required now, so a payload
+		// naming neither must not install anything.
+		{"legacy flat schema", []byte(`{"version":1,"threshold":2,"admins":["` +
+			devAdmins[0] + `","` + devAdmins[1] + `"]}`)},
+		{"missing backing", adminsPayload(Admins{
+			Version: 1, Providers: AdminSet{Threshold: 2, Admins: devAdmins}})},
+		{"missing providers", adminsPayload(Admins{
+			Version: 1, Backing: AdminSet{Threshold: 1, Admins: devAdmins[:1]}})},
+		// 1-of-N is legal for backing and illegal for providers.
+		{"providers below the floor", adminsPayload(Admins{Version: 1,
+			Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 1, Admins: devAdmins}})},
+		{"backing threshold of zero", adminsPayload(Admins{Version: 1,
+			Backing:   AdminSet{Threshold: 0, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 2, Admins: devAdmins}})},
+		{"providers threshold above set size", adminsPayload(Admins{Version: 1,
+			Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 4, Admins: devAdmins}})},
+		{"not an address", adminsPayload(Admins{Version: 1,
+			Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 2, Admins: []string{devAdmins[0], "nope"}}})},
+		{"zero address", adminsPayload(Admins{Version: 1,
+			Backing: AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 2, Admins: []string{
+				devAdmins[0], "0x0000000000000000000000000000000000000000"}}})},
+		{"duplicate admin", adminsPayload(Admins{Version: 1,
+			Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+			Providers: AdminSet{Threshold: 2, Admins: []string{devAdmins[0], devAdmins[0]}}})},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStore(t)
+			if err := s.ApplyAdmins(c.payload); err == nil {
+				t.Fatal("want an error")
+			}
+			if s.Readiness().AdminsSet {
+				t.Error("a rejected payload must not install an admin set")
+			}
+		})
+	}
+}
+
+// Replay protection. The instruction channel has the registry's own nonce, but
+// the admin set is the root of trust for every credential that follows, so a
+// captured SET_ADMINS must not be able to reinstate a superseded signer set.
+func TestApplyAdmins_RejectsNonIncreasingVersion(t *testing.T) {
+	s := newStore(t)
+	setAdmins(t, s, 5)
+	installed := s.Readiness().AdminsHash
+
+	for _, version := range []uint64{1, 4, 5} {
+		raw := adminsPayload(withVersion(testAdmins(1), version))
+		if err := s.ApplyAdmins(raw); err == nil {
+			t.Errorf("version %d must be rejected as not newer than 5", version)
+		}
+	}
+
+	if got := s.Readiness().AdminsHash; got != installed {
+		t.Error("a replayed payload must leave the working admin set in place")
+	}
+
+	// Strictly greater is fine, and gaps are allowed: versions come from the
+	// publisher, not from a counter this side controls.
+	raw := adminsPayload(withVersion(testAdmins(1), 9))
+	if err := s.ApplyAdmins(raw); err != nil {
+		t.Fatalf("version 9 must be accepted: %v", err)
+	}
+	if s.Readiness().AdminsHash == installed {
+		t.Error("a newer payload must replace the working admin set")
+	}
+}
+
+// A rejected rotation must not take provisioning down, for the same reason a bad
+// SET_ENDPOINTS must not take a live feed down.
+func TestApplyAdmins_RejectedRotationKeepsTheWorkingSet(t *testing.T) {
+	s := provisioned(t)
+	before := s.Readiness()
+
+	bad := adminsPayload(Admins{Version: 99,
+		Backing:   AdminSet{Threshold: 1, Admins: devAdmins[:1]},
+		Providers: AdminSet{Threshold: 1, Admins: devAdmins}})
+	if err := s.ApplyAdmins(bad); err == nil {
+		t.Fatal("a providers threshold below the floor must be rejected")
+	}
+
+	after := s.Readiness()
+	if after.AdminsHash != before.AdminsHash {
+		t.Error("the working admin set must survive a rejected rotation")
+	}
+	if !after.Ready {
+		t.Error("a rejected rotation must not take the machine out of service")
+	}
+}
+
+// The observation must commit to the admin set in force, so the store can refuse
+// a price from a machine whose provisioning authority is not the published one.
+func TestResolve_CarriesTheAdminsHash(t *testing.T) {
+	s := provisioned(t)
+
+	cfg, err := s.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cfg.AdminsHash.Hex() != s.Readiness().AdminsHash {
+		t.Errorf("AdminsHash = %s, want %s", cfg.AdminsHash.Hex(), s.Readiness().AdminsHash)
+	}
+	if cfg.AdminsHash == (common.Hash{}) {
+		t.Error("a zero admins hash is the store's no-set-published sentinel")
 	}
 }

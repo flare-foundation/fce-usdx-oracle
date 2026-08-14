@@ -37,12 +37,18 @@ contract MockRegistry is ITeeMachineRegistry {
     }
 }
 
-/// @dev Stands in for the instruction sender's expectedConfigHash mapping.
+/// @dev Stands in for the instruction sender's expectedConfigHash and
+/// expectedAdminsHash mappings.
 contract MockConfigSource {
     mapping(address => bytes32) public expectedConfigHash;
+    mapping(address => bytes32) public expectedAdminsHash;
 
     function setExpected(address teeId, bytes32 h) external {
         expectedConfigHash[teeId] = h;
+    }
+
+    function setExpectedAdmins(address teeId, bytes32 h) external {
+        expectedAdminsHash[teeId] = h;
     }
 }
 
@@ -50,6 +56,24 @@ contract MockConfigSource {
 /// contract that does not implement the interface.
 contract RevertingConfigSource {
     function expectedConfigHash(address) external pure returns (bytes32) {
+        revert("config source down");
+    }
+
+    function expectedAdminsHash(address) external pure returns (bytes32) {
+        revert("config source down");
+    }
+}
+
+/// @dev Serves a config hash but fails on the admin set, so the admins branch
+/// is exercised on its own rather than only behind a wholly dead source.
+contract AdminsRevertingConfigSource {
+    mapping(address => bytes32) public expectedConfigHash;
+
+    function setExpected(address teeId, bytes32 h) external {
+        expectedConfigHash[teeId] = h;
+    }
+
+    function expectedAdminsHash(address) external pure returns (bytes32) {
         revert("config source down");
     }
 }
@@ -66,6 +90,7 @@ contract UsdxPriceStoreTest is Test {
     UsdxPriceStore store;
 
     bytes32 constant CONFIG_HASH = keccak256("endpoints-v1");
+    bytes32 constant ADMINS_HASH = keccak256("admins-v1");
 
     uint256 teeKey = 0xA11CE;
     address teeId;
@@ -79,6 +104,7 @@ contract UsdxPriceStoreTest is Test {
 
         configSource = new MockConfigSource();
         configSource.setExpected(teeId, CONFIG_HASH);
+        configSource.setExpectedAdmins(teeId, ADMINS_HASH);
 
         store = new UsdxPriceStore(
             registry, IUsdxConfigSource(address(configSource)),
@@ -100,13 +126,30 @@ contract UsdxPriceStoreTest is Test {
     function _bodyWithConfig(uint256 price, uint64 observedAt, int8 decimals, bytes32 configHash)
         internal pure returns (bytes memory)
     {
+        return _bodyWith(price, observedAt, decimals, configHash, ADMINS_HASH);
+    }
+
+    function _bodyWithAdmins(uint256 price, uint64 observedAt, int8 decimals, bytes32 adminsHash)
+        internal pure returns (bytes memory)
+    {
+        return _bodyWith(price, observedAt, decimals, CONFIG_HASH, adminsHash);
+    }
+
+    function _bodyWith(
+        uint256 price,
+        uint64 observedAt,
+        int8 decimals,
+        bytes32 configHash,
+        bytes32 adminsHash
+    ) internal pure returns (bytes memory) {
         return abi.encode(
             keccak256("USDX_ORACLE_PRICE_V1"),
             price,
             decimals,
             observedAt,
             bytes32(uint256(0xABC)),
-            configHash
+            configHash,
+            adminsHash
         );
     }
 
@@ -247,7 +290,7 @@ contract UsdxPriceStoreTest is Test {
     function test_RejectsWrongDomain() public {
         bytes memory body = abi.encode(
             keccak256("SOME_OTHER_DOMAIN_V1"),
-            PAR, DECIMALS, uint64(1_700_000_000), bytes32(uint256(1)), CONFIG_HASH
+            PAR, DECIMALS, uint64(1_700_000_000), bytes32(uint256(1)), CONFIG_HASH, ADMINS_HASH
         );
         vm.expectRevert(UsdxPriceStore.WrongDomain.selector);
         store.submitPrice(body, _sign(body, teeKey));
@@ -574,6 +617,7 @@ contract UsdxPriceStoreTest is Test {
         uint256 newExtensionId = EXTENSION_ID + 7;
         MockConfigSource newSource = new MockConfigSource();
         newSource.setExpected(teeId, CONFIG_HASH);
+        newSource.setExpectedAdmins(teeId, ADMINS_HASH);
 
         // Under the old extension the machine is now a stranger.
         registry.setMachine(teeId, newExtensionId, PRODUCTION);
@@ -674,8 +718,10 @@ contract UsdxPriceStoreTest is Test {
     function test_LandingAPriceRecordsTheMachine() public {
         _submit(PAR, 1_700_000_000);
 
-        (bytes32 configHash, uint64 obsAt, uint64 acceptedAt, uint32 submissions) = store.lastReport(teeId);
+        (bytes32 configHash, bytes32 adminsHash, uint64 obsAt, uint64 acceptedAt, uint32 submissions) =
+            store.lastReport(teeId);
         assertEq(configHash, CONFIG_HASH);
+        assertEq(adminsHash, ADMINS_HASH);
         assertEq(obsAt, 1_700_000_000);
         assertEq(acceptedAt, uint64(block.timestamp));
         assertEq(submissions, 1);
@@ -706,7 +752,7 @@ contract UsdxPriceStoreTest is Test {
 
         assertEq(store.seenTeeCount(), 1);
 
-        (,,, uint32 submissions) = store.lastReport(teeId);
+        (,,,, uint32 submissions) = store.lastReport(teeId);
         assertEq(submissions, 3);
     }
 
@@ -729,7 +775,7 @@ contract UsdxPriceStoreTest is Test {
 
         // The record still says what the machine last proved, which is what
         // tells an operator it is running the OLD config rather than nothing.
-        (bytes32 configHash,,,) = store.lastReport(teeId);
+        (bytes32 configHash,,,,) = store.lastReport(teeId);
         assertEq(configHash, CONFIG_HASH);
     }
 
@@ -752,6 +798,7 @@ contract UsdxPriceStoreTest is Test {
         address secondTee = vm.addr(secondKey);
         registry.setMachine(secondTee, EXTENSION_ID, PRODUCTION);
         configSource.setExpected(secondTee, CONFIG_HASH);
+        configSource.setExpectedAdmins(secondTee, ADMINS_HASH);
 
         _submit(PAR, 1_700_000_000);
 
@@ -765,6 +812,77 @@ contract UsdxPriceStoreTest is Test {
         assertEq(tees[1], secondTee);
         assertEq(reports[0].observedAt, 1_700_000_000);
         assertEq(reports[1].observedAt, 1_700_000_100);
+    }
+
+    // --- per-machine admin-set proof ---
+    //
+    // The admin set decides who may install credentials in an enclave, so it is
+    // checked on the same terms as the endpoint config: published on-chain by
+    // the owner, committed to inside the signed body, and compared here.
+
+    function test_RejectsStaleAdmins() public {
+        bytes memory body = _bodyWithAdmins(PAR, 1_700_000_000, DECIMALS, keccak256("admins-v0"));
+        vm.expectRevert(UsdxPriceStore.StaleAdmins.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+    }
+
+    function test_RejectsWhenNoAdminsPublished() public {
+        configSource.setExpectedAdmins(teeId, bytes32(0));
+        bytes memory body = _goodBody(PAR, 1_700_000_000);
+        vm.expectRevert(UsdxPriceStore.NoAdminsPublished.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+    }
+
+    /// A source that serves the config hash but fails on the admin set must be a
+    /// typed rejection, not an opaque revert bubbling up from the try block.
+    function test_AdminsRevertingConfigSourceIsTyped() public {
+        AdminsRevertingConfigSource broken = new AdminsRevertingConfigSource();
+        broken.setExpected(teeId, CONFIG_HASH);
+
+        vm.prank(governance);
+        store.setExtension(EXTENSION_ID, IUsdxConfigSource(address(broken)));
+
+        bytes memory body = _goodBody(PAR, 1_700_000_000);
+        vm.expectRevert(UsdxPriceStore.ConfigSourceUnavailable.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+    }
+
+    /// Rotating the admin set withdraws the proof exactly as republishing
+    /// endpoints does: the machine has not yet landed a price under the new set,
+    /// so the rotated-out signers could still be the ones it honours.
+    function test_RepublishingAdminsWithdrawsTheProof() public {
+        _submit(PAR, 1_700_000_000);
+        assertTrue(store.isProvenConfigured(teeId));
+
+        configSource.setExpectedAdmins(teeId, keccak256("admins-v2"));
+        assertFalse(store.isProvenConfigured(teeId));
+
+        vm.warp(1_700_000_200);
+        bytes memory fresh = _bodyWithAdmins(PAR, 1_700_000_200, DECIMALS, keccak256("admins-v2"));
+        store.submitPrice(fresh, _sign(fresh, teeKey));
+        assertTrue(store.isProvenConfigured(teeId));
+    }
+
+    /// A body from an extension still on the six-field layout must not be
+    /// decoded as if its missing admin commitment were absent by choice. Without
+    /// the length check the short body would simply fail to decode; with it the
+    /// rejection names the real cause.
+    function test_RejectsShortBody() public {
+        bytes memory body = abi.encode(
+            keccak256("USDX_ORACLE_PRICE_V1"),
+            PAR, DECIMALS, uint64(1_700_000_000), bytes32(uint256(0xABC)), CONFIG_HASH
+        );
+        vm.expectRevert(UsdxPriceStore.BadBodyLength.selector);
+        store.submitPrice(body, _sign(body, teeKey));
+    }
+
+    /// Trailing bytes are the other half: abi.decode tolerates them, so without
+    /// the length check a longer body would be silently truncated to the fields
+    /// this store knows about.
+    function test_RejectsOverlongBody() public {
+        bytes memory body = abi.encodePacked(_goodBody(PAR, 1_700_000_000), bytes32(uint256(1)));
+        vm.expectRevert(UsdxPriceStore.BadBodyLength.selector);
+        store.submitPrice(body, _sign(body, teeKey));
     }
 
     /// A rejected submission must leave no trace. Recording an unproven machine
@@ -786,6 +904,7 @@ contract UsdxPriceStoreTest is Test {
         address secondTee = vm.addr(secondKey);
         registry.setMachine(secondTee, EXTENSION_ID, PRODUCTION);
         configSource.setExpected(secondTee, CONFIG_HASH);
+        configSource.setExpectedAdmins(secondTee, ADMINS_HASH);
 
         _submit(PAR, 1_700_000_100);
 

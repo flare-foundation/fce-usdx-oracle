@@ -37,17 +37,39 @@ func newAdmins(t *testing.T, n int) []admin {
 	return out
 }
 
-// newTestVerifier binds a Verifier to a generated admin set rather than the
-// baked placeholders.
+// testBackingRef is the ref the backing set governs in these tests. Mirrors
+// config.HexAPIKeyRef without importing it — provision is deliberately
+// independent of the pinned policy.
+const testBackingRef = "hex_api_key"
+
+// newTestVerifier installs a generated set as the PROVIDERS set through the real
+// SetAdmins path, so the tests exercise the same validation SET_ADMINS does. The
+// backing set is a separate throwaway, since both must be installed for the
+// verifier to accept anything.
 func newTestVerifier(t *testing.T, admins []admin, threshold int) *Verifier {
 	t.Helper()
-	v := NewVerifier(testChainID, testTeeID)
-	v.admins = nil
-	for _, a := range admins {
-		v.admins = append(v.admins, a.addr)
+	return newTestVerifierWith(t, newAdmins(t, 1), 1, admins, threshold)
+}
+
+func newTestVerifierWith(
+	t *testing.T, backing []admin, backingThreshold int, providers []admin, providerThreshold int,
+) *Verifier {
+	t.Helper()
+	v := NewVerifier(testChainID, testTeeID, testBackingRef)
+	if err := v.SetAdmins(
+		adminSet(backing, backingThreshold), adminSet(providers, providerThreshold),
+	); err != nil {
+		t.Fatalf("SetAdmins: %v", err)
 	}
-	v.threshold = threshold
 	return v
+}
+
+func adminSet(admins []admin, threshold int) AdminSet {
+	addrs := make([]common.Address, 0, len(admins))
+	for _, a := range admins {
+		addrs = append(addrs, a.addr)
+	}
+	return AdminSet{Admins: addrs, Threshold: threshold}
 }
 
 func testEnvelope(payload []byte) Envelope {
@@ -56,7 +78,9 @@ func testEnvelope(payload []byte) Envelope {
 		TeeID:       testTeeID,
 		Version:     1,
 		IssuedAt:    uint64(time.Now().UTC().Unix()),
-		Ref:         "hex_api_key",
+		// A provider ref: newTestVerifier installs its admins as the PROVIDERS
+		// set, and the backing ref is governed by a different set entirely.
+		Ref:         "ankr_flare_key",
 		PayloadHash: crypto.Keccak256Hash(payload),
 		Payload:     payload,
 	}
@@ -86,6 +110,17 @@ func encode(t *testing.T, e Envelope, sigs [][]byte) []byte {
 	return msg
 }
 
+// signedMessage is encode+sign for the common case: one envelope, signed by each
+// of the given admins in turn.
+func signedMessage(t *testing.T, e Envelope, signers []admin) []byte {
+	t.Helper()
+	sigs := make([][]byte, 0, len(signers))
+	for _, a := range signers {
+		sigs = append(sigs, sign(t, e, a))
+	}
+	return encode(t, e, sigs)
+}
+
 // --- happy path ---
 
 func TestVerify_AcceptsThresholdSignatures(t *testing.T) {
@@ -99,7 +134,7 @@ func TestVerify_AcceptsThresholdSignatures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Ref != "hex_api_key" {
+	if got.Ref != "ankr_flare_key" {
 		t.Errorf("ref = %q", got.Ref)
 	}
 	if string(got.Payload) != "ciphertext" {
@@ -293,7 +328,7 @@ func TestVerify_VersionsAreIndependentPerRef(t *testing.T) {
 	v := newTestVerifier(t, admins, 2)
 
 	a := testEnvelope([]byte("a"))
-	a.Ref, a.Version = "hex_api_key", 5
+	a.Ref, a.Version = "alchemy_flare_key", 5
 	if _, err := v.Verify(encode(t, a, [][]byte{sign(t, a, admins[0]), sign(t, a, admins[1])})); err != nil {
 		t.Fatalf("first ref: %v", err)
 	}
@@ -402,8 +437,7 @@ func FuzzVerify(f *testing.F) {
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, message []byte) {
-		v := NewVerifier(testChainID, testTeeID)
-		v.admins = []common.Address{admins[0].addr, admins[1].addr, admins[2].addr}
+		v := newTestVerifier(t, admins, 2)
 
 		got, err := v.Verify(message)
 		if err == nil {
@@ -419,24 +453,205 @@ func FuzzVerify(f *testing.F) {
 	})
 }
 
-// The baked admin set must be replaced before a live deployment. This test is
-// EXPECTED TO FAIL until it is — that is the point.
-func TestAdminSetIsNotPlaceholder(t *testing.T) {
-	// The addresses of private keys 1, 2 and 3 — publicly known, so anyone can
-	// sign as these admins.
-	placeholders := map[common.Address]bool{
-		common.HexToAddress("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"): true,
-		common.HexToAddress("0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF"): true,
-		common.HexToAddress("0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"): true,
+// The admin set arrives by SET_ADMINS and is empty until it does. These cover
+// the install path itself; the envelope tests above cover verification once a
+// set is in place.
+
+// A machine that has not been told who its admins are must not be provisionable.
+// This is the property that replaced the baked set: there is no default to guess
+// at, and no first-come window to race for.
+func TestVerify_RejectsBeforeAnyAdminSetIsInstalled(t *testing.T) {
+	admins := newAdmins(t, 3)
+	v := NewVerifier(testChainID, testTeeID, testBackingRef)
+
+	if v.HasAdmins() {
+		t.Fatal("a fresh verifier must not report an admin set")
 	}
-	for _, a := range Admins {
-		if placeholders[a] {
-			t.Skipf("admin set is still the dev placeholder %s (private key 1, 2 or 3 — "+
-				"publicly known). Replace before any live deployment and turn this skip "+
-				"into a hard failure.", a)
-		}
+
+	payload := []byte("ciphertext")
+	message := signedMessage(t, testEnvelope(payload), admins[:2])
+	if _, err := v.Verify(message); err != failure.ProvisionRejected {
+		t.Fatalf("want ProvisionRejected with no admin set, got %v", err)
 	}
-	if len(Admins) < Threshold {
-		t.Fatalf("admin set has %d members but the threshold is %d", len(Admins), Threshold)
+}
+
+func TestSetAdmins_RejectsUnusableSets(t *testing.T) {
+	admins := newAdmins(t, 3)
+	ok := adminSet(admins, 2)
+
+	cases := []struct {
+		name               string
+		backing, providers AdminSet
+	}{
+		{"empty providers", adminSet(admins[:1], 1), AdminSet{Threshold: 2}},
+		{"empty backing", AdminSet{Threshold: 1}, ok},
+		// M=1 is not a threshold scheme for the providers set: one key would be
+		// the whole authority over every RPC credential.
+		{"providers below the floor", adminSet(admins[:1], 1), adminSet(admins, 1)},
+		{"providers threshold of zero", adminSet(admins[:1], 1), adminSet(admins, 0)},
+		{"backing threshold of zero", adminSet(admins[:1], 0), ok},
+		// Unsatisfiable: no set of distinct signers could ever reach it.
+		{"providers threshold above set size", adminSet(admins[:1], 1), adminSet(admins, 4)},
+		{"duplicate provider admin", adminSet(admins[:1], 1),
+			AdminSet{Admins: []common.Address{admins[0].addr, admins[0].addr}, Threshold: 2}},
+		{"zero address", adminSet(admins[:1], 1),
+			AdminSet{Admins: []common.Address{admins[0].addr, {}}, Threshold: 2}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := NewVerifier(testChainID, testTeeID, testBackingRef)
+			if err := v.SetAdmins(c.backing, c.providers); err == nil {
+				t.Fatal("want an error")
+			}
+			if v.HasAdmins() {
+				t.Error("a rejected pair must not be installed")
+			}
+		})
+	}
+}
+
+// 1-of-1 is legal for the backing set and illegal for the providers set. That
+// asymmetry is the whole point of splitting them, so it is asserted directly.
+func TestSetAdmins_BackingAllowsSingleSigner(t *testing.T) {
+	backing := newAdmins(t, 1)
+	providers := newAdmins(t, 3)
+
+	v := NewVerifier(testChainID, testTeeID, testBackingRef)
+	if err := v.SetAdmins(adminSet(backing, 1), adminSet(providers, 2)); err != nil {
+		t.Fatalf("1-of-1 backing must be accepted: %v", err)
+	}
+
+	v2 := NewVerifier(testChainID, testTeeID, testBackingRef)
+	if err := v2.SetAdmins(adminSet(backing, 1), adminSet(providers, 1)); err == nil {
+		t.Fatal("1-of-N providers must be rejected")
+	}
+}
+
+// The ref selects the set, and a signer from the other set does not count.
+// Without this the split would authorise nothing: whoever held the 1-of-1
+// backing key could sign for an RPC credential too.
+func TestVerify_RefSelectsTheSigningSet(t *testing.T) {
+	backing := newAdmins(t, 1)
+	providers := newAdmins(t, 3)
+	v := newTestVerifierWith(t, backing, 1, providers, 2)
+
+	payload := []byte("ciphertext")
+
+	// One backing signature authorises the backing ref.
+	env := testEnvelope(payload)
+	env.Ref = testBackingRef
+	if _, err := v.Verify(signedMessage(t, env, backing)); err != nil {
+		t.Fatalf("the backing set must authorise its own ref: %v", err)
+	}
+
+	// The same lone signature must NOT authorise a provider ref.
+	provEnv := testEnvelope(payload)
+	provEnv.Ref = "ankr_flare_key"
+	if _, err := v.Verify(signedMessage(t, provEnv, backing)); err != failure.ProvisionRejected {
+		t.Fatalf("the backing key must not authorise a provider ref, got %v", err)
+	}
+
+	// Nor do two provider signatures authorise the backing ref, since they are
+	// not members of the backing set.
+	backEnv := testEnvelope(payload)
+	backEnv.Ref = testBackingRef
+	backEnv.Version = 2
+	if _, err := v.Verify(signedMessage(t, backEnv, providers[:2])); err != failure.ProvisionRejected {
+		t.Fatalf("provider keys must not authorise the backing ref, got %v", err)
+	}
+
+	// And the providers set does authorise its own refs.
+	okEnv := testEnvelope(payload)
+	okEnv.Ref = "ankr_flare_key"
+	okEnv.Version = 2
+	if _, err := v.Verify(signedMessage(t, okEnv, providers[:2])); err != nil {
+		t.Fatalf("the providers set must authorise a provider ref: %v", err)
+	}
+}
+
+// A ref this build has never heard of must fall under the STRONGER set, so a new
+// credential name cannot be slipped in on a single signature.
+func TestVerify_UnknownRefUsesTheProvidersSet(t *testing.T) {
+	backing := newAdmins(t, 1)
+	providers := newAdmins(t, 3)
+	v := newTestVerifierWith(t, backing, 1, providers, 2)
+
+	env := testEnvelope([]byte("ciphertext"))
+	env.Ref = "some_new_key"
+	if _, err := v.Verify(signedMessage(t, env, backing)); err != failure.ProvisionRejected {
+		t.Fatalf("an unknown ref must not be authorised by the backing key, got %v", err)
+	}
+	if _, err := v.Verify(signedMessage(t, env, providers[:2])); err != nil {
+		t.Fatalf("an unknown ref must be authorised by the providers set: %v", err)
+	}
+}
+
+// A rejected rotation must leave the working set in place, for the same reason a
+// bad SET_ENDPOINTS must not take a live feed down.
+func TestSetAdmins_RejectedRotationKeepsTheWorkingSet(t *testing.T) {
+	admins := newAdmins(t, 3)
+	v := newTestVerifier(t, admins, 2)
+
+	if err := v.SetAdmins(AdminSet{}, AdminSet{}); err == nil {
+		t.Fatal("want an error installing an empty pair")
+	}
+
+	payload := []byte("ciphertext")
+	env := testEnvelope(payload)
+	env.Version = 9
+	if _, err := v.Verify(signedMessage(t, env, admins[:2])); err != nil {
+		t.Fatalf("the previous admin set must still verify: %v", err)
+	}
+}
+
+// Rotation must not reopen anti-rollback state. Envelope versions are per-ref
+// and independent of who signs, so an envelope the outgoing admins signed must
+// not become replayable against the incoming set.
+func TestSetAdmins_RotationDoesNotResetEnvelopeVersions(t *testing.T) {
+	first := newAdmins(t, 3)
+	v := newTestVerifier(t, first, 2)
+
+	payload := []byte("ciphertext")
+	env := testEnvelope(payload)
+	env.Version = 5
+	if _, err := v.Verify(signedMessage(t, env, first[:2])); err != nil {
+		t.Fatalf("first envelope: %v", err)
+	}
+
+	second := newAdmins(t, 3)
+	if err := v.SetAdmins(adminSet(newAdmins(t, 1), 1), adminSet(second, 2)); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	// Same version, signed by the NEW admins: still a rollback.
+	replay := testEnvelope(payload)
+	replay.Version = 5
+	if _, err := v.Verify(signedMessage(t, replay, second[:2])); err != failure.ProvisionRejected {
+		t.Fatalf("want ProvisionRejected replaying version 5 after rotation, got %v", err)
+	}
+
+	// And the new set does work going forward.
+	next := testEnvelope(payload)
+	next.Version = 6
+	if _, err := v.Verify(signedMessage(t, next, second[:2])); err != nil {
+		t.Fatalf("rotated admins must verify a newer envelope: %v", err)
+	}
+}
+
+// The outgoing admins must lose their authority the moment a new set lands.
+func TestSetAdmins_RotationRevokesThePreviousSet(t *testing.T) {
+	first := newAdmins(t, 3)
+	v := newTestVerifier(t, first, 2)
+
+	second := newAdmins(t, 3)
+	if err := v.SetAdmins(adminSet(newAdmins(t, 1), 1), adminSet(second, 2)); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	env := testEnvelope([]byte("ciphertext"))
+	env.Version = 7
+	if _, err := v.Verify(signedMessage(t, env, first[:2])); err != failure.ProvisionRejected {
+		t.Fatalf("want ProvisionRejected from the outgoing admins, got %v", err)
 	}
 }

@@ -203,5 +203,24 @@ func checkSignerAndConfig(
 				"the machine never applied the published configuration, or a newer one was sent",
 			r.ConfigHash.Hex(), configSource.Hex(), common.Hash(expected).Hex())
 	}
+
+	// The same check for the admin set. Without it this preflight would report a
+	// submittable report and the transaction would then revert StaleAdmins,
+	// which is exactly the confusion it exists to prevent.
+	expectedAdmins, err := sender.ExpectedAdminsHash(opts, teeID)
+	if err != nil {
+		return reject("ConfigSourceUnavailable", "reading expectedAdminsHash from %s: %s",
+			configSource.Hex(), err)
+	}
+	if common.Hash(expectedAdmins) == (common.Hash{}) {
+		return reject("NoAdminsPublished",
+			"no admin set has been sent to %s — run send-admins first", teeID.Hex())
+	}
+	if common.Hash(expectedAdmins) != r.AdminsHash {
+		return reject("StaleAdmins",
+			"the machine computed this price under admin set %s but %s expects %s; "+
+				"the machine never applied the published admin set, or a newer one was sent",
+			r.AdminsHash.Hex(), configSource.Hex(), common.Hash(expectedAdmins).Hex())
+	}
 	return nil
 }

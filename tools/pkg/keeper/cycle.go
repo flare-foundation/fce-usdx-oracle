@@ -5,8 +5,12 @@
 // invocation can do is waste gas. Nothing here may compute or adjust a price,
 // and the signed body is relayed byte for byte.
 //
-// No state is kept across cycles: every partial cycle is harmless, and
-// observedAt monotonicity makes duplicate submissions safe by construction.
+// A cycle keeps no state: every partial cycle is harmless, and observedAt
+// monotonicity makes duplicate submissions safe by construction. The timer
+// keeps two pieces — whose turn it is in the rotation, and when the last
+// on-chain instruction went out — and neither is correctness-bearing: any
+// registered machine may serve any cycle, so a restart that resets them costs
+// nothing beyond one extra on-chain fee.
 package keeper
 
 import (
@@ -45,7 +49,23 @@ type Config struct {
 
 	Sender common.Address
 	Store  common.Address
-	Proxy  string
+
+	// Proxy is the machine this cycle talks to: the direct request goes there,
+	// and it is the first place the result is looked for.
+	Proxy string
+
+	// TeeID names the machine behind Proxy, when the caller knows it. Recorded
+	// and logged only — the report's own signature is what decides which machine
+	// actually answered.
+	TeeID common.Address
+
+	// ResultProxies are further proxies to look for the result on, for the
+	// on-chain channel: getRandomTeeIds picks the machine, and a result is
+	// retrievable only from the proxy of the machine that produced it, so
+	// polling one URL of several finds nothing most of the time. Empty on the
+	// direct channel, where the answer can only come from the machine the
+	// request was sent to.
+	ResultProxies []string
 
 	// Direct raises the GET_PRICE action on the proxy instead of on-chain,
 	// which saves the registry fee and one transaction per cycle.
@@ -58,11 +78,11 @@ type Config struct {
 	// as the one anybody can use by paying the fee.
 	//
 	// It also removes an ambiguity that only appears with several machines: an
-	// on-chain request goes to a RANDOM machine via getRandomTeeIds, and the
-	// result is retrievable only from that machine's own proxy, so a keeper
-	// polling one URL misses most of them. A direct request goes to the machine
-	// whose proxy it was sent to, which is what makes per-machine commissioning
-	// possible at all.
+	// on-chain request goes to a RANDOM machine via getRandomTeeIds, so the
+	// keeper cannot know in advance which proxy will hold the result and has to
+	// look on all of them — see ResultProxies. A direct request goes to the
+	// machine whose proxy it was sent to, which is what makes addressing one
+	// named machine, and so per-machine commissioning, possible at all.
 	Direct       bool
 	DirectAPIKey string
 
@@ -87,26 +107,41 @@ func (c Config) Channel() string {
 // RunCycle performs one complete keeper cycle. It never exits the process on an
 // expected failure: a single failed cycle is noise, not a reason to stop.
 func RunCycle(ctx context.Context, s *support.Support, cfg Config) (Record, error) {
+	report, rec, err := Collect(ctx, s, cfg)
+	if err != nil {
+		return rec, err
+	}
+	return Relay(ctx, s, cfg, rec, report)
+}
+
+// Collect is the first half of a cycle: raise the action, wait for a terminal
+// result, and decode the report out of it. It sends no transaction on the direct
+// channel, which is what lets a caller run it against several machines at once
+// — see Sweep — without two cycles racing for the same nonce.
+//
+// The returned Record is finished on error and half-filled on success; pass it
+// to Relay either way rather than building a second one, so a cycle emits one
+// record whichever step ended it.
+func Collect(ctx context.Context, s *support.Support, cfg Config) (pricereport.Report, Record, error) {
 	rec := Record{
 		KeeperID:       cfg.KeeperID,
 		CycleStartedAt: time.Now().UTC(),
 		Outcome:        OutcomeInternal,
 		SubmitOutcome:  "not_attempted",
 		Channel:        cfg.Channel(),
+		Proxy:          cfg.Proxy,
+	}
+	if cfg.TeeID != (common.Address{}) {
+		rec.TeeID = cfg.TeeID.Hex()
 	}
 
 	// A stuck transaction blocks every later one behind it. Recorded rather than
 	// acted on: the fix is operational, not something to retry into.
 	rec.PendingNonceGap = pendingNonceGap(ctx, s)
 
-	finish := func(out Outcome, err error) (Record, error) {
-		rec.Outcome = out
-		rec.CycleEndedAt = time.Now().UTC()
-		if err != nil {
-			rec.Detail = err.Error()
-		}
-		rec.StoreObservedAtAfter = storeObservedAt(ctx, s, cfg.Store)
-		return rec, err
+	fail := func(out Outcome, err error) (pricereport.Report, Record, error) {
+		rec, err = finish(ctx, s, cfg, rec, out, err)
+		return pricereport.Report{}, rec, err
 	}
 
 	// --- 1. trigger -----------------------------------------------------------
@@ -136,58 +171,78 @@ func RunCycle(ctx context.Context, s *support.Support, cfg Config) (Record, erro
 		}
 	}
 	if err != nil {
-		return finish(OutcomeRequestFailed, err)
+		return fail(OutcomeRequestFailed, err)
 	}
 	rec.InstructionID = actionID.Hex()
-	logger.Infof("[%s] %s action %s", cfg.KeeperID, cfg.Channel(), actionID.Hex())
+	logger.Infof("[%s] %s action %s%s", cfg.KeeperID, cfg.Channel(), actionID.Hex(), targetSuffix(cfg))
 
 	// --- 2. collect -----------------------------------------------------------
-	result, err := PollResult(ctx, cfg.Proxy, actionID, tag, cfg.PollTimeout)
+	targets := cfg.pollTargets()
+	result, from, err := PollResultAny(ctx, targets, actionID, tag, cfg.PollTimeout)
 	if err != nil {
 		rec.ResultStatus = "timeout"
 		rec.SourceHealth = sourceHealth(cfg.Proxy)
-		return finish(OutcomeNoResult, err)
+		return fail(OutcomeNoResult, err)
 	}
 
+	// The answering proxy, which on the on-chain channel is the one the registry
+	// happened to route to rather than the one configured.
+	rec.Proxy = from
+
 	// Recorded either way: on failure it is what says WHICH source broke.
-	rec.SourceHealth = sourceHealth(cfg.Proxy)
+	rec.SourceHealth = sourceHealth(from)
 
 	if result.Status != statusSucceeded {
 		// A status-0 result is the extension declining to publish; Log is a class
 		// from its closed vocabulary. Relaying anything would invent a price.
 		rec.ResultStatus = "0"
 		rec.ErrorClass = result.Log
-		return finish(OutcomeExtensionFailed, errors.Errorf(
+		return fail(OutcomeExtensionFailed, errors.Errorf(
 			"the extension published nothing (status %d): %s", result.Status, result.Log))
 	}
 	rec.ResultStatus = "1"
 
-	// --- 3. relay -------------------------------------------------------------
 	report, err := pricereport.Decode(result.Data)
 	if err != nil {
-		return finish(OutcomeInternal, errors.Errorf("decoding the action result: %s", err))
+		return fail(OutcomeInternal, errors.Errorf("decoding the action result: %s", err))
 	}
 	rec.Price = report.Price.String()
 	rec.Decimals = report.Decimals
 	rec.ObservedAt = report.ObservedAt
 
+	// The signer is the machine that actually produced this report, which on the
+	// on-chain channel is the only thing that says which one did.
+	if teeID, err := report.Signer(); err == nil {
+		rec.TeeID = teeID.Hex()
+	}
+
+	return report, rec, nil
+}
+
+// Relay is the second half of a cycle: check the report against every store
+// guard and submit it. Split from Collect so a caller holding reports from
+// several machines can order the submissions — observedAt must strictly
+// increase, so the order is what decides how many of them land.
+func Relay(
+	ctx context.Context, s *support.Support, cfg Config, rec Record, report pricereport.Report,
+) (Record, error) {
 	if err := Preflight(s, cfg.Store, report); err != nil {
 		if rj, ok := AsRejection(err); ok {
 			rec.SubmitOutcome = rj.Guard
-			return finish(classifyRejection(rj, report), err)
+			return finish(ctx, s, cfg, rec, classifyRejection(rj, report), err)
 		}
-		return finish(OutcomeInternal, err)
+		return finish(ctx, s, cfg, rec, OutcomeInternal, err)
 	}
 
 	if cfg.DryRun {
 		rec.SubmitOutcome = "dry_run"
-		return finish(OutcomeRejected, nil)
+		return finish(ctx, s, cfg, rec, OutcomeRejected, nil)
 	}
 
 	tx, err := submit(ctx, s, cfg, report)
 	if err != nil {
 		rec.SubmitOutcome = "send_failed"
-		return finish(OutcomeRejected, err)
+		return finish(ctx, s, cfg, rec, OutcomeRejected, err)
 	}
 	rec.SubmitTx = tx.Hash().Hex()
 
@@ -195,11 +250,48 @@ func RunCycle(ctx context.Context, s *support.Support, cfg Config) (Record, erro
 		// Not chased. The next cycle supersedes this one, and a replacement
 		// landing after maxAge would revert TooOld anyway.
 		rec.SubmitOutcome = "not_mined"
-		return finish(OutcomeNotMined, err)
+		return finish(ctx, s, cfg, rec, OutcomeNotMined, err)
 	}
 
 	rec.SubmitOutcome = "accepted"
-	return finish(OutcomeAccepted, nil)
+	return finish(ctx, s, cfg, rec, OutcomeAccepted, nil)
+}
+
+// finish stamps the terminal fields every ending shares.
+func finish(
+	ctx context.Context, s *support.Support, cfg Config, rec Record, out Outcome, err error,
+) (Record, error) {
+	rec.Outcome = out
+	rec.CycleEndedAt = time.Now().UTC()
+	if err != nil {
+		rec.Detail = err.Error()
+	}
+	rec.StoreObservedAtAfter = storeObservedAt(ctx, s, cfg.Store)
+	return rec, err
+}
+
+// pollTargets is where the result might be, most likely first and deduplicated.
+func (c Config) pollTargets() []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, 1+len(c.ResultProxies))
+
+	for _, p := range append([]string{c.Proxy}, c.ResultProxies...) {
+		p = strings.TrimRight(strings.TrimSpace(p), "/")
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+// targetSuffix names the machine a cycle addressed, when it addressed one.
+func targetSuffix(cfg Config) string {
+	if cfg.TeeID == (common.Address{}) {
+		return ""
+	}
+	return " to " + cfg.TeeID.Hex()
 }
 
 // classifyRejection separates the one benign store guard from the rest.
@@ -323,35 +415,60 @@ func postDirectAction(
 	return action.Data.ID, nil
 }
 
-// PollResult waits for a terminal action result. The deadline is what makes the
-// cycle's duration knowable, and has to stay inside the store's maxAge.
-//
-// The tag is not optional: an instruction's result is filed under "threshold"
-// and a direct action's under "submit", and asking for the wrong one returns 404
-// forever rather than an error naming the mismatch.
+// PollResult waits for a terminal action result on one proxy.
 func PollResult(
 	ctx context.Context, proxyURL string, id common.Hash, tag teetypes.SubmissionTag,
 	timeout time.Duration,
 ) (teetypes.ActionResult, error) {
+	res, _, err := PollResultAny(ctx, []string{proxyURL}, id, tag, timeout)
+	return res, err
+}
+
+// PollResultAny waits for a terminal action result on any of several proxies and
+// reports which one answered. The deadline is what makes the cycle's duration
+// knowable, and has to stay inside the store's maxAge.
+//
+// Several proxies because an on-chain instruction is routed to a machine the
+// registry picks at random, and only that machine's proxy ever holds the result:
+// asking just one of a fleet of N finds nothing (N-1)/N of the time, and the
+// symptom is a poll that expires looking exactly like a dropped instruction. On
+// the direct channel there is only ever one target.
+//
+// The tag is not optional: an instruction's result is filed under "threshold"
+// and a direct action's under "submit", and asking for the wrong one returns 404
+// forever rather than an error naming the mismatch.
+func PollResultAny(
+	ctx context.Context, proxies []string, id common.Hash, tag teetypes.SubmissionTag,
+	timeout time.Duration,
+) (teetypes.ActionResult, string, error) {
+	if len(proxies) == 0 {
+		return teetypes.ActionResult{}, "", errors.New("no proxy to poll for the result")
+	}
+
 	deadline := time.Now().Add(timeout)
 	backoff := time.Second
 
 	for attempt := 1; ; attempt++ {
-		res, ok, err := fetchResult(proxyURL, id, tag)
-		switch {
-		case err != nil:
-			logger.Warnf("attempt %d: %s", attempt, err)
-		case ok:
-			return res, nil
-		default:
-			logger.Infof("attempt %d: pending (status %d)", attempt, res.Status)
+		// Sequential across proxies: a fleet is a handful of machines, and one
+		// slow proxy delaying a round costs less than the concurrency would.
+		for _, proxy := range proxies {
+			res, ok, err := fetchResult(proxy, id, tag)
+			switch {
+			case err != nil:
+				logger.Warnf("attempt %d (%s): %s", attempt, proxy, err)
+			case ok:
+				return res, proxy, nil
+			default:
+				logger.Infof("attempt %d (%s): pending (status %d)", attempt, proxy, res.Status)
+			}
 		}
 
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return teetypes.ActionResult{}, errors.Errorf(
-				"no terminal result for %s within %s — FCC is fire-and-forget, so a dropped "+
-					"instruction is an expected outcome, not an exceptional one", id.Hex(), timeout)
+			return teetypes.ActionResult{}, "", errors.Errorf(
+				"no terminal result for %s within %s on any of %d proxy/proxies — FCC is "+
+					"fire-and-forget, so a dropped instruction is an expected outcome, not an "+
+					"exceptional one", id.Hex(), timeout, len(proxies))
 		}
 		if backoff > remaining {
 			backoff = remaining
@@ -359,7 +476,7 @@ func PollResult(
 
 		select {
 		case <-ctx.Done():
-			return teetypes.ActionResult{}, ctx.Err()
+			return teetypes.ActionResult{}, "", ctx.Err()
 		case <-time.After(backoff):
 		}
 
@@ -373,7 +490,8 @@ func PollResult(
 func fetchResult(
 	proxyURL string, id common.Hash, tag teetypes.SubmissionTag,
 ) (teetypes.ActionResult, bool, error) {
-	url := proxyURL + "/action/result/" + id.Hex() + "?submissionTag=" + string(tag)
+	url := strings.TrimRight(proxyURL, "/") +
+		"/action/result/" + id.Hex() + "?submissionTag=" + string(tag)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -400,7 +518,7 @@ func fetchResult(
 // are fine". The map is only written when an observation runs, so stale "ok"
 // values persist if requests stop — alert on on-chain feed age instead.
 func sourceHealth(proxyURL string) map[string]string {
-	resp, err := http.Get(proxyURL + "/info")
+	resp, err := http.Get(strings.TrimRight(proxyURL, "/") + "/info")
 	if err != nil {
 		return nil
 	}

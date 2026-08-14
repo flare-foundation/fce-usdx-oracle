@@ -17,9 +17,9 @@ import (
 
 // processUsdxConfig routes USDX_CONFIG provisioning commands. Each is valid
 // over exactly one action type, enforced here rather than assumed: SET_ENDPOINTS
-// is authorised by the sender's owner-only check, so a direct action would skip
-// it; SET_SECRET is authorised by M-of-N admin signatures, and on-chain would
-// put a ciphertext in permanent public storage for no benefit.
+// and SET_ADMINS are authorised by the sender's owner-only check, so a direct
+// action would skip it; SET_SECRET is authorised by M-of-N admin signatures, and
+// on-chain would put a ciphertext in permanent public storage for no benefit.
 //
 // Every path returns nil data and a fixed log, so provisioning cannot be used
 // to probe the admin set or which machine is which.
@@ -42,6 +42,20 @@ func (e *Extension) processUsdxConfig(action teetypes.Action, df *instruction.Da
 		logger.Infof("SET_ENDPOINTS applied")
 		return ok(action, df)
 
+	case df.OPCommand == teeutils.ToHash(config.OPCommandSetAdmins):
+		if action.Data.Type != teetypes.Instruction {
+			return respond(e, action, df, failure.WrongActionType)
+		}
+		if err := e.provisioner.ApplyAdmins(df.OriginalMessage); err != nil {
+			// The detail names versions, thresholds and admin addresses — all
+			// public on-chain in the very payload this rejects — so it goes to
+			// the log only, on the same terms as SET_ENDPOINTS.
+			logger.Errorf("SET_ADMINS rejected: %v", err)
+			return respond(e, action, df, failure.ProvisionRejected)
+		}
+		logger.Infof("SET_ADMINS applied")
+		return ok(action, df)
+
 	case df.OPCommand == teeutils.ToHash(config.OPCommandSetSecret):
 		if action.Data.Type != teetypes.Direct {
 			return respond(e, action, df, failure.WrongActionType)
@@ -56,9 +70,10 @@ func (e *Extension) processUsdxConfig(action teetypes.Action, df *instruction.Da
 
 	default:
 		return http.StatusNotImplemented, []byte(fmt.Sprintf(
-			"unsupported op command: received %s, expected one of [%s (%s), %s (%s)]",
+			"unsupported op command: received %s, expected one of [%s (%s), %s (%s), %s (%s)]",
 			df.OPCommand.Hex(),
 			teeutils.ToHash(config.OPCommandSetEndpoints).Hex(), config.OPCommandSetEndpoints,
+			teeutils.ToHash(config.OPCommandSetAdmins).Hex(), config.OPCommandSetAdmins,
 			teeutils.ToHash(config.OPCommandSetSecret).Hex(), config.OPCommandSetSecret,
 		))
 	}

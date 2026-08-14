@@ -7,10 +7,17 @@ import { IUsdxConfigSource } from "./interfaces/IUsdxConfigSource.sol";
 /// @title UsdxPriceStore
 /// @author Flare Foundation
 /// @notice Accepts TEE-signed USDX price reports and stores the latest one.
-/// @dev Open submission; trust is signature plus registry membership. Strictly increasing `observedAt` covers replay and out-of-order delivery.
+/// @dev Open submission; trust is signature plus registry membership. Strictly
+/// increasing `observedAt` covers replay and out-of-order delivery.
 contract UsdxPriceStore {
     /// @notice Report schema version; change when the signed layout changes.
+    /// @dev Still V1: the extension and this store are redeployed together, so
+    /// BODY_LENGTH rather than the version is what catches a mismatched pair.
     bytes32 public constant DOMAIN = keccak256("USDX_ORACLE_PRICE_V1");
+
+    /// @notice Encoded report body length: seven static ABI words.
+    /// @dev Checked explicitly because `abi.decode` tolerates trailing bytes.
+    uint256 public constant BODY_LENGTH = 7 * 32;
 
     /// @notice Registry of TEE machines authorised for this extension.
     /// @dev Immutable — the FlareTeeManager diamond is a permanent address.
@@ -28,7 +35,7 @@ contract UsdxPriceStore {
     uint64 public constant MAX_FUTURE_SKEW = 2 minutes;
 
     /// @notice Required machine status for an accepted signer (PRODUCTION = 2).
-    /// @dev Fixed constant — the only valid value; previously misconfigured as a constructor arg on Coston2.
+    /// @dev A constant, not a constructor arg: it is the only valid value.
     uint8 public constant REQUIRED_TEE_STATUS = uint8(ITeeMachineRegistry.TeeStatus.PRODUCTION);
 
     /// @notice Fixed-point decimal scale of stored prices.
@@ -60,18 +67,11 @@ contract UsdxPriceStore {
     /// @dev Unlike paused, this withdraws the value without zeroing price (zero would read as worthless).
     bool public invalidated;
 
-    /// @notice What one machine last proved about itself by landing a price.
-    ///
-    /// `expectedConfigHash` on the sender records what was SENT to a machine.
-    /// Nothing recorded what a machine was actually RUNNING — a config can be
-    /// rejected by the extension or never delivered at all, and with several
-    /// machines each needs its own setEndpoints call. This is the other half:
-    /// submitPrice has already recovered the signer and checked its config hash
-    /// against the expected one, so writing it down turns an accepted price into
-    /// standing evidence that this machine ran that configuration.
+    /// @notice What one machine last proved by landing a price — what it was
+    /// RUNNING, as against the sender's hashes, which record what was SENT to it.
     struct TeeReport {
-        /// @dev The config the machine proved it was running, not the one sent to it.
         bytes32 configHash;
+        bytes32 adminsHash;
         /// @dev The report's own timestamp, from inside the enclave.
         uint64 observedAt;
         /// @dev Chain time when the report was accepted.
@@ -84,13 +84,12 @@ contract UsdxPriceStore {
 
     /// @notice Every machine that has ever landed a price, append-only.
     /// @dev Enumerable so a dashboard can read the fleet without an indexer.
-    /// Bounded in practice by the number of machines an extension ever runs.
     address[] public seenTees;
 
     event PriceUpdated(uint256 indexed price, uint64 indexed observedAt, address indexed teeId);
 
-    /// @notice Emitted the first time a machine lands a price — its commissioning.
-    /// @dev Only on first sighting; later submissions update lastReport silently.
+    /// @notice Emitted the first time a machine lands a price; later submissions
+    /// update lastReport silently.
     event TeeSeen(address indexed teeId, bytes32 indexed configHash);
     event Paused(bool paused);
     event Invalidated(bool invalidated);
@@ -114,8 +113,11 @@ contract UsdxPriceStore {
     error BadBounds();
     error StaleConfig();
     error NoConfigPublished();
+    error StaleAdmins();
+    error NoAdminsPublished();
     error ConfigSourceUnavailable();
     error ZeroExtensionId();
+    error BadBodyLength();
 
     modifier onlyGovernance() {
         if (msg.sender != governance) revert NotGovernance();
@@ -159,27 +161,44 @@ contract UsdxPriceStore {
 
         _requireRegisteredTee(teeId);
 
+        if (_body.length != BODY_LENGTH) revert BadBodyLength();
+
         (
             bytes32 domain,
             uint256 reportedPrice,
             int8 decimals,
             uint64 reportedAt,
             bytes32 instructionID,
-            bytes32 configHash
-        ) = abi.decode(_body, (bytes32, uint256, int8, uint64, bytes32, bytes32));
+            bytes32 configHash,
+            bytes32 adminsHash
+        ) = abi.decode(_body, (bytes32, uint256, int8, uint64, bytes32, bytes32, bytes32));
 
         if (domain != DOMAIN) revert WrongDomain();
         if (decimals != DECIMALS) revert WrongDecimals();
 
-        // Config source errors are rejected input, not opaque reverts.
-        bytes32 expected;
-        try configSource.expectedConfigHash(teeId) returns (bytes32 h) {
-            expected = h;
-        } catch {
-            revert ConfigSourceUnavailable();
+        // Scoped to keep the two expected-hash reads off the stack below.
+        {
+            // Config source errors are rejected input, not opaque reverts.
+            bytes32 expected;
+            try configSource.expectedConfigHash(teeId) returns (bytes32 h) {
+                expected = h;
+            } catch {
+                revert ConfigSourceUnavailable();
+            }
+            if (expected == bytes32(0)) revert NoConfigPublished();
+            if (configHash != expected) revert StaleConfig();
+
+            // The admin set decides who may install credentials in that enclave,
+            // so it is checked on the same terms as the config hash.
+            bytes32 expectedAdmins;
+            try configSource.expectedAdminsHash(teeId) returns (bytes32 h) {
+                expectedAdmins = h;
+            } catch {
+                revert ConfigSourceUnavailable();
+            }
+            if (expectedAdmins == bytes32(0)) revert NoAdminsPublished();
+            if (adminsHash != expectedAdmins) revert StaleAdmins();
         }
-        if (expected == bytes32(0)) revert NoConfigPublished();
-        if (configHash != expected) revert StaleConfig();
 
         // Strictly increasing observedAt covers replay and out-of-order delivery.
         if (reportedAt <= observedAt) revert NotNewer();
@@ -190,15 +209,13 @@ contract UsdxPriceStore {
         // Inside the skew window, age is zero; also prevents subtraction underflow.
         if (reportedAt < block.timestamp && block.timestamp - reportedAt > maxAge) revert TooOld();
 
-        // Todo: Claude don't touch this! We need to check if there is anything alse, to add since we removed a few unnecessary checks. 
-
         if (reportedPrice < minPrice || reportedPrice > maxPrice) revert OutOfBounds();
 
         price = reportedPrice;
         observedAt = reportedAt;
         observedAtInstructionID = instructionID;
 
-        _recordTee(teeId, configHash, reportedAt);
+        _recordTee(teeId, configHash, adminsHash, reportedAt);
 
         emit PriceUpdated(reportedPrice, reportedAt, teeId);
     }
@@ -218,48 +235,54 @@ contract UsdxPriceStore {
         return seenTees.length;
     }
 
-    /// @notice Whether `_teeId` has proven it runs the configuration currently published for it.
-    ///
-    /// @dev False for a machine that never landed a price, and false again as
-    /// soon as setEndpoints publishes something new for it — which is correct
-    /// and self-announcing: a re-pushed config has not been proven until that
-    /// machine lands a price under it. Re-commission with
-    /// `submit-price -direct -p <that machine's proxy>`.
-    ///
-    /// This is a record of commissioning, not of liveness. Only the machine that
-    /// wins a given cycle updates its entry, so a stale `acceptedAt` means "has
-    /// not won lately", not "unhealthy" — read GET /state per machine for that.
+    /// @notice Whether `_teeId` has proven it runs the configuration and admin
+    /// set currently published for it. Both halves are required.
+    /// @dev Goes false as soon as setEndpoints or setAdmins publishes something
+    /// new, until that machine lands a price under it. Commissioning, not
+    /// liveness — see docs/usdx-oracle-keeper.md.
     function isProvenConfigured(address _teeId) external view returns (bool) {
         TeeReport storage report = lastReport[_teeId];
         if (report.acceptedAt == 0) return false;
 
         // A config source that has gone away must not read as "configured".
         try configSource.expectedConfigHash(_teeId) returns (bytes32 expected) {
-            return expected != bytes32(0) && report.configHash == expected;
+            if (expected == bytes32(0) || report.configHash != expected) return false;
+        } catch {
+            return false;
+        }
+
+        try configSource.expectedAdminsHash(_teeId) returns (bytes32 expected) {
+            return expected != bytes32(0) && report.adminsHash == expected;
         } catch {
             return false;
         }
     }
 
     /// @dev Records what a machine just proved. First sighting appends to seenTees.
-    function _recordTee(address _teeId, bytes32 _configHash, uint64 _reportedAt) private {
+    function _recordTee(
+        address _teeId,
+        bytes32 _configHash,
+        bytes32 _adminsHash,
+        uint64 _reportedAt
+    ) private {
         TeeReport storage report = lastReport[_teeId];
 
-        // acceptedAt is the first-sighting flag: it is only ever set here, and a
-        // machine cannot reach this point without having passed every guard.
+        // acceptedAt is the first-sighting flag; it is only ever set here.
         if (report.acceptedAt == 0) {
             seenTees.push(_teeId);
             emit TeeSeen(_teeId, _configHash);
         }
 
         report.configHash = _configHash;
+        report.adminsHash = _adminsHash;
         report.observedAt = _reportedAt;
         report.acceptedAt = uint64(block.timestamp);
         report.submissions += 1;
     }
 
     /// @notice Returns the stored price and its observation timestamp.
-    /// @dev Never reverts. Zero timestamp means invalidated or unpublished. Clamped to block.timestamp so staleness checks cannot underflow.
+    /// @dev Never reverts. Zero timestamp means invalidated or unpublished.
+    /// Clamped to block.timestamp so staleness checks cannot underflow.
     function latest() external view returns (uint256 _price, int8 _decimals, uint64 _timestamp) {
         if (invalidated) return (price, DECIMALS, 0);
 
@@ -282,7 +305,8 @@ contract UsdxPriceStore {
     }
 
     /// @notice Repoints the store at a new extension generation.
-    /// @dev Id and config source move together on re-registration; consider invalidating until the new generation publishes.
+    /// @dev Id and config source move together on re-registration; consider
+    /// invalidating until the new generation publishes.
     function setExtension(uint256 _extensionId, IUsdxConfigSource _configSource) external onlyGovernance {
         // Zero id would make the registry check vacuous.
         if (_extensionId == 0) revert ZeroExtensionId();
@@ -325,7 +349,8 @@ contract UsdxPriceStore {
     }
 
     /// @notice Recovers the TEE signer from a 65-byte signature over the report body.
-    /// @dev Applies the EIP-191 prefix to match tee-node; requires v in {27, 28} as normalised by the extension.
+    /// @dev Applies the EIP-191 prefix to match tee-node; requires v in {27, 28},
+    /// as normalised by the extension.
     function _recover(bytes calldata _body, bytes calldata _signature) internal pure returns (address) {
         if (_signature.length != 65) revert BadSignatureLength();
 

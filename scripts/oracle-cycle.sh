@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # oracle-cycle.sh — run one keeper cycle against the deployed stack.
 #
-#   trigger   requestPriceUpdate() on the instruction sender
+#   trigger   POST /direct on the proxy, or requestPriceUpdate() with --on-chain
 #   collect   poll the TEE proxy for the signed ActionResult
 #   relay     decode and call UsdxPriceStore.submitPrice
 #
@@ -10,10 +10,17 @@
 # The keeper holds no authority: the store verifies the TEE signature, so the
 # worst a wrong invocation does is waste gas.
 #
+# Everything here addresses the ONE proxy at ORACLE_PROXY_URL, which is what
+# makes it a per-machine tool. The fleet-wide behaviour — rotating over the
+# registered machines, and the startup sweep that commissions all of them —
+# needs cmd/keeper without -p; see docs/usdx-oracle-keeper.md.
+#
 # Usage:
 #   ./scripts/oracle-cycle.sh                        # one cycle, submit for real
+#   ./scripts/oracle-cycle.sh --on-chain             # pay the fee, use the permissionless path
 #   ./scripts/oracle-cycle.sh --dry-run              # decode + preflight, send nothing
-#   ./scripts/oracle-cycle.sh --dry-run --instruction-id 0x…   # re-check a result, no fee
+#   ./scripts/oracle-cycle.sh --dry-run --instruction-id 0x…   # re-check a direct result, no fee
+#   ./scripts/oracle-cycle.sh --dry-run --on-chain --instruction-id 0x…  # …an instruction's
 #   ./scripts/oracle-cycle.sh --loop 10m             # stay up and cycle on a timer
 #   ./scripts/oracle-cycle.sh --loop 10m --records cycles.jsonl
 set -euo pipefail
@@ -27,10 +34,14 @@ die() { echo -e "${RED}[oracle-cycle] ERROR:${NC} $*" >&2; exit 1; }
 [[ -f "$PROJECT_DIR/.env" ]] && { set -a; source "$PROJECT_DIR/.env"; set +a; }
 [[ -f "$PROJECT_DIR/config/extension.env" ]] && source "$PROJECT_DIR/config/extension.env"
 
-DRY_RUN=false; INTERVAL=""; INSTRUCTION_ID=""; RECORDS=""
+DRY_RUN=false; INTERVAL=""; INSTRUCTION_ID=""; RECORDS=""; ON_CHAIN=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run) DRY_RUN=true; shift ;;
+        # The direct channel is the default because it is what the keeper runs:
+        # no registry fee, no trigger transaction. --on-chain exercises the
+        # permissionless path instead, which is worth proving still works.
+        --on-chain) ON_CHAIN=true; shift ;;
         --loop) [[ $# -ge 2 ]] || die "--loop needs a duration, e.g. 10m"
                 INTERVAL="$2"; shift 2 ;;
         # One JSON record per cycle. Separating them from the log stream is what
@@ -82,11 +93,23 @@ if [[ "$DRY_RUN" == "true" || -n "$INSTRUCTION_ID" ]]; then
         && ARGS+=(-instructionId "$INSTRUCTION_ID") \
         || ARGS+=(-instructionSender "$INSTRUCTION_SENDER")
     [[ "$DRY_RUN" == "true" ]] && ARGS+=(-dry-run)
+    # submit-price still defaults to the on-chain channel, so direct is opt-in
+    # there — the opposite of the keeper, which runs unattended and pays a fee
+    # per cycle if it gets this wrong.
+    #
+    # With --instruction-id this also picks the submission tag: a direct action's
+    # result is filed under "submit" and an instruction's under "threshold", and
+    # asking for the wrong one 404s for the whole poll window. So re-checking the
+    # result of an on-chain instruction needs --on-chain.
+    [[ "$ON_CHAIN" == "false" ]] && ARGS+=(-direct)
     go build -o "$BIN_DIR/submit-price" ./cmd/submit-price
     exec "$BIN_DIR/submit-price" "${ARGS[@]}"
 fi
 
-ARGS=(-a "$ADDR_FILE" -p "$PROXY" -instructionSender "$INSTRUCTION_SENDER")
+# -sweep=false: this script drives one named machine, and a sweep would submit a
+# price from every registered one behind the operator's back.
+ARGS=(-a "$ADDR_FILE" -p "$PROXY" -instructionSender "$INSTRUCTION_SENDER" -sweep=false)
+[[ "$ON_CHAIN" == "true" ]] && ARGS+=(-direct=false)
 [[ -n "$RECORDS" ]] && ARGS+=(-records "$RECORDS")
 
 go build -o "$BIN_DIR/keeper" ./cmd/keeper

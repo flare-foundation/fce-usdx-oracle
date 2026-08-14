@@ -498,8 +498,13 @@ attestation meaningless:
   whoever can set endpoints can point a chain at a server they control and
   dictate the price. It was later removed so providers can be rotated without a
   rebuild, and the resulting owner-key trust is accepted explicitly in §15.
-- **The admin signer set** (`internal/provision.Admins`), the root of trust for
-  provisioning.
+- ~~**The admin signer set**~~ — *superseded*. It was baked at this point as the
+  root of trust for provisioning. It is now published per machine by
+  `SET_ADMINS`, owner-only, recorded in `expectedAdminsHash` and enforced by the
+  store against the signed report. Baking it bought nothing the owner key did
+  not already have (see §15) and cost a rebuild per rotation; publishing it makes
+  "who could provision this machine" answerable from the chain. See
+  rationale §9.
 - **The observation window**, since widening it weakens the TOCTOU bound.
 
 (The signed report's target binding — chain id, store, feed id — was removed
@@ -509,11 +514,29 @@ See §16.)
 ### Properties worth knowing
 
 **Each command is valid over exactly one channel, enforced not assumed.**
-`SET_ENDPOINTS` is instruction-only: its authorisation is the owner-only check in
-the on-chain sender, which a direct action would bypass entirely. `SET_SECRET` is
-direct-only: a credential ciphertext has no business in permanent public storage.
-The handler checks `action.Data.Type` — which the scaffold's dispatch ignored
-completely.
+`SET_ENDPOINTS` and `SET_ADMINS` are instruction-only: their authorisation is the
+owner-only check in the on-chain sender, which a direct action would bypass
+entirely. `SET_SECRET` is direct-only: a credential ciphertext has no business in
+permanent public storage. The handler checks `action.Data.Type` — which the
+scaffold's dispatch ignored completely.
+
+**A published admin set is enforced end to end.** `setAdmins` records
+`expectedAdminsHash`, the extension commits to `adminsHash` inside the signed
+body, and the store rejects any mismatch with `StaleAdmins`. Rotating admins
+therefore withdraws a machine's commissioning until it lands a price under the
+new set — the same self-announcing behaviour republishing endpoints already had.
+
+**Two signer sets, split by exposure rather than by importance.** The envelope's
+ref selects the set: `hex_api_key` is authorised by `backing` (1-of-N permitted),
+everything else by `providers` (2-of-N minimum). The asymmetry is deliberate and
+worth restating plainly, because it looks backwards at first glance — the
+*better-protected* credential gets the *weaker* threshold. The reasoning is
+impact, not exposure: the backing endpoint is pinned and authenticated by header,
+so a wrong value degrades the feed to cash-less rather than moving the price,
+whereas a provider credential is substituted into a URL the owner key chooses.
+**If the backing endpoint ever stops being pinned, `MinBackingThreshold` must go
+back up.** The ref-to-set mapping is pinned in the build, never in the payload;
+otherwise the 1-of-1 key could claim the provider credentials.
 
 **One rejection reason for everything.** Bad signature, too few distinct signers,
 unknown signer, stale `issuedAt`, replayed version, wrong `teeId`, wrong chain,
@@ -543,16 +566,10 @@ while a keyed RPC URL has a placeholder and no header — and one field could no
 express both without validation rejecting one of the two real configurations.
 Split into `URLSecretRef` and `AuthSecretRef`.
 
-### Open
+### Resolved: the baked placeholder admin set
 
-The admin set is **still placeholder addresses** with `Threshold = 2`.
-`TestAdminSetIsNotPlaceholder` skips with a warning today and must become a hard
-failure once real keys are baked. Nothing can be provisioned against a live
-deployment until they are.
-
-**Corrected 5 Aug 2026.** This section previously described the placeholders as
-`0x1111…`, `0x2222…`, `0x3333…`. They are not. They are the addresses of
-**private keys 1, 2 and 3**:
+The admin set used to be baked into the image, and the baked value was the
+addresses of **private keys 1, 2 and 3**:
 
 ```
 0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf   privkey 0x01
@@ -560,16 +577,25 @@ deployment until they are.
 0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69   privkey 0x03
 ```
 
-The difference is not cosmetic, and the old wording understated the risk in the
-safe-sounding direction. `0x1111…` has no known private key, so an envelope
-could never be signed for it and provisioning would fail closed. The keys above
-are the most widely known in existence, so **anyone can produce two valid admin
-signatures today**. The M-of-N threshold currently provides no protection
-whatever; what stands between an attacker and `SET_SECRET` is the proxy's
-`DIRECT_API_KEY` and network reach, not the admin set.
+Those are the most widely known keys in existence, so anyone could produce two
+valid admin signatures, and the M-of-N threshold provided no protection whatever.
+`TestAdminSetIsNotPlaceholder` skipped with a warning and was to become a hard
+failure once real keys were baked.
 
-`internal/provision` states this correctly in both the code comment and
-`TestAdminSetIsNotPlaceholder` — the drift was in this document alone.
+The fix was not to bake different keys. The set is now **published per machine**
+by the owner-only `SET_ADMINS` instruction, and a verifier starts with none —
+`TestVerify_RejectsBeforeAnyAdminSetIsInstalled` holds that line. A machine that
+has not been told who its admins are cannot be provisioned at all, so there is no
+longer a guessable default to be wrong about. The same addresses survive as an
+explicitly named test fixture, `testdata/admins/dev-wellknown-keys.json`, which
+is inert unless someone deliberately publishes it to a machine.
+
+`TestAdminSetIsNotPlaceholder` is gone with the constant it guarded.
+
+**Corrected 5 Aug 2026.** This section previously described the placeholders as
+`0x1111…`, `0x2222…`, `0x3333…`. They were not, and the old wording understated
+the risk in the safe-sounding direction: `0x1111…` has no known private key, so
+provisioning would have failed closed, whereas the real values failed open.
 
 ---
 
