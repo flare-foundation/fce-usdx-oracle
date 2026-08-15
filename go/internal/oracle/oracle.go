@@ -291,7 +291,7 @@ func healthOf(err error) string {
 // checkWindow rejects an observation whose inputs are spread too far apart in
 // time. With a single supply pass this is the only bound on read skew between
 // the supply and reserve figures; the reserve figure's own lag behind chain
-// state is bounded separately, by config.BackingMaxAge.
+// state is bounded separately, by config.BondsMaxAge / config.CashMaxAge.
 func checkWindow(window time.Duration, supplies []supply.Reading, readings ...backing.Reading) error {
 	var earliest, latest time.Time
 

@@ -111,8 +111,20 @@ const (
 	// BackingMaxAge, and that is the larger of the two exposures.
 	ObservationWindow = 30 * time.Second
 
-	BackingMaxAge = 30 * time.Minute
-	HTTPTimeout   = 5 * time.Second
+	// The two reserve figures are published on different schedules, so one
+	// freshness bound cannot fit both. Bonds moves continuously; cash is
+	// republished about once an hour, and a 30-minute bound discarded it for
+	// most of every hour — the machine fetched a perfectly good figure, then
+	// threw it away. A bound below the publishing interval does not make the
+	// price fresher, it just makes the source unusable part of the time.
+	//
+	// 90 minutes leaves room for a late or skipped publish without accepting a
+	// figure old enough to be meaningless. It is the weaker bound of the two,
+	// but the alternative it replaces is not a fresher cash figure — it is no
+	// cash figure at all, since the oracle then runs cash-less.
+	BondsMaxAge = 30 * time.Minute
+	CashMaxAge  = 90 * time.Minute
+	HTTPTimeout = 5 * time.Second
 
 	HexAPIKeyRef = "hex_api_key"
 )
@@ -207,7 +219,7 @@ func BondsSource() BackingSpec {
 	return BackingSpec{
 		Name: HexBondsName, URL: HexBondsURL,
 		RequireCurrency: false,
-		MaxAge:          BackingMaxAge, Timeout: HTTPTimeout,
+		MaxAge:          BondsMaxAge, Timeout: HTTPTimeout,
 	}
 }
 
@@ -216,7 +228,7 @@ func CashSource(apiKey string) BackingSpec {
 	return BackingSpec{
 		Name: HexCashName, URL: HexCashURL,
 		RequireCurrency: true,
-		MaxAge:          BackingMaxAge, Timeout: HTTPTimeout,
+		MaxAge:          CashMaxAge, Timeout: HTTPTimeout,
 		AuthHeader: HexCashAuthHeader, AuthValue: apiKey,
 	}
 }
