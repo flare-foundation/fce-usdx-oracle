@@ -14,14 +14,9 @@ import (
 	"github.com/pkg/errors"
 )
 
-// SetTeeGovernance registers the TEE governance signer set + threshold via
-// ExtensionGovernance.SetNewTeeGovernance.
-//
-// The node derives its governanceHash from the SAME (signers, threshold) pair,
-// and MachineManager.register only accepts a machine whose signed
-// governanceHash matches — so this must stay consistent with the node's env.
-//
-// Idempotent: skipped when the on-chain hash already matches.
+// SetTeeGovernance registers the TEE governance signers and threshold. The node
+// derives its governanceHash from the SAME pair and register() only accepts a match,
+// so this must stay consistent with the node's env. Idempotent.
 func SetTeeGovernance(s *support.Support, privKey *ecdsa.PrivateKey, extensionId *big.Int, signers []common.Address, threshold uint64) error {
 	if len(signers) == 0 {
 		return errors.New("at least one governance signer is required (set GOVERNANCE_SIGNERS)")

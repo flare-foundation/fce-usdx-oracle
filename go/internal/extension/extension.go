@@ -30,10 +30,9 @@ import (
 type Observer interface {
 	Report(ctx context.Context, instructionID common.Hash) (oracle.Observation, error)
 
-	// ReadinessReport answers GET_READINESS. It takes the provisioning half
-	// because the observer does not own it, and returns the finished
-	// ActionResult payload — assembling and signing happen behind the poller's
-	// lock, where the observation state and the signer both live.
+	// ReadinessReport answers GET_READINESS. It takes the provisioning half because
+	// the observer does not own it, and returns the finished payload: assembling
+	// and signing both happen behind the poller's lock.
 	ReadinessReport(
 		ctx context.Context, instructionID common.Hash, provisioning types.Readiness,
 	) ([]byte, error)
@@ -70,9 +69,7 @@ type Extension struct {
 }
 
 // NewWithObserver builds an Extension backed by a live observer. A nil observer
-// panics: the scaffold's New() silently produced a stub, which is how the
-// production entrypoint once served a hard-coded price. NewStub is now the only
-// way to a stub, and it is named at its single call site.
+// panics — the scaffold's New() once silently shipped a hard-coded price.
 func NewWithObserver(extensionPort, signPort int, observer Observer) *Extension {
 	return NewWithProvisioner(extensionPort, signPort, observer, nil)
 }
@@ -155,16 +152,9 @@ func (e *Extension) stateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// parseActionData extracts the operation identifiers and the payload, which
-// arrive in two different envelopes depending on how the action was raised.
-//
-// An on-chain instruction carries an instruction.DataFixed. A direct action
-// carries a types.DirectInstruction, whose payload field is "message" and not
-// "originalMessage". Parsing one as the other does not fail — encoding/json
-// drops unknown fields — it silently yields an EMPTY payload, so the envelope
-// has to be chosen from Data.Type rather than guessed at. Reading a direct
-// action as DataFixed is what made SET_SECRET over the production /direct path
-// receive nothing at all.
+// parseActionData extracts the op identifiers and payload from a DataFixed
+// (instruction) or a DirectInstruction (direct). Parsing one as the other yields an
+// EMPTY payload rather than an error, so the envelope comes from Data.Type.
 func parseActionData(action teetypes.Action) (*instruction.DataFixed, error) {
 	if action.Data.Type != teetypes.Direct {
 		return processorutils.Parse[instruction.DataFixed](action.Data.Message)
@@ -175,10 +165,8 @@ func parseActionData(action teetypes.Action) (*instruction.DataFixed, error) {
 		return nil, err
 	}
 
-	// A direct action has no on-chain instruction behind it, so the proxy's
-	// action id stands in as the correlator bound into the signed report. It
-	// must not be left zero: the store records it as observedAtInstructionID,
-	// and a zero there would make every direct price indistinguishable.
+	// No on-chain instruction behind it, so the proxy's action id is the correlator.
+	// Never zero: the store records it as observedAtInstructionID.
 	return &instruction.DataFixed{
 		InstructionID:   action.Data.ID,
 		OPType:          di.OPType,
@@ -211,20 +199,9 @@ func (e *Extension) processAction(action teetypes.Action) (int, []byte) {
 func (e *Extension) processUsdxOracle(action teetypes.Action, df *instruction.DataFixed) (int, []byte) {
 	switch {
 	case df.OPCommand == teeutils.ToHash(config.OPCommandGetPrice):
-		// Valid over BOTH channels, unlike the USDX_CONFIG commands, and the
-		// asymmetry is deliberate. Those two are authorised by the channel
-		// itself — the sender's owner-only check, or M-of-N admin signatures —
-		// so the channel is load-bearing. GET_PRICE is authorised by nothing,
-		// because it grants nothing: it signs the observation the enclave
-		// already made on its own timer, and UsdxPriceStore verifies that
-		// signature against the machine registry however it was requested.
-		//
-		// So the instruction channel is the permissionless path (anyone can pay
-		// the registry fee) and the direct channel is the operator's cheap one
-		// (no fee, no transaction). The worst a direct caller with the proxy's
-		// API key can do is ask too often — an availability cost, not a
-		// correctness one. Listed explicitly rather than left open so a future
-		// action type cannot quietly acquire a signed price.
+		// Valid over BOTH channels, unlike the USDX_CONFIG commands: GET_PRICE grants
+		// nothing, and the store checks the signature however it was requested. Listed
+		// explicitly so no future action type quietly acquires a signed price.
 		if action.Data.Type != teetypes.Instruction && action.Data.Type != teetypes.Direct {
 			return respond(e, action, df, failure.WrongActionType)
 		}
@@ -257,10 +234,8 @@ func (e *Extension) processUsdxOracle(action teetypes.Action, df *instruction.Da
 // closed: never guesses, never falls back to a cached price. A frozen feed with
 // an ageing timestamp is the designed failure mode.
 func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
-	// Require exactly the pinned one-byte envelope, so an unrecognised version
-	// is refused rather than guessed at. Neither the length nor the content is
-	// reported back: ActionResult.Log is public, and echoing attacker-supplied
-	// dimensions is free reconnaissance.
+	// Exactly the pinned envelope, so an unrecognised version is refused rather than
+	// guessed at. Nothing about it is echoed back: ActionResult.Log is public.
 	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.GetPriceRequestV1 {
 		return e.fail(action, df, failure.UnexpectedPayload)
 	}
@@ -293,16 +268,8 @@ func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.Data
 }
 
 // processGetReadiness answers with the machine's own account of itself, signed.
-//
-// Unlike processGetPrice this never fails closed: an unprovisioned or stale
-// machine returns a report saying so, because "nothing is configured" is the
-// answer rather than a failure to produce one. Only an encoding or signing
-// fault is an error here, and that is a machine broken in a way no readiness
-// report could describe anyway.
-//
-// It deliberately does not touch the GET /state counters. Those describe
-// prices served, and a status query is not one — incrementing them would make
-// polling look like production.
+// Never fails closed — "nothing is configured" is the answer. Leaves the /state
+// counters alone: those describe prices served, and polling is not production.
 func (e *Extension) processGetReadiness(
 	action teetypes.Action, df *instruction.DataFixed,
 ) teetypes.ActionResult {

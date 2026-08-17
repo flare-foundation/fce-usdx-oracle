@@ -26,11 +26,9 @@ const (
 	// The trigger transaction never landed.
 	OutcomeRequestFailed Outcome = "request_failed"
 
-	// The machine said it would refuse to sign, so no paid request was made.
-	// Distinct from request_failed: nothing was attempted and nothing was spent,
-	// which is a saving rather than a fault. Alerting on it as an error would
-	// page someone for the keeper working correctly — what deserves attention is
-	// the observation age it names, and that is already on the record.
+	// The machines said they would refuse to sign, so no paid request was made.
+	// Distinct from request_failed: a saving, not a fault. What deserves attention
+	// is the observation age it names, which is already on the record.
 	OutcomeRequestSkipped Outcome = "request_skipped"
 
 	// The poll expired with no terminal status. FCC is fire-and-forget, so this
@@ -67,28 +65,23 @@ type Record struct {
 
 	Outcome Outcome `json:"outcome"`
 
-	// Channel is "instruction" or "direct". Worth recording because the two have
-	// different failure modes at the same outcome: a direct no_result points at
-	// one machine's proxy, an instruction no_result could be any machine the
-	// registry happened to pick.
+	// Channel is "instruction" or "direct". The two have different failure modes at
+	// the same outcome: a direct no_result names one machine, an instruction one
+	// could be any machine the registry picked.
 	Channel string `json:"channel,omitempty"`
 
-	// Phase is "bootstrap" for the startup sweep and empty for a timed cycle.
-	// The two have different success criteria — a sweep entry that reports
-	// race_lost did not commission its machine, while a cycle that reports it
-	// worked exactly as designed — so alerting has to be able to tell them apart.
+	// Phase is "bootstrap" for the startup sweep, empty for a timed cycle. Different
+	// success criteria: a sweep reporting race_lost commissioned nothing, while a
+	// cycle reporting it worked as designed.
 	Phase string `json:"phase,omitempty"`
 
-	// Proxy is the machine's proxy this cycle used: the direct target, or on the
-	// instruction channel whichever of the fleet's proxies actually held the
-	// result. With a rotating keeper this is what says which machine a failure
-	// belongs to.
+	// Proxy is the proxy this cycle used: the direct target, or whichever of the
+	// fleet's held the result. With a rotating keeper, what says whose failure it is.
 	Proxy string `json:"proxy,omitempty"`
 
-	// TeeID is the machine that signed the report, recovered from the signature.
-	// On the instruction channel it is the only thing that names the machine the
-	// registry routed to. Falls back to the machine the cycle addressed when no
-	// report was produced.
+	// TeeID is the machine that signed the report, recovered from the signature — on
+	// the instruction channel, the only thing naming the machine the registry chose.
+	// Falls back to the addressed machine when no report was produced.
 	TeeID string `json:"teeId,omitempty"`
 
 	// InstructionID is the on-chain instruction id, or the proxy's action id on

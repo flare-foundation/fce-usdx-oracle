@@ -22,13 +22,9 @@ func testReport(t *testing.T) PriceReport {
 	}
 }
 
-// The golden vector. Built word by word from the ABI spec rather than by
-// calling the encoder, so this is an independent derivation of the layout the
-// Solidity side must agree with — not a tautology asserting the encoder equals
-// itself.
-//
-// Every field is a static type, so abi.encode is seven concatenated 32-byte
-// words with no offsets and no length prefixes.
+// The golden vector, built word by word from the ABI spec rather than by calling the
+// encoder — an independent derivation of the layout, not a tautology. Every field is
+// static, so abi.encode is seven concatenated words with no offsets.
 func TestEncodeBody_GoldenLayout(t *testing.T) {
 	r := testReport(t)
 
@@ -173,10 +169,9 @@ func TestDataRoundTrip(t *testing.T) {
 	}
 }
 
-// The body must survive as raw bytes. The store verifies the signature over
-// exactly what it received, so a re-encode anywhere in the path would turn a
-// future encoding divergence into an "invalid signature" rather than a visible
-// encoding bug.
+// The body must survive as raw bytes: the store verifies the signature over exactly
+// what it received, so a re-encode would turn a future encoding divergence into an
+// "invalid signature" rather than a visible encoding bug.
 func TestDataCarriesBodyVerbatim(t *testing.T) {
 	body, err := EncodeBody(testReport(t))
 	if err != nil {

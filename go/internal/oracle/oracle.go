@@ -4,9 +4,10 @@
 //
 // Supply and reserves are each read once. Neither has an internal race worth
 // bracketing: the quorum procedure pins every provider to one agreed block, so
-// a supply figure is "supply as of block N", and the reserve figure moves on
-// Hex's ~10 minute tick, so it is effectively constant across a 20s
-// observation. checkWindow bounds the read skew between the two.
+// a supply figure is "supply as of block N", and Hex republishes the reserve
+// figures only within ~10 minutes of an on-chain event, so a reserve figure is
+// effectively constant across a 20s observation. checkWindow bounds the read
+// skew between the two.
 //
 // Observing and signing are separate calls: an observation takes 2-3s and
 // tee-node allows 2s per action, so internal/observe runs Observe on a timer
@@ -145,10 +146,11 @@ func Observe(ctx context.Context, cfg Config) (Observation, error) {
 		return Observation{Health: health}, err
 	}
 
-	// Wall-clock completion time, not the oldest input timestamp: the store
-	// requires strict monotonicity and the reserves endpoint ticks every ~10
-	// minutes, so two observations could share one and the second be rejected
-	// as a replay. Input freshness is guarded earlier, in package backing.
+	// Wall-clock completion, not the oldest input: the store requires strict
+	// monotonicity, and the reserve figures change only on an on-chain event, so
+	// keying off them would leave consecutive observations sharing a stamp for
+	// hours at a time. This stamps when the inputs were READ, which is what
+	// MaxObservationAge and the store's maxAge both bound.
 	observedAt := uint64(time.Now().UTC().Unix())
 
 	return Observation{
@@ -289,9 +291,13 @@ func healthOf(err error) string {
 }
 
 // checkWindow rejects an observation whose inputs are spread too far apart in
-// time. With a single supply pass this is the only bound on read skew between
-// the supply and reserve figures; the reserve figure's own lag behind chain
-// state is bounded separately, by config.BondsMaxAge / config.CashMaxAge.
+// time. Read skew only — the spread between RetrievedAt stamps, not data age.
+//
+// How far the reserve figure lags chain state is NOT bounded here, and no
+// longer bounded anywhere: Hex republishes on an on-chain event rather than on
+// a schedule, so an old figure is normally the correct one (config.BondsSource
+// has the reasoning). The lag that remains fails safe — a reserve figure that
+// trails a mint understates R/S, and the price is capped at par.
 func checkWindow(window time.Duration, supplies []supply.Reading, readings ...backing.Reading) error {
 	var earliest, latest time.Time
 

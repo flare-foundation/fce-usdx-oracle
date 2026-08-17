@@ -53,10 +53,9 @@ func Compute(in Inputs, decimals int8) (*big.Int, error) {
 	return value, nil
 }
 
-// ComputeWithoutCash returns the price when the cash figure is unavailable.
-// Cash is non-negative and the price is capped at par, so a bonds-only price
-// that already reaches par proves the complete observation matches. Below par
-// the missing figure is load-bearing, so this errors rather than degrade.
+// ComputeWithoutCash returns the price when the cash figure is unavailable. Cash is
+// non-negative and the price caps at par, so a bonds-only price already at par is the
+// full result. Below par the missing figure is load-bearing, so this errors.
 func ComputeWithoutCash(bonds, supply *big.Rat, decimals int8) (*big.Int, error) {
 	value, err := Compute(Inputs{Bonds: bonds, Cash: new(big.Rat), Supply: supply}, decimals)
 	if err != nil {

@@ -12,21 +12,9 @@ import (
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 )
 
-// Sweep lands one price from every machine in the fleet, over the direct
-// channel, before the keeper starts its timer.
-//
-// This is commissioning, done automatically: a machine is only usable once it
-// has landed a price under its published config, because that is what writes
-// lastReport and makes isProvenConfigured true. An on-chain request cannot do
-// it — the registry routes those to a machine of its own choosing — so the
-// direct channel is the only way to address a named machine, and a sweep is the
-// only way to address all of them.
-//
-// It is run at every start rather than only for uncommissioned machines: a
-// re-pushed config or admin set decommissions a machine silently, and a start is
-// the cheapest moment to find out.
-//
-// Returns one record per machine per attempt, already emitted.
+// Sweep lands one price from every machine over the direct channel before the timer
+// starts. This is commissioning — landing a price is what makes isProvenConfigured
+// true — and it runs at every start, because a re-pushed config decommissions silently.
 func Sweep(ctx context.Context, s *support.Support, cfg LoopConfig, machines []Machine) []Record {
 	if len(machines) == 0 {
 		logger.Warnf("[%s] nothing to sweep: no reachable machine is registered to this extension",
@@ -110,19 +98,9 @@ type swept struct {
 	ok      bool
 }
 
-// sweepPass collects from every machine, then submits in ascending observedAt
-// order.
-//
-// The order is the whole point. The store requires observedAt to strictly
-// increase, and each machine stamps its own from its own observation timer, so
-// submitting in registry order rejects every machine whose cached observation is
-// older than one already landed — commissioning at most one machine per pass.
-// Ascending, each submission is newer than the last and the whole fleet can land
-// in one pass.
-//
-// Collection runs concurrently and submission strictly sequentially: gathering
-// sends no transaction, while two in-flight submissions would take two nonces
-// and could land out of order.
+// sweepPass collects from every machine, then submits in ascending observedAt order
+// — see submissionOrder. Collection is concurrent, submission strictly sequential:
+// two in-flight submissions would take two nonces and could land out of order.
 func sweepPass(ctx context.Context, s *support.Support, cfg LoopConfig, machines []Machine) []Record {
 	held := make([]swept, len(machines))
 
@@ -176,13 +154,9 @@ func sweepPass(ctx context.Context, s *support.Support, cfg LoopConfig, machines
 	return out
 }
 
-// submissionOrder is the order the collected reports must be submitted in:
-// oldest observation first, skipping the machines that produced none.
-//
-// Ascending because observedAt has to strictly increase for the store to accept
-// a report. Submitting newest-first lands one report and rejects every other as
-// NotNewer, so the sweep would commission one machine per pass however many
-// times it ran.
+// submissionOrder is oldest observation first, skipping machines that produced
+// none. Ascending because observedAt must strictly increase: newest-first would
+// land one report and reject the rest as NotNewer, one machine per pass forever.
 func submissionOrder(held []swept) []int {
 	order := make([]int, 0, len(held))
 	for i := range held {

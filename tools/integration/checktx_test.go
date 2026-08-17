@@ -14,10 +14,9 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 )
 
-// --- 2.4: CheckTx Revert Reason Chain ---
-//
-// These tests verify that when a transaction is mined but reverts (Status=0),
-// CheckTx correctly replays the call and decodes the revert reason.
+// --- 2.4: CheckTx revert reason chain ---
+// When a transaction is mined but reverts (Status=0), CheckTx must replay the call
+// and decode the revert reason.
 
 func TestCheckTx_SuccessfulTx(t *testing.T) {
 	// Deploy a fresh InstructionSender — the deployment tx itself is successful.

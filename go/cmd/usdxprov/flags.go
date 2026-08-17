@@ -25,16 +25,9 @@ func (f *flagSet) u64(name string, def uint64, u string) *uint64 {
 }
 func (f *flagSet) parse() error { return f.fs.Parse(f.args) }
 
-// secret declares a flag whose value is a credential, and prefers the named
-// environment variable over it.
-//
-// A value passed as a flag is in argv, which every other process on the machine
-// can read from `ps`, and in the shell history of whoever ran it. The flag stays
-// for local testing and stays documented, but anything handling a real
-// credential should set the variable instead — see scripts/upload-hex-key.sh.
-//
-// Returns a getter rather than a pointer because the environment is only
-// consulted after parse().
+// secret declares a flag whose value is a credential, preferring the named
+// environment variable: a flag value sits in argv, readable by `ps`, and in shell
+// history. Returns a getter because the environment is consulted after parse().
 func (f *flagSet) secret(name, env, usage string) func() string {
 	flagValue := f.fs.String(name, "", usage+" (prefer the "+env+" environment variable)")
 	return func() string {

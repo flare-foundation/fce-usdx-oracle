@@ -22,9 +22,8 @@ var testGetPrice = instrutils.GetPriceRequest{
 }
 
 // The direct wire shape is a DirectInstruction: three fields, payload under
-// "message". Sending a DataFixed instead does not fail — the proxy accepts it
-// and the extension then sees an empty payload — so the shape is asserted here
-// rather than left to an integration run to discover.
+// "message". Sending a DataFixed does not fail — the extension just sees an empty
+// payload — so the shape is asserted here rather than in an integration run.
 func TestPostDirectAction_SendsTheDirectInstructionShape(t *testing.T) {
 	var (
 		gotKey  string

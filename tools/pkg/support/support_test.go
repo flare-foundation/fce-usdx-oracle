@@ -16,7 +16,7 @@ type mockDataError struct {
 	data interface{}
 }
 
-func (e *mockDataError) Error() string        { return e.msg }
+func (e *mockDataError) Error() string          { return e.msg }
 func (e *mockDataError) ErrorData() interface{} { return e.data }
 
 // makeRevertHex creates valid ABI-encoded Error(string) revert data as hex.

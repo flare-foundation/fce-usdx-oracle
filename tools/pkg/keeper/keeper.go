@@ -20,16 +20,9 @@ type LoopConfig struct {
 	// costs gas per cycle and buys nothing.
 	Interval time.Duration
 
-	// OnChainEvery is how often a cycle raises GET_PRICE on-chain instead of
-	// directly. Zero means never.
-	//
-	// The two channels produce the same signed report — GET_PRICE grants no
-	// authority, and the store checks the signature the same way however it was
-	// requested — so the only thing the on-chain path buys is that it is the
-	// permissionless one: anybody can pay the registry fee and get a price
-	// published, without the proxy's API key or network reach. Exercising it on
-	// a slow cadence keeps that path proven to work while paying the fee a
-	// handful of times a day instead of on every cycle.
+	// OnChainEvery is how often a cycle goes on-chain instead of direct; zero means
+	// never. Both channels yield the same signed report, so all the on-chain path
+	// buys is being the permissionless one — worth proving on a slow cadence.
 	OnChainEvery time.Duration
 
 	// Sweep lands a price from every registered machine before the first timed
@@ -37,16 +30,14 @@ type LoopConfig struct {
 	// would otherwise sweep the whole fleet.
 	Sweep bool
 
-	// ProxyOverride replaces the URL the registry publishes for every machine.
-	// Only ever right with a single machine — it sends every request to the same
-	// proxy — and it exists for the case where the keeper reaches a machine on a
-	// different address than the one it registered.
+	// ProxyOverride replaces the URL the registry publishes for every machine, for
+	// a machine reachable at a different address than it registered. Only ever
+	// right with a single machine: it sends every request to the same proxy.
 	ProxyOverride string
 
-	// How many times the sweep re-tries a machine that did not land a price, and
-	// how long it waits first. The wait wants to be at least one of the
-	// extension's observation intervals: a machine rejected as NotNewer needs a
-	// newer observation before a retry can go any differently.
+	// How many times the sweep re-tries a machine that landed no price, and how long
+	// it waits first. At least one observation interval: a machine rejected as
+	// NotNewer needs a newer observation before a retry can differ.
 	SweepAttempts   int
 	SweepRetryDelay time.Duration
 
@@ -54,14 +45,9 @@ type LoopConfig struct {
 	Emitter *Emitter
 }
 
-// Run drives cycles until ctx is cancelled.
-//
-// Single-flight: cycles run sequentially, so two in-flight instructions can
-// never consume two nonces and submit out of order. A cycle that overruns
-// Interval delays the next tick rather than running beside it.
-//
-// A failed cycle is never fatal — deciding when a run of failures becomes
-// signal is the alerting layer's job.
+// Run drives cycles until ctx is cancelled. Single-flight: cycles run
+// sequentially, so two in-flight instructions can never take two nonces and
+// submit out of order. A failed cycle is never fatal.
 func Run(ctx context.Context, s *support.Support, cfg LoopConfig) error {
 	logger.Infof("keeper %s starting: interval=%s poll=%s submit=%s",
 		cfg.KeeperID, cfg.Interval, cfg.PollTimeout, cfg.SubmitTimeout)
@@ -97,10 +83,8 @@ func Run(ctx context.Context, s *support.Support, cfg LoopConfig) error {
 		Sweep(ctx, s, cfg, fl.machines)
 	}
 
-	// The clock starts now, so the first cycle after the sweep is a direct one
-	// and the fee is not paid at every restart. A keeper that restarts more
-	// often than OnChainEvery therefore never exercises the on-chain path —
-	// which is the right trade: a crash loop must not also burn fees.
+	// The clock starts now, so a restart does not pay the fee. A keeper restarting
+	// more often than OnChainEvery never goes on-chain — a crash loop must not burn fees.
 	lastOnChain := time.Now()
 
 	for {
@@ -161,15 +145,9 @@ func Run(ctx context.Context, s *support.Support, cfg LoopConfig) error {
 	}
 }
 
-// RunOnce performs a single cycle the way the loop would, and returns its
-// record. It is the cron-driven deployment: the process is what repeats, so
-// there is no rotation state to carry and the machine is picked at random, which
-// spreads the same coverage over successive runs.
-//
-// The channel is whatever -direct says. OnChainEvery cannot apply — nothing here
-// knows when the last run was — so a cron deployment that wants the
-// permissionless path exercised schedules a second, rarer entry with the direct
-// channel off.
+// RunOnce performs a single cycle the way the loop would: the cron deployment, so
+// there is no rotation state and the machine is picked at random. OnChainEvery
+// cannot apply here — schedule a second, rarer entry with -direct off instead.
 func RunOnce(ctx context.Context, s *support.Support, cfg LoopConfig) (Record, error) {
 	var fl fleet
 	fl.refresh(ctx, s, cfg.Store, cfg.ProxyOverride)
@@ -184,13 +162,9 @@ func RunOnce(ctx context.Context, s *support.Support, cfg LoopConfig) (Record, e
 	return RunCycle(ctx, s, cfg.cycleConfig(&fl, !cfg.Direct))
 }
 
-// cycleConfig picks the channel and the machine for one cycle.
-//
-// A direct cycle addresses the next machine in the rotation, so every machine
-// keeps landing prices and keeps its commissioning current, and one broken
-// machine costs one cycle in N rather than all of them. An on-chain cycle
-// addresses nobody — the registry routes it — so it polls the whole fleet for
-// the result instead.
+// cycleConfig picks the channel and the machine for one cycle. A direct cycle
+// takes the next machine in the rotation, so one broken machine costs one cycle
+// in N. An on-chain cycle addresses nobody, so it polls the whole fleet.
 func (cfg LoopConfig) cycleConfig(fl *fleet, onChain bool) Config {
 	c := cfg.Config
 

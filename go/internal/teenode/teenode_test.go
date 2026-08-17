@@ -19,15 +19,11 @@ import (
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
-// teeNodeSign reproduces tee-node's POST /sign exactly, as verified against
-// v0.0.21-0.20260619120252-31fc839ae6d2:
+// teeNodeSign reproduces tee-node's POST /sign, verified against
+// v0.0.21-0.20260619120252-31fc839ae6d2. Every claim about the signing path is
+// asserted against it, so a tee-node change fails here.
 //
-//	server.go:  msgHash := crypto.Keccak256(signRequest.Message)
-//	            signature, err := s.node.Sign(msgHash)
-//	crypto.go:  sig, err := crypto.Sign(accounts.TextHash(msgHash), privKey)
-//
-// Every claim this package makes about the signing path is asserted against
-// this function, so if tee-node changes, the tests below are what catch it.
+//	crypto.Sign(accounts.TextHash(crypto.Keccak256(message)), privKey)
 func teeNodeSign(t *testing.T, message []byte, key *ecdsa.PrivateKey) []byte {
 	t.Helper()
 	msgHash := crypto.Keccak256(message)
@@ -50,11 +46,9 @@ func newKey(t *testing.T) (*ecdsa.PrivateKey, common.Address) {
 
 // --- The three claims about POST /sign ---
 
-// CLAIM 1: crypto.Sign returns v as 0 or 1, NOT 27 or 28.
-//
-// This is the trap. ecrecover and OpenZeppelin's ECDSA.recover both require
-// 27/28 and reject anything else, so a raw tee-node signature fails on-chain
-// with an "invalid signature" that looks nothing like an encoding bug.
+// CLAIM 1: crypto.Sign returns v as 0 or 1, NOT 27 or 28. ecrecover and OpenZeppelin
+// both require 27/28, so a raw tee-node signature fails on-chain with an "invalid
+// signature" that looks nothing like an encoding bug.
 func TestClaim1_TeeNodeReturnsRecoveryIDNotV(t *testing.T) {
 	key, _ := newKey(t)
 
@@ -79,13 +73,9 @@ func TestClaim1_TeeNodeReturnsRecoveryIDNotV(t *testing.T) {
 	}
 }
 
-// CLAIM 2: EIP-191 prefixing is applied BY tee-node.
-//
-// A verifier must recover against toEthSignedMessageHash(keccak256(body)).
-// Recovering against the bare keccak256(body) succeeds but returns the WRONG
-// address — which is the dangerous part: the on-chain failure presents as an
-// unregistered TEE machine, sending an investigator to the registry rather than
-// to the hashing.
+// CLAIM 2: EIP-191 prefixing is applied BY tee-node, so a verifier must recover
+// against toEthSignedMessageHash(keccak256(body)). The bare hash succeeds but returns
+// the WRONG address, which presents on-chain as an unregistered machine.
 func TestClaim2_MustRecoverAgainstPrefixedHash(t *testing.T) {
 	key, want := newKey(t)
 	message := []byte("usdx price report body")

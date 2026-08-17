@@ -51,10 +51,9 @@ func (f *fakeProvisioner) ApplySecret(ctx context.Context, message []byte) error
 
 func (f *fakeProvisioner) Readiness() types.Readiness { return f.readiness }
 
-// configAction builds a USDX_CONFIG action over a chosen channel, in the
-// envelope that channel really uses: a DataFixed for an instruction, a
-// DirectInstruction for a direct action. Building both as DataFixed is what hid
-// the fact that the extension could not read a real direct payload.
+// configAction builds a USDX_CONFIG action in the envelope its channel really uses: a
+// DataFixed for an instruction, a DirectInstruction for a direct action. Building both
+// as DataFixed hid that the extension could not read a real direct payload.
 func configAction(command string, actionType teetypes.ActionType, payload []byte) teetypes.Action {
 	opType, opCommand := toHash(config.OPTypeUsdxConfig), toHash(command)
 
@@ -75,11 +74,9 @@ func newProvisionedExtension(p Provisioner) *Extension {
 
 // --- direct envelope ---
 
-// The regression test for the envelope confusion. A direct action carries a
-// DirectInstruction, whose payload field is "message"; DataFixed calls it
-// "originalMessage". Reading one as the other does not error — encoding/json
-// discards the unknown field — so SET_SECRET reached ApplySecret with nil and
-// the only visible symptom was a rejected envelope.
+// The regression test for the envelope confusion: DirectInstruction calls the payload
+// "message", DataFixed calls it "originalMessage", and reading one as the other does
+// not error — so SET_SECRET reached ApplySecret with nil.
 func TestSetSecret_DirectEnvelopeDeliversThePayload(t *testing.T) {
 	p := &fakeProvisioner{}
 	e := newProvisionedExtension(p)

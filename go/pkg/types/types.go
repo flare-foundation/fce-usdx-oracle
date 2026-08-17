@@ -62,18 +62,9 @@ type Readiness struct {
 	MissingRefs []string `json:"missingSecretRefs"`
 }
 
-// ReadinessReport is the JSON payload of a signed GET_READINESS answer, carried
-// inside abi.encode(body, signature, payload) — see internal/readiness.
-//
-// PUBLIC on the same terms as State: it reaches whoever can reach the direct
-// channel, so it may name a secret ref but never a value, and may report a
-// failure.Class but never an upstream's own words.
-//
-// It is deliberately NOT a copy of State. State's counters and source map are
-// written by the GET_PRICE handler, so a machine that has never served a
-// request reports zeroes while its loop runs perfectly. Everything here comes
-// from the poller, and describes the engine rather than the last request
-// served.
+// ReadinessReport is the JSON payload of a signed GET_READINESS answer — see
+// internal/readiness. PUBLIC on the same terms as State, and deliberately not a copy
+// of it: State's counters come from the GET_PRICE handler, these from the poller.
 type ReadinessReport struct {
 	// --- provisioning, from the runtime configuration store ---
 	Readiness Readiness `json:"readiness"`

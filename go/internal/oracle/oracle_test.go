@@ -39,10 +39,8 @@ func (f *fakeChain) supplyCalls() int {
 	return f.calls
 }
 
-// HeaderByNumber serves both the head (n == nil) and the pinned block. The
-// timestamp is "now" rather than zero because no real chain produces a block
-// without one, and supply.agreedBlockTime treats a zero stamp as a malformed
-// response.
+// HeaderByNumber serves both the head (n == nil) and the pinned block. The timestamp
+// is "now" rather than zero: agreedBlockTime treats a zero stamp as malformed.
 func (f *fakeChain) HeaderByNumber(ctx context.Context, n *big.Int) (*types.Header, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -147,10 +145,9 @@ func testConfig(t *testing.T, chain *fakeChain, bonds, cash *fakeSource) Config 
 	}
 }
 
-// cashSource converts a nil *fakeSource into a nil interface. Assigning the
-// typed nil directly would leave Config.Cash non-nil holding a nil pointer, and
-// the cash-less path is selected by exactly that comparison — so the shortcut
-// would silently test the wrong branch and then panic in Name().
+// cashSource converts a nil *fakeSource into a nil interface. A typed nil would leave
+// Config.Cash non-nil, and the cash-less path is selected by exactly that comparison
+// — so the shortcut would test the wrong branch and then panic in Name().
 func cashSource(f *fakeSource) backing.Source {
 	if f == nil {
 		return nil
@@ -177,16 +174,9 @@ func observeWith(t *testing.T, cfg Config, signer Signer, id common.Hash) (Obser
 
 // --- the single supply pass ---
 
-// Supply is read once per chain per observation. The conservative double-read
-// that used to bracket the reserve read was dropped: each pass is already
-// pinned to one agreed block, and the reserve figure moves on Hex's ~10 minute
-// tick, so a second pass changed the answer only when a burn or mint landed in
-// the few seconds between the two pinned blocks — while doubling the supply-side
-// fail-closed surface.
-//
-// The call count is asserted rather than inferred from the price, so a
-// reintroduced bracket fails here instead of showing up as a latency
-// regression.
+// Supply is read once per chain per observation: the double-read that used to bracket
+// the reserve read doubled the fail-closed surface for nothing. The call count is
+// asserted rather than inferred, so a reintroduced bracket fails here.
 func TestObserve_ReadsSupplyOncePerChain(t *testing.T) {
 	// The real event from spec §6.1: 1,000,000 USDX burned, 4.8% of supply. A
 	// second pass would consume the post-burn figure; one pass never sees it.
@@ -493,10 +483,9 @@ func TestObserve_WithoutCash(t *testing.T) {
 	}
 }
 
-// Whatever the cash-less path publishes must equal what the same observation
-// would have published with the source present. If these ever diverge, the
-// extension is silently publishing a degraded number under a signature that
-// says otherwise.
+// Whatever the cash-less path publishes must equal what the same observation would
+// have published with the source present. Divergence means the extension is
+// publishing a degraded number under a signature that says otherwise.
 func TestObserve_WithoutCash_MatchesTheFullObservation(t *testing.T) {
 	chain := func() *fakeChain { return &fakeChain{supplies: []string{"1000000"}, decimals: 6} }
 	bonds := func() *fakeSource { return &fakeSource{name: "hex_bonds", amount: "0.999999999"} }

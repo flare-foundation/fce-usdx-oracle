@@ -159,24 +159,40 @@ func TestFetch_PresentButWrongCurrencyRejectedEvenWhenOptional(t *testing.T) {
 	}
 }
 
-func TestFetch_StaleRejected(t *testing.T) {
-	old := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
-	s, _ := newTestSource(t, Config{MaxAge: 30 * time.Minute},
-		serve(fmt.Sprintf(publicBody, old)))
+// An old last_update is the NORMAL case, not a fault: Hex republishes within
+// ~10 minutes of an on-chain event and not otherwise, so a week without a mint
+// leaves a week-old stamp on a perfectly correct figure. A freshness bound here
+// rejected good data at a rate set by USDX activity — hex_cash was `down` for
+// most of every hour under a 30-minute bound. This is the guard against
+// reintroducing one.
+func TestFetch_OldTimestampAccepted(t *testing.T) {
+	for _, age := range []time.Duration{2 * time.Hour, 7 * time.Hour, 30 * 24 * time.Hour} {
+		t.Run(age.String(), func(t *testing.T) {
+			old := time.Now().UTC().Add(-age).Format(time.RFC3339)
+			s, _ := newTestSource(t, Config{}, serve(fmt.Sprintf(publicBody, old)))
 
-	if _, err := s.Fetch(context.Background()); !errors.Is(err, failure.BackingStale) {
-		t.Errorf("expected BackingStale, got %v", err)
+			r, err := s.Fetch(context.Background())
+			if err != nil {
+				t.Fatalf("a %s-old figure must be accepted, got %v", age, err)
+			}
+			if r.Amount == nil || r.Amount.Sign() == 0 {
+				t.Error("accepted reading carries no amount")
+			}
+			if got := r.AsOf.UTC().Format(time.RFC3339); got != old {
+				t.Errorf("AsOf = %s, want the source's own stamp %s", got, old)
+			}
+		})
 	}
 }
 
-// A future timestamp means clock skew or a broken upstream; the freshness check
-// is meaningless either way, so the reading must be refused rather than trusted.
+// A future timestamp is a different fault from an old one: it means clock skew
+// or a broken upstream, so nothing else in the response can be trusted either.
 func TestFetch_FutureTimestampRejected(t *testing.T) {
 	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	s, _ := newTestSource(t, Config{}, serve(fmt.Sprintf(publicBody, future)))
 
-	if _, err := s.Fetch(context.Background()); !errors.Is(err, failure.BackingStale) {
-		t.Errorf("expected BackingStale, got %v", err)
+	if _, err := s.Fetch(context.Background()); !errors.Is(err, failure.BackingTimestamp) {
+		t.Errorf("expected BackingTimestamp, got %v", err)
 	}
 }
 

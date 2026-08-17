@@ -65,8 +65,15 @@ var (
 	BackingUnavailable = Failure{ClassSourceDown, "backing source unavailable"}
 	BackingTimeout     = Failure{ClassSourceDown, "backing source timed out"}
 	BackingMalformed   = Failure{ClassSourceInvalid, "backing source returned a malformed response"}
-	BackingStale       = Failure{ClassSourceInvalid, "backing source data is stale"}
 	BackingCurrency    = Failure{ClassSourceInvalid, "backing source reported an unexpected currency"}
+
+	// There is no "backing data is stale": last_update moves on a mint or a
+	// redemption, not on a schedule, so an old figure is usually the correct
+	// one. Only a timestamp in the FUTURE is a fault, and it is a broken
+	// upstream or a skewed clock rather than an aged reading — kept distinct
+	// from BackingMalformed so those get routed differently.
+	BackingTimestamp = Failure{ClassSourceInvalid, "backing source reported a timestamp in the future"}
+
 	BackingImplausible = Failure{ClassImplausible, "backing source returned an implausible value"}
 
 	// --- supply reads (RPC) ---
@@ -77,13 +84,9 @@ var (
 	SupplyNoQuorum    = Failure{ClassQuorumFailed, "supply providers did not reach quorum"}
 	SupplyImplausible = Failure{ClassImplausible, "supply read produced an implausible value"}
 
-	// The block every provider was asked about is too far behind wall-clock.
-	//
-	// Distinct from the quorum failures because the reads all SUCCEED and all
-	// AGREE — a read at a fixed block is deterministic, so honest providers
-	// corroborate an old block perfectly. This is the only check that catches a
-	// provider lying about which block to read rather than about what is in it,
-	// and the only one that works at all when a chain has a single provider.
+	// The block every provider was asked about is too far behind wall-clock. Distinct
+	// from the quorum failures because the reads all SUCCEED and AGREE: this catches a
+	// provider lying about which block to read, not about what is in it.
 	SupplyBlockStale = Failure{ClassSourceInvalid, "supply block is too far behind"}
 
 	// --- observation consistency ---
@@ -120,7 +123,7 @@ var All = []Failure{
 	UnexpectedPayload, WrongActionType,
 	ProvisionRejected, NotConfigured,
 	BackingUnavailable, BackingTimeout, BackingMalformed,
-	BackingStale, BackingCurrency, BackingImplausible,
+	BackingCurrency, BackingTimestamp, BackingImplausible,
 	SupplyUnavailable, SupplyTimeout, SupplyMalformed,
 	SupplyNoQuorum, SupplyImplausible, SupplyBlockStale,
 	WindowExceeded, Deadline,

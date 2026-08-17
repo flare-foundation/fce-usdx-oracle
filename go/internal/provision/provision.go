@@ -35,9 +35,10 @@ import (
 // Distinct from the price report's domain so the two signatures cannot cross.
 const DomainName = "USDX_ORACLE_PROVISION_V1"
 
-// Freshness is long enough to collect M signatures across timezones, short
-// enough that a captured envelope expires quickly.
-const Freshness = 15 * time.Minute
+// Freshness is long enough to collect M signatures across timezones, short enough
+// that a captured envelope expires quickly. The only replay bar that survives a
+// restart, since lastVersion is in memory.
+const Freshness = time.Hour
 
 const ClockSkew = 2 * time.Minute
 
@@ -127,10 +128,8 @@ func Encode(e Envelope, signatures [][]byte) ([]byte, error) {
 }
 
 // Verifier checks envelopes against the installed admin set and tracks versions.
-//
 // NOT SAFE FOR CONCURRENT USE: Verify, SetTeeID and SetAdmins all write
-// unsynchronised state, and the extension's /action handler serves actions
-// concurrently. runtimecfg.Store holds applyMu across every call.
+// unsynchronised state. runtimecfg.Store holds applyMu across every call.
 type Verifier struct {
 	chainID *big.Int
 	teeID   common.Address
@@ -170,12 +169,9 @@ func (v *Verifier) setFor(ref string) AdminSet {
 	return v.providers
 }
 
-// SetAdmins installs both signer sets together or not at all, replacing any
-// previous pair. The caller validates the payload; this rechecks the invariants
-// the verifier itself depends on.
-//
-// lastVersion is deliberately NOT reset: clearing it on rotation would let an
-// envelope the outgoing admins signed be replayed against the incoming set.
+// SetAdmins installs both signer sets together or not at all. lastVersion is
+// deliberately NOT reset: clearing it on rotation would let an envelope the
+// outgoing admins signed be replayed against the incoming set.
 func (v *Verifier) SetAdmins(backing, providers AdminSet) error {
 	if err := checkSet(backing, MinBackingThreshold); err != nil {
 		return fmt.Errorf("provision: backing set: %w", err)

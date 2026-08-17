@@ -16,12 +16,9 @@ import (
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 )
 
-// StartExtension starts the HTTP server and the observation loop, returning a
-// channel that receives any ListenAndServe failure.
-//
-// The extension boots UNPROVISIONED and that is normal: it serves
-// not_configured until SET_ENDPOINTS and SET_SECRET land, after every restart.
-// The observation loop is what makes it answerable at all — see internal/observe.
+// StartExtension starts the HTTP server and the observation loop, returning a channel
+// that receives any ListenAndServe failure. The extension boots UNPROVISIONED and that
+// is normal: it serves not_configured until SET_ENDPOINTS and SET_SECRET land.
 func StartExtension(extensionPort, signPort int) <-chan error {
 	node := teenode.New(signPort, 10*time.Second)
 

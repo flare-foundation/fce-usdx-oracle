@@ -23,14 +23,9 @@ import (
 	"github.com/pkg/errors"
 )
 
-// DomainName is the schema version the signature is bound to: a layout change
-// must change it, so an old signature cannot be reinterpreted.
-//
-// adminsHash was appended without bumping this, as a deliberate
-// development-phase exception — the extension and UsdxPriceStore are redeployed
-// together, so no mixed pair is ever live. BodyLength is what enforces it: a
-// peer still on the six-word layout fails the length check rather than having
-// its body read as one that simply omits the admin commitment.
+// DomainName is the schema version the signature is bound to: a layout change must
+// change it. adminsHash was appended without bumping it, as a development-phase
+// exception — BodyLength is what stops a six-word peer being misread.
 const DomainName = "USDX_ORACLE_PRICE_V1"
 
 // BodyLength is the encoded body: seven static ABI words.

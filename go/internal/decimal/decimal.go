@@ -26,14 +26,12 @@ var (
 	errNotNumber = errors.New("not a number")
 )
 
-// ParseAmount parses a non-negative decimal amount, accepting ',' only as a
-// thousands separator in a well-formed grouping.
+// ParseAmount parses a non-negative decimal amount, accepting ',' only as a thousands
+// separator in a well-formed grouping. Errors never include the input: it IS the
+// reserve figure.
 //
-// Accepted:   "0"  "25452544.52"  "25,452,544.52"  "1,000"  ".5"  "123."
-// Rejected:   "1,50"  "1,0000"  "12,34,567"  "-1"  "1e5"  "1.2.3"  ",100"
-//
-// Errors never include the input: it IS the reserve figure, and must not reach
-// any public surface.
+//	Accepted:   "0"  "25452544.52"  "25,452,544.52"  "1,000"  ".5"  "123."
+//	Rejected:   "1,50"  "1,0000"  "12,34,567"  "-1"  "1e5"  "1.2.3"  ",100"
 func ParseAmount(s string) (*big.Rat, error) {
 	if s == "" {
 		return nil, errEmpty

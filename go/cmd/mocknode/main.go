@@ -82,8 +82,8 @@ func main() {
 	}
 }
 
-// signHandler reproduces tee-node's signWithTeeHandler exactly — EIP-191
-// prefixing and the 0/1 recovery id both behave as in production:
+// signHandler reproduces tee-node's signWithTeeHandler exactly: EIP-191 prefixing and
+// the 0/1 recovery id both behave as in production.
 //
 //	sig := crypto.Sign(accounts.TextHash(crypto.Keccak256(message)), key)
 func signHandler(key *ecdsa.PrivateKey) http.HandlerFunc {

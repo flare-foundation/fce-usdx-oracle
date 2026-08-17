@@ -47,24 +47,15 @@ const secretPlaceholder = "{secret}"
 const maxPayloadBytes = 256 << 10
 
 // urlUnsafe lists characters a credential may not contain, because each can
-// restructure the URL it is substituted into. The URL author (owner key, via
-// SET_ENDPOINTS) and the credential holder (admins, via SET_SECRET) are
-// different parties. Declared once and used at both checkpoints — two copies of
-// a security-relevant character set drift.
+// restructure the URL it lands in. One copy, used at both checkpoints.
 const urlUnsafe = " \t\r\n/?#&"
 
-// Endpoints is the entire SET_ENDPOINTS payload. Chain names must match
+// Endpoints is the entire SET_ENDPOINTS payload; chain names must match
 // internal/config.Chains.
 //
-//	{
-//	  "flare": {
-//	    "threshold": 2,
-//	    "providers": [
-//	      {"url": "https://flare-api.flare.network/ext/C/rpc"},
-//	      {"url": "https://rpc.ankr.com/flare/{secret}", "secret": "ankr_flare_key"}
-//	    ]
-//	  }
-//	}
+//	{"flare": {"threshold": 2, "providers": [
+//	  {"url": "https://flare-api.flare.network/ext/C/rpc"},
+//	  {"url": "https://rpc.ankr.com/flare/{secret}", "secret": "ankr_flare_key"}]}}
 type Endpoints map[string]ChainEndpoints
 
 type ChainEndpoints struct {
@@ -82,21 +73,12 @@ type Provider struct {
 }
 
 // Admins is the entire SET_ADMINS payload: two signer sets, published together.
+// Addresses only, and public on-chain by construction. Which set governs which
+// credential is pinned in the build, never read from here — see Verifier.setFor.
 //
-//	{
-//	  "version": 1,
-//	  "backing":   {"threshold": 1, "admins": ["0x1111…"]},
-//	  "providers": {"threshold": 2, "admins": ["0x2222…", "0x3333…", "0x4444…"]}
-//	}
-//
-// Addresses only — never keys, and nothing secret. The whole payload is public
-// on-chain by construction, which is the point: who may provision a machine is
-// as verifiable as which providers it reads.
-//
-// Which set governs which credential is NOT in this payload. config.HexAPIKeyRef
-// is the backing credential and everything else is a provider credential, pinned
-// in the build; otherwise whoever publishes admins could move a credential under
-// whichever set they happen to hold.
+//	{"version": 1,
+//	 "backing":   {"threshold": 1, "admins": ["0x1111…"]},
+//	 "providers": {"threshold": 2, "admins": ["0x2222…", "0x3333…"]}}
 type Admins struct {
 	// Strictly increasing across the life of the process. Blocks a captured
 	// SET_ADMINS from reinstating a superseded pair of signer sets.
@@ -126,15 +108,9 @@ type Node interface {
 
 // Store receives provisioning messages and resolves them into an oracle.Config.
 type Store struct {
-	// applyMu covers a whole Apply* call including the verifier, which keeps
-	// per-ref version state in a plain map: /action is an ordinary net/http
-	// handler, so two concurrent direct actions would race it.
-	//
-	// mu covers only the data fields, in short critical sections. Deliberately
-	// NOT held across the tee-node round trips in ApplySecret, or a hung
-	// /decrypt would freeze GET /state and every observation.
-	//
-	// Order is applyMu then mu, never the reverse.
+	// applyMu covers a whole Apply* call including the verifier's version map; mu
+	// covers only the data fields, and is never held across a tee-node round trip,
+	// or a hung /decrypt would freeze /state. Order is applyMu then mu.
 	applyMu sync.Mutex
 
 	mu        sync.RWMutex
@@ -154,14 +130,9 @@ type Store struct {
 	// the verifier, which is guarded by applyMu rather than mu.
 	adminsSet bool
 
-	// Highest SET_ADMINS version applied. The instruction channel has the
-	// registry's own replay protection, but the admin set is the root of trust
-	// for every credential that follows, so this does not rely on it: a captured
-	// SET_ADMINS must not be able to reinstate a rotated-out signer.
-	//
-	// In-memory like everything else here, which is safe in the direction that
-	// matters — a restart clears it, and the only party who can exploit that is
-	// the owner key, who can publish any set it likes anyway.
+	// Highest SET_ADMINS version applied. Not leaning on the registry's own replay
+	// protection: the admin set is the root of trust for every credential that
+	// follows, so a captured SET_ADMINS must not reinstate a rotated-out signer.
 	adminsVersion uint64
 
 	secrets map[string]string
@@ -208,13 +179,8 @@ func (s *Store) ApplyEndpoints(payload []byte) error {
 }
 
 // ApplyAdmins installs the admin signer set from an on-chain instruction.
-// Authorisation is the owner-only check in the instruction sender, exactly as
-// for endpoints; what is checked here is content.
-//
-// The two are separate commands so either can be rotated without republishing
-// the other, and because they answer different questions: SET_ENDPOINTS decides
-// which sources a price comes from, SET_ADMINS decides who may put credentials
-// in the machine that reads them.
+// Authorisation is the owner-only check in the sender; what is checked here is
+// content. Separate from SET_ENDPOINTS so either can rotate alone. Rationale §9.
 func (s *Store) ApplyAdmins(payload []byte) error {
 	// Covers the verifier for the whole call, like ApplySecret: SetAdmins writes
 	// state that a concurrent Verify would read.
@@ -275,10 +241,8 @@ func validateAdmins(a Admins) (backing, providers provision.AdminSet, err error)
 		return backing, providers, err
 	}
 
-	// The two sets MAY overlap — the same person can hold both roles — so no
-	// disjointness check. What matters is that neither set can satisfy the
-	// other's threshold, which holds because each envelope is verified against
-	// exactly one set.
+	// The two sets MAY overlap — one person can hold both roles — so no disjointness
+	// check. What matters is that each envelope is verified against exactly one set.
 	return backing, providers, nil
 }
 
@@ -320,6 +284,13 @@ func parseAdminSet(name string, in AdminSet, floor int) (provision.AdminSet, err
 // ApplySecret verifies a signed envelope and installs the credential it
 // carries, decrypted inside the enclave and held only in memory.
 func (s *Store) ApplySecret(ctx context.Context, message []byte) error {
+	// The only Apply* reachable without the owner key, and the work it hands off
+	// grows with the input. Checked before applyMu is taken, so a large message
+	// cannot hold the provisioning lock while it is being rejected.
+	if len(message) == 0 || len(message) > maxPayloadBytes {
+		return failure.ProvisionRejected
+	}
+
 	// Covers the verifier for the whole call: two concurrent envelopes for one
 	// ref could otherwise both read the old version and both be accepted.
 	s.applyMu.Lock()
@@ -481,8 +452,8 @@ func newBacking(spec config.BackingSpec) (backing.Source, error) {
 	return backing.New(backing.Config{
 		Name: spec.Name, URL: spec.URL,
 		RequireCurrency: spec.RequireCurrency,
-		MaxAge:          spec.MaxAge, Timeout: spec.Timeout,
-		AuthHeader: spec.AuthHeader, AuthValue: spec.AuthValue,
+		Timeout:         spec.Timeout,
+		AuthHeader:      spec.AuthHeader, AuthValue: spec.AuthValue,
 	})
 }
 
@@ -505,10 +476,8 @@ func validate(e Endpoints) error {
 				name, ce.Threshold, len(ce.Providers))
 		}
 		for _, p := range ce.Providers {
-			// The backing credential authenticates the PINNED Hex endpoint by
-			// header. Without this check a payload author could name it as a
-			// provider secret and have it substituted into a host of their
-			// choosing, receiving it on the next observation.
+			// Without this a payload author could name the backing credential as a
+			// provider secret and have it substituted into a host of their choosing.
 			if p.Secret == config.HexAPIKeyRef {
 				return fmt.Errorf(
 					"runtimecfg: chain %q: %q authenticates the backing source and may not be used as a provider secret",
@@ -532,9 +501,7 @@ func validate(e Endpoints) error {
 }
 
 // resolveURL validates a URL's shape and substitutes a credential. It says
-// nothing about WHICH host is named; it enforces that the transport is
-// encrypted and that an injected credential cannot change where the request
-// goes.
+// nothing about WHICH host is named, only that a credential cannot change it.
 func resolveURL(raw, secretRef, value string) (string, error) {
 	hasPlaceholder := strings.Contains(raw, secretPlaceholder)
 	if hasPlaceholder != (secretRef != "") {

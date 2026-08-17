@@ -52,6 +52,13 @@ WORKDIR /build/extension-examples/fce-usdx-oracle/go
 # Path is relative to the module dir: go/ -> fce-usdx-oracle -> extension-examples -> /build.
 RUN go mod edit -replace github.com/flare-foundation/tee-node=../../../tee-node
 
+# start-services.sh writes a go.work at the repo root for HOST builds, listing both
+# sibling checkouts. It travels into the context, and go.work takes precedence over
+# the replace above — so the build then demands /build/tee-proxy, which this image
+# deliberately does not copy (the proxy is a separate image). Dropped rather than
+# satisfied: the explicit replace is what this build resolves tee-node through.
+RUN rm -f ../go.work ../go.work.sum
+
 RUN GOFLAGS=-mod=mod go mod download
 
 # -trimpath strips build-host paths from the binary

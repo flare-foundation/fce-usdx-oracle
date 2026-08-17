@@ -104,11 +104,9 @@ func SetExtensionId(s *support.Support, instructionSenderAddress common.Address)
 	return nil
 }
 
-// priceUpdateFee returns the registry's current fee for one GET_PRICE
-// instruction. Read, never hard-coded: the fee is governance-settable and a
-// stale constant would revert every request with nothing in this repo changed
-// to explain it. The op type and command come from the deployed contract's own
-// constants, so the lookup cannot drift from the instruction actually sent.
+// priceUpdateFee returns the registry's current fee for one GET_PRICE instruction.
+// Read, never hard-coded: the fee is governance-settable, and the op pair comes
+// from the deployed contract so the lookup cannot drift from what is sent.
 func priceUpdateFee(s *support.Support, senderAddress common.Address) (*big.Int, error) {
 	return instructionFee(s, senderAddress, opGetPrice)
 }
@@ -123,14 +121,9 @@ func adminsFee(s *support.Support, senderAddress common.Address) (*big.Int, erro
 	return instructionFee(s, senderAddress, opSetAdmins)
 }
 
-// GetPriceRequest is everything needed to raise a GET_PRICE action off-chain,
-// read from the deployed sender rather than restated here.
-//
-// The direct channel does not touch the sender contract at all, so nothing would
-// stop a hand-written constant here from drifting away from the one
-// requestPriceUpdate() actually emits — and the failure would be a rejected
-// request envelope with no hint that the two channels disagree. Reading them
-// from the same source makes that impossible.
+// GetPriceRequest is everything needed to raise a GET_PRICE action off-chain, read
+// from the deployed sender rather than restated here: the direct channel never
+// touches the contract, so a local constant could drift from it unnoticed.
 type GetPriceRequest struct {
 	OPType    common.Hash
 	OPCommand common.Hash
@@ -234,10 +227,8 @@ func instructionFee(s *support.Support, senderAddress common.Address, sel opSele
 	return def, nil
 }
 
-// RequestPriceUpdate calls requestPriceUpdate() and returns the instruction ID
-// and transaction hash. It takes no arguments: the observation needs nothing
-// from the caller, and acceptance is settled by the store's registered-machine
-// check rather than by the payload.
+// RequestPriceUpdate calls requestPriceUpdate() and returns the instruction ID and
+// transaction hash. No arguments: the observation needs nothing from the caller.
 func RequestPriceUpdate(s *support.Support, instructionSenderAddress common.Address) (common.Hash, common.Hash, error) {
 	sender, err := usdxoracle.NewUsdxOracleInstructionSender(instructionSenderAddress, s.ChainClient)
 	if err != nil {
@@ -296,10 +287,8 @@ func RequestPriceUpdate(s *support.Support, instructionSenderAddress common.Addr
 		return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status: %d", receipt.Status)
 	}
 
-	// Read the id off our own PriceUpdateRequested event rather than the
-	// registry's, which would couple every caller to the registry's event ABI.
-	// Scanned, not indexed by position: the receipt also holds the registry's
-	// logs and the emit order can change.
+	// Read off our own PriceUpdateRequested rather than the registry's event, and
+	// scanned rather than indexed: the receipt also holds the registry's logs.
 	for _, l := range receipt.Logs {
 		if l == nil {
 			continue
@@ -416,16 +405,9 @@ func SetEndpoints(s *support.Support, instructionSenderAddress, teeID common.Add
 	return instructionID, receipt.TxHash, nil
 }
 
-// SetAdmins publishes an admin signer set through the instruction sender. The
-// payload is addresses and a threshold — public by construction, and public on
-// purpose: who may provision a machine should be as verifiable as which
-// providers it reads.
-//
-// Deliberately a near-copy of SetEndpoints rather than a shared generic. The two
-// differ only in the ABI, the fee selector and the event topic, and folding them
-// together would hide exactly the three things that must not be confused: a
-// mistake there would publish an admin set under the endpoints hash, or charge
-// the wrong fee, and both fail late and confusingly.
+// SetAdmins publishes an admin signer set through the instruction sender. A
+// near-copy of SetEndpoints on purpose: the two differ only in ABI, fee selector and
+// event topic, which are exactly the three things that must not be confused.
 func SetAdmins(s *support.Support, instructionSenderAddress, teeID common.Address, config []byte) (common.Hash, common.Hash, error) {
 	parsed, err := abi.JSON(strings.NewReader(setAdminsABI))
 	if err != nil {

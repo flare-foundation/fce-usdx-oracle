@@ -1,40 +1,21 @@
 // Package supply reads USDX circulating supply across chains via RPC.
 //
-// Providers disagree about what "latest" resolves to, so the read is pinned to
-// an explicit block: ask every provider for its head, take the Quorum-th
-// HIGHEST, then query every provider at that exact number and require Quorum
-// IDENTICAL results. Identical, not median: a read at a fixed block is
-// deterministic, so disagreement means one provider is wrong or lying.
+// Providers disagree about what "latest" resolves to, so the read is pinned to an
+// explicit block: ask every provider for its head, take the Quorum-th HIGHEST, then
+// query every provider at that exact number and require Quorum IDENTICAL results for a
+// UNIQUELY most-common answer. Identical, not median, because a read at a fixed block
+// is deterministic; unique, because a tie would otherwise be settled by the order the
+// providers happen to be listed in.
 //
-// # Why the Quorum-th highest head and not the minimum
+// The Quorum-th highest rather than the minimum: one provider answering with a head
+// from two weeks ago used to drag the minimum back with it, and every honest provider
+// then corroborated the stale supply at that block. MaxBlockAge covers what head
+// selection cannot — a single-provider chain, or Quorum equal to the provider count.
 //
-// The minimum is the block every responding provider can serve, which is the
-// right instinct and the wrong rule, because nothing was checking the heads
-// themselves. One provider answering "what block are you at?" with a number
-// from two weeks ago dragged the minimum back with it, and then every HONEST
-// provider answered the supply query at that old block identically and
-// correctly. Quorum passed. The enclave signed a stale supply figure.
+// Supply is the plain sum of totalSupply() over the pinned contracts, which is correct
+// only because the set matches the basis Hex reports reserves on.
 //
-// The sharp part is that the malicious provider never lies about the supply. It
-// lies about which question to ask, and the honest majority corroborates the
-// answer. Rewinding to when supply was lower understates supply, which
-// OVERSTATES the price.
-//
-// The Quorum-th highest keeps the property the minimum was reaching for — at
-// least Quorum providers can serve the pinned block — while making the choice
-// obey the same rule as the values: Quorum-1 liars cannot move it. Providers
-// below it simply fail their calls and do not contribute, which is what Quorum
-// < len(Providers) exists to absorb.
-//
-// It cannot help a chain configured with a single provider, or with Quorum
-// equal to the provider count. MaxBlockAge covers that case and every case the
-// head-selection rule cannot: it bounds how old the pinned block may be in
-// wall-clock terms, so an ancient block is refused however it was chosen. It is
-// also the only check here that notices a chain that has simply stopped.
-//
-// Supply is the plain sum of totalSupply() over the pinned contracts — no
-// exclusion list, no balanceOf. The set must match the basis on which Hex
-// reports reserves. See docs/usdx-oracle-rationale.md.
+// Rationale §6 has the long form; findings §24 has the incident.
 package supply
 
 import (
@@ -86,15 +67,9 @@ type ChainConfig struct {
 	// How many providers(RPCs) must return identical results
 	Quorum int
 
-	// MaxBlockAge refuses a pinned block whose own header timestamp is older
-	// than this. Zero disables the check.
-	//
-	// This is the backstop the agreement rules cannot provide. Every other
-	// freshness bound in the system is wall-clock: checkWindow compares when the
-	// HTTP calls happened, and the store compares the report timestamp against
-	// block.timestamp. Reading two-week-old chain state one second ago passes
-	// all of them. Only a comparison against the BLOCK's own timestamp catches
-	// it, and unlike the head-selection rule it still works at Quorum 1.
+	// MaxBlockAge refuses a pinned block whose own header timestamp is older than
+	// this; zero disables it. The only freshness bound that is not wall-clock, and
+	// the only one that still works at Quorum 1. Rationale §6.
 	MaxBlockAge time.Duration
 }
 
@@ -109,14 +84,9 @@ type Reading struct {
 	// Block is the height every provider was queried at.
 	Block uint64
 
-	// BlockTime is that block's own header timestamp — when the chain state
-	// being reported actually existed, as opposed to when it was fetched.
-	//
-	// Deliberately NOT folded into oracle.checkWindow: that window is 30s and
-	// measures read skew between RetrievedAt stamps, while Ethereum's head is
-	// routinely 12s or more behind wall-clock. Mixing the two would spend most
-	// of the budget on ordinary block age and reject healthy observations.
-	// MaxBlockAge bounds this quantity directly instead.
+	// BlockTime is that block's own header timestamp — when the state existed, not
+	// when it was fetched. Not folded into oracle.checkWindow: Ethereum's head runs
+	// 12s+ behind, which would eat that window. MaxBlockAge bounds it instead.
 	BlockTime time.Time
 
 	// Recorded so a silent change is visible in logs.
@@ -124,11 +94,8 @@ type Reading struct {
 
 	RetrievedAt time.Time
 
-	// Providers maps each provider's name to its status for this read.
-	//
-	// Quorum lets a chain stay healthy while one provider is dead, dissenting or
-	// lagging, so without this the failing provider is invisible right up until
-	// enough of them fail at once.
+	// Providers maps each provider's name to its status for this read. Quorum hides
+	// a dead or dissenting provider until enough of them fail at once; this shows it.
 	Providers map[string]string
 }
 
@@ -211,10 +178,8 @@ func Read(ctx context.Context, cfg ChainConfig) (Reading, error) {
 	}, nil
 }
 
-// agreedBlock returns the Quorum-th highest head across the providers — the
-// highest block at least Quorum of them can serve.
-//
-// See the package comment for why this is not the minimum.
+// agreedBlock returns the Quorum-th highest head — the highest block at least
+// Quorum providers can serve. The package comment says why not the minimum.
 func agreedBlock(ctx context.Context, cfg ChainConfig, health map[string]string) (uint64, error) {
 	type result struct {
 		n   uint64
@@ -271,10 +236,8 @@ func agreedBlock(ctx context.Context, cfg ChainConfig, health map[string]string)
 		return 0, failure.SupplyUnavailable
 	}
 
-	// A provider below the pinned block cannot serve it and will fail its calls.
-	// That is tolerated — it is what Quorum < len(Providers) is for — but it is
-	// also the shape a provider takes when it tries to rewind the observation,
-	// and nothing else would record it.
+	// Tolerated — it is what Quorum < len(Providers) is for — but recorded, because
+	// it is also the shape a provider takes when it tries to rewind the observation.
 	for i, r := range results {
 		if r.err == nil && r.n < pinned && health[cfg.Providers[i].Name] == config.HealthOK {
 			health[cfg.Providers[i].Name] = config.HealthLagging
@@ -285,14 +248,8 @@ func agreedBlock(ctx context.Context, cfg ChainConfig, health map[string]string)
 }
 
 // agreedBlockTime returns the pinned block's own header timestamp, agreed by
-// Quorum providers.
-//
-// Agreement is required rather than trusting whichever provider proposed the
-// block. Taking the timestamp from that one provider would hand a liar both
-// halves of the lie: an ancient block number paired with a fresh timestamp,
-// which passes MaxBlockAge and leaves the honest providers corroborating the
-// stale supply at that block. A header at a fixed height is deterministic, so
-// honest providers agree exactly and one liar is outvoted.
+// Quorum providers. Trusting whichever provider proposed the block would let one
+// liar pair an ancient number with a fresh stamp. Rationale §6.
 func agreedBlockTime(
 	ctx context.Context, cfg ChainConfig, at *big.Int, health map[string]string,
 ) (time.Time, error) {
@@ -384,9 +341,8 @@ func readDecimals(
 }
 
 // callAll performs the same eth_call against every provider concurrently. The
-// result is index-aligned with cfg.Providers; nil means that provider gave no
-// usable answer. Index-aligned rather than compacted so the caller can still
-// say WHICH provider failed.
+// result is index-aligned with cfg.Providers — nil means no usable answer — so
+// the caller can still say WHICH provider failed.
 func callAll(ctx context.Context, cfg ChainConfig, selector []byte, at *big.Int) [][]byte {
 	answers := make([][]byte, len(cfg.Providers))
 
@@ -412,24 +368,44 @@ func callAll(ctx context.Context, cfg ChainConfig, selector []byte, at *big.Int)
 	return answers
 }
 
-// vote returns the most common answer, how many providers gave it, and how many
-// answered at all — and records each provider's standing in health. Demote
-// only: a provider already marked down or lagging by an earlier call must not be
-// promoted back to merely disagreeing by a later one.
+// vote returns the most common answer, how many gave it, how many answered at all,
+// and records each provider's standing. Demote only. The winner must be UNIQUE: a tie
+// reports zero agreement, else the provider ORDER would pick the supply figure.
 func vote(cfg ChainConfig, answers [][]byte, health map[string]string) (best []byte, agreed, answered int) {
+	// Tallied per distinct answer, not per provider, so the runner-up is visible.
+	type tally struct {
+		value []byte
+		count int
+	}
+	var tallies []tally
+
 	for _, a := range answers {
 		if a == nil {
 			continue
 		}
 		answered++
-		count := 0
-		for _, b := range answers {
-			if b != nil && string(a) == string(b) {
-				count++
+
+		seen := false
+		for i := range tallies {
+			if string(tallies[i].value) == string(a) {
+				tallies[i].count++
+				seen = true
+				break
 			}
 		}
-		if count > agreed {
-			best, agreed = a, count
+		if !seen {
+			tallies = append(tallies, tally{value: a, count: 1})
+		}
+	}
+
+	tied := false
+	for _, t := range tallies {
+		switch {
+		case t.count > agreed:
+			// A strictly better answer clears any earlier tie.
+			best, agreed, tied = t.value, t.count, false
+		case t.count == agreed:
+			tied = true
 		}
 	}
 
@@ -446,6 +422,11 @@ func vote(cfg ChainConfig, answers [][]byte, health map[string]string) (best []b
 		case string(a) != string(best) && health[name] == config.HealthOK:
 			health[name] = config.HealthDisagree
 		}
+	}
+
+	if tied {
+		// best still returned: callers check agreed first, and health is already set.
+		return best, 0, answered
 	}
 	return best, agreed, answered
 }

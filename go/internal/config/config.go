@@ -14,11 +14,8 @@ const (
 	OPTypeUsdxOracle  = "USDX_ORACLE"
 	OPCommandGetPrice = "GET_PRICE"
 
-	// GET_READINESS is direct-only, and needs no counterpart in the sender: a
-	// price must be requestable permissionlessly because feed liveness is a
-	// public good, whereas readiness is operational detail whose answer is
-	// stale within minutes. On-chain it would spend a fee per poll to write
-	// ephemeral state into permanent public calldata. Enforced in extension.go.
+	// Direct-only, and with no counterpart in the sender: a status answer is
+	// stale within minutes and not worth a fee. Enforced in extension.go.
 	OPCommandGetReadiness = "GET_READINESS"
 
 	// SET_ENDPOINTS is instruction-only (its authorisation is the owner-only
@@ -56,12 +53,8 @@ const (
 	// problem from one returning nothing, and quorum hides both.
 	HealthDisagree = "disagree"
 
-	// An RPC provider whose head sits below the block the read was pinned to, so
-	// it could not serve the query. Legitimate for a node that is merely behind
-	// — which is why it is tolerated rather than fatal — but it is also exactly
-	// the shape a provider takes when it tries to rewind the observation to an
-	// old block, and block selection now ignores such a provider rather than
-	// following it. Recorded so that being ignored still leaves a trace.
+	// An RPC provider whose head sits below the pinned block, so it could not
+	// serve the query. Tolerated, but recorded: it is also how a rewind looks.
 	HealthLagging = "lagging"
 
 	// Never provisioned, as opposed to broken. "down" pages someone to fix an
@@ -97,8 +90,8 @@ func init() {
 const (
 	ObservationDeadline = 20 * time.Second
 
-	// Faster than Hex's ~10 minute refresh so several consecutive failures still
-	// fit inside MaxObservationAge.
+	// Faster than Hex's ~10 minute post-event republish, so several consecutive
+	// failures still fit inside MaxObservationAge.
 	ObservationInterval = 2 * time.Minute
 
 	// Oldest observation that may still be signed. Past it GET_PRICE publishes
@@ -106,24 +99,11 @@ const (
 	// UsdxPriceStore.maxAge, which bounds the same staleness from the other end.
 	MaxObservationAge = 10 * time.Minute
 
-	// Maximum spread between earliest and latest input read. Bounds read skew
-	// only — how far the reserve figure lags actual chain state is bounded by
-	// BackingMaxAge, and that is the larger of the two exposures.
+	// Maximum spread between earliest and latest input read: read skew only, not
+	// data age. Sits ABOVE ObservationDeadline, so the deadline binds first and
+	// this never fires — tighten it below the deadline to make it a live bound.
 	ObservationWindow = 30 * time.Second
 
-	// The two reserve figures are published on different schedules, so one
-	// freshness bound cannot fit both. Bonds moves continuously; cash is
-	// republished about once an hour, and a 30-minute bound discarded it for
-	// most of every hour — the machine fetched a perfectly good figure, then
-	// threw it away. A bound below the publishing interval does not make the
-	// price fresher, it just makes the source unusable part of the time.
-	//
-	// 90 minutes leaves room for a late or skipped publish without accepting a
-	// figure old enough to be meaningless. It is the weaker bound of the two,
-	// but the alternative it replaces is not a fresher cash figure — it is no
-	// cash figure at all, since the oracle then runs cash-less.
-	BondsMaxAge = 30 * time.Minute
-	CashMaxAge  = 90 * time.Minute
 	HTTPTimeout = 5 * time.Second
 
 	HexAPIKeyRef = "hex_api_key"
@@ -153,34 +133,14 @@ type Chain struct {
 	Token string
 
 	// MaxBlockAge refuses a supply read whose pinned block is older than this,
-	// measured against the block's own header timestamp.
-	//
-	// Pinned rather than configurable, and deliberately so: this is the check
-	// that stops a hostile RPC provider rewinding the observation to a block
-	// where supply was lower, which overstates the price. Letting the same key
-	// that chooses the providers also choose how stale a block may be would give
-	// the check away with the attack.
-	//
-	// Sized as a large multiple of normal block age, not as a tight bound. The
-	// thing it defends against is a rewind of hours or weeks; the cost of being
-	// generous is only that a briefly-stalled chain is caught a little later,
-	// and the cost of being tight is rejecting healthy observations. Ethereum
-	// gets more room because its head is routinely 12s+ behind wall-clock while
-	// Flare and Songbird run ~1.8s blocks.
-	//
-	// NOT the removed FinalityMargin, which was a depth BELOW the head and was
-	// dropped in Aug 2026 after measurement showed it bought no availability.
-	// This bounds the freshness of the chosen block instead — a different
-	// property, and one that measurement never covered.
+	// measured against the block's own header timestamp. Pinned, not configurable:
+	// the key that chooses the providers must not also choose this. Rationale §6.
 	MaxBlockAge time.Duration
 }
 
-// Chains is the pinned chain set. USDX is a native burn-and-mint LayerZero OFT
-// on each, so supply is a plain sum.
-//
-// The pre-migration Ethereum contract (0x7A48…D56c, 150,000 USDX) is absent on
-// purpose: Hex excludes it from reserves, so counting it would publish a
-// spurious ~0.6% depeg.
+// Chains is the pinned chain set. USDX is a native burn-and-mint LayerZero OFT on
+// each, so supply is a plain sum. The pre-migration Ethereum contract is absent on
+// purpose: Hex excludes it from reserves. Rationale §6.
 var Chains = []Chain{
 	{Name: "flare", Token: "0x4A771Cc1a39FDd8AA08B8EA51F7Fd412e73B3d2B", MaxBlockAge: 2 * time.Minute},
 	{Name: "ethereum", Token: "0xf8750b54d86BE7aE9e32b4A0C826811198D63313", MaxBlockAge: 3 * time.Minute},
@@ -197,10 +157,8 @@ func LookupChain(name string) (Chain, bool) {
 	return Chain{}, false
 }
 
-// ChainID binds provisioning envelopes to one network, so an envelope signed
-// for Coston2 cannot be replayed against mainnet. Set at build time:
-//
-//	go build -ldflags "-X fce-usdx-oracle/internal/config.chainIDStr=14"
+// ChainID binds provisioning envelopes to one network. Set at build time with
+// -ldflags "-X fce-usdx-oracle/internal/config.chainIDStr=14".
 var ChainID = mustChainID()
 
 var chainIDStr = "114"
@@ -213,13 +171,38 @@ func mustChainID() uint64 {
 	return v
 }
 
+// Neither reserve source carries a freshness bound, and that is the deliberate
+// answer to a question this code got wrong twice.
+//
+// Hex confirmed that both endpoints — public and restricted alike — are
+// event-driven: they republish within about ten minutes of an on-chain event, a
+// mint or a redemption, and not otherwise. So `last_update` is a CHANGE
+// timestamp, not a heartbeat, and there is no periodic refresh to bound. A
+// quiet day leaves the stamp hours old with the figure perfectly correct,
+// because nothing happened to change it.
+//
+// A wall-clock bound therefore rejects good data at a rate set by USDX
+// activity, not by anything wrong upstream. That is not hypothetical: a shared
+// 30-minute bound had hex_cash reporting `down` for most of every hour on every
+// machine, and widening it to 90 minutes only moved the flapping — observed
+// stamps were ~7 hours apart with the value unchanged throughout. Each time the
+// machine fetched a good figure and then threw it away.
+//
+// Dropping the bound costs less than it looks, because it never covered the
+// dangerous direction. If the upstream freezes, R stops tracking a growing S
+// and price = min(1, R/S) prints BELOW par — the direction that reveals a
+// shortfall rather than hides one. And reserves lost WITHOUT an on-chain event
+// do not move `last_update` either, so no bound would have caught that. What
+// replaces it is monitoring the on-chain feed's own age, which the store's
+// maxAge and MaxObservationAge already bound from the other end.
+//
 // BondsSource is Hex's public reserves endpoint. RequireCurrency must stay
 // false: the public endpoint omits the field entirely.
 func BondsSource() BackingSpec {
 	return BackingSpec{
 		Name: HexBondsName, URL: HexBondsURL,
 		RequireCurrency: false,
-		MaxAge:          BondsMaxAge, Timeout: HTTPTimeout,
+		Timeout:         HTTPTimeout,
 	}
 }
 
@@ -228,8 +211,8 @@ func CashSource(apiKey string) BackingSpec {
 	return BackingSpec{
 		Name: HexCashName, URL: HexCashURL,
 		RequireCurrency: true,
-		MaxAge:          CashMaxAge, Timeout: HTTPTimeout,
-		AuthHeader: HexCashAuthHeader, AuthValue: apiKey,
+		Timeout:         HTTPTimeout,
+		AuthHeader:      HexCashAuthHeader, AuthValue: apiKey,
 	}
 }
 
@@ -239,7 +222,6 @@ type BackingSpec struct {
 	Name            string
 	URL             string
 	RequireCurrency bool
-	MaxAge          time.Duration
 	Timeout         time.Duration
 	AuthHeader      string
 	AuthValue       string

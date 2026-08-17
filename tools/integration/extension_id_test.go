@@ -86,10 +86,8 @@ func TestSetExtensionId_RevertReasonDecoded(t *testing.T) {
 
 	errMsg := err.Error()
 
-	// The hardening in SetExtensionId tries:
-	// 1. DecodeRevertReason(err) — from the estimation error
-	// 2. SimulateAndDecodeRevert() — replays the call via eth_call
-	// At least one of these should produce a human-readable reason.
+	// SetExtensionId tries DecodeRevertReason on the estimation error, then
+	// SimulateAndDecodeRevert via eth_call. One of them must produce a reason.
 	if !strings.Contains(errMsg, "Extension ID not found") {
 		t.Errorf("expected error to contain decoded revert reason 'Extension ID not found', got: %s", errMsg)
 		t.Log("This indicates the revert decoding chain is not working correctly.")

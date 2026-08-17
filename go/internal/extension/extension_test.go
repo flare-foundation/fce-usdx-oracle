@@ -81,11 +81,9 @@ func buildTestAction(opType, opCommand common.Hash, originalMessage []byte) teet
 // stands in for the instruction id, which a direct action does not have.
 var testDirectActionID = common.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222")
 
-// buildDirectAction constructs the envelope the PROXY actually delivers for a
-// direct action: Data.Message is a JSON types.DirectInstruction, whose payload
-// field is "message". It is deliberately not a DataFixed — building it that way
-// is what let a real direct action arrive with an empty payload unnoticed, since
-// encoding/json drops the unknown field rather than failing.
+// buildDirectAction constructs the envelope the PROXY actually delivers: Data.Message
+// is a JSON DirectInstruction, whose payload field is "message". Deliberately not a
+// DataFixed — building it that way hid a real direct action arriving empty.
 func buildDirectAction(opType, opCommand common.Hash, message []byte) teetypes.Action {
 	di := teetypes.DirectInstruction{
 		OPType:    opType,
@@ -251,10 +249,9 @@ func TestProcessGetPrice_RejectsPayload(t *testing.T) {
 		t.Errorf("expected the vocabulary reason, got %q", result.Log)
 	}
 
-	// ActionResult.Log is public (contract §4.6). It must echo back neither the
-	// submitted bytes nor their length — both are free reconnaissance for anyone
-	// probing the oracle. The whole result is checked, not just Log, since data
-	// must be empty on a failure too.
+	// ActionResult.Log is public (contract §4.6) and must echo back neither the
+	// submitted bytes nor their length. The whole result is checked, not just Log,
+	// since data must be empty on a failure too.
 	whole := string(body)
 	if strings.Contains(whole, sentinel) {
 		t.Errorf("result echoes caller-supplied bytes: %s", whole)
@@ -271,14 +268,9 @@ func TestProcessGetPrice_RejectsPayload(t *testing.T) {
 	}
 }
 
-// The request envelope is exactly one byte and exactly this value. Anything
-// else is refused rather than ignored, so a caller cannot come to depend on
-// bytes the extension silently drops, and a future envelope version cannot be
-// mistaken for this one.
-//
-// Empty is included deliberately: the registry rejects an empty message with
-// MessageEmpty() before it ever reaches a machine, but the handler must not
-// rely on that — the direct channel is not the registry.
+// The request envelope is exactly one byte and exactly this value; anything else is
+// refused rather than ignored. Empty is included deliberately: the registry rejects
+// it first, but the handler must not rely on that — direct is not the registry.
 func TestProcessGetPrice_RequiresTheRequestEnvelope(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -626,13 +618,9 @@ func TestProcessGetPrice_FailureKeepsLastGoodPrice(t *testing.T) {
 	}
 }
 
-// Stub mode must be impossible to enter accidentally: the production
-// constructors panic on a nil observer, and the only stub path is the
-// explicitly named NewStub, used solely by the wire-contract conformance
-// server. A hard-coded par price is the one failure that produces no errors,
-// no alerts and no stale timestamp — it looks exactly like a healthy
-// fully-backed feed — so a log banner was never enough defence, and inside a
-// TEE it is not even readable.
+// Stub mode must be impossible to enter accidentally: the production constructors
+// panic on a nil observer, and NewStub is the only stub path. A hard-coded par price
+// produces no errors, no alerts and no stale timestamp — a banner is no defence.
 func TestStubMode_CannotBeEnteredAccidentally(t *testing.T) {
 	mustPanic := func(name string, f func()) {
 		t.Helper()

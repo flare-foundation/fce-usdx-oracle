@@ -5,10 +5,10 @@ import (
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
+	"fce-usdx-oracle/tools/pkg/support"
 	"math/big"
 	"os"
 	"strings"
-	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -366,6 +366,7 @@ func ToProduction(s *support.Support, toProductionProof *machinemanager.ITeeAvai
 
 	tx, err := s.TeeMachineRegistry.ToProduction(opts, *toProductionProof)
 	if err != nil {
+		diagToProductionRevert(s, toProductionProof)
 		return errors.Errorf("%s", err)
 	}
 	_, err = support.CheckTx(tx, s.ChainClient)

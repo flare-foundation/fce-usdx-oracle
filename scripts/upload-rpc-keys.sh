@@ -200,7 +200,7 @@ OLD_IFS="$IFS"; IFS=','; read -r -a ADMIN_KEYS <<< "$USDXPROV_KEYS"; IFS="$OLD_I
 
 # Only whoever submits needs the proxy API key, and an admin holding fewer keys
 # than the threshold will only ever hand off. Asked here rather than at the
-# submit itself so nobody is hunting for a key while a 15-minute window runs.
+# submit itself so nobody is hunting for a key while the freshness window runs.
 if [ "${#ADMIN_KEYS[@]}" -ge "$PROVIDER_FLOOR" ]; then
   ask_secret USDXPROV_API_KEY "Proxy API key (hidden)"
 else
@@ -220,15 +220,24 @@ mkdir -p "$BIN_DIR"
 ( cd "$REPO_ROOT/go" && go build -o "$BIN_DIR/usdxprov" ./cmd/usdxprov ) \
   || die "could not build usdxprov"
 
+ATTESTED_TEE_ID=""
 if [ "$VERIFY" = true ]; then
   ( cd "$REPO_ROOT/tools" && go build -o "$BIN_DIR/verify-tee" ./cmd/verify-tee ) \
     || die "could not build verify-tee"
-  "$BIN_DIR/verify-tee" -p "$PROXY_URL" -code-hash "$EXPECTED_CODE_HASH" \
+  # -print-tee-id puts the ATTESTED teeId on stdout and the human report on
+  # stderr. Every build below pins to it, so a proxy that serves an honest key
+  # to this check and a substituted one to an encryption a moment later is
+  # refused rather than handed a credential. One id for the whole run: every ref
+  # goes to the same machine.
+  ATTESTED_TEE_ID="$("$BIN_DIR/verify-tee" -p "$PROXY_URL" -code-hash "$EXPECTED_CODE_HASH" -print-tee-id)" \
     || die "verification failed — no credential was sent"
+  [ -n "$ATTESTED_TEE_ID" ] \
+    || die "verification passed but printed no teeId — no credential was sent"
 else
   echo "  SKIPPED (--no-verify). Nothing here has checked that the key these"
-  echo "  credentials are encrypted to belongs to an enclave at all. Only ever"
-  echo "  do this against a mocknode."
+  echo "  credentials are encrypted to belongs to an enclave at all, and with no"
+  echo "  attested teeId the encryptions below cannot be pinned to one either."
+  echo "  Only ever do this against a mocknode."
 fi
 
 echo
@@ -310,9 +319,13 @@ for ref in "${REFS[@]}"; do
   # correct across a restart that resets the enclave's in-memory counter to zero.
   version="$(date +%s)"
 
+  # -tee pins the encryption to the machine the attestation named. The expansion
+  # is unquoted-by-design so an empty value passes no flag at all (--no-verify);
+  # a teeId is a hex address, so word splitting has nothing to split.
   USDXPROV_VALUE="${!var}" "$BIN_DIR/usdxprov" build \
       -url "$PROXY_URL" -chain-id "$CHAIN_ID" -ref "$ref" \
-      -version "$version" -out "$envelope" \
+      -version "$version" ${ATTESTED_TEE_ID:+-tee "$ATTESTED_TEE_ID"} \
+      -out "$envelope" \
     || die "could not build the envelope for $ref"
 
   # Every key held HERE signs. usdxprov refuses a duplicate signer, so a key

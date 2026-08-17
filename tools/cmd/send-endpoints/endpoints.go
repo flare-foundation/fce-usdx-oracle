@@ -9,20 +9,9 @@ import (
 	"github.com/pkg/errors"
 )
 
-// The SET_ENDPOINTS payload schema, restated here rather than imported.
-//
-// tools/ is deliberately independent of any one language implementation — the
-// Go extension is one of several possible ones, and importing its internals
-// would make this tool unusable against the others. The cost is that this must
-// be kept in step with internal/runtimecfg by hand; the alternative is what this
-// preflight exists to prevent.
-//
-// The check is worth having because publishing a bad payload is expensive and
-// SILENT: the transaction succeeds, expectedConfigHash is written, and only then
-// does the extension reject it and keep its previous configuration. The chain
-// expects hash B, the machine reports hash A, and every submitPrice from it
-// reverts StaleConfig until someone works out why. One stale fixture in the repo
-// is one -config argument away from exactly that.
+// The SET_ENDPOINTS payload schema, restated rather than imported so tools/ stays
+// independent of any one implementation. Worth checking because a bad payload fails
+// SILENTLY: expectedConfigHash is written, then every submitPrice reverts StaleConfig.
 type endpoints map[string]chainEndpoints
 
 type chainEndpoints struct {
@@ -42,10 +31,9 @@ type provider struct {
 // secretPlaceholder is the token the enclave replaces at dial time.
 const secretPlaceholder = "{secret}"
 
-// hexAPIKeyRef authenticates the pinned backing source by header. It may not be
-// named as a provider secret: the URL author and the credential holder are
-// different parties, and substituting it into a provider URL would deliver the
-// backing credential to a host of the URL author's choosing.
+// hexAPIKeyRef authenticates the pinned backing source by header, and may not be
+// named as a provider secret: substituting it into a provider URL would deliver
+// the backing credential to a host of the URL author's choosing.
 const hexAPIKeyRef = "hex_api_key"
 
 // pinnedChains must match config.Chains in the extension. A payload missing one
@@ -53,10 +41,8 @@ const hexAPIKeyRef = "hex_api_key"
 // rejected rather than treated as "that chain is off".
 var pinnedChains = []string{"flare", "ethereum", "songbird"}
 
-// parseEndpoints decodes the payload the way the extension does, rejecting
-// unknown fields. An unrecognised field means the publisher and the running
-// build disagree about the schema, and applying the subset we understand is
-// worse than stopping.
+// parseEndpoints decodes the payload the way the extension does, rejecting unknown
+// fields: they mean publisher and build disagree about the schema.
 func parseEndpoints(raw []byte) (endpoints, error) {
 	var e endpoints
 
@@ -110,10 +96,9 @@ func validateEndpoints(e endpoints) error {
 	return nil
 }
 
-// checkURL mirrors the shape half of runtimecfg.resolveURL. It cannot check
-// whether the credential has arrived — that is SET_SECRET's business — only that
-// the URL and secret ref agree and that a credential could not move the request
-// to another host.
+// checkURL mirrors the shape half of runtimecfg.resolveURL: that the URL and
+// secret ref agree, and that a credential could not move the request to another
+// host. Whether the credential has arrived is SET_SECRET's business.
 func checkURL(raw, secretRef string) error {
 	hasPlaceholder := strings.Contains(raw, secretPlaceholder)
 	if hasPlaceholder != (secretRef != "") {
@@ -137,9 +122,7 @@ func checkURL(raw, secretRef string) error {
 }
 
 // summarise describes what is about to be published: chain names, thresholds and
-// credential refs. Never a URL — this goes to a terminal and to logs, and while
-// the stored URL holds only {secret}, printing them invites pasting a resolved
-// one in later.
+// credential refs. Never a URL — this reaches terminals and logs.
 func summarise(e endpoints) string {
 	var b strings.Builder
 	for _, name := range sortedKeys(e) {

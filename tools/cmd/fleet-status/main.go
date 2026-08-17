@@ -66,8 +66,7 @@ type machineStatus struct {
 	Reachable bool `json:"reachable"`
 	// NoAttestedState separates "the proxy did not answer" from "it answered and
 	// carried no state". Both leave Reachable false, but only the first is a
-	// connectivity fault; reporting the second as unreachable sends an operator
-	// to check a tunnel that is working.
+	// connectivity fault.
 	NoAttestedState bool              `json:"noAttestedState"`
 	LiveHash        string            `json:"liveConfigHash,omitempty"`
 	Ready           bool              `json:"ready"`
@@ -243,13 +242,9 @@ func inspect(
 	return m
 }
 
-// readLiveByQuery fills m from a signed GET_READINESS, returning whether it
-// managed to. Used only when the attested state is absent — it costs a round
-// trip and an API key, so it is not the first choice, but the answer is the
-// enclave's own and carries strictly more than /state does.
-//
-// The signer is checked against the machine this row is about: a proxy serving
-// a valid report signed by a different enclave would otherwise be believed.
+// readLiveByQuery fills m from a signed GET_READINESS, reporting whether it managed
+// to. Used only when the attested state is absent: it costs a round trip and an API
+// key. The signer is checked against the machine this row is about.
 func readLiveByQuery(m *machineStatus, apiKey string, timeout time.Duration) bool {
 	if apiKey == "" {
 		m.Notes = append(m.Notes,
@@ -294,10 +289,8 @@ func readLive(m *machineStatus, apiKey string, timeout time.Duration) {
 	state, err := fetchState(m.URL, timeout)
 	if err != nil {
 		if errors.Is(err, fccutils.ErrNoAttestedState) {
-			// Ask the machine directly instead. GET_READINESS carries the same
-			// facts over the direct channel and is signed by the enclave, so
-			// nothing is given up on trust — only the dependency on tee-node
-			// folding /state into /info, which this version does not do.
+			// Ask the machine directly. GET_READINESS carries the same facts, signed by
+			// the enclave, without depending on tee-node folding /state into /info.
 			if readLiveByQuery(m, apiKey, timeout) {
 				return
 			}

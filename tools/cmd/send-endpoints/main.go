@@ -57,11 +57,9 @@ func main() {
 		fccutils.FatalWithCause(errors.Errorf("%s is not valid JSON", *configF))
 	}
 
-	// Decode against the REAL schema before spending gas. json.Valid only says
-	// the bytes are JSON; it happily passes a payload from an older schema, which
-	// then lands on-chain, sets expectedConfigHash, and is rejected by the
-	// extension — leaving the machine running its previous config and every
-	// submitPrice from it reverting StaleConfig.
+	// Decode against the REAL schema before spending gas: json.Valid would pass an
+	// older schema, which lands on-chain, sets expectedConfigHash, and is then
+	// rejected — leaving the machine on its old config and reverting StaleConfig.
 	parsed, err := parseEndpoints(configBytes)
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("%s: %s", *configF, err))
@@ -116,15 +114,9 @@ func main() {
 		return
 	}
 
-	// expectedConfigHash is now written, so from this moment the machine can only
-	// submit prices once it is actually RUNNING this config. FCC is
-	// fire-and-forget: the instruction may never be delivered, and the extension
-	// may reject it. Either way the machine keeps its old configuration and goes
-	// silent. Confirm rather than assume.
-	// Two outcomes are possible here and they call for opposite reactions, so
-	// they are never reported with the same words: the machine contradicting the
-	// published hash is a failure, whereas the machine publishing no state at all
-	// leaves the question open.
+	// expectedConfigHash is written, so the machine can now only submit prices while
+	// actually RUNNING this config — and FCC is fire-and-forget, so confirm. A
+	// contradicting hash is a failure; no state at all is an open question.
 	if err := waitForConfig(*pf, *apiKeyF, configHash, *waitF); err != nil {
 		if errors.Is(err, fccutils.ErrNoAttestedState) {
 			logger.Infof("Delivery not confirmed: %s", err)
@@ -168,10 +160,8 @@ func waitForConfig(proxyURL, apiKey string, want common.Hash, budget time.Durati
 				last = "readiness query failed: " + qerr.Error()
 				break
 			}
-			// Nothing will appear later: this tee-node version never publishes
-			// state and there is no key to ask directly with. Returning
-			// immediately keeps the operator from watching a budget expire on a
-			// question that cannot be answered.
+			// Nothing will appear later: this tee-node never publishes state and there
+			// is no key to ask directly with. Do not spend the budget waiting.
 			return err
 		case err != nil:
 			last = err.Error()

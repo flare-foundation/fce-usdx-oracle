@@ -71,9 +71,14 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `usdxprov — build, sign and submit provisioning envelopes
 
-  usdxprov build  -url <proxy> -chain-id <n> -ref <name> -value <secret> [-version <n>] -out env.json
+  usdxprov build  -url <proxy> -chain-id <n> -ref <name> -value <secret> [-version <n>] [-tee <id>] -out env.json
   usdxprov sign   -in env.json -key <hex-private-key> [-out env.json]
   usdxprov submit -in env.json -url <proxy> [-api-key <k>] [-action-url <url>]
+
+Always pass -tee for a real credential. build encrypts to whatever public key the
+proxy's /info serves, and -tee is what makes it refuse a substituted one; take the
+value from the attestation, with "verify-tee -print-tee-id". The upload scripts do
+this for you.
 
 The freshness window is `+provision.Freshness.String()+`: sign and submit within it, or
 the envelope is rejected as stale.
@@ -97,7 +102,9 @@ func build(args []string) error {
 	value := fs.secret("value", "USDXPROV_VALUE", "the credential itself")
 	version := fs.u64("version", 1, "must strictly increase per ref")
 	out := fs.str("out", "envelope.json", "output file")
-	teeIDFlag := fs.str("tee", "", "override the teeId from /info")
+	teeIDFlag := fs.str("tee", "",
+		"the teeId the ATTESTATION derived (verify-tee -print-tee-id); "+
+			"build refuses to encrypt if /info serves a key deriving to anything else")
 	if err := fs.parse(); err != nil {
 		return err
 	}
@@ -110,8 +117,22 @@ func build(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// -tee ASSERTS which machine answered; it never overrides what /info served, which
+	// would send the plaintext to whoever answered the port. verify-tee runs a separate
+	// request, so it cannot speak for the key THIS call fetched — hence the flag.
 	if *teeIDFlag != "" {
-		teeID = common.HexToAddress(*teeIDFlag)
+		want := common.HexToAddress(*teeIDFlag)
+		if want == (common.Address{}) {
+			return fmt.Errorf("-tee is not a usable address")
+		}
+		if want != teeID {
+			return fmt.Errorf(
+				"%s served a public key deriving to %s, but -tee names %s — "+
+					"the key was substituted between verification and now; "+
+					"do NOT send a credential to this endpoint",
+				strings.TrimRight(*proxyURL, "/"), teeID.Hex(), want.Hex())
+		}
 	}
 	if teeID == (common.Address{}) {
 		return fmt.Errorf("could not determine teeId; pass -tee")
@@ -225,10 +246,8 @@ func sign(args []string) error {
 		return err
 	}
 
-	// No local admin-set check: the set is published per machine by SET_ADMINS
-	// and lives in the enclave, so this tool cannot know it without trusting a
-	// copy that would go stale on the first rotation. The machine is the
-	// authority, and it reports one rejection for everything by design.
+	// No local admin-set check: the set lives in the enclave, and a local copy would
+	// go stale on the first rotation. The machine is the authority.
 	fmt.Printf("signed by %s (%d signature(s) so far)\n", signer.Hex(), len(f.Signatures))
 	return nil
 }
@@ -250,10 +269,8 @@ func submit(args []string) error {
 	if err := readJSON(*in, &f); err != nil {
 		return err
 	}
-	// The floor for the set this ref falls under, not the machine's actual
-	// threshold: SetAdmins refuses to install anything below it, so fewer than
-	// this can never be accepted anywhere and is worth catching before spending
-	// a round trip.
+	// The floor for the set this ref falls under, not the machine's actual threshold:
+	// fewer than this can never be accepted anywhere, so catch it before the trip.
 	floor := provision.MinThresholdFor(f.Ref, config.HexAPIKeyRef)
 	if len(f.Signatures) < floor {
 		return fmt.Errorf("have %d signatures, need at least %d for the %s set",
@@ -345,13 +362,9 @@ func postDirect(proxyURL, apiKey string, message []byte) error {
 	return nil
 }
 
-// postAction delivers straight to an extension, bypassing proxy and chain.
-// Local testing only; the production path is postDirect.
-//
-// The inner envelope is a DirectInstruction, byte for byte what the proxy puts
-// in Data.Message for a direct action — NOT a DataFixed. This used to wrap a
-// DataFixed, which meant the local path exercised a shape production never
-// sends and hid the fact that the extension could not read a real one.
+// postAction delivers straight to an extension, bypassing proxy and chain. Local
+// testing only; the production path is postDirect. The inner envelope is a
+// DirectInstruction — what the proxy really sends — never a DataFixed.
 func postAction(actionURL string, message []byte) error {
 	di := map[string]any{
 		"opType":    b32("USDX_CONFIG"),

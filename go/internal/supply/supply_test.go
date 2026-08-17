@@ -197,13 +197,9 @@ func TestRead_PinsTheQuorumThHighestHead(t *testing.T) {
 	}
 }
 
-// The attack the old minimum rule allowed, and the reason for this whole change.
-//
-// One provider claims a head from two weeks ago. Under min(heads) everyone was
-// then queried at that block, the HONEST providers answered identically and
-// correctly, quorum passed, and the enclave signed a stale supply figure —
-// understating supply, which overstates the price. The liar never lies about
-// the supply; it lies about which question to ask.
+// The attack the old minimum rule allowed. One provider claims a head from two weeks
+// ago; under min(heads) the HONEST providers then answered at that block identically
+// and correctly, quorum passed, and the enclave signed a stale supply figure.
 func TestRead_OneProviderCannotRewindTheObservation(t *testing.T) {
 	honestA := client(1_000_000, "5000000", 6)
 	honestB := client(1_000_000, "5000000", 6)
@@ -224,10 +220,8 @@ func TestRead_OneProviderCannotRewindTheObservation(t *testing.T) {
 	}
 }
 
-// At quorum == provider count the order statistic degenerates to the minimum,
-// so head selection cannot help. Stated as a test because it is the case
-// MaxBlockAge exists to cover, and someone will otherwise assume the new rule
-// protects every configuration.
+// At quorum == provider count the order statistic degenerates to the minimum, so head
+// selection cannot help. Stated as a test because it is the case MaxBlockAge covers.
 func TestRead_UnanimityStillFollowsTheLowestHead(t *testing.T) {
 	got, err := Read(context.Background(), cfg(t, 2,
 		client(1000, "100", 6),
@@ -284,10 +278,9 @@ func TestRead_ZeroMaxBlockAgeDisablesTheCheck(t *testing.T) {
 	}
 }
 
-// The block timestamp is voted on, not taken from whichever provider proposed
-// the block. Otherwise a liar supplies both halves — an ancient block number
-// with a fresh timestamp — and MaxBlockAge is defeated while the honest
-// providers corroborate the stale supply at that block.
+// The block timestamp is voted on, not taken from whichever provider proposed the
+// block. Otherwise a liar supplies both halves — an ancient number with a fresh
+// stamp — and MaxBlockAge is defeated.
 func TestRead_BlockTimeMustReachQuorum(t *testing.T) {
 	honestA := client(1000, "100", 6)
 	honestA.blockTime = time.Now().Add(-90 * time.Minute)
@@ -363,6 +356,51 @@ func TestRead_OutlierOutvoted(t *testing.T) {
 	}
 	if want := "1.000000"; got.Amount.FloatString(6) != want {
 		t.Errorf("amount = %s, want %s", got.Amount.FloatString(6), want)
+	}
+}
+
+// An even split must fail closed, the same way whichever order the providers are
+// listed in. Before the uniqueness check, 2-2 at quorum 2 returned whichever value
+// was listed first, with no error — so payload order decided the price.
+func TestRead_EvenSplitFailsClosedWhateverTheOrder(t *testing.T) {
+	honestFirst := cfg(t, 2,
+		client(1000, "1000000", 6),
+		client(1000, "1000000", 6),
+		client(1000, "9999999", 6),
+		client(1000, "9999999", 6),
+	)
+	liarsFirst := cfg(t, 2,
+		client(1000, "9999999", 6),
+		client(1000, "9999999", 6),
+		client(1000, "1000000", 6),
+		client(1000, "1000000", 6),
+	)
+
+	for name, c := range map[string]ChainConfig{"honest first": honestFirst, "liars first": liarsFirst} {
+		got, err := Read(context.Background(), c)
+		if !errors.Is(err, failure.SupplyNoQuorum) {
+			t.Errorf("%s: expected SupplyNoQuorum, got %v (value %v)", name, err, got.Amount)
+		}
+	}
+}
+
+// A clear majority still wins with an even provider count: the uniqueness rule
+// rejects ties, not pluralities.
+func TestRead_MajorityWinsWithAnEvenProviderCount(t *testing.T) {
+	got, err := Read(context.Background(), cfg(t, 2,
+		client(1000, "1000000", 6),
+		client(1000, "1000000", 6),
+		client(1000, "1000000", 6),
+		client(1000, "9999999", 6),
+	))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "1.000000"; got.Amount.FloatString(6) != want {
+		t.Errorf("amount = %s, want %s", got.Amount.FloatString(6), want)
+	}
+	if got.Providers["rpc_test_d"] != "disagree" {
+		t.Errorf("outvoted provider is %q, want %q", got.Providers["rpc_test_d"], "disagree")
 	}
 }
 

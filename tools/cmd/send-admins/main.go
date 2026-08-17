@@ -59,10 +59,8 @@ func main() {
 		fccutils.FatalWithCause(errors.Errorf("%s is not valid JSON", *configF))
 	}
 
-	// Decode against the REAL schema before spending gas, for the reason spelled
-	// out on the admins type: a rejected rotation leaves the machine on its old
-	// admin set while the chain expects the new one, which stops prices AND
-	// stops the new admins from provisioning anything.
+	// Decode against the REAL schema before spending gas, for the reason on the
+	// admins type: a rejected rotation stops prices AND stops the new admins.
 	parsed, err := parseAdmins(configBytes)
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("%s: %s", *configF, err))
@@ -117,16 +115,9 @@ func main() {
 		return
 	}
 
-	// expectedAdminsHash is now written, so from this moment the machine can only
-	// submit prices once it is actually RUNNING this admin set. FCC is
-	// fire-and-forget: the instruction may never be delivered, and the extension
-	// may reject it — a replayed or non-increasing version is rejected outright.
-	// Either way the machine keeps its previous set and goes silent. Confirm
-	// rather than assume.
-	// Two outcomes are possible here and they call for opposite reactions, so
-	// they are never reported with the same words: the machine contradicting the
-	// published hash is a failure, whereas the machine publishing no state at all
-	// leaves the question open.
+	// expectedAdminsHash is written, so the machine can now only submit prices while
+	// actually RUNNING this set — and a non-increasing version is rejected outright,
+	// so confirm. A contradicting hash is a failure; no state at all is not.
 	if err := waitForAdmins(*pf, *apiKeyF, adminsHash, *waitF); err != nil {
 		if errors.Is(err, fccutils.ErrNoAttestedState) {
 			logger.Infof("Delivery not confirmed: %s", err)
@@ -171,10 +162,8 @@ func waitForAdmins(proxyURL, apiKey string, want common.Hash, budget time.Durati
 				last = "readiness query failed: " + qerr.Error()
 				break
 			}
-			// Nothing will appear later: this tee-node version never publishes
-			// state and there is no key to ask directly with. Returning
-			// immediately keeps the operator from watching a budget expire on a
-			// question that cannot be answered.
+			// Nothing will appear later: this tee-node never publishes state and there
+			// is no key to ask directly with. Do not spend the budget waiting.
 			return err
 		case err != nil:
 			last = err.Error()

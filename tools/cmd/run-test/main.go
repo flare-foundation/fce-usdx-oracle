@@ -18,9 +18,8 @@ import (
 )
 
 // Decoding lives in tools/pkg/pricereport, which declares the wire layout
-// independently of any one extension implementation. What stays here are the
-// assertions: whether the payload a real machine produced is one
-// UsdxPriceStore would accept.
+// independently of any one implementation. What stays here are the assertions:
+// whether a real machine's payload is one UsdxPriceStore would accept.
 
 func main() {
 	af := flag.String("a", configs.AddressesFile, "file with deployed addresses")
@@ -66,11 +65,9 @@ func main() {
 	}
 	logger.Infof("Test passed: GET_PRICE instruction processed successfully")
 
-	// --- Test case 2: A second request must produce a fresh, consistent result ---
-	//
-	// The price depends on observed inputs, not call count, so this checks
-	// internal consistency rather than change — and that the extension serves
-	// repeat instructions rather than wedging after one.
+	// --- Test case 2: a second request must produce a consistent result ---
+	// The price depends on observed inputs, not call count, so this checks internal
+	// consistency and that the extension serves repeats rather than wedging.
 	logger.Infof("Sending a second GET_PRICE instruction...")
 
 	secondInstructionId, _, err := instrutils.RequestPriceUpdate(testSupport, instructionSenderAddress)

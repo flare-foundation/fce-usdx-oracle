@@ -9,19 +9,9 @@ import (
 	"github.com/pkg/errors"
 )
 
-// The SET_ADMINS payload schema, restated here rather than imported, for the
-// same reason send-endpoints restates its own: tools/ is deliberately
-// independent of any one language implementation, and importing the Go
-// extension's internals would make this tool unusable against the others. The
-// cost is that this must be kept in step with internal/runtimecfg by hand.
-//
-// The check matters more here than for endpoints. Publishing a bad admin set is
-// silent in the same way — the transaction succeeds, expectedAdminsHash is
-// written, and only then does the extension reject it — but the machine is left
-// running the PREVIOUS admin set while the chain expects the new one, so every
-// submitPrice reverts StaleAdmins and no SET_SECRET signed by the new admins can
-// land either. A rotation that half-happened is worse than one that did not
-// start.
+// The SET_ADMINS payload schema, restated for the same reason send-endpoints
+// restates its own. Worse to get wrong: a rejected rotation leaves the machine on
+// the previous set, so prices revert StaleAdmins and no new SET_SECRET lands.
 type admins struct {
 	Version uint64 `json:"version"`
 
@@ -38,23 +28,18 @@ type adminSet struct {
 	Admins    []string `json:"admins"`
 }
 
-// Mirrors provision.MinBackingThreshold, provision.MinProviderThreshold and
-// provision.MaxAdmins.
-//
-// The two floors differ by decision. The backing credential authenticates a
-// PINNED endpoint by header, so a wrong value degrades the feed to cash-less
-// rather than moving the price; provider credentials are named by SET_ENDPOINTS
-// and a rogue value denies service on every chain that uses it.
+// Mirrors provision.MinBackingThreshold, MinProviderThreshold and MaxAdmins. The
+// floors differ by decision: a wrong backing credential degrades the feed to
+// cash-less, a rogue provider credential denies service on every chain using it.
 const (
 	minBackingThreshold  = 1
 	minProviderThreshold = 2
 	maxAdmins            = 32
 )
 
-// hexAPIKeyRef is the one credential the backing set governs. Stated here only
-// so the summary can name it; the mapping that matters is pinned in the
-// extension build and is NOT carried in this payload — otherwise whoever
-// published admins could move a credential under whichever set they hold.
+// hexAPIKeyRef is the one credential the backing set governs, stated here only so
+// the summary can name it. The mapping that matters is pinned in the extension
+// build and is NOT carried in this payload.
 const hexAPIKeyRef = "hex_api_key"
 
 // parseAdmins decodes the payload the way the extension does, rejecting unknown

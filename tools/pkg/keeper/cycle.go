@@ -59,30 +59,14 @@ type Config struct {
 	// actually answered.
 	TeeID common.Address
 
-	// ResultProxies are further proxies to look for the result on, for the
-	// on-chain channel: getRandomTeeIds picks the machine, and a result is
-	// retrievable only from the proxy of the machine that produced it, so
-	// polling one URL of several finds nothing most of the time. Empty on the
-	// direct channel, where the answer can only come from the machine the
-	// request was sent to.
+	// ResultProxies are further proxies to look for the result on, for the on-chain
+	// channel: getRandomTeeIds picks the machine and only its proxy holds the
+	// result. Empty on the direct channel, where there is only one candidate.
 	ResultProxies []string
 
-	// Direct raises the GET_PRICE action on the proxy instead of on-chain,
-	// which saves the registry fee and one transaction per cycle.
-	//
-	// It costs nothing in trust. GET_PRICE grants no authority: it signs the
-	// observation the enclave already made on its own timer, and submitPrice
-	// verifies that signature against the machine registry however it was
-	// requested. What it does cost is permissionlessness — the direct channel
-	// needs the proxy's API key and network reach, so the on-chain path stays
-	// as the one anybody can use by paying the fee.
-	//
-	// It also removes an ambiguity that only appears with several machines: an
-	// on-chain request goes to a RANDOM machine via getRandomTeeIds, so the
-	// keeper cannot know in advance which proxy will hold the result and has to
-	// look on all of them — see ResultProxies. A direct request goes to the
-	// machine whose proxy it was sent to, which is what makes addressing one
-	// named machine, and so per-machine commissioning, possible at all.
+	// Direct raises GET_PRICE on the proxy instead of on-chain, saving the fee and a
+	// transaction. It costs nothing in trust and buys the ability to address ONE
+	// named machine, which commissioning needs. See Run's OnChainEvery.
 	Direct       bool
 	DirectAPIKey string
 
@@ -115,13 +99,8 @@ func RunCycle(ctx context.Context, s *support.Support, cfg Config) (Record, erro
 }
 
 // Collect is the first half of a cycle: raise the action, wait for a terminal
-// result, and decode the report out of it. It sends no transaction on the direct
-// channel, which is what lets a caller run it against several machines at once
-// — see Sweep — without two cycles racing for the same nonce.
-//
-// The returned Record is finished on error and half-filled on success; pass it
-// to Relay either way rather than building a second one, so a cycle emits one
-// record whichever step ended it.
+// result, decode the report. It sends no transaction, which is what lets Sweep run
+// it against several machines. Its Record is half-filled on success; pass it to Relay.
 func Collect(ctx context.Context, s *support.Support, cfg Config) (pricereport.Report, Record, error) {
 	rec := Record{
 		KeeperID:       cfg.KeeperID,
@@ -144,10 +123,8 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) (pricereport.R
 		return pricereport.Report{}, rec, err
 	}
 
-	// --- 1. trigger -----------------------------------------------------------
-	//
-	// Both channels yield an id and a submission tag to collect the result
-	// under; nothing downstream of here depends on which was used.
+	// --- 1. trigger ---
+	// Both channels yield an id and a tag; nothing downstream depends on which.
 	var (
 		actionID common.Hash
 		tag      teetypes.SubmissionTag
@@ -155,24 +132,14 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) (pricereport.R
 	)
 	if cfg.Direct {
 		actionID, err = RequestDirect(ctx, s, cfg)
-		// A direct action is enqueued under the "submit" tag. The proxy's
-		// result endpoint defaults to "threshold", so asking for the wrong one
-		// polls a 404 until the deadline and reports a timeout that looks like
-		// a dropped instruction.
+		// Direct actions are filed under "submit"; the endpoint defaults to
+		// "threshold", and the wrong tag 404s until the deadline.
 		tag = teetypes.Submit
 		rec.RequestTxStatus = "not_applicable"
 	} else {
-		// Ask before paying. The on-chain path costs a registry fee and a
-		// transaction, and a machine whose newest observation has aged out will
-		// refuse to sign whatever it is asked — so the fee buys a failure that
-		// was predictable for the price of one direct action.
-		//
-		// Only on this path: the direct channel is already free, so pre-checking
-		// there would spend a round trip to save an equally cheap one.
-		//
-		// Best effort throughout. A machine that cannot answer readiness is not
-		// thereby known to be unhealthy — this build may predate the command —
-		// and refusing to try would turn a diagnostic into an outage.
+		// Ask before paying: a machine whose observation has aged out will refuse
+		// whatever it is asked, so the fee would buy a predictable failure. Only on
+		// this path — the direct channel is already free. Best effort throughout.
 		if skip, why := wouldRefuse(ctx, cfg); skip {
 			return fail(OutcomeRequestSkipped, errors.New(why))
 		}
@@ -191,7 +158,7 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) (pricereport.R
 	rec.InstructionID = actionID.Hex()
 	logger.Infof("[%s] %s action %s%s", cfg.KeeperID, cfg.Channel(), actionID.Hex(), targetSuffix(cfg))
 
-	// --- 2. collect -----------------------------------------------------------
+	// --- 2. collect ---
 	targets := cfg.pollTargets()
 	result, from, err := PollResultAny(ctx, targets, actionID, tag, cfg.PollTimeout)
 	if err != nil {
@@ -234,10 +201,9 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) (pricereport.R
 	return report, rec, nil
 }
 
-// Relay is the second half of a cycle: check the report against every store
-// guard and submit it. Split from Collect so a caller holding reports from
-// several machines can order the submissions — observedAt must strictly
-// increase, so the order is what decides how many of them land.
+// Relay is the second half of a cycle: check the report against every store guard
+// and submit it. Split from Collect so a caller holding several machines' reports
+// can order the submissions — observedAt must strictly increase.
 func Relay(
 	ctx context.Context, s *support.Support, cfg Config, rec Record, report pricereport.Report,
 ) (Record, error) {
@@ -357,21 +323,16 @@ func waitMined(ctx context.Context, s *support.Support, tx *types.Transaction, t
 	return nil
 }
 
-// RequestDirect raises a GET_PRICE action on the proxy and returns the action id
-// the proxy assigned it.
-//
-// The op pair and request envelope are read off the deployed sender rather than
-// restated here, so the two channels cannot drift apart — see
-// instrutils.ReadGetPriceRequest.
+// RequestDirect raises a GET_PRICE action on the proxy and returns the action id.
+// The op pair and envelope are read off the deployed sender rather than restated
+// here, so the two channels cannot drift apart.
 func RequestDirect(ctx context.Context, s *support.Support, cfg Config) (common.Hash, error) {
 	if cfg.Proxy == "" {
 		return common.Hash{}, errors.New("direct mode needs a proxy URL")
 	}
 	if cfg.DirectAPIKey == "" {
-		// The proxy can be configured with api_key_optional, but a keeper that
-		// silently sends no key against a proxy that wants one gets a 401 that
-		// reads like an outage. Require it here and let the operator opt out
-		// deliberately by not using direct mode.
+		// A proxy may allow api_key_optional, but silently sending no key to one that
+		// wants it yields a 401 that reads like an outage. Opt out by not using direct.
 		return common.Hash{}, errors.New("direct mode needs an API key (-directApiKey or DIRECT_API_KEY)")
 	}
 
@@ -385,9 +346,8 @@ func RequestDirect(ctx context.Context, s *support.Support, cfg Config) (common.
 }
 
 // postDirectAction is the HTTP half of RequestDirect, split out so it can be
-// exercised without a chain to read the op constants from. Takes the op pair
-// loose rather than a GetPriceRequest because GET_READINESS uses the same
-// envelope and has no on-chain counterpart to read constants from.
+// exercised without a chain. Takes the op pair loose because GET_READINESS uses
+// the same envelope and has no on-chain counterpart to read constants from.
 func postDirectAction(
 	ctx context.Context, proxyURL, apiKey string,
 	opType, opCommand common.Hash, message []byte,
@@ -443,19 +403,9 @@ func PollResult(
 	return res, err
 }
 
-// PollResultAny waits for a terminal action result on any of several proxies and
-// reports which one answered. The deadline is what makes the cycle's duration
-// knowable, and has to stay inside the store's maxAge.
-//
-// Several proxies because an on-chain instruction is routed to a machine the
-// registry picks at random, and only that machine's proxy ever holds the result:
-// asking just one of a fleet of N finds nothing (N-1)/N of the time, and the
-// symptom is a poll that expires looking exactly like a dropped instruction. On
-// the direct channel there is only ever one target.
-//
-// The tag is not optional: an instruction's result is filed under "threshold"
-// and a direct action's under "submit", and asking for the wrong one returns 404
-// forever rather than an error naming the mismatch.
+// PollResultAny waits for a terminal result on any of several proxies and reports
+// which answered — an instruction is routed at random and only the chosen machine's
+// proxy holds it. The wrong tag 404s forever rather than erroring.
 func PollResultAny(
 	ctx context.Context, proxies []string, id common.Hash, tag teetypes.SubmissionTag,
 	timeout time.Duration,
@@ -533,9 +483,8 @@ func fetchResult(
 }
 
 // sourceHealth reads the extension's per-source health map off the proxy.
-// Best-effort: a nil map means the proxy could not be read, never "the sources
-// are fine". The map is only written when an observation runs, so stale "ok"
-// values persist if requests stop — alert on on-chain feed age instead.
+// Best-effort: nil means the proxy could not be read, never "the sources are
+// fine". Stale "ok" values persist if requests stop — alert on feed age instead.
 func sourceHealth(proxyURL string) map[string]string {
 	resp, err := http.Get(strings.TrimRight(proxyURL, "/") + "/info")
 	if err != nil {

@@ -69,11 +69,9 @@ func TestZeroFailureIsNotAFailure(t *testing.T) {
 	}
 }
 
-// This is the regression guard for the actual incident this package prevents:
-// wrapping a real upstream error and publishing it. It asserts that the errors
-// we would otherwise have surfaced do contain secrets, so that if a future
-// refactor reintroduces raw-error publishing, the danger is documented in a
-// test rather than rediscovered in production.
+// The regression guard for the incident this package prevents: wrapping a real
+// upstream error and publishing it. It asserts that the errors we would otherwise
+// have surfaced DO contain secrets, so the danger stays documented.
 func TestRawErrorsWouldLeak(t *testing.T) {
 	c := &http.Client{Timeout: 200 * time.Millisecond}
 	_, err := c.Get("https://usdx-oracle.invalid/restricted/metrics?apikey=SECRET_VALUE")

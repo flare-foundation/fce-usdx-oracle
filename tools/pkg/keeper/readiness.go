@@ -14,12 +14,9 @@ import (
 	"github.com/pkg/errors"
 )
 
-// The op pair for GET_READINESS is declared here, not read off the deployed
-// sender the way GET_PRICE is. That asymmetry follows the command's: a price is
-// requestable on-chain so its constants live in the contract and both channels
-// read the same source, while readiness exists only on the direct channel and
-// has no contract counterpart to drift from. These must match
-// go/internal/config.
+// Declared here, not read off the sender the way GET_PRICE is: readiness exists
+// only on the direct channel and has no contract counterpart to drift from.
+// These must match go/internal/config.
 const (
 	opTypeUsdxOracle      = "USDX_ORACLE"
 	opCommandGetReadiness = "GET_READINESS"
@@ -30,15 +27,9 @@ const (
 // extension rejects anything else.
 var readinessRequestV1 = []byte{0x01}
 
-// QueryReadiness asks one machine for its signed readiness report.
-//
-// Round trip over the direct channel: post the action, wait for the result,
-// decode and check the signature. No fee and no transaction — the cost is one
-// action, which is why it is affordable to ask before deciding whether to pay
-// for anything else.
-//
-// The returned report is verified but still a self-report; see
-// tools/pkg/readinessreport on what that does and does not settle.
+// QueryReadiness asks one machine for its signed readiness report: one direct
+// action, no fee, no transaction. Verified, but still a self-report — see
+// tools/pkg/readinessreport for what that does and does not settle.
 func QueryReadiness(
 	ctx context.Context, proxyURL, apiKey string, timeout time.Duration,
 ) (readinessreport.Report, error) {
@@ -90,32 +81,44 @@ func QueryReadiness(
 	return report, nil
 }
 
-// wouldRefuse reports whether the addressed machine says it would refuse to
-// sign, and why. Used only before a paid request.
-//
-// It answers false for every uncertainty — no proxy, no key, a build without
-// the command, an unreachable machine. The question being asked is "can this
-// fee be saved", and the honest answer when readiness is unavailable is "not
-// known", which must not become "do not try": that would turn every machine
-// that cannot answer into one the keeper refuses to use.
+// wouldRefuse reports whether EVERY machine that could serve the request says it
+// would refuse to sign, and why. All of them, because getRandomTeeIds picks the
+// machine. Every uncertainty answers false: "not known" is not "do not try".
 func wouldRefuse(ctx context.Context, cfg Config) (bool, string) {
-	if cfg.Proxy == "" || cfg.DirectAPIKey == "" {
+	if cfg.DirectAPIKey == "" {
 		return false, ""
 	}
 
-	report, err := QueryReadiness(ctx, cfg.Proxy, cfg.DirectAPIKey, readinessPreflightTimeout)
-	if err != nil {
-		logger.Debugf("[%s] readiness preflight unavailable, requesting anyway: %s", cfg.KeeperID, err)
+	// Config.Proxy plus every fleet proxy, deduplicated — the same set the
+	// result is later polled on, for the same reason.
+	targets := cfg.pollTargets()
+	if len(targets) == 0 {
 		return false, ""
 	}
-	if report.Payload.WouldSign {
-		return false, ""
+
+	// Returns on the first machine that would sign or cannot be read, so the healthy
+	// path costs one round trip. Only a unanimously refusing fleet pays for them all.
+	var first string
+	for _, proxy := range targets {
+		report, err := QueryReadiness(ctx, proxy, cfg.DirectAPIKey, readinessPreflightTimeout)
+		if err != nil {
+			logger.Debugf("[%s] readiness preflight unavailable at %s, requesting anyway: %s",
+				cfg.KeeperID, proxy, err)
+			return false, ""
+		}
+		if report.Payload.WouldSign {
+			return false, ""
+		}
+		if first == "" {
+			first = fmt.Sprintf("%s reports observation %ds old, class %q, ready=%t",
+				proxy, report.Payload.ObservationAge, report.Payload.LastErrorClass,
+				report.Payload.Readiness.Ready)
+		}
 	}
 
 	return true, fmt.Sprintf(
-		"skipped the on-chain request: the machine reports it would not sign "+
-			"(observation %ds old, class %q, ready=%t) — no fee spent",
-		report.Payload.ObservationAge, report.Payload.LastErrorClass, report.Payload.Readiness.Ready)
+		"skipped the on-chain request: all %d reachable machine(s) report they would "+
+			"not sign (%s) — no fee spent", len(targets), first)
 }
 
 // readinessPreflightTimeout is short on purpose: this runs before the real work
@@ -123,8 +126,7 @@ func wouldRefuse(ctx context.Context, cfg Config) (bool, string) {
 const readinessPreflightTimeout = 15 * time.Second
 
 // QueryReadinessSigner is QueryReadiness with the signer checked against the
-// machine the caller believes it is talking to. Use it wherever the answer will
-// inform a decision about a specific machine: without it a proxy could serve a
+// machine the caller believes it is talking to. Without it a proxy could serve a
 // valid report signed by a different enclave.
 func QueryReadinessSigner(
 	ctx context.Context, proxyURL, apiKey string, want common.Address, timeout time.Duration,

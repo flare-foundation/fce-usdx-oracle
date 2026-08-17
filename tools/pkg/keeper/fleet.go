@@ -20,21 +20,9 @@ type Machine struct {
 	Proxy string
 }
 
-// ActiveMachines lists the machines registered to the store's extension.
-//
-// The extension id is read off the store rather than configured, so the keeper
-// can never sweep or rotate over a fleet whose prices the store would reject —
-// the two would disagree silently, and the symptom would be UnknownSigner on
-// every cycle with nothing naming the mismatch.
-//
-// proxyOverride, when set, replaces every registered URL. That is for a machine
-// the keeper reaches on a different address than the one it published — a local
-// docker fleet, or a proxy behind a tunnel — and it is only ever correct with a
-// single machine, because it sends every request to the same one.
-//
-// Machines the registry lists without a URL are dropped: a direct request has
-// nowhere to go, and substituting another machine's URL would silently ask the
-// wrong enclave.
+// ActiveMachines lists the machines registered to the store's extension. The id is
+// read off the store, not configured, so the keeper cannot rotate over a fleet whose
+// prices the store would reject. Machines listed without a URL are dropped.
 func ActiveMachines(
 	ctx context.Context, s *support.Support, storeAddr common.Address, proxyOverride string,
 ) ([]Machine, error) {
@@ -77,22 +65,17 @@ func machineList(teeIDs []common.Address, urls []string, proxyOverride string) [
 	return machines
 }
 
-// fleet is the keeper's view of the machines it may send to, plus whose turn it
-// is next.
-//
-// The rotation index is the only state the loop keeps across cycles, and it is
-// deliberately not correctness-bearing: any registered machine may serve any
-// cycle, so losing the index to a restart costs nothing.
+// fleet is the keeper's view of the machines it may send to, plus whose turn it is
+// next. The rotation index is the only state the loop keeps across cycles, and it
+// is not correctness-bearing: any registered machine may serve any cycle.
 type fleet struct {
 	machines []Machine
 	next     int
 }
 
-// refresh re-reads the registry so machines added or suspended mid-run are
-// picked up without a restart.
-//
-// A read failure keeps the previous list: the registry being briefly unreadable
-// is not a reason to stop sending prices, and an empty fleet would stop them.
+// refresh re-reads the registry so machines added or suspended mid-run are picked
+// up without a restart. A read failure keeps the previous list: a briefly
+// unreadable registry is not a reason to stop sending prices.
 func (f *fleet) refresh(ctx context.Context, s *support.Support, storeAddr common.Address, proxyOverride string) {
 	machines, err := ActiveMachines(ctx, s, storeAddr, proxyOverride)
 	if err != nil {

@@ -43,9 +43,8 @@ func newAdmins(t *testing.T, n int) []admin {
 const testBackingRef = "hex_api_key"
 
 // newTestVerifier installs a generated set as the PROVIDERS set through the real
-// SetAdmins path, so the tests exercise the same validation SET_ADMINS does. The
-// backing set is a separate throwaway, since both must be installed for the
-// verifier to accept anything.
+// SetAdmins path, so tests exercise the same validation SET_ADMINS does. The backing
+// set is a throwaway: both must be installed before the verifier accepts anything.
 func newTestVerifier(t *testing.T, admins []admin, threshold int) *Verifier {
 	t.Helper()
 	return newTestVerifierWith(t, newAdmins(t, 1), 1, admins, threshold)
@@ -74,12 +73,11 @@ func adminSet(admins []admin, threshold int) AdminSet {
 
 func testEnvelope(payload []byte) Envelope {
 	return Envelope{
-		ChainID:     testChainID,
-		TeeID:       testTeeID,
-		Version:     1,
-		IssuedAt:    uint64(time.Now().UTC().Unix()),
-		// A provider ref: newTestVerifier installs its admins as the PROVIDERS
-		// set, and the backing ref is governed by a different set entirely.
+		ChainID:  testChainID,
+		TeeID:    testTeeID,
+		Version:  1,
+		IssuedAt: uint64(time.Now().UTC().Unix()),
+		// A provider ref: the backing ref is governed by a different set entirely.
 		Ref:         "ankr_flare_key",
 		PayloadHash: crypto.Keccak256Hash(payload),
 		Payload:     payload,

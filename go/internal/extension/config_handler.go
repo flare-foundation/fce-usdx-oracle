@@ -15,14 +15,9 @@ import (
 	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
 )
 
-// processUsdxConfig routes USDX_CONFIG provisioning commands. Each is valid
-// over exactly one action type, enforced here rather than assumed: SET_ENDPOINTS
-// and SET_ADMINS are authorised by the sender's owner-only check, so a direct
-// action would skip it; SET_SECRET is authorised by M-of-N admin signatures, and
-// on-chain would put a ciphertext in permanent public storage for no benefit.
-//
-// Every path returns nil data and a fixed log, so provisioning cannot be used
-// to probe the admin set or which machine is which.
+// processUsdxConfig routes USDX_CONFIG commands, each valid over exactly one action
+// type: over direct, SET_ENDPOINTS would skip the sender's owner check; on-chain,
+// SET_SECRET would make a ciphertext permanent. Every path returns nil and a fixed log.
 func (e *Extension) processUsdxConfig(action teetypes.Action, df *instruction.DataFixed) (int, []byte) {
 	if e.provisioner == nil {
 		return respond(e, action, df, failure.NotConfigured)

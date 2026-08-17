@@ -61,13 +61,9 @@ func TestCompute(t *testing.T) {
 	}
 }
 
-// Rounding, not truncation — reversed 5 Aug 2026. The reasoning is in the
-// package doc: Hex quotes reserves to the cent, so truncation turns a $0.004
-// quantisation artifact into a permanent sub-par print.
-//
-// This pins the boundary in both directions, because the whole safety argument
-// is that the shortfall rounding can hide is bounded at exactly half a unit in
-// the last place.
+// Rounding, not truncation: Hex quotes reserves to the cent, so truncation turns a
+// $0.004 quantisation artifact into a permanent sub-par print. Pinned in both
+// directions, because the shortfall it can hide is bounded at half a ULP.
 func TestCompute_RoundsHalfUp(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -171,12 +167,9 @@ func TestCompute_BadDecimalsRejected(t *testing.T) {
 	}
 }
 
-// Precision beyond float64. Supply at Ethereum's 18 decimals against a backing
-// figure at 2 decimals is where a float-based implementation drifts.
-//
-// One wei of extra supply is 5e-26 of the float — far inside half a ULP, so par
-// is the correct answer under rounding. What is asserted is that the arithmetic
-// gets there without overflowing or losing the low digits.
+// Precision beyond float64: supply at 18 decimals against a backing figure at 2 is
+// where a float implementation drifts. One wei is 5e-26, inside half a ULP, so par is
+// correct — what is asserted is that the arithmetic gets there without losing digits.
 func TestCompute_ExactBeyondFloat64(t *testing.T) {
 	got, err := Compute(in(t,
 		"20620459.685024", "0",
@@ -190,10 +183,8 @@ func TestCompute_ExactBeyondFloat64(t *testing.T) {
 	}
 }
 
-// ComputeWithoutCash publishes only when the missing figure cannot matter, and
-// fails closed otherwise. The failing half is the important one: it is what
-// keeps this from becoming the graceful degradation the availability doc
-// argues against.
+// ComputeWithoutCash publishes only when the missing figure cannot matter. The failing
+// half is the important one: it keeps this from becoming graceful degradation.
 func TestComputeWithoutCash(t *testing.T) {
 	cases := []struct {
 		name          string

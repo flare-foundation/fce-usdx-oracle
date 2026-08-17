@@ -33,8 +33,11 @@ const attempts = 2
 type Reading struct {
 	Amount *big.Rat
 
-	// The source's own last_update: when Hex says the figure was computed, not
-	// when we read it. The gap against the supply reads is the TOCTOU exposure.
+	// The source's own last_update: when Hex says the figure last CHANGED, not
+	// when we read it and not a heartbeat. Hex republishes within ~10 minutes of
+	// an on-chain event — a mint or a redemption — and not otherwise, so a quiet
+	// day legitimately leaves this hours old with the figure still correct.
+	// Recorded for operators; deliberately not a freshness bound, see Config.
 	AsOf time.Time
 
 	RetrievedAt time.Time
@@ -60,8 +63,10 @@ type Config struct {
 	// shared struct asserting currency == "USD" would fail closed forever.
 	RequireCurrency bool
 
-	// Rejects a reading whose last_update is older than this. Zero disables.
-	MaxAge time.Duration
+	// There is deliberately no MaxAge. Both endpoints are event-driven, so age
+	// carries no information about correctness — the rationale is in
+	// config.BondsSource. A timestamp is still parsed and still rejected if it
+	// is in the future, which is a broken upstream rather than an old figure.
 
 	// Bounds a single attempt.
 	Timeout time.Duration
@@ -194,7 +199,8 @@ func isTimeout(err error) bool {
 }
 
 // parse turns a response body into a Reading, rejecting an unrecognised shape,
-// a non-USD figure, an unparseable amount or a stale timestamp.
+// a non-USD figure, an unparseable amount or a timestamp from the future. An
+// OLD timestamp is not a rejection reason — see Config.
 func (s *httpSource) parse(body []byte) (Reading, error) {
 	var r response
 	dec := json.NewDecoder(strings.NewReader(string(body)))
@@ -229,14 +235,13 @@ func (s *httpSource) parse(body []byte) (Reading, error) {
 		return Reading{}, failure.BackingMalformed
 	}
 
+	// How OLD asOf is says nothing: it moves only when the figure changes, so a
+	// week-old stamp on a week without a mint is the correct answer. A stamp in
+	// the FUTURE is different — it means clock skew or a broken upstream, and
+	// nothing else the response says can be trusted either.
 	now := time.Now().UTC()
-	if s.cfg.MaxAge > 0 && now.Sub(asOf) > s.cfg.MaxAge {
-		return Reading{}, failure.BackingStale
-	}
-	// Stamped in the future means clock skew or a broken upstream; either way
-	// the freshness check is meaningless.
 	if asOf.After(now.Add(time.Minute)) {
-		return Reading{}, failure.BackingStale
+		return Reading{}, failure.BackingTimestamp
 	}
 
 	return Reading{Amount: amount, AsOf: asOf, RetrievedAt: now}, nil

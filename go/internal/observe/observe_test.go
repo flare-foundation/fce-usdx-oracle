@@ -14,10 +14,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// The poller is tested against a fake resolver rather than a real observation:
-// what is under test is the caching, the staleness bound and the fail-closed
-// rules, none of which involve an upstream. The observation itself is covered
-// exhaustively in internal/oracle.
+// The poller is tested against a fake resolver: what is under test is the caching, the
+// staleness bound and the fail-closed rules, none of which involve an upstream. The
+// observation itself is covered in internal/oracle.
 
 type fakeSigner struct {
 	err    error

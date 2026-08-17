@@ -107,27 +107,44 @@ VERSION="${VERSION:-$(date +%s)}"
 echo
 echo "--- 1/5  Verifying the machine ------------------------------------"
 echo
-# Gating step. If this fails, the key on the next line may not belong to an
-# enclave at all, so nothing after it runs.
+# Gating step, and the source of the teeId step 2 pins the encryption to. If
+# this fails, the key on the next line may not belong to an enclave at all, so
+# nothing after it runs.
+ATTESTED_TEE_ID=""
 if [ "$VERIFY" = true ]; then
-  ( cd "$REPO_ROOT/tools" && go run ./cmd/verify-tee \
-      -p "$PROXY_URL" -code-hash "$EXPECTED_CODE_HASH" ) \
+  # -print-tee-id puts the ATTESTED teeId on stdout and the human report on
+  # stderr, so the operator still sees every check while the id is captured.
+  #
+  # Capturing it matters because this command and the encryption below are
+  # separate processes making separate requests to the same proxy. Verifying
+  # here proves something about the key THIS request received; passing the id to
+  # build is what makes build refuse a different key on its own request.
+  ATTESTED_TEE_ID="$( cd "$REPO_ROOT/tools" && go run ./cmd/verify-tee \
+      -p "$PROXY_URL" -code-hash "$EXPECTED_CODE_HASH" -print-tee-id )" \
     || die "verification failed — the credential was NOT sent"
+  [ -n "$ATTESTED_TEE_ID" ] \
+    || die "verification passed but printed no teeId — the credential was NOT sent"
 else
   echo "  SKIPPED (--no-verify). Nothing here has checked that the key this"
-  echo "  credential is encrypted to belongs to an enclave at all. Only ever"
-  echo "  do this against a mocknode."
+  echo "  credential is encrypted to belongs to an enclave at all, and with no"
+  echo "  attested teeId the encryption below cannot be pinned to one either."
+  echo "  Only ever do this against a mocknode."
 fi
 
 echo
 echo "--- 2/5  Building the envelope ------------------------------------"
 echo
-# build reads the attested public key from the same /info the verification above
-# just checked, derives the teeId from it, and encrypts the credential to it. The
-# plaintext exists only in this shell and inside the target enclave.
+# build reads the public key from /info and encrypts the credential to it. -tee
+# is what ties that key to the attestation checked above: build refuses outright
+# if what it is served derives to a different machine. The expansion is
+# unquoted-by-design so an empty value passes no flag at all (--no-verify); a
+# teeId is a hex address, so word splitting has nothing to split.
+#
+# The plaintext exists only in this shell and inside the target enclave.
 ( cd "$REPO_ROOT/go" && go run ./cmd/usdxprov build \
     -url "$PROXY_URL" -chain-id "$CHAIN_ID" -ref "$REF" \
-    -version "$VERSION" -out "$WORKDIR/envelope.json" ) \
+    -version "$VERSION" ${ATTESTED_TEE_ID:+-tee "$ATTESTED_TEE_ID"} \
+    -out "$WORKDIR/envelope.json" ) \
   || die "could not build the envelope"
 
 echo
@@ -142,7 +159,7 @@ echo
 echo "--- 4/5  Submitting ------------------------------------------------"
 echo
 # Direct channel: no gas, no transaction, no permanent record of the ciphertext.
-# Must land within the 15-minute freshness window opened at build time.
+# Must land within the one-hour freshness window opened at build time.
 ( cd "$REPO_ROOT/go" && go run ./cmd/usdxprov submit \
     -in "$WORKDIR/envelope.json" -url "$PROXY_URL" ) \
   || die "submission was rejected — the enclave reports one reason for every failure, so check its logs"

@@ -13,6 +13,8 @@
         "readiness": {
           "endpointsSet": false,
           "endpointsHash": "",
+          "adminsSet": false,
+          "adminsHash": "",
           "ready": false,
           "missingSecretRefs": []
         },

@@ -3,6 +3,7 @@ package runtimecfg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"fce-usdx-oracle/internal/config"
+	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/provision"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -77,10 +79,9 @@ func provisioned(t *testing.T) *Store {
 	return s
 }
 
-// devAdmins are the addresses of private keys 1, 2 and 3 — the keys the
-// envelope helpers sign with. Publicly known, which is exactly why they are
-// confined to tests and to an explicitly named fixture: nothing bakes them in
-// any more, so a machine only honours them if someone publishes them to it.
+// devAdmins are the addresses of private keys 1, 2 and 3, which the envelope helpers
+// sign with. Publicly known, so nothing bakes them in: a machine honours them only
+// if someone publishes them to it.
 var devAdmins = []string{
 	"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf", // privkey 0x01
 	"0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF", // privkey 0x02
@@ -150,10 +151,9 @@ func TestPinnedPolicyIsUsed(t *testing.T) {
 			t.Errorf("chain %q token = %s, want the pinned %s", ch.Name, ch.Token, pinnedChain.Token)
 		}
 
-		// MaxBlockAge is the check that stops a hostile provider rewinding the
-		// observation. Letting the key that chooses the providers also choose
-		// how stale a block may be would hand over the check with the attack, so
-		// it has to come from the pinned policy and be non-zero there.
+		// The check that stops a hostile provider rewinding the observation, so it must
+		// come from the pinned policy: the key that chooses the providers must not also
+		// choose how stale a block may be.
 		if ch.MaxBlockAge != pinnedChain.MaxBlockAge {
 			t.Errorf("chain %q maxBlockAge = %s, want the pinned %s",
 				ch.Name, ch.MaxBlockAge, pinnedChain.MaxBlockAge)
@@ -357,10 +357,9 @@ func TestStore_StartsUnconfigured(t *testing.T) {
 	}
 }
 
-// The Hex key is always reported as required. Since 5 Aug 2026 it no longer
-// blocks Resolve — the observation runs cash-less and publishes only where the
-// figure provably cannot matter — but Ready means "fully provisioned", and a
-// machine that can answer for only part of the price range must not claim it.
+// The Hex key is always reported as required. It no longer blocks Resolve — the
+// observation runs cash-less — but Ready means "fully provisioned", and a machine
+// answering for only part of the price range must not claim it.
 func TestStore_HexKeyIsAlwaysRequired(t *testing.T) {
 	s := newStore(t)
 	if err := setEndpoints(s, testEndpoints()); err != nil {
@@ -381,11 +380,9 @@ func TestStore_HexKeyIsAlwaysRequired(t *testing.T) {
 	}
 }
 
-// Endpoints without the Hex key resolve to a config with no cash source, rather
-// than refusing outright. The oracle then decides per observation whether the
-// missing figure could have changed the answer; refusing here would take that
-// decision away and freeze the feed on a credential the feed does not always
-// need.
+// Endpoints without the Hex key resolve to a config with no cash source rather than
+// refusing outright, so the oracle can decide per observation whether the missing
+// figure could have changed the answer.
 func TestResolve_WithoutHexKeyYieldsNoCashSource(t *testing.T) {
 	s := newStore(t)
 	if err := setEndpoints(s, testEndpoints()); err != nil {
@@ -501,14 +498,47 @@ func TestApplySecret_RejectsQuerySeparatorOnArrival(t *testing.T) {
 	}
 }
 
-// TestSetEndpoints_RejectsBackingCredentialAsProviderSecret is the containment
-// for the exfiltration path: the Hex credential authenticates a PINNED endpoint
-// by header, so naming it as a provider secret would substitute it into a URL on
-// a host the payload author chose, handing it over on the next observation.
-//
-// The URL author (owner key) and the credential holder (admins) are different
-// parties. resolveURL already stops a credential changing its destination; this
-// stops the URL author choosing a destination for someone else's credential.
+// Bounds the one Apply* that does not require the owner key: a direct action could
+// otherwise hand the enclave an arbitrarily large buffer to ABI-decode and forward
+// to /decrypt. Checked before the lock, so a large message cannot hold it.
+func TestApplySecret_RejectsOversizedMessage(t *testing.T) {
+	s := concurrentStore(t)
+
+	// A FULLY VALID envelope that is merely too big. Garbage of the same length would
+	// prove nothing — it fails ABI decoding either way. Only a message that would
+	// otherwise be ACCEPTED can tell the two builds apart.
+	oversized := envelopeFor(t, config.HexAPIKeyRef, strings.Repeat("k", maxPayloadBytes), 1)
+	if len(oversized) <= maxPayloadBytes {
+		t.Fatalf("setup: message is %d bytes, expected more than %d", len(oversized), maxPayloadBytes)
+	}
+
+	err := s.ApplySecret(context.Background(), oversized)
+	if err == nil {
+		t.Fatal("a message larger than maxPayloadBytes must be refused")
+	}
+	// Indistinguishable from every other rejection, or the endpoint becomes a
+	// way to probe where the bound sits.
+	if !errors.Is(err, failure.ProvisionRejected) {
+		t.Errorf("want ProvisionRejected, got %v", err)
+	}
+	s.mu.RLock()
+	stored := s.secrets[config.HexAPIKeyRef]
+	s.mu.RUnlock()
+	if stored != "" {
+		t.Error("an oversized credential was stored anyway")
+	}
+
+	// The same ref at an ordinary size still applies, so the bound refuses size
+	// and not everything. Reusing version 1 is the point: a rejection before the
+	// verifier must not have burned that version, and this is what proves it.
+	if err := s.ApplySecret(context.Background(), envelopeFor(t, config.HexAPIKeyRef, "value-ok", 1)); err != nil {
+		t.Fatalf("a normal envelope must still be accepted: %v", err)
+	}
+}
+
+// Containment for the exfiltration path: naming the Hex credential as a provider
+// secret would substitute it into a URL on a host the payload author chose. resolveURL
+// stops a credential moving; this stops the URL author aiming someone else's.
 func TestSetEndpoints_RejectsBackingCredentialAsProviderSecret(t *testing.T) {
 	e := testEndpoints()
 
@@ -545,11 +575,8 @@ func TestReadiness_ExposesNoSecrets(t *testing.T) {
 }
 
 // --- concurrency ---
-//
-// /action is an ordinary net/http handler, so tee-node delivering two actions
-// at once runs two handler goroutines. These tests go through the real
-// ApplySecret path — envelope and all — rather than the setSecret bypass,
-// because what needs protecting lives in the verifier.
+// /action is an ordinary net/http handler, so two actions at once run two goroutines.
+// These use the real ApplySecret path: what needs protecting lives in the verifier.
 
 // concurrentTeeID must be non-zero: a zero teeId never satisfies Verify's
 // machine binding, so the envelope path would reject before reaching anything
@@ -620,9 +647,8 @@ func envelopeFor(t *testing.T, ref, value string, version uint64) []byte {
 	return msg
 }
 
-// TestApplySecret_IsSafeUnderConcurrency drives every entry point at once.
-// Without applyMu the verifier's lastVersion map is written unsynchronised,
-// which -race reports and which the runtime turns into a fatal concurrent map
+// Drives every entry point at once. Without applyMu the verifier's lastVersion map
+// is written unsynchronised, which the runtime turns into a fatal concurrent map
 // write — a process kill, not a recoverable panic.
 func TestApplySecret_IsSafeUnderConcurrency(t *testing.T) {
 	s := concurrentStore(t)
@@ -683,10 +709,9 @@ func TestApplySecret_IsSafeUnderConcurrency(t *testing.T) {
 	}
 }
 
-// TestApplySecret_ConcurrentReplayAdmitsExactlyOne is the security half. The
-// per-ref version check is read-then-write; run unserialised, several goroutines
-// read the same old version and all conclude they are newer, so one captured
-// envelope replays as many times as it is submitted in parallel.
+// The security half. The per-ref version check is read-then-write, so unserialised
+// several goroutines read the same old version and all conclude they are newer —
+// one captured envelope replaying as often as it is submitted in parallel.
 func TestApplySecret_ConcurrentReplayAdmitsExactlyOne(t *testing.T) {
 	s := concurrentStore(t)
 
@@ -719,14 +744,9 @@ func TestApplySecret_ConcurrentReplayAdmitsExactlyOne(t *testing.T) {
 }
 
 // --- SET_ADMINS ---
-//
-// The admin set is the root of trust for every credential that follows, so it
-// gets the same treatment SET_ENDPOINTS does: validated on arrival, and a
-// rejected payload leaves the working set in place.
+// The root of trust for every credential that follows, so it gets the same treatment
+// SET_ENDPOINTS does: validated on arrival, and a rejected payload changes nothing.
 
-// adminsPayload marshals a set for the table-driven cases. It takes no
-// *testing.T because it is called while building the table, where there is no
-// live test to fail; Admins is plain data and cannot fail to marshal.
 // withVersion returns a copy at a chosen version, for cases that vary only that.
 func withVersion(a Admins, version uint64) Admins {
 	a.Version = version

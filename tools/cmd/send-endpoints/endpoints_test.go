@@ -7,10 +7,8 @@ import (
 	"testing"
 )
 
-// Every fixture the repo ships must survive the preflight. If one does not, it
-// is either stale or the preflight has drifted from internal/runtimecfg — and
-// both are exactly the failure this check exists to catch, so the suite should
-// say so rather than let someone discover it by spending gas.
+// Every fixture the repo ships must survive the preflight. A failure means either a
+// stale fixture or a preflight that has drifted from internal/runtimecfg.
 func TestShippedFixturesValidate(t *testing.T) {
 	matches, err := filepath.Glob("../../../testdata/endpoints/*.json")
 	if err != nil {

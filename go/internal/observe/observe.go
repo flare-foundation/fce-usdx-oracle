@@ -150,16 +150,9 @@ func (p *Poller) Report(ctx context.Context, instructionID common.Hash) (oracle.
 	return oracle.Sign(ctx, p.signer, obs, instructionID)
 }
 
-// ReadinessReport answers GET_READINESS: it assembles what the poller knows
-// about itself, binds it to one instruction, and signs it.
-//
-// Assembled here rather than in the extension because everything but the
-// provisioning half lives behind this mutex, and the signer does too. The
-// caller supplies the provisioning half, which it owns.
-//
-// No I/O beyond the one signing call: tee-node allows two seconds per action,
-// which is the whole reason observation runs on a timer. Nothing here observes,
-// resolves configuration, or dials an upstream.
+// ReadinessReport assembles what the poller knows about itself, binds it to one
+// instruction and signs it. Assembled here because everything but the provisioning
+// half lives behind this mutex, and so does the signer. No I/O beyond the signing call.
 func (p *Poller) ReadinessReport(
 	ctx context.Context, instructionID common.Hash, provisioning types.Readiness,
 ) ([]byte, error) {
@@ -222,10 +215,8 @@ func (p *Poller) ReadinessReport(
 		return nil, asFailure(err)
 	}
 
-	// asFailure, not the raw error: a signer's own words can name the endpoint
-	// it failed to reach. The one in production already returns vocabulary, and
-	// this must not depend on that staying true — the same reason record() does
-	// it for lastErr.
+	// asFailure, not the raw error: a signer's own words can name the endpoint it
+	// failed to reach, and this must not depend on the signer keeping to vocabulary.
 	signature, err := p.signer.Sign(ctx, body)
 	if err != nil {
 		return nil, asFailure(err)

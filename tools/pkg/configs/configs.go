@@ -14,10 +14,9 @@ import (
 // so the tools run flag-free from a sourced .env. Fallbacks point at the
 // coston2 deployment: the old docker/sim_dump path no longer exists.
 var (
-	// The port Docker Compose publishes: the container listens on 6664 and
-	// compose maps 6674 -> 6664, so these are one proxy seen from two sides.
-	// Under `start-services.sh --local` the proxy binds 6664 on the host, so a
-	// hand-run tool there needs EXT_PROXY_URL=http://localhost:6664 or -p.
+	// The port Docker Compose publishes: the container listens on 6664 and compose
+	// maps 6674 -> 6664. Under `start-services.sh --local` the proxy binds 6664 on
+	// the host, so a hand-run tool there needs EXT_PROXY_URL or -p.
 	ExtensionProxyURL = envOrDefault("EXT_PROXY_URL", "http://localhost:6674")
 	ChainNodeURL      = envOrDefault("CHAIN_URL", "https://coston2-api.flare.network/ext/C/rpc")
 	AddressesFile     = envOrDefault("ADDRESSES_FILE", "../config/coston2/deployed-addresses.json")

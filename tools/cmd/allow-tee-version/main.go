@@ -2,14 +2,14 @@ package main
 
 import (
 	"crypto/ecdsa"
-	"flag"
-	"os"
-	"strings"
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
 	"fce-usdx-oracle/tools/pkg/support"
+	"flag"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
+	"os"
+	"strings"
 )
 
 func main() {

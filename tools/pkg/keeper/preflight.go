@@ -14,10 +14,9 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Rejection is a report the store will not accept, named by the guard that
-// rejects it. The name matters more than the message: StaleConfig needs a
-// setEndpoints call, NotNewer usually needs nothing, and "execution reverted"
-// distinguishes neither.
+// Rejection is a report the store will not accept, named by the guard that rejects
+// it. The name matters more than the message: StaleConfig needs a setEndpoints call,
+// NotNewer usually needs nothing, and "execution reverted" distinguishes neither.
 type Rejection struct {
 	Guard string
 	Msg   string

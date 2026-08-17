@@ -43,10 +43,9 @@ const BodyLength = 4 * 32
 
 func Domain() common.Hash { return crypto.Keccak256Hash([]byte(DomainName)) }
 
-// Report is the signed header. It carries no teeId: the signer is recovered
-// from the signature, so naming the machine as well would add a field that
-// either agrees with the recovery or is ignored. The price report omits it for
-// the same reason.
+// Report is the signed header. It carries no teeId: the signer is recovered from
+// the signature, so naming the machine would add a field that is only ever
+// redundant. The price report omits it for the same reason.
 type Report struct {
 	// InstructionID is the action being answered. With Timestamp it is what
 	// stops a captured answer being replayed later as a current one — the field
@@ -118,10 +117,9 @@ func EncodeData(body, signature, payload []byte) ([]byte, error) {
 	return data, nil
 }
 
-// DecodeData splits an ActionResult payload into body, signature and payload.
-// Exported for the tooling, which verifies the signature and then reads the
-// JSON; it deliberately does not unmarshal, so the caller hashes the same bytes
-// the signature covers.
+// DecodeData splits an ActionResult payload into body, signature and payload. It
+// deliberately does not unmarshal, so the caller hashes the same bytes the
+// signature covers.
 func DecodeData(data []byte) (body, signature, payload []byte, err error) {
 	values, err := dataArgs.Unpack(data)
 	if err != nil || len(values) != 3 {
