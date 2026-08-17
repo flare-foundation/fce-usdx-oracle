@@ -71,9 +71,15 @@ rejected payload costs a transaction *and* leaves the machine unable to land pri
 | 5. publish endpoints + admins | `send-endpoints`, `send-admins` | [production setup](usdx-oracle-production-setup.md) |
 | 6. install credentials | `upload-hex-key.sh`, `upload-rpc-keys.sh` | |
 | 7. commission + run the feed | `keeper` | [keeper](usdx-oracle-keeper.md) |
+| 8. retire, replace or upgrade a machine | `pause`, `register-tee`, `addTeeVersion` | [lifecycle](usdx-oracle-machine-lifecycle.md) |
 
 `full-setup.sh` runs 1–4 end to end. Everything after that is deliberately manual: it moves
 credentials and money.
+
+Stages 3 and 5–7 repeat **per machine**; there is no fleet-wide form of any of them. Stage 8 is
+not exceptional — a rebuild mints a new enclave key, so replacing a machine is the ordinary
+consequence of shipping a change, and the identity it replaces has to be paused or it stays
+registered forever.
 
 ---
 
@@ -181,7 +187,7 @@ Never on-chain. The credential is encrypted to the enclave's attested key and de
 | `verify-tee` | **Run before any credential.** Answers: is this proxy fronting an enclave running code we accept? |
 | `usdxprov build` | Reads the attested key, encrypts the credential to it, emits an unsigned envelope. |
 | `usdxprov sign` | One admin signs the envelope body. Refuses a duplicate signer — M-of-N needs distinct ones. |
-| `usdxprov submit` | Combines signatures and POSTs to `/direct`. Must land within 15 minutes of the build. |
+| `usdxprov submit` | Combines signatures and POSTs to `/direct`. Must land within one hour of the build. |
 | `upload-hex-key.sh` | The three above, for `hex_api_key`, gated on `verify-tee`. Backing set, so one signature can finish it. |
 | `upload-rpc-keys.sh` | The same for every RPC ref the machine reports missing, with handoff when it cannot meet the providers threshold. |
 
@@ -260,6 +266,35 @@ running the *previous* config; the "config proven" column is what makes that vis
 trusting the machine's own account of itself. Do not pass `-p` to it: that overrides every
 machine's registered URL.
 
+Its table prints only **unhealthy** sources as notes, so a clean run says nothing about the
+sources that are fine. For the full per-source matrix — including everything reporting `ok` —
+use `-json` and read `sourceHealth`. Note that log lines share stdout with the JSON, so strip
+anything before the first line that is exactly `[`.
+
+`query-tee` needs `-reg` pointed at the **FlareTeeManager diamond**, not the `MachineManagerFacet`
+address in `deployed-addresses.json`; every TEE facet is called through the diamond, and calling a
+facet directly reverts. Its default is a hard-coded address that may not match your deployment, so
+pass `-reg` explicitly. Because it lists only *active* machines, it is the quickest way to confirm
+a `pause` took effect.
+
+### Environment overrides worth knowing
+
+| Variable | Effect |
+| --- | --- |
+| `SIMULATED_TEE=true` | expected code hash and platform are the simulated constants rather than parsed from an attestation token |
+| `SIMULATED_CODE_HASH` | overrides that expected hash, for addressing a fleet running two builds mid-upgrade. Validated as exactly 32 bytes, and **ignored unless `SIMULATED_TEE=true`** — under real attestation the hash comes from the token and must not be overridable |
+| `EXTENSION_OWNER_KEY` | signs `addTeeVersion` as someone other than the deployer |
+| `DIRECT_API_KEY` | the direct channel gate; also what lets `fleet-status`, `send-endpoints` and `send-admins` fall back to a signed `GET_READINESS` when a machine publishes no attested state |
+
+### When a transaction just says `execution reverted`
+
+`register-tee` replays the failing call as an `eth_call` and decodes the revert against the custom
+errors of Verification, Fdc2Hub, MachineManager and ExtensionManager — so prefer its output to the
+raw error. It covers both the availability-check request and `toProduction`, which is where
+promotion failures surface. `audit-deploy` does the same for `addTeeVersion`. The reverts you are
+most likely to meet are tabulated in
+[usdx-oracle-machine-lifecycle.md](usdx-oracle-machine-lifecycle.md).
+
 ---
 
 ## Local development
@@ -275,6 +310,15 @@ machine's registered URL.
 
 The upload scripts take `--no-verify` for a mocknode, which has no attestation and no on-chain
 registration. Never against a machine that will hold a real credential.
+
+**Building against on-disk tee-node / tee-proxy.** `USE_LOCAL_SIBLINGS=1 ./scripts/start-services.sh`
+swaps the pinned node build for one compiled from sibling checkouts. Two things to know: the
+sibling layout is resolved as `$PROJECT_DIR/../..`, so the repo has to sit at
+`tee/extension-examples/<repo>` with `tee/tee-node` and `tee/tee-proxy` beside it — both must exist
+even if only one is being changed. And `start-services.sh` writes a `go.work` at the repo root for
+*host* builds which travels into the Docker context and takes precedence over the image's own
+`replace` directive; `go/Dockerfile.siblings` removes it in-layer for that reason. `.dockerignore`
+cannot help, because the siblings build's context root is `tee/`, not the repo.
 
 ## Build and housekeeping
 

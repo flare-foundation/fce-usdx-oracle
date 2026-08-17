@@ -95,7 +95,7 @@ keeper dying; 7 catches everything, including causes nobody anticipated.
 | --- | --- | --- | --- |
 | `source_unavailable` | `BackingUnavailable`, `BackingTimeout`, `SupplyUnavailable`, `SupplyTimeout` | An upstream is unreachable | warn; page on N consecutive |
 | `supply_quorum_failed` | `SupplyNoQuorum` | Providers disagreed or too few answered | page — should be near-impossible at a fixed block |
-| `source_invalid` | `BackingMalformed`, `BackingStale`, `BackingCurrency` | The source answered and we refused it | **page differently** — a human must read the response |
+| `source_invalid` | `BackingMalformed`, `BackingCurrency`, `BackingTimestamp` | The source answered and we refused it | **page differently** — a human must read the response |
 | `implausible_value` | `BackingImplausible`, `SupplyImplausible`, `PriceImplausible`, `SupplyZero` | A value failed a sanity bound | page — either a real event or a bad bound |
 | `not_configured` | `NotConfigured` | Secrets lost to a restart — memory-only by design | page — needs re-provisioning, not a retry |
 | `sign_failed` | `SignUnavailable`, `SignRejected` | tee-node signing path broken | page |

@@ -47,7 +47,7 @@ burn-and-mint confirmation. Evidence and history: findings doc §1 / `usdx-oracl
 | --- | --- |
 | Keeper relays the signed result; TEE sends no transaction | Keeps gas/nonces/stuck-tx out of the enclave. The store verifies the signature, so the keeper is liveness, not trust — anyone can submit. |
 | RPC, not FDC, for supply reads | FDC adds a round trip and complexity; the TEE is already the trust anchor. Redundancy instead: 3 providers/chain, 2-of-3 or all-3 — configurable. |
-| Query an explicit block number, never a tag | Providers disagree on `latest` — and, measured, on `finalized` too. Resolve the tag to a number per provider, take the minimum, query everyone there. |
+| Query an explicit block number, never a tag | Providers disagree on `latest` — and, measured, on `finalized` too. Resolve the tag to a number per provider, pin the **Quorum-th highest** (the minimum let one lagging or lying provider rewind the observation — findings §24), then query everyone there. |
 | Read `decimals()` per chain | They differ: 18 on Ethereum, 6 on Flare/Songbird. |
 | On-chain payload carries price only | Hex may consider reserve figures sensitive. Note `GET /state` is public too, so it can't hold them either. |
 | Fail closed | Source down or value implausible → publish nothing, let the timestamp age. Never guess a price. |
@@ -145,7 +145,8 @@ and the phased build. Placement reasoning (keeper, not extension) stays in
 - [ ] **Price < 1 alert** — a business event, not a metric. Pages someone, and needs an agreed
       comms path to Hex. **Check it against `minPrice`:** bounds set at par mean a genuine depeg
       reverts `OutOfBounds` and this alert never fires at all.
-- [ ] Hex API health + `last_update` staleness · [ ] per-RPC health and disagreement rate
+- [ ] Hex API health (reachability, **not** `last_update` age — the sources are event-driven) ·
+      [ ] per-RPC health and disagreement rate
 - [ ] TEE liveness, keeper balance, failed-tx rate · [ ] Phase 5 — dashboard + on-call routing
 
 ### Testing · Deployment
@@ -172,7 +173,8 @@ and the phased build. Placement reasoning (keeper, not extension) stays in
 4. Bonds at market or par? Liquidity haircut?
 5. Auth scheme and rate limits on the private endpoint? Public has no `currency` field and uses
    comma separators while your private sample has neither — deliberate and stable?
-6. How often are figures recomputed, and does `last_update` move on every redemption? *(We see a 10-min tick.)*
+6. ~~How often are figures recomputed, and does `last_update` move on every redemption?~~
+   **Answered:** on change only — within ~10 min of an on-chain event, never on a schedule.
 7. Confirm burn-and-mint OFT on every chain, no lock-and-mint adapter anywhere.
 8. Uptime expectations and an escalation contact.
 
@@ -202,21 +204,31 @@ and the phased build. Placement reasoning (keeper, not extension) stays in
 Milestone 0 is resolved; the design stands. Milestone 1 is still open with Hex but no longer
 gates 2–4: the observation runs cash-less and publishes where the figure provably cannot matter.
 
-### Coston2 deployment, as of 6 Aug 2026
+### Coston2 deployment, as of 15 Aug 2026
+
+Read back from the chain, not from this file's history. The generation below supersedes the
+one recorded here through 6 Aug 2026 (sender `0xe14781f3…8555`, extension id `0x101a8`, store
+`0x786307b2…cD60`, feed `0xEF67cD9C…2386`) — those contracts still exist and still answer, so
+a stale reference does not fail loudly, it just reads a feed nobody updates any more.
 
 | What | Address / value |
 | --- | --- |
-| `UsdxOracleInstructionSender` | `0xe14781f34a3Ca262D87EE6b6C099C14E70308555` |
-| Extension ID | `0x101a8` (65960) |
-| `UsdxPriceStore` | `0x786307b2bd21A5BfE4524Ff14C0B80F9c618cD60` |
-| `UsdxCustomFeed` | `0xEF67cD9C73FaB3Ef27109a3B0ED9E12305Aa2386` |
+| `UsdxOracleInstructionSender` | `0x1562e092C807a823fE22dc832b6F20cCe169a8F6` |
+| Extension ID | `0x102e9` (66281) |
+| `UsdxPriceStore` | `0x4E2f462cfB6CC8567D6A918666B15c04E03B73aE` |
+| `UsdxCustomFeed` | `0x56c5F1b72DCA580F7b2B0c07c63973C58627a12D` |
 | Feed ID | `0x20555344582f555344…` (`USDX/USD`, category 32) |
-| Endpoints config hash | `0xf9f4c2be0d2821e4735ec587242bb0f2a78409ea47bbc72367f81d7e8c5c4a8d` |
 | Store bounds / maxAge | `0.5 … 1.0`, 3600 s |
 
-All three contracts are **verified** on `coston2-explorer.flare.network` (6 Aug 2026) via
-`./scripts/verify-contracts.sh`, so the acceptance rules are readable by anyone relying on
+The store and the feed are **verified** on `coston2-explorer.flare.network` via
+`./scripts/verify-contracts.sh`, so their acceptance rules are readable by anyone relying on
 them, and `latest()` / `getCurrentFeed()` can be called from the explorer's Read Contract tab.
+**The instruction sender is not verified**, and it is the one holding the price-controlling
+owner key (finding 15) — verifying it is outstanding work, not a cosmetic gap.
+
+The endpoints config hash is deliberately not recorded here: it changes on every
+`setEndpoints`, so a copy in a document is stale by construction. Read it from the machine
+(`readiness.endpointsHash`) or from `expectedConfigHash(teeId)` on the sender.
 
 **Milestone 4 closed 6 Aug 2026.** First price on-chain: `1.00000000` at 8 decimals,
 `observedAt` 1786004691, from instruction `0x7040b32d…cb17` under config hash

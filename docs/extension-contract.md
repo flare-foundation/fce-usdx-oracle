@@ -1,8 +1,20 @@
 # Extension Container Contract
 
-**This document is normative.** Any container that satisfies it is a valid FCC extension, regardless of implementation language. The scaffold ships Go, Python and TypeScript implementations; all three are measured against this document, and `scripts/test-conformance.sh` enforces it mechanically.
+**This document is normative.** Any container that satisfies it is a valid FCC extension, regardless of implementation language, and `scripts/test-conformance.sh` enforces it mechanically against the golden fixtures in `testdata/conformance/`.
 
 If you are adding a new language, this is the specification you are implementing. Nothing else in the repo needs to change.
+
+> **Scope note for this repository.** The upstream scaffold ships Go, Python and
+> TypeScript implementations and this document is written for all three. **Only Go is
+> checked in here** (`go/`), so passages describing `python/` or `typescript/` files
+> describe the scaffold, not this repo. The scaffold's `SAY_HELLO` / `SAY_GOODBYE`
+> examples are likewise illustrative — this extension's operations are
+> `USDX_ORACLE/{GET_PRICE, GET_READINESS}` and
+> `USDX_CONFIG/{SET_ENDPOINTS, SET_ADMINS, SET_SECRET}`. Of those, only `GET_PRICE`,
+> the `/state` shape and the routing rules are pinned by conformance fixtures;
+> the provisioning commands and `GET_READINESS` are specified in
+> [usdx-oracle-codebase.md](usdx-oracle-codebase.md) §6 and
+> [usdx-oracle-readiness-query.md](usdx-oracle-readiness-query.md).
 
 ---
 

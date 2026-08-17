@@ -76,20 +76,25 @@ one extra RPC round per observation.
 comment states that "the gap between this and the supply reads is the TOCTOU exposure in
 spec §6.1."
 
-That gap is **not** in the window check. It is bounded only by `MaxAge`, which for a
-source refreshing on a ~10 minute tick has to be at least 10 minutes. So the double-read
-tightens a 30-second bracket sitting inside a staleness gap roughly twenty times larger
-— and it cannot help there: if `B` is ten minutes stale and a burn landed five minutes
-ago, both `S₁` and `S₂` are post-burn while `B` is pre-burn. That is the bad direction,
-and `max()` cannot see it.
+That gap is **not** in the window check. At the time it was bounded only by `MaxAge`,
+which for a source believed to tick every ~10 minutes had to be at least 10 minutes. So
+the double-read tightened a 30-second bracket sitting inside a staleness gap roughly
+twenty times larger — and it could not help there: if `B` is ten minutes stale and a burn
+landed five minutes ago, both `S₁` and `S₂` are post-burn while `B` is pre-burn. That is
+the bad direction, and `max()` cannot see it.
 
 The double-read was correct; it simply protected a much smaller exposure than the
 design language implied. That is what led to dropping it — the exposure it covered
 is now closed at a different layer, by pinning each supply read to one agreed block.
 
-**OPEN:** fold `AsOf` into `checkWindow`, or state explicitly that `MaxAge` is the real
-TOCTOU bound and the consistency window only covers read skew. This is the live gap
-now that the bracket is gone.
+**RESOLVED, and in the other direction.** `MaxAge` was not the real TOCTOU bound either;
+it has since been removed entirely. Hex confirmed both endpoints are event-driven — they
+republish within ~10 minutes of a mint or a redemption and not otherwise — so `AsOf` is a
+*change* timestamp with no periodic refresh to bound, and folding it into `checkWindow`
+would have failed every observation on a quiet day. `checkWindow` covers read skew and
+says so. The reserve lag itself is unbounded and fails safe: a reserve figure trailing a
+mint understates `R/S`, and the price is capped at par. See failure-modes,
+"`hex_cash` staleness — resolved".
 
 ---
 
@@ -185,7 +190,9 @@ The fix for the availability concern is **redundancy, not degradation**.
    question above matters more than its current position on the list suggests.
 
 2. **Resolve the `AsOf` / `RetrievedAt` inconsistency** in `checkWindow`, or document that
-   `MaxAge` is the real bound.
+   `MaxAge` is the real bound. **Done, 17 Aug 2026 — neither option.** `MaxAge` was removed:
+   Hex republishes on an on-chain event, not on a schedule, so no wall-clock bound on `AsOf`
+   is meaningful. `checkWindow` covers read skew and now says only that.
 
 3. **Do not implement graceful degradation.** §3.0 is resolved: `R_bonds` is a real
    asset measure, so degradation is actively harmful — it would drop the cash buffer
@@ -220,6 +227,63 @@ a complete one even though the published price is identical by construction.
 Recommendation 1 is unaffected: this covers the case where cash is *absent*, not
 the case where the bond figure is. That source still has no redundancy, and it is
 the one whose failure stops the feed outright.
+
+### Measured again, 16 Aug 2026 — and cash absence turns out to be the normal state
+
+The figures above held: supply 25,452,544.524 against bonds 25,452,544.52, still
+$0.004 apart for the same cent-quoting reason. The 1:1 tracking is stable rather
+than a one-off of 31 Jul.
+
+What changed is the standing of the cash-less branch. It was written as the
+exceptional path; on a three-machine fleet it had become the **routine** one,
+because `hex_cash` spent most of its time outside any plausible freshness bound.
+Observed `last_update` values sat at `:29:08` roughly **seven hours** apart with
+the value unchanged, while `hex_bonds` on the same host stayed seconds fresh —
+which rules out credentials, egress and TLS and points at the metric's publishing
+cadence. `BackingMaxAge` was split into `BondsMaxAge` (30 min) and `CashMaxAge`
+(90 min); on this evidence 90 minutes was still not enough, and the real question
+was whether Hex republishes cash on a schedule at all or only on change.
+
+That mattered more than it first reads, because of what §2 established. Bonds are
+not a buffer — they track supply. **Cash is the entire 12.6% of
+over-collateralisation.** So for most of any given day the feed was running with
+no numerical margin at all: the cash-less path publishes par only while bonds
+stay within half a ULP of supply, about $0.13 at current scale. Cross that and
+the extension publishes *nothing* — `BackingUnavailable` — and the feed ages out.
+
+### Answered, 17 Aug 2026 — the sources are event-driven, and the bound is gone
+
+Hex's answer: **on change, not on a schedule.** Both endpoints, public and
+restricted alike, republish within about ten minutes of an on-chain event — a
+mint or a redemption — and never otherwise. There is no periodic refresh, and
+none was ever offered.
+
+That settles it against the freshness bound entirely, on both sources. The
+readings above were not a stalled upstream; they were a quiet seven hours,
+reported accurately. `BondsMaxAge`, `CashMaxAge` and `failure.BackingStale` have
+been removed rather than widened — a bound whose false-positive rate is set by
+USDX trading activity is not a bound, and every rejection it produced discarded a
+figure that was correct. Only a `last_update` in the *future* is still refused
+(`BackingTimestamp`), because that is clock skew or a broken upstream rather than
+an old figure.
+
+The cash-less branch goes back to being exceptional, and the 12.6% buffer is
+available in practice rather than only on paper.
+
+This does not change recommendation 3. Degradation would still be harmful, and
+failing closed is still right. It **narrows** recommendation 1 without retiring
+it: what looked like an availability problem was a measurement problem, so the
+cash endpoint is not in fact down most of the day. But it remains a single URL
+with no fallback, and the bond figure — the one whose failure stops the feed
+outright — still has none either. Mechanism and symptoms are in
+[usdx-oracle-failure-modes.md](usdx-oracle-failure-modes.md).
+
+The residual exposure is now stated honestly rather than bounded falsely: a
+reserve figure may lag chain state by up to Hex's ~10-minute event latency, and
+that lag fails safe — reserves trailing a mint understate `R/S`, and the price is
+capped at par. What no longer has *any* guard, at this or any previous
+`MaxAge`, is reserves changing without an on-chain event; that is a disclosure
+question for Hex, not a freshness one.
 
 Neither (1) nor (2) is a correctness bug in the current code. They are gaps between what
 the design claims and what the implementation guarantees.
@@ -278,7 +342,7 @@ The classes that matter for this alert:
 ```
 ClassSourceDown     BackingUnavailable, BackingTimeout, SupplyUnavailable, SupplyTimeout
 ClassQuorumFailed   SupplyNoQuorum
-ClassSourceInvalid  BackingMalformed, BackingStale, BackingCurrency
+ClassSourceInvalid  BackingMalformed, BackingCurrency, BackingTimestamp
 ClassNotConfigured  NotConfigured        (secrets lost to a restart — memory-only by design)
 ```
 
@@ -326,8 +390,9 @@ should be scheduled alongside — not after — the decision.
 | --- | --- | --- | --- |
 | 1 | Is stale-but-honest preferable to fresh-but-incomplete? | _TBD — needs a risk owner_ | Design |
 | 2 | What uptime and escalation path does Hex offer on both endpoints? | Hex | Yes, for sizing (1) |
+| 2a | ~~Does Hex republish reserves on a schedule or on change?~~ **On change**, within ~10 min of an on-chain event — answered 17 Aug 2026 | Hex | Closed |
 | 3 | Is a second source for the bond figure obtainable? | Hex / us | No |
-| 4 | Should `checkWindow` bound `AsOf` as well as `RetrievedAt`? | Engineering | No |
+| 4 | ~~Should `checkWindow` bound `AsOf` as well as `RetrievedAt`?~~ **No** — resolved 17 Aug 2026, the sources are event-driven and `MaxAge` was removed | Engineering | Closed |
 
 Question 1 shares a shape with the deviation-guard decision in spec §6.2 — both trade
 detection latency against false-signal risk, and both need the same named risk owner.

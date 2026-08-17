@@ -87,8 +87,9 @@ price = min(1, B / S)
 
 Neither side has an internal race worth bracketing. The quorum procedure (§6)
 pins every provider to one agreed block, so a supply figure is not "supply at
-some point during the read" but *supply as of block N*. The reserve figure moves
-on Hex's ~10 minute tick, so it is effectively constant across a 20s observation.
+some point during the read" but *supply as of block N*. Hex republishes a reserve
+figure only within ~10 minutes of an on-chain event, so it is effectively
+constant across a 20s observation.
 A second supply pass therefore changed the answer only when a burn or mint landed
 in the few seconds between two pinned blocks — while doubling the supply-side
 fail-closed surface, since either pass failing failed the whole observation.
@@ -107,12 +108,42 @@ wrong price is not recoverable downstream.
 
 ### `observedAt` is wall-clock, not the oldest input
 
-The store requires strict monotonicity, and an input timestamp can stall: the
-public reserves endpoint ticks on a ~10 minute cadence, so two observations
-minutes apart could share one, and the second would be rejected as a replay.
-Freshness of the underlying data is guarded separately and earlier — a stale
-reserve figure fails the observation outright in `internal/backing` — so a
-published price is never built on data older than `MaxAge`.
+The store requires strict monotonicity, and an input timestamp can stall
+indefinitely: `last_update` moves only when a mint or a redemption changes the
+figure, so on a quiet day every observation for hours would share one, and all
+but the first would be rejected as a replay. `observedAt` therefore stamps when
+the inputs were **read**, and that is what `MaxObservationAge` (10 min) and the
+store's `maxAge` (3600s) each bound. There is deliberately no bound on how old
+the reserve figure itself is — see [§ *No freshness bound on the reserve
+figures*](#no-freshness-bound-on-the-reserve-figures) below.
+
+### No freshness bound on the reserve figures
+
+Hex's endpoints are **event-driven**: both republish within about ten minutes of
+an on-chain event — a mint or a redemption — and not otherwise. `last_update` is
+a *change* timestamp, not a heartbeat, so an old stamp usually means nothing
+happened, not that anything is wrong.
+
+The extension used to reject a reading past a wall-clock age, and it was wrong
+twice over. Empirically it rejected good data at a rate set by USDX activity: a
+shared 30-minute bound had `hex_cash` reporting `down` for most of every hour on
+every machine, and widening it to 90 minutes only moved the flapping — observed
+stamps sat ~7 hours apart with the value unchanged. Each time the machine
+fetched a correct figure and then discarded it, which cost the feed its entire
+12.6% cash buffer for most of the day (availability §"Measured again").
+
+It also never covered the direction that matters. If the upstream freezes, `R`
+stops tracking a growing `S` and `min(1, R/S)` prints **below** par — the
+direction that reveals a shortfall rather than hides one. And reserves lost
+*without* an on-chain event never move `last_update` at all, so no bound would
+have caught that either.
+
+What survives is narrower and accurate: `last_update` is still parsed (an
+unparseable one is `BackingMalformed`) and a stamp in the **future** is still
+refused as `BackingTimestamp`, because that means clock skew or a broken
+upstream rather than an aged figure. Staleness is now bounded only where it can
+be measured honestly — on the age of our own observation, and on the age of the
+on-chain feed.
 
 ---
 
@@ -549,8 +580,16 @@ memory and blocks replaying an older envelope while the process lives. `issuedAt
 survives restarts, where the version counter resets to zero and would otherwise
 let a captured envelope be replayed indefinitely.
 
-`Freshness` is 15 minutes: long enough to collect M signatures across timezones,
-short enough that a captured envelope expires quickly. The consequence is that
+`Freshness` is one hour: long enough to collect M signatures from separate people
+in separate timezones, short enough that a captured envelope expires quickly. It
+is deliberately the *only* bar left after a restart — the envelope is safe to
+pass around in the clear, so assume it leaks, and this window is exactly how long
+a leaked one can re-provision a machine whose version counter has just reset.
+Widening it further is a real trade, not a free knob; the way to buy more room is
+to make the per-ref version survive restarts, not to raise this. The blast radius
+is bounded meanwhile: only `SET_SECRET` travels this path, so the worst a replay
+achieves is rolling one ref back to a credential that was already provisioned
+once. The consequence is that
 recovering from a restart hours later needs a freshly signed envelope — the safe
 direction, and why the keeper holds ciphertext envelopes to re-submit promptly
 rather than relying on old ones.

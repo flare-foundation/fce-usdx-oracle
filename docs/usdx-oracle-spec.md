@@ -364,7 +364,7 @@ Each row is a candidate ticket. Owner/estimate to be filled in.
 | 1.2 | Get TEE egress IPs whitelisted by Hex (see WP6.4) | | blocked on 1.1 |
 | 1.3 | Client for public `current_reserves_amount` | | |
 | 1.4 | Client for private `current_cash_reserves_amount` (auth header) | | |
-| 1.5 | Response validation: schema, `currency == USD`, `last_update` freshness, value parseable as decimal, non-negative, within plausible bounds | | |
+| 1.5 | Response validation: schema, `currency == USD`, `last_update` parseable and not in the future (**no** age bound — the sources are event-driven), value parseable as decimal, non-negative, within plausible bounds | | |
 | 1.6 | Timeouts, bounded retries, no unbounded response body | | |
 | 1.7 | Agree an SLA / uptime expectation with Hex; what happens on their maintenance windows | | |
 
@@ -426,6 +426,26 @@ two different serializers? Handle both formats on both endpoints regardless.
 | 2.5 | Block-finality policy per chain | | |
 | 2.6 | Exclusion-list handling (`balanceOf` on excluded addresses) | | |
 | 2.7 | Per-provider timeout, retry, and failover behaviour | | |
+
+> **⚠ Superseded — this subsection records the design-time proposal, not what ships.**
+> Two parts of it were replaced after implementation and are wrong as written below:
+>
+> - **Head selection is the Quorum-th *highest*, not the minimum.** A single provider
+>   answering "what block are you at?" with a two-week-old number dragged the minimum
+>   back with it, and every honest provider then corroborated the stale supply at that
+>   block perfectly — quorum passed and the enclave signed a stale figure. Rewinding to
+>   when supply was lower *overstates* the price. See findings §24 and the package
+>   comment in `go/internal/supply/supply.go`.
+> - **There is no finality margin.** `FinalityMargin` — a depth below the head — was
+>   dropped in Aug 2026 after measurement showed it bought no availability. The
+>   freshness of the *chosen* block is bounded instead, by the per-chain
+>   `MaxBlockAge` (2 min Flare/Songbird, 3 min Ethereum) measured against the block's
+>   own header timestamp, which is the only check that still works at Quorum 1. The
+>   pinned block's timestamp is itself agreed by Quorum providers, so a liar cannot
+>   pair an ancient block number with a fresh stamp.
+>
+> The rest — explicit block numbers never tags, ≥2-of-3 *identical* results, reading
+> `decimals()` at the same block, the state-retention constraint — is what ships.
 
 **Quorum rule — proposal.** For each chain, query all 3 providers for
 `totalSupply()` **at an explicit block number** (not `latest`, which differs per
@@ -666,7 +686,7 @@ them, not a self-service action. Decide the machine count now.
 | --- | --- | --- | --- |
 | 7.1 | Feed freshness alert (no update in > 2×T) | Podlogar | |
 | 7.2 | Price deviation alert (price < 1 at all; price < threshold) | Podlogar | |
-| 7.3 | Hex API health + `last_update` staleness | Podlogar | |
+| 7.3 | Hex API health — reachability only; `last_update` age is **not** an alert signal (§6.1) | Podlogar | |
 | 7.4 | Per-RPC-provider health and disagreement rate | Podlogar | |
 | 7.5 | TEE machine liveness / attestation status | Podlogar | |
 | 7.6 | Keeper wallet balance, failed-tx rate | Podlogar | |
@@ -743,7 +763,12 @@ Mitigations, in rough order of preference:
    an explicit `as_of` timestamp (the private one already has `last_update`), and
    ideally both figures from one atomic query. Then require
    `|as_of − block_time| < threshold`. **Worth asking for; the cheapest real fix.**
-4. Reject the update if `last_update` is older than `maxReserveAge`.
+4. ~~Reject the update if `last_update` is older than `maxReserveAge`.~~
+   **Withdrawn 17 Aug 2026.** Hex republishes on an on-chain event, not on a
+   schedule, so `last_update` is a change timestamp and an old one usually means
+   nothing happened. Any such bound flaps at a rate set by USDX activity — a
+   30-minute one had `hex_cash` `down` most of every hour. Removed rather than
+   widened; see rationale §2 and availability "Answered, 17 Aug 2026".
 
 **This is not hypothetical.** Observed on Flare: supply fell 45.1M → 20.6M over
 240 days, and a **single 1,000,000 USDX burn landed at 07:10:58Z on 31 Jul 2026** —
@@ -752,11 +777,16 @@ the naive ratio by ~4.8%, which is far larger than any plausible deviation
 threshold. Mitigation 2 (conservative double-read) was judged worth its cost at
 the time; see the note above for why it was later withdrawn.
 
-**Partially answered:** the public endpoint refreshes on a ~10-minute tick
-(`last_update` advanced 12:17:21 → 12:27:21 → 12:37:21 with an unchanged value).
-So sub-10-minute consistency windows are theatre against that source, and we
-should lean on mitigations 2 and 4. **Still OPEN:** whether `last_update` jumps
-immediately on a redemption or only on the next scheduled tick.
+**Answered, 17 Aug 2026.** The early reading of a "~10-minute tick"
+(`last_update` advancing 12:17:21 → 12:27:21 → 12:37:21 with an unchanged value)
+was a misread of a busy hour. Hex confirms both endpoints are **event-driven**:
+they republish within about ten minutes of an on-chain event — a mint or a
+redemption — and not otherwise. So sub-10-minute consistency windows are still
+theatre against these sources, but mitigation 4 is out too: there is no schedule
+to bound against, and later measurement found stamps ~7 hours apart with the
+value unchanged and nothing wrong. Mitigation 1 is the operative one, and the
+residual ~10-minute event latency fails safe — reserves trailing a mint
+understate `R/S`, and the price is capped at par.
 
 ### 6.2 Depeg detection vs manipulation resistance
 
@@ -810,8 +840,11 @@ For Hex:
 4. Auth scheme and rate limits for the private endpoint? Response shape of the
    public one?
 5. How many IPs can we whitelist, and what is the lead time to add one?
-6. How frequently are the reserve figures recomputed? Does `last_update` move on
-   every redemption?
+6. ~~How frequently are the reserve figures recomputed? Does `last_update` move on
+   every redemption?~~ **Answered 17 Aug 2026:** not on a frequency at all. Both
+   endpoints republish within ~10 minutes of an on-chain event — a mint or a
+   redemption — and not otherwise. `last_update` is a change timestamp, which is
+   why the extension no longer bounds its age (§6.1 mitigation 4).
 7. Are the raw reserve components confidential? We have assumed **yes** and
    excluded them from both the on-chain payload and `/state` (§4.1). If they are
    in fact publishable, we would rather include them — it makes the feed

@@ -197,7 +197,8 @@ admin laptop
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, hash)
   usdxprov sign     admin #1   (refuses a duplicate signer)
   usdxprov sign     admin #2   (providers set only; backing can be 1-of-N)
-  usdxprov submit   POST proxy/direct     ← must be within 15 min of issuedAt
+  usdxprov submit   POST proxy/direct     ← must be within provision.Freshness
+                                            (1 hour) of issuedAt
      ↓  tee-node polls the direct queue → POST /action (type = direct)
 enclave
   runtimecfg.ApplySecret                          runtimecfg.go:211
@@ -223,22 +224,27 @@ Runs whether or not anyone asks for a price. Nothing else touches the network.
 ```
 observe.Poller.Run — every 2 minutes                observe.go:114
   │
-  ├─ runtimecfg.Resolve()                           runtimecfg.go:305
+  ├─ runtimecfg.Resolve()                           runtimecfg.go:415
   │     re-run every tick, never cached
   │     builds RPC clients, bonds source, cash source (nil if no secret)
   │     provider names are positional ("rpc_flare_1") so nothing an operator
   │     writes reaches the public /state
   │
-  └─ oracle.Observe — 20s deadline                  oracle.go:179
+  └─ oracle.Observe — 20s deadline                  oracle.go:104
         S   supply, all chains concurrently
               ask every provider for its head → take the Quorum-th HIGHEST
               refuse it if older than MaxBlockAge → query all at that EXACT block
-              require N IDENTICAL results (never a median)
+              require N IDENTICAL results (never a median) and a UNIQUE
+                winner — a tie fails closed rather than letting the provider
+                order decide the supply figure
               amount = raw / 10^decimals, exact
         B   backing, both endpoints concurrently
               bonds failing is fatal; cash failing is not
               no redirects · unknown JSON fields rejected
-              comma grouping validated, not stripped · last_update ≤ 30 min
+              comma grouping validated, not stripped
+              NO bound on how old last_update is — both endpoints republish on
+                an on-chain event, not on a schedule, so an old stamp means
+                nothing changed. A FUTURE stamp is still refused.
         checkWindow(30s) across all read timestamps
         price = min(1, B/S) × 10⁸, rounded half-up
               no cash? publish only if the answer provably cannot depend on it
@@ -249,9 +255,9 @@ observe.Poller.Run — every 2 minutes                observe.go:114
                and ages out after 10 minutes
 ```
 
-**One pass per side:** each supply figure is pinned to one agreed block and the
-reserve figure moves on Hex's ~10 minute tick, so neither side has an internal
-race worth bracketing. `checkWindow` bounds the skew between the two. The earlier
+**One pass per side:** each supply figure is pinned to one agreed block, and a
+reserve figure changes only within ~10 minutes of an on-chain event, so neither
+side has an internal race worth bracketing. `checkWindow` bounds the skew between the two. The earlier
 double-read (S₁ … B … S₂, taking the larger supply) was dropped for this reason —
 see rationale §2.
 
@@ -393,12 +399,17 @@ either public surface. That is a compile error, not a review item.
    `SET_ADMINS` installs one. The pre-production requirement is that the set
    published is a real one — `testdata/admins/dev-wellknown-keys.json` names
    private keys 1, 2 and 3 and is for local and testnet work only.
-2. **`Poller.Stats()` is dead code.** `/state` counters and `sourceHealth` are
-   written only on the GET_PRICE path, so a machine nobody queries reports an
-   empty health map while its poller fails every 2 minutes.
+2. **`/state` describes requests served, not the engine.** Its counters and
+   `sourceHealth` are written only on the GET_PRICE path, so a machine nobody
+   queries reports an empty health map while its poller fails every 2 minutes.
+   `GET_READINESS` is the surface that reports the poller itself — use it, or
+   alert on on-chain feed *age*. (`Poller.Stats()` remains unused outside tests;
+   `ReadinessReport` reads the counters directly.)
 3. **`checkWindow` measures retrieval time, not data age.** The 30s window bounds
-   when we *fetched*; the reserve figure itself may be up to 30 minutes old.
-   Worth confirming against spec §6.1.
+   when we *fetched*; the reserve figure itself may be up to 30 min (bonds) or
+   90 min (cash) old — those are bounded separately, in package `backing`. Note
+   the 20s observation deadline is already tighter than the 30s window, so the
+   window cannot fire in production; the deadline is the real bound on read skew.
 4. **No target binding in the report** (finding 18, accepted) — a genuinely
    signed report is replayable into any other store registered under the same
    extension.

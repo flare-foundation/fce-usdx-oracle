@@ -63,6 +63,23 @@ Steps 3 and 4 are independent of each other and run by different people. Both ne
 first. Getting the order wrong is not dangerous, only silent: an envelope arriving before its
 admin set is rejected with the same opaque error as everything else.
 
+### Every step here is per machine
+
+This runbook provisions **one** machine. Nothing in it is fleet-wide, and there is no broadcast:
+`send-endpoints` and `send-admins` are addressed to a single `teeId`, and every credential envelope
+is ECIES-sealed to one enclave's public key. A three-machine fleet runs all five steps three times —
+six on-chain publications and nine envelopes.
+
+Run them all from **one control node**, pointing `-p` at each machine's proxy in turn, rather than
+from the machines themselves. Only the control node then needs the funded deployer key and the
+provisioning admin keys; a machine needs nothing beyond Docker and its own proxy key, which matters
+because a machine publishes a port to the internet and a control node does not.
+
+Getting a machine *registered* in the first place — and retiring, replacing or upgrading one — is
+[usdx-oracle-machine-lifecycle.md](usdx-oracle-machine-lifecycle.md). Note that a rebuild mints a
+new enclave key, so it produces a machine that has never been provisioned: it needs all five steps
+again, and its predecessor needs pausing.
+
 ---
 
 ## Step 1 — publish the endpoint configuration
@@ -128,7 +145,7 @@ cd tools && go run ./cmd/send-admins -p <PROXY_URL> -instructionSender <SENDER> 
 Run by the party holding the RPC keys. One envelope per ref, each signed by distinct admins from
 the `providers` set.
 
-**Coordinate first: the envelope expires 15 minutes after it is built.** Every signer has to be
+**Coordinate first: the envelope expires one hour after it is built.** Every signer has to be
 available in that window. Set `--threshold` to the number you published, so the script hands the
 envelope on rather than submitting one the machine will refuse.
 
@@ -206,7 +223,7 @@ exists for: they never see an RPC credential, and the provider admins never see 
 
 If the Hex key holder is **not** a backing admin, this script does not apply — it signs and
 submits in one pass. Use the three commands directly, keeping the envelope somewhere durable so
-it can be handed over, and remember the 15-minute window:
+it can be handed over, and remember the one-hour window:
 
 ```bash
 cd tools && go run ./cmd/verify-tee -p <PROXY_URL> -code-hash <0x…>
@@ -312,7 +329,10 @@ which the scripts get right by using wall-clock seconds.
 ---
 
 _Companion docs: [usdx-oracle-tooling.md](usdx-oracle-tooling.md) (what every script and command
-does) · [deployment-steps.md](deployment-steps.md) (getting the machine registered) ·
+does) · [usdx-oracle-machine-lifecycle.md](usdx-oracle-machine-lifecycle.md) (registering, pausing,
+replacing and upgrading machines) ·
+[usdx-oracle-failure-modes.md](usdx-oracle-failure-modes.md) (what breaks the feed and how it
+shows) · [deployment-steps.md](deployment-steps.md) (getting the machine registered) ·
 [testing.md](testing.md) (the same flow on a testnet) ·
 [usdx-oracle-keeper.md](usdx-oracle-keeper.md) (the feed) ·
 [usdx-oracle-flows.md](usdx-oracle-flows.md) (what each instruction does inside the enclave) ·

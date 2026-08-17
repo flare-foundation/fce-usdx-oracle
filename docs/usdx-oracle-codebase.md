@@ -57,7 +57,7 @@ redis              the proxy's action queue
 | `go/` | the extension implementation (the only language checked in) |
 | `contracts/` | `InstructionSender`, `UsdxPriceStore`, `UsdxCustomFeed` + interfaces |
 | `tools/` | deployment, registration and the keeper — **language-neutral**, talks wire format only |
-| `scripts/` | setup, start/stop, the four `oracle-*.sh` operator commands, and the two `upload-*.sh` credential uploads |
+| `scripts/` | setup, start/stop, the three `oracle-*.sh` operator commands, and the two `upload-*.sh` credential uploads |
 | `test/` | Foundry tests for the store |
 | `docs/` | spec, rationale, findings, flows, deployment |
 | `testing/` | agent-driven chaos / smoke / edge-case harness |
@@ -78,16 +78,17 @@ Roughly bottom-up. "Flow" refers to §6.
 | `internal/failure` | the *closed* public error vocabulary | `Failure` (unexported fields, no constructor), `Class*`, `All` | everywhere |
 | `internal/decimal` | exact money parsing (`"25,452,544.52"` → `*big.Rat`), validates comma grouping instead of stripping it | `ParseAmount` | C |
 | `internal/price` | pure arithmetic, no I/O | `Compute`, `ComputeWithoutCash`, `Scale` | C |
-| `internal/supply` | per-chain `totalSupply()` over N RPC providers with a quorum procedure | `Read` `:116`, `agreedBlock` `:160`, `vote` `:291`, `Total` `:323` | C |
+| `internal/supply` | per-chain `totalSupply()` over N RPC providers with a quorum procedure | `Read` `:163`, `agreedBlock` `:218`, `agreedBlockTime` `:296`, `vote` `:419`, `Total` `:456` | C |
 | `internal/backing` | Hex Trust HTTP reserve reads | `Source` iface, `New` `:77`, `Fetch` `:125` | C |
-| `internal/report` | the signed payload's ABI layout | `EncodeBody`, `EncodeData`, `DecodeData`, `Domain` | D |
-| `internal/teenode` | HTTP client for tee-node's local `/sign` + `/decrypt` | `Sign` `:82`, `Decrypt` `:106`, `TeeID` `:184`, `NormalizeV` `:158` | B, D |
-| `internal/provision` | verifies M-of-N admin-signed provisioning envelopes | `Verifier.Verify` `:152`, `EncodeBody`, `Admins` | B |
-| `internal/runtimecfg` | the only mutable state: provider URLs + credentials → `oracle.Config` | `ApplyEndpoints` `:118`, `ApplySecret` `:150`, `Resolve` `:227`, `Readiness` `:188` | A, B, C |
-| `internal/oracle` | orchestrates **one** observation: ordering, deadlines, health map | `Observe` `:96`, `Sign` `:158`, `readAllChains` `:194`, `readBacking` `:237`, `checkWindow` `:285` | C, D |
-| `internal/observe` | runs `Observe` on a timer, caches the latest, enforces staleness | `Poller.Run` `:65`, `Latest` `:122`, `Report` `:141` | C, D |
-| `internal/extension` | HTTP surface + action routing | `processAction` `:149`, `processGetPrice` `:189`, `processUsdxConfig` (config_handler.go`:26`), `stateHandler` `:113` | A, B, D |
-| `pkg/types` | the **public** `/state` shape | `State`, `Readiness`, `StateResponse` | D |
+| `internal/report` | the signed **price** payload's ABI layout | `EncodeBody`, `EncodeData`, `DecodeData`, `Domain` | D |
+| `internal/readiness` | the signed **readiness** payload's ABI layout — a separate domain, so an answer can never be reinterpreted as a price | `EncodeBody`, `EncodeData`, `DecodeData`, `Domain` | D2 |
+| `internal/teenode` | HTTP client for tee-node's local `/sign` + `/decrypt` | `Sign` `:82`, `Decrypt` `:106`, `TeeID` `:184`, `NormalizeV` `:158` | B, D, D2 |
+| `internal/provision` | verifies M-of-N admin-signed provisioning envelopes | `Verifier.Verify` `:232`, `EncodeBody`, `AdminSet` | B |
+| `internal/runtimecfg` | the only mutable state: provider URLs, admin sets + credentials → `oracle.Config` | `ApplyEndpoints` `:180`, `ApplyAdmins` `:218`, `ApplySecret` `:322`, `Readiness` `:371`, `Resolve` `:415`, `validate` `:502` | A, A2, B, C |
+| `internal/oracle` | orchestrates **one** observation: ordering, deadlines, health map | `Observe` `:104`, `Sign` `:167`, `readAllChains` `:204`, `readBacking` `:247`, `checkWindow` `:295` | C, D |
+| `internal/observe` | runs `Observe` on a timer, caches the latest, enforces staleness, and answers readiness | `Poller.Run` `:69`, `Latest` `:126`, `Report` `:145`, `ReadinessReport` `:163` | C, D, D2 |
+| `internal/extension` | HTTP surface + action routing | `processAction` `:190`, `processGetPrice` `:259`, `processGetReadiness` `:306`, `processUsdxConfig` (config_handler.go`:26`), `stateHandler` `:122` | A, B, D, D2 |
+| `pkg/types` | the **public** `/state` and readiness-payload shapes | `State`, `Readiness`, `ReadinessReport`, `StateResponse` | D, D2 |
 | `pkg/server` | wires everything together | `StartExtension` `:25` | boot |
 
 ### Binaries (`go/cmd/`)
@@ -132,12 +133,13 @@ old `New()` once silently shipped a hard-coded price to production.
 ## 6. The flows
 
 Everything entering the extension goes through one dispatch, `processAction`
-(`extension.go:149`) → `POST /action`:
+(`extension.go:190`) → `POST /action`:
 
 ```
 POST /action  (utils.go:16 actionHandler)
   └─ processAction
-       ├─ USDX_ORACLE / GET_PRICE     → processGetPrice        [Flow D]
+       ├─ USDX_ORACLE / GET_PRICE     → processGetPrice        [Flow D]  instruction OR direct
+       ├─ USDX_ORACLE / GET_READINESS → processGetReadiness    [Flow D2] requires type = direct
        ├─ USDX_CONFIG / SET_ENDPOINTS → ApplyEndpoints         [Flow A]  requires type = instruction
        ├─ USDX_CONFIG / SET_ADMINS    → ApplyAdmins            [Flow A2] requires type = instruction
        ├─ USDX_CONFIG / SET_SECRET    → ApplySecret            [Flow B]  requires type = direct
@@ -150,17 +152,26 @@ means anyone reaching the proxy could install their own admin set and provision 
 it; `SET_SECRET` over `instruction` would put a credential ciphertext into permanent
 public storage.
 
+`GET_PRICE` is the one command valid over **both** channels, and the asymmetry is
+deliberate: it is authorised by nothing because it grants nothing — it signs an
+observation the enclave already made on its own timer, and the store verifies that
+signature however the request arrived. So the instruction channel is the
+permissionless path (anyone can pay the registry fee) and the direct channel is the
+operator's cheap one. `GET_READINESS` is direct-only: a price is worth making
+permissionless, an operational status report whose answer is stale within minutes is
+not worth a fee and a permanent calldata record.
+
 ### Flow A — `SET_ENDPOINTS` (which RPC sources we read)
 
 ```
-owner → InstructionSender.setEndpoints(teeId, cfg)          InstructionSender.sol:104
+owner → InstructionSender.setEndpoints(teeId, cfg)          InstructionSender.sol:112
           expectedConfigHash[teeId] = keccak256(cfg)        ← recorded BEFORE dispatch
           registry.sendInstructions(...)
             ↓ cosigned → proxy → tee-node → POST /action
         extension.processUsdxConfig                         config_handler.go:26
-        runtimecfg.ApplyEndpoints                           runtimecfg.go:118
+        runtimecfg.ApplyEndpoints                           runtimecfg.go:180
           JSON decode with DisallowUnknownFields
-          validate()  runtimecfg.go:304
+          validate()  runtimecfg.go:502
             · chain name must be one of config.Chains, and ALL of them must be present
             · 1 ≤ threshold ≤ provider count
             · "hex_api_key" may NOT be used as a provider secret
@@ -175,12 +186,12 @@ what a machine is *running*.
 ### Flow A2 — `SET_ADMINS` (who may provision this machine)
 
 ```
-owner → InstructionSender.setAdmins(teeId, cfg)             InstructionSender.sol
+owner → InstructionSender.setAdmins(teeId, cfg)             InstructionSender.sol:142
           expectedAdminsHash[teeId] = keccak256(cfg)        ← recorded BEFORE dispatch
           registry.sendInstructions(...)
             ↓ cosigned → proxy → tee-node → POST /action
-        extension.processUsdxConfig                         config_handler.go
-        runtimecfg.ApplyAdmins                              runtimecfg.go
+        extension.processUsdxConfig                         config_handler.go:26
+        runtimecfg.ApplyAdmins                              runtimecfg.go:218
           JSON decode with DisallowUnknownFields
           validateAdmins()
             · version must be non-zero AND strictly greater than the last applied
@@ -221,15 +232,17 @@ admin laptop (go/cmd/usdxprov)
   usdxprov build    GET proxy/info → TEE public key; ciphertext = ECIES(pubkey, secret)
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
   usdxprov sign     admin #1, then admin #2   (refuses a duplicate signer)
-  usdxprov submit   POST proxy/direct         (must be within 15 min of issuedAt)
+  usdxprov submit   POST proxy/direct         (must be within provision.Freshness —
+                                               1 hour — of issuedAt)
     ↓ tee-node polls the direct queue → POST /action (type = direct)
 enclave
-  runtimecfg.ApplySecret                       runtimecfg.go:150
+  runtimecfg.ApplySecret                       runtimecfg.go:322
     applyMu held for the whole call            ← the replay defence needs this
     teenode.TeeID()   signs a fixed probe, recovers its own address
-    provision.Verify()                         provision.go:152
+    provision.Verify()                         provision.go:232
       chainId · teeId · payloadHash · freshness · version strictly > last
-      · ≥2 DISTINCT admins, low-s only
+      · DISTINCT signatures up to the threshold of the set the ref selects
+        (backing ≥1, providers ≥2), low-s only
       EVERY failure returns the same error — no probing oracle
     teenode.Decrypt() POST localhost:9090/decrypt   ← in-enclave
     reject a value containing  space \t \r \n / ? # &
@@ -242,28 +255,44 @@ Runs on a timer whether or not anyone asks for a price. **This is the only code 
 touches the network for data.**
 
 ```
-observe.Poller.Run — every 2 min                observe.go:65
-  ├─ runtimecfg.Resolve()                       runtimecfg.go:227
+observe.Poller.Run — every 2 min                observe.go:69
+  ├─ runtimecfg.Resolve()                       runtimecfg.go:415
   │     re-run every tick (never cached), so a rotated credential needs no restart
   │     builds RPC clients, bonds source, cash source (nil if no secret yet)
   │     provider names are POSITIONAL — "rpc_flare_1" — so nothing an operator
   │     writes can reach the public /state
   │
-  └─ oracle.Observe — 20s deadline              oracle.go:96
-        S  readAllChains, all chains concurrently      oracle.go:194
-             supply.Read per chain                     supply.go:116
-               agreedBlock: ask every provider for its head, take the MINIMUM
+  └─ oracle.Observe — 20s deadline              oracle.go:104
+        S  readAllChains, all chains concurrently      oracle.go:204
+             supply.Read per chain                     supply.go:163
+               agreedBlock: ask every provider for its head, sort DESCENDING and
+                 pin the Quorum-th highest — the highest block at least Quorum of
+                 them can serve. NOT the minimum: one provider answering with a
+                 two-week-old head dragged the minimum back with it, and every
+                 honest provider then corroborated the stale supply at that block
+                 perfectly. Findings §24.
+               agreedBlockTime: that block's own header timestamp, also agreed by
+                 Quorum, then refused if older than the chain's pinned MaxBlockAge
+                 (2 min Flare/Songbird, 3 min Ethereum) — the only check that works
+                 at Quorum 1, and the only one that notices a stalled chain
                readDecimals + readTotalSupply at that EXACT block number
-               require `Quorum` IDENTICAL answers (never a median — a read at a
-               fixed block is deterministic, so disagreement means someone is wrong)
+               require `Quorum` IDENTICAL answers, and a UNIQUE winner (never a
+                 median — a read at a fixed block is deterministic, so
+                 disagreement means someone is wrong; and a tie fails closed,
+                 because otherwise the provider ORDER in the payload would pick
+                 the supply figure)
                amount = raw / 10^decimals, exact in big.Rat
              any chain failing fails the whole observation (a partial sum is a
              wrong supply, not a smaller one)
-        B  readBacking, both endpoints concurrently    oracle.go:237
+        B  readBacking, both endpoints concurrently    oracle.go:247
              backing.Fetch → 2 attempts, no redirects ever, unknown JSON fields
-             rejected, comma grouping validated not stripped, last_update ≤ 30 min
+             rejected, comma grouping validated not stripped, last_update parsed
+             and refused only if it is in the FUTURE — there is no bound on how
+             old it is, because both endpoints republish on an on-chain event
+             rather than on a schedule (rationale §2)
              bonds failing is FATAL; cash failing is not
-        checkWindow(30s) across every read timestamp   oracle.go:285
+        checkWindow(30s) across every read timestamp   oracle.go:295
+             read skew only; in practice the 20s deadline is the tighter bound
         price.Compute → min(1, B/S) × 10⁸, rounded half-up
              no cash? price.ComputeWithoutCash — publishes only if the answer
              provably cannot depend on the missing figure (i.e. already at par)
@@ -280,14 +309,14 @@ tee-node allows an extension **2 seconds** per action, and a full observation me
 trip.
 
 ```
-anyone → InstructionSender.requestPriceUpdate()           InstructionSender.sol:153
+anyone → InstructionSender.requestPriceUpdate()           InstructionSender.sol:187
            picks ONE random registered TEE machine; message = 0x01 (fixed envelope)
     ↓ proxy → tee-node → POST /action
-  extension.processGetPrice                               extension.go:189
+  extension.processGetPrice                               extension.go:259
     require message == exactly 0x01, else UnexpectedPayload
-    observe.Poller.Report(instructionID)                  observe.go:141
+    observe.Poller.Report(instructionID)                  observe.go:145
       Latest()  ─ fails closed if the observation is older than 10 min
-      oracle.Sign()                                       oracle.go:158
+      oracle.Sign()                                       oracle.go:167
         report.EncodeBody → abi(DOMAIN, price, decimals, observedAt,
                                 instructionId, endpointsHash, adminsHash)
         teenode.Sign → POST localhost:9090/sign   (tee-node applies EIP-191;
@@ -297,6 +326,48 @@ anyone → InstructionSender.requestPriceUpdate()           InstructionSender.so
     ActionResult{status: 1, data}
     ↓ tee-node → proxy → served at GET /action/result/<id>
 ```
+
+### Flow D2 — `GET_READINESS` (the machine's signed account of itself)
+
+Direct only, no fee, no transaction. Same 2-second budget as `GET_PRICE`, and met the
+same way: one signing round trip and no I/O beyond it — nothing here observes, resolves
+configuration or dials an upstream.
+
+```
+operator/keeper → POST proxy/direct { GET_READINESS, 0x01 }
+    ↓ tee-node → POST /action (type = direct)
+  extension.processGetReadiness                           extension.go:306
+    require message == exactly 0x01, else UnexpectedPayload
+    both halves must exist (observer AND provisioner), else NotConfigured
+    observe.Poller.ReadinessReport(id, store.Readiness())  observe.go:163
+      assembled behind the poller's lock, where the observation state and the
+        signer both live; the caller supplies the provisioning half it owns
+      payload = JSON types.ReadinessReport — readiness, lastObservedAt,
+        observationAge, wouldSign, observations/failures, lastErrorClass,
+        sourceHealth, chainId
+      body    = abi(READINESS_DOMAIN, instructionId, timestamp, keccak256(payload))
+      teenode.Sign(body) → readiness.EncodeData(body, sig, payload)
+```
+
+Three properties are the whole point:
+
+- **It never fails closed.** An unprovisioned or stale machine answers with a report
+  *saying so*. "Nothing is configured" is the answer, not a failure to produce one —
+  only an encoding or signing fault is an error here.
+- **Its domain differs from the price report's.** The identity key signs both, so a
+  readiness answer can never be reinterpreted as a price however the bytes are routed.
+- **It does not touch the `/state` counters.** Those describe prices *served*; counting
+  status polls would make monitoring look like production traffic.
+
+`wouldSign` is the field that earns its keep: `tools/pkg/keeper.wouldRefuse` reads it
+before paying for an on-chain request, so a machine whose newest observation has aged
+out costs a free direct action instead of a registry fee. It fails **open** — an
+unreachable machine or a build without the command means "not known", never "do not
+try". Consumers: `keeper`, `fleet-status`, `send-endpoints`, `send-admins`.
+
+The report is verified but still a *self*-report; see
+[`usdx-oracle-readiness-query.md`](usdx-oracle-readiness-query.md) for what that does
+and does not settle.
 
 ### Flow E — the keeper relay (`tools/`)
 
@@ -326,18 +397,25 @@ so it must never alert. That taxonomy lives in `tools/pkg/keeper/record.go`.
 
 ### Flow F — on-chain acceptance, then the consumer read
 
-`UsdxPriceStore.submitPrice` (`UsdxPriceStore.sol:124`), in execution order:
+`UsdxPriceStore.submitPrice` (`UsdxPriceStore.sol:157`), in execution order:
 
 ```
  1 not paused                              6 configSource.expectedConfigHash(teeId)
  2 sig: 65 bytes, v∈{27,28}, low-s,          published AND matching   ← closes Flow A
-   EIP-191 digest, ecrecover                7 observedAt strictly greater than stored
- 3 signer registered to THIS extension        (replay + out-of-order in one rule)
-   AND status = PRODUCTION                  8 not > 2 min in the future
- 4 domain matches                           9 not older than maxAge
- 5 decimals match                          10 price within [minPrice, maxPrice] — rejected, never clamped
-   ────────► store price/observedAt/instructionId · emit PriceUpdated
+   EIP-191 digest, ecrecover                7 configSource.expectedAdminsHash(teeId)
+ 3 signer registered to THIS extension        published AND matching   ← closes Flow A2
+   AND status = PRODUCTION                  8 observedAt strictly greater than stored
+ 4 body is exactly 7 ABI words                (replay + out-of-order in one rule)
+   (abi.decode tolerates trailing bytes)    9 not > 2 min in the future
+ 5 domain and decimals match               10 not older than maxAge
+                                           11 price within [minPrice, maxPrice] — rejected, never clamped
+   ────────► store price/observedAt/instructionId · _recordTee · emit PriceUpdated
 ```
+
+`_recordTee` is what makes commissioning legible on-chain: it writes
+`lastReport[teeId]` — the config and admin hashes the machine proved it was *running*,
+as against the sender's mappings, which record what was *sent* — appends to `seenTees`
+on first sighting, and is what `isProvenConfigured(teeId)` reads.
 
 ```
 FtsoV2 → UsdxCustomFeed.getCurrentFeed() → UsdxPriceStore.latest()
@@ -356,8 +434,8 @@ as worthless rather than absent.
 
 | Contract | Entry points | Notes |
 | --- | --- | --- |
-| `UsdxOracleInstructionSender` | `requestPriceUpdate()` payable, **anyone** · `setEndpoints(teeId, cfg)` payable, **owner** · `setExtensionId()` once | also the `IUsdxConfigSource` the store reads `expectedConfigHash` from |
-| `UsdxPriceStore` | `submitPrice(body, sig)` **anyone** · `latest()` · governance: `setPaused`, `setInvalidated`, `setBounds`, `setExtension` | all authority lives here |
+| `UsdxOracleInstructionSender` | `requestPriceUpdate()` payable, **anyone** · `setEndpoints(teeId, cfg)` and `setAdmins(teeId, cfg)` payable, **owner** · `transferOwnership` · `setExtensionId()` once | also the `IUsdxConfigSource` the store reads `expectedConfigHash` and `expectedAdminsHash` from |
+| `UsdxPriceStore` | `submitPrice(body, sig)` **anyone** · `latest()` · `isProvenConfigured`, `teeReports`, `seenTeeCount` · governance: `setPaused`, `setInvalidated`, `setBounds`, `setExtension`, `transferGovernance` | all authority lives here |
 | `UsdxCustomFeed` | `getCurrentFeed()`, `feedId()`, `calculateFee()` | thin `IICustomFeed` adapter for FtsoV2 |
 
 ---

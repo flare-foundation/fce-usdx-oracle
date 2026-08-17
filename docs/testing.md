@@ -372,7 +372,7 @@ Same five steps, three differences that follow from the split:
   finish. The script signs with every key in `USDXPROV_KEYS` (comma-separated), submits if it
   has enough, and otherwise **hands off**: the envelope goes to `OUT_DIR` for the next admin
   to sign and submit. It holds ciphertext and signatures only, so it is safe to send over any
-  channel — but it expires 15 minutes after it was built.
+  channel — but it expires one hour after it was built.
 - **Rotation is explicit.** The default uploads only what the machine says is missing, which
   makes a re-run after a partial failure safe. `--all` re-uploads every ref named in
   `ENDPOINTS_FILE` — that is the rotation path, and the only one that needs a local copy of
