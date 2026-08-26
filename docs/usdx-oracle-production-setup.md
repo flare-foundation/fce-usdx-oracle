@@ -22,7 +22,7 @@ The split is the security model. No single party can both choose a credential an
 
 | Role | Holds | Used for |
 | --- | --- | --- |
-| **Contract owner** | the `InstructionSender` owner key, funded | publishing endpoints and admin sets on-chain (steps 1–2) |
+| **Flare governance** | the timelocked governance authority | publishing endpoints and admin sets on-chain (steps 1–2) via `setEndpoints`/`setAdmins` |
 | **Backing admin(s)** | an admin private key | authorising `hex_api_key` only — ≥1 signature |
 | **Provider admins** | one admin private key each, on separate machines | authorising the RPC credentials — ≥2 distinct signatures |
 | **Hex credential holder** | the Hex API key | building that envelope (step 4) |
@@ -89,23 +89,31 @@ substituted for `{secret}` at dial time. It contains no secret values. Model it 
 [`testdata/endpoints/coston2.json`](../testdata/endpoints/coston2.json); keep the production
 copy outside the repo or in `config/`.
 
-Validate before spending gas — a rejected payload is silent, and leaves the chain expecting a
-config the machine is not running:
+Validate before anything is recorded — a rejected payload is silent, and leaves the chain
+expecting a config the machine is not running:
 
 ```bash
-cd tools && go run ./cmd/send-endpoints -dry-run -p <PROXY_URL> -instructionSender <SENDER> -config <ENDPOINTS_JSON>
+cd tools && go run ./cmd/send-endpoints -dry-run -tee <TEE_ID> -config <ENDPOINTS_JSON>
 ```
 
-Then publish, once per machine:
+Then build the publication, once per machine:
 
 ```bash
-cd tools && go run ./cmd/send-endpoints -p <PROXY_URL> -instructionSender <SENDER> -config <ENDPOINTS_JSON>
+cd tools && go run ./cmd/send-endpoints -tee <TEE_ID> -config <ENDPOINTS_JSON> -out /tmp/endpoints-<TEE_ID>.json
 ```
 
-`-p` selects the machine: the `teeId` is derived from the attested public key on its `/info`,
-never taken from a field. The command waits until that machine reports the matching
-`endpointsHash` and fails if it does not — the difference between what was *sent* and what is
-*running*.
+`setEndpoints` is governance-only once the sender is in production mode, so the command does
+not publish — `-out` writes the **governance hand-off** (exact calldata, the fee to attach, the
+predicted `endpointsHash`) for the Flare governance executor, who runs it through the timelock
+and attaches the fee at execution. Hand the file over as written: the recorded calldata hash
+must match byte for byte.
+
+After governance executes, confirm the machine is running the published config — its reported
+`endpointsHash` must equal the hand-off's `payloadHash`:
+
+```bash
+cd tools && go run ./cmd/fleet-status
+```
 
 ## Step 2 — publish the admin sets
 
@@ -130,12 +138,16 @@ payload** — otherwise whoever publishes admins could move a credential under w
 hold. A ref the build does not recognise falls under the stronger set.
 
 ```bash
-cd tools && go run ./cmd/send-admins -dry-run -p <PROXY_URL> -instructionSender <SENDER> -config <ADMINS_JSON>
+cd tools && go run ./cmd/send-admins -dry-run -tee <TEE_ID> -config <ADMINS_JSON>
 ```
 
 ```bash
-cd tools && go run ./cmd/send-admins -p <PROXY_URL> -instructionSender <SENDER> -config <ADMINS_JSON>
+cd tools && go run ./cmd/send-admins -tee <TEE_ID> -config <ADMINS_JSON> -out /tmp/admins-<TEE_ID>.json
 ```
+
+Same hand-off model as step 1: the file carries the exact calldata and fee for the Flare
+governance executor, and the machine's reported `adminsHash` must afterwards equal the
+hand-off's `payloadHash` (`fleet-status` shows both columns).
 
 > Never publish `testdata/admins/dev-wellknown-keys.json` to a live feed. It names the addresses
 > of private keys 1, 2 and 3 — anyone can sign as those admins.
@@ -157,8 +169,8 @@ ENDPOINTS_FILE=<ENDPOINTS_JSON> ./scripts/upload-rpc-keys.sh --threshold 3 --all
 
 `--all` takes the ref list from the endpoints file — every `secret` it names — so the machine is
 never asked what it is missing. Use the file the machine is actually **running**: confirm with
-`send-endpoints -dry-run` that its hash matches `expectedConfigHash`, or the list describes a
-configuration nobody is on. `--refs <a,b>` names them by hand for the same result.
+`send-endpoints -dry-run` that its predicted hash matches `expectedEndpointsHash`, or the list
+describes a configuration nobody is on. `--refs <a,b>` names them by hand for the same result.
 
 That uploads every configured ref rather than only the absent ones. The difference costs nothing:
 credentials are memory-only and each envelope carries a higher version, so a re-upload supersedes
@@ -237,41 +249,46 @@ Then the backing admin signs and submits, exactly as admin C does in step 3.
 
 ## Step 5 — commission and run the feed
 
-A machine is only usable once it has landed one price under its published config and admin set.
-The keeper does this for the whole fleet at startup:
+A machine is only usable once it has landed one update under its published config and admin set.
+The keeper names its target machines (`-tee`), and `requestFeedUpdate` dispatches one instruction
+to each — so this happens as the keeper runs, not as a step you drive:
 
 ```bash
-cd tools && DIRECT_API_KEY=<DIRECT_API_KEY> go run ./cmd/keeper -instructionSender <SENDER> -keeperId keeper-a
+cd tools && DIRECT_API_KEY=<DIRECT_API_KEY> go run ./cmd/keeper -store <STORE> -tee <TEE1>,<TEE2>,<TEE3> -keeperId keeper-a
 ```
 
-It sweeps every registered machine, then rotates over them on the direct channel and raises one
-on-chain instruction every two hours. Run **at least two** keepers: their submissions collide
-harmlessly, exactly one wins each cycle. See [usdx-oracle-keeper.md](usdx-oracle-keeper.md).
+(`-store` resolves the `TeeOracleFeedStore` entry in the addresses file if omitted; the
+instructions sender is derived from the store's own pointer.) Each cycle asks every named machine,
+so a fleet of three commissions itself within the hour at the default 10-minute interval. Run
+**at least two** keepers: their submissions collide harmlessly, exactly one wins each cycle. See
+[usdx-oracle-keeper.md](usdx-oracle-keeper.md).
 
-To commission a single machine by hand instead:
+To force updates faster, run single cycles rather than waiting on the timer:
 
 ```bash
-cd tools && DIRECT_API_KEY=<DIRECT_API_KEY> go run ./cmd/submit-price -direct -p <PROXY_URL> -instructionSender <SENDER>
+./scripts/oracle-cycle.sh -tee <TEE1>,<TEE2>,<TEE3>
 ```
+
+`DIRECT_API_KEY` is for the `GET_READINESS` preflight, which skips paying the fee when every
+machine reports it would refuse to sign. Without it the cycle simply pays.
 
 ---
 
 ## Verify
 
-One screen for the whole fleet — registry status, what was sent, what each machine proved, and
-what it says about itself right now. Do not pass `-p`: that overrides every machine's registered
-URL and is only ever right with one machine.
+One screen for the whole fleet — registry status, what was sent, and what each machine says about
+itself right now. The instructions sender is derived from the store's pointer.
 
 ```bash
-cd tools && go run ./cmd/fleet-status -instructionSender <SENDER>
+cd tools && go run ./cmd/fleet-status -store <STORE> -feedId <FEED_ID>
 ```
 
 | Line | Wanted | If not |
 | --- | --- | --- |
-| `registry` | `PRODUCTION (2)` | the store rejects every price it signs, whatever else is true |
-| `config sent` / `config proven` | the same hash | it rejected or never received the last `setEndpoints` — every `submitPrice` reverts `StaleConfig` |
-| `live` | `ready=yes` | a credential is missing; the `! missing credentials:` note names which refs |
-| `commissioned` | `yes` | it has not landed a price under the current config — step 5 |
+| `registry` | `PRODUCTION (2)` | the store rejects every update it signs, whatever else is true |
+| `configured` | `yes` | `isTeeIdConfigured(feedId, teeId)` is false — endpoints or admins not published for this (feed, machine) |
+| `endpoints` / `admins` hash vs `live` | the same hash | it rejected or never received the last `setEndpoints`/`setAdmins` — every `submitFeedUpdate` reverts `StaleEndpoints`/`StaleAdmins` |
+| `live` | `ready=yes` | a credential is missing; the `missingSecretRefs` note names which refs |
 
 Then the feed itself: `./scripts/oracle-status.sh` for the on-chain view, and
 `./scripts/oracle-observe.sh` for per-source health inside the machine.
@@ -289,12 +306,15 @@ loses power loses its secrets.
 | one RPC credential | step 3 with `--refs <ref>` | nothing — the config is re-resolved every 2 min, no restart |
 | every RPC credential | step 3 with `--all` and `ENDPOINTS_FILE=<the published file>` | nothing |
 | the Hex credential | step 4 again | nothing |
-| the endpoint config | step 1 with the new file | **re-commission** — a new config hash decommissions the machine |
-| the admin set | step 2 with a higher `version` | **re-commission** — installed credentials are untouched |
+| the endpoint config | step 1 with the new file | **re-commission** — a new endpoints hash decommissions the machine |
+| the admin set | step 2 again (the contract assigns the new version) | **re-commission** — installed credentials are untouched |
 
-`isProvenConfigured` goes false the moment a new config or admin set is published, which is
-correct and self-announcing: the machine has not yet proven it runs the new one. Restarting a
-keeper re-sweeps the fleet and fixes it.
+Publishing a new config or admin set raises the sender's expected hash for those machines, which
+is correct and self-announcing: a machine still running the old one now signs updates carrying a
+stale hash, and the store rejects them `StaleEndpoints`/`StaleAdmins` until the machine applies
+the new payload and lands an update. The store keeps no per-machine bookkeeping — there is no
+`isProvenConfigured` flag any more — so commissioning is reconciled with `fleet-status`, which
+compares each machine's live hash against the sender's expected one.
 
 Rotating admins does **not** evict the credentials already installed, and does **not** reset the
 per-ref envelope versions — that would let an envelope the outgoing admins signed be replayed

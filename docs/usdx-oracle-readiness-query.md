@@ -30,10 +30,10 @@ action path that already works.
 
 ### Scope
 
-Read-only, and it changes nothing. It is not a price source — `GET_PRICE` remains the only signed
-price, under its own domain. It is not a substitute for the on-chain proof that a machine runs the
-published configuration; see [What it does not replace](#what-it-does-not-replace). It needs no
-contract change.
+Read-only, and it changes nothing. It is not a price source — `GET_FEED` remains the only signed
+feed update, under its own domain. It is not a substitute for the on-chain proof that a machine
+runs the published configuration; see [What it does not replace](#what-it-does-not-replace). It
+needs no contract change.
 
 ---
 
@@ -41,17 +41,19 @@ contract change.
 
 | | |
 | --- | --- |
-| OP type | `USDX_ORACLE` — a read of the oracle's own state, alongside `GET_PRICE` |
+| OP type | `TEE_ORACLE` — a read of the oracle's own state, alongside `GET_FEED` |
 | OP command | `GET_READINESS` |
 | Channel | **direct only** |
 | Request payload | `READINESS_REQUEST_V1 = 0x01`, one version byte |
-| Response | `abi.encode(body, signature)`, as `GET_PRICE` returns |
+| Response | `abi.encode(body, signature, payload)`, where the body commits to the JSON payload by hash |
 
-The request carries a version byte for the same reason `GET_PRICE` does: the registry rejects an
-empty message, and a single checkable constant is the smallest payload that satisfies it while
-letting the extension reject anything it does not recognise.
+The request carries a version byte because the registry rejects an empty message, and a single
+checkable constant is the smallest payload that satisfies it while letting the extension reject
+anything it does not recognise. (`GET_FEED`'s request is different — an ABI-encoded
+`FeedUpdateRequest` naming the feed — but readiness is direct-only with no on-chain counterpart,
+so nothing upstream defines its shape and it keeps the one-byte envelope.)
 
-**Direct only, unlike `GET_PRICE`.** A price must be requestable permissionlessly, because
+**Direct only, unlike `GET_FEED`.** A feed update must be requestable permissionlessly, because
 liveness of the feed is a public good. Readiness is the opposite: it is operational detail its
 operator needs, the answer is stale within minutes, and putting it on-chain would spend a fee per
 poll to write ephemeral state into permanent public calldata. The direct channel is gated by
@@ -69,9 +71,9 @@ number — never a credential, a URL, or an upstream's own words.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `endpointsSet` | bool | |
-| `endpointsHash` | hash | what `send-endpoints` compares against `expectedConfigHash` |
+| `endpointsHash` | hash | what `send-endpoints` compares against `expectedEndpointsHash(feedId, teeId)` |
 | `adminsSet` | bool | |
-| `adminsHash` | hash | what `send-admins` compares against `expectedAdminsHash` |
+| `adminsHash` | hash | what `send-admins` compares against `expectedAdminsHash(feedId, teeId)` |
 | `missingSecretRefs` | []string | **ref names only.** Never a value, never a hint about one |
 | `ready` | bool | every credential the current configuration names is installed |
 
@@ -81,12 +83,12 @@ number — never a credential, a URL, or an upstream's own words.
 | --- | --- | --- |
 | `lastObservedAt` | uint64 | unix seconds of the newest observation |
 | `observationAge` | uint64 | seconds; the number an operator actually alerts on |
-| `wouldSign` | bool | age ≤ `MaxObservationAge`, i.e. would a `GET_PRICE` succeed right now |
+| `wouldSign` | bool | age ≤ `MaxObservationAge`, i.e. would a `GET_FEED` succeed right now |
 | `observations` | int | cumulative successes, `Poller.Stats()` |
 | `failures` | int | cumulative failures, `Poller.Stats()` |
 | `lastErrorClass` | string | `internal/failure` vocabulary only — see below |
 
-**These must come from the poller.** `/state`'s equivalents are written by the `GET_PRICE`
+**These must come from the poller.** `/state`'s equivalents are written by the `GET_FEED`
 handler, so a machine that has never served a request reports `updateCount: 0`, `failureCount: 0`
 and an empty `sourceHealth` while its loop runs perfectly — which reads exactly like a dead
 poller and has already cost one debugging session. `GET_READINESS` describes the engine, not the
@@ -161,7 +163,7 @@ own claim, which is the same standard the price is held to.
 
 It must answer **from cached state, with no I/O**. tee-node allows an extension two seconds per
 action, and an observation takes longer than that — which is exactly why observation lives on a
-timer and a `GET_PRICE` costs only one signature. Readiness must not re-observe, re-resolve
+timer and a `GET_FEED` costs only one signature. Readiness must not re-observe, re-resolve
 configuration, or dial anything. It reads what the poller already holds, encodes, signs once, and
 returns.
 
@@ -169,7 +171,7 @@ returns.
 
 ## Failure behaviour
 
-**It always answers.** Unlike `GET_PRICE`, it never fails closed: an unprovisioned machine returns
+**It always answers.** Unlike `GET_FEED`, it never fails closed: an unprovisioned machine returns
 a body saying `endpointsSet: false, ready: false` rather than an error, because "I have nothing
 configured" is the answer, not a failure to produce one. The only path that returns a failure is
 an internal encoding or signing fault, which is `sign_failed` or `internal` and means the machine
@@ -224,5 +226,5 @@ whether its proxy is reachable from outside, or whether its tunnel is up. Those 
 - **Rate limiting.** It is cheap but not free, and it is reachable by anyone holding
   `DIRECT_API_KEY`. A per-machine floor may be worth having before the first operator scripts a
   one-second poll.
-- **Whether to include `lastPrice`.** It is already obtainable via `GET_PRICE`, and duplicating it
+- **Whether to include `lastPrice`.** It is already obtainable via `GET_FEED`, and duplicating it
   invites two sources of truth for the same number.

@@ -30,14 +30,11 @@ mechanism](#replacement-is-the-upgrade-mechanism) for exactly what carries over 
 | 2 | `PRODUCTION` | Live. Dispatched to, and the only status the store accepts. |
 | 4 | `PAUSED` | Retired. Still registered, never dispatched to, prices rejected. |
 
-`UsdxPriceStore` pins this itself:
-
-```solidity
-uint8 public constant REQUIRED_TEE_STATUS = uint8(ITeeMachineRegistry.TeeStatus.PRODUCTION);
-```
-
-and `_requireRegisteredTee` reverts `UnknownSigner` for anything else. That placement matters:
-**pausing is enforced on-chain, not by asking the machine to stop.** A paused machine keeps
+`TeeOracleFeedStore` delegates the check to `Fdc2Verification.verifyTeeSignature`, which
+recovers the signer and requires it to be registered to the store's extension and in
+`PRODUCTION` status (reverting otherwise), and also rejects while the extension is emergency
+paused. That placement matters: **pausing is enforced on-chain, not by asking the machine to
+stop.** A paused machine keeps
 running, keeps observing and keeps signing perfectly valid reports — it simply cannot get one
 accepted. Verified directly: a paused machine produced a *newer* signed observation than the one
 that had just been accepted, and the store refused it with
@@ -163,7 +160,7 @@ Any restart mints a new enclave key. The sequence, and the order matters:
 5. **Pause the old identity.** Otherwise it stays `PRODUCTION` forever and on-chain instructions
    are dispatched to a machine that cannot answer.
 6. Re-provision — steps 1–4 of the production runbook, per machine. All of it is memory-only.
-7. Restart the keeper; its bootstrap sweep re-commissions the fleet.
+7. Restart the keeper; the fleet re-commissions itself as cycles are dispatched to each machine.
 
 ### The same-host constraint
 
@@ -207,7 +204,7 @@ clear about what carries over and what does not:
 | --- | --- |
 | the extension id, the sender, the store, the feed | the `teeId` — a new key, every time |
 | the published endpoint config and admin set *(as on-chain facts)* | the machine's copy of them — memory-only, must be re-sent |
-| the store's price and its history | that machine's submission count and `isProvenConfigured` |
+| the store's latest value and its `observedAt` | the retiring machine's readiness state — the new machine starts unprovisioned |
 | consumers, who see one continuous feed | fleet capacity during the window — one short, not one paused |
 
 So a consumer reading `getCurrentFeed()` cannot tell an upgrade happened, provided at least one
@@ -262,7 +259,8 @@ sudo systemctl disable --now usdx-keeper
 Repeat 1–7 for the next machine. **Do not start the next one until the previous is landing prices**
 — that is the whole point of rolling.
 
-**Once, at the end.** Restart the keeper and let its sweep commission the migrated fleet:
+**Once, at the end.** Start the keeper and let ordinary cycles commission the migrated fleet —
+each request is dispatched to a machine the registry picks, so every machine gets its turn:
 
 ```
 sudo systemctl enable --now usdx-keeper

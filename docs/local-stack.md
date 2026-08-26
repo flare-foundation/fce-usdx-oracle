@@ -25,7 +25,7 @@ what every command does.
 > This repository checks in **only the Go implementation**. The scaffold's `LANGUAGE=<dir>`
 > dispatch is still wired up throughout the scripts (a directory is an implementation iff
 > `<dir>/language.env` exists), so `LANGUAGE` resolves to `go` and stays there unless you
-> add one. See [languages.md](languages.md).
+> add one.
 
 ---
 
@@ -34,32 +34,23 @@ what every command does.
 With local infrastructure running, one command runs the whole lifecycle:
 
 ```bash
-./scripts/full-setup.sh --test
+./scripts/full-setup.sh
 ```
 
-1. **Pre-build** — compile contracts, deploy, register the extension, write `config/extension.env`
+1. **Identity** — pin `EXTENSION_ID` (the reserved id 1) to `config/extension.env`
 2. **Docker Compose** — start redis, the proxy, and the extension TEE as containers
 3. **Post-build** — register the TEE version, the governance, and the TEE machine on-chain
-4. **Test** — send instructions and verify results
+
+The oracle contracts (`TeeOracleInstructionsSender` + `TeeOracleFeedStore`) are **not**
+deployed here — that is upstream's `deploy-tee-oracle.sh` plus governance follow-ups (see
+[deployment-steps.md](deployment-steps.md)). Once they are on-chain, slot their addresses into
+`deployed-addresses.json`.
 
 ---
 
 ## The phases individually
 
-### 1. Pre-build
-
-```bash
-./scripts/pre-build.sh
-```
-
-Deploys `InstructionSender`, registers the extension, and writes `config/extension.env`
-with `EXTENSION_ID` and `INSTRUCTION_SENDER`. To override defaults:
-
-```bash
-ADDRESSES_FILE=/path/to/deployed-addresses.json CHAIN_URL=http://your-node:8545 ./scripts/pre-build.sh
-```
-
-### 2. Start services
+### 1. Start services
 
 ```bash
 ./scripts/start-services.sh
@@ -79,7 +70,7 @@ Three containers come up:
 - **ext-proxy** — TEE proxy, using `config/proxy/extension_proxy.docker.toml`
 - **extension-tee** — tee-node + the extension server, built from source
 
-The compose file reads `EXTENSION_ID` from `config/extension.env` (written by pre-build)
+The compose file reads `EXTENSION_ID` from `config/extension.env` (written by full-setup)
 and joins `docker_default` so the proxy can reach `indexer-db` and `node`.
 
 ```bash
@@ -88,7 +79,7 @@ docker compose logs -f extension-tee
 ./scripts/stop-services.sh
 ```
 
-### 3. Post-build
+### 2. Post-build
 
 ```bash
 ./scripts/post-build.sh
@@ -98,25 +89,20 @@ Waits for the proxy to be ready, then allows the TEE version, registers the exte
 TEE **governance** (below), and registers the TEE machine on-chain. It reads
 `EXT_PROXY_URL` and `NORMAL_PROXY_URL` from your `.env`.
 
-### 4. Test
+### Proving the round trip
+
+With the machine registered and configuration published, run one keeper cycle against the
+deployed stack:
 
 ```bash
-./scripts/test.sh
+./scripts/oracle-cycle.sh -tee <TEE1> --dry-run    # preflight only, no submission
+./scripts/oracle-cycle.sh -tee <TEE1>              # request, poll, submit
 ```
 
-Sends instructions via the deployed `InstructionSender` and polls the proxy for results.
-It stops at the proxy — it proves the machine produced a valid signed report but puts
-nothing on-chain. For the full feed, see [testing.md](testing.md).
+The wire contract itself (independent of any chain) is checked by
+`./scripts/test-conformance.sh`. For the full feed walkthrough see [testing.md](testing.md).
 
 ### Running single steps
-
-```bash
-cd tools && go run ./cmd/deploy-contract -a /path/to/deployed-addresses.json
-```
-
-```bash
-cd tools && go run ./cmd/register-extension -a /path/to/deployed-addresses.json --instructionSender 0xYourContractAddress
-```
 
 ```bash
 cd tools && go run ./cmd/allow-tee-version -a /path/to/deployed-addresses.json -p http://localhost:6674
@@ -127,7 +113,7 @@ cd tools && go run ./cmd/register-tee -a /path/to/deployed-addresses.json -p htt
 ```
 
 ```bash
-./scripts/generate-bindings.sh
+./scripts/vendor-interfaces.sh && ./scripts/generate-bindings.sh
 ```
 
 ---
@@ -140,7 +126,7 @@ cd tools && go run ./cmd/register-tee -a /path/to/deployed-addresses.json -p htt
 | `CHAIN_URL` | `http://127.0.0.1:8545` | Chain RPC endpoint |
 | `DEPLOYMENT_PRIVATE_KEY` | Hardhat dev key | Funded private key for transactions |
 | `PROXY_PRIVATE_KEY` | Hardhat dev key | Proxy signing key (used by start-services) |
-| `EXTENSION_ID` | from `config/extension.env` | Extension ID (bytes32 hex, set by pre-build) |
+| `EXTENSION_ID` | from `config/extension.env` | Extension ID (the reserved id 1, written by full-setup) |
 | `INITIAL_OWNER` | derived from `DEPLOYMENT_PRIVATE_KEY` | Initial contract owner address |
 | `EXT_PROXY_URL` | `http://localhost:6674` | Extension proxy URL (post-build, test) |
 | `NORMAL_PROXY_URL` | `http://localhost:6662` | Normal/FTDC proxy URL (post-build) |
@@ -150,7 +136,6 @@ cd tools && go run ./cmd/register-tee -a /path/to/deployed-addresses.json -p htt
 | `GOVERNANCE_THRESHOLD` | `1` | Minimum distinct governance signatures required |
 | `LOCAL_MODE` | `true` | Skip attestation in local dev |
 | `WAIT_TIMEOUT` | `120` | Service wait timeout in seconds |
-| `INSTRUCTION_SENDER` | from `config/extension.env` | InstructionSender contract address (test) |
 
 These are the *deployment* variables. They are unrelated to the oracle's own runtime
 configuration — RPC providers, admin sets and credentials never appear in the
@@ -307,23 +292,16 @@ ngrok http 6674
 
 Copy the HTTPS URL into `EXT_PROXY_URL`.
 
-### 4–7. Deploy
+### 4–6. Deploy
 
 ```bash
-./scripts/pre-build.sh
+./scripts/full-setup.sh --chain coston2
 ```
 
-```bash
-./scripts/start-services.sh --chain coston2
-```
-
-```bash
-./scripts/post-build.sh
-```
-
-```bash
-./scripts/test.sh
-```
+(or the phases individually: `start-services.sh --chain coston2`, then `post-build.sh`).
+The oracle contracts deploy upstream; slot their addresses into
+`config/coston2/deployed-addresses.json`, then prove the round trip with
+`./scripts/oracle-cycle.sh -tee <TEE1>`.
 
 Compared to a bare `docker compose up`, `start-services.sh --chain coston2`:
 

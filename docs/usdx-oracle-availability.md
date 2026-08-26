@@ -3,8 +3,7 @@
 **Status:** ⚠ **OPEN QUESTION — needs a decision owner** · **Raised:** 2026-08-03
 
 _Companion docs: design intent in `usdx-oracle-spec.md`, implementation findings in
-`usdx-oracle-findings.md`, plan in `usdx-oracle-plan.md`.
-Google-Doc-ready: `usdx-oracle-availability.html`._
+`usdx-oracle-findings.md`, plan in `usdx-oracle-plan.md`._
 
 ---
 
@@ -122,12 +121,12 @@ or lying and there is no safe way to average that.
 
 Worth stating precisely, because the phrase sounds worse than the behaviour:
 
-- No new price is published.
-- `UsdxPriceStore` keeps the last accepted price and its `observedAt`.
-- `UsdxCustomFeed.getCurrentFeed()` **never reverts** — it returns the last price with an
-  ageing timestamp. Even a pause freezes rather than throws, specifically because
-  `FtsoV2` forwards the call and a revert would become a simultaneous liveness outage for
-  every consumer at once.
+- No new feed update is published.
+- `TeeOracleFeedStore` keeps the last accepted value and its `observedAt`.
+- `TeeOracleFeedStore.getCurrentFeed()` returns the last value with an ageing timestamp once
+  any update has landed — it reverts `NoValuePublished` only before the first one, and
+  otherwise never throws, specifically because `FtsoV2` forwards the call and a revert would
+  become a simultaneous liveness outage for every consumer at once.
 
 The failure mode is **stale and visibly so**, not broken. Consumers are required to check
 the timestamp, and that requirement is already on the consumer-docs TODO.
@@ -357,11 +356,11 @@ _Each of these is carried into `usdx-oracle-monitoring.md` — kept here as the 
 was raised. Update that doc, not this list, if the thinking changes._
 
 - **Alert on sustained failure, not single events.** FCC is fire-and-forget with no
-  delivery guarantee, and `UsdxPriceStore` treats a rejected submission as normal
+  delivery guarantee, and `TeeOracleFeedStore` treats a rejected submission as normal
   operation. A single failed observation is noise. N consecutive failures, or a time
   threshold, is signal.
-- **Distinguish "a machine" from "the sources".** `getRandomTeeIds` picks one machine per
-  instruction, so one failure may be one bad machine. Alerting on a single result cannot
+- **Distinguish "a machine" from "the sources".** The keeper names its target machines per
+  request, so one failure may be one bad machine. Alerting on a single result cannot
   tell the difference; correlating across machines can.
 - **Deduplicate across keeper instances.** The plan calls for ≥2 idempotent keepers. Both
   will observe the same outage and must not both page.

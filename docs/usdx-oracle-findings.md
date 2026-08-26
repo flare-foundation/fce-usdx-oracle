@@ -2,6 +2,15 @@
 
 **Status:** living document · **Last updated:** 2026-08-15
 
+> **Migration note (2026-08).** The on-chain half moved to the upstream generic
+> TEE oracle contracts (`TeeOracleInstructionsSender` + `TeeOracleFeedStore`):
+> the op type is now `TEE_ORACLE`, the price report is a `FeedUpdate` with an
+> `extensionId`/`feedId` binding, and the old `UsdxPriceStore` guards
+> (`minPrice`/`maxPrice`, `maxAge`, `paused`) are gone. Where a finding below
+> names the old contracts, op types, or store guards, read it against the new
+> model in `usdx-oracle-flows.md`. The enclave-side findings — pricing, supply
+> quorum, fail-closed behaviour, credential handling — are unchanged.
+
 Findings discovered while implementing the extension, each with the evidence
 that established it and the test that now pins it. Design intent lives in
 `usdx-oracle-spec.md`; this file records what turned out to be true in practice,

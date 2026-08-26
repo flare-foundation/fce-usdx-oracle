@@ -1,7 +1,13 @@
 # USDX Price Oracle — Plan & TODO
 
-_Working plan. Evidence and reference data: `usdx-oracle-reference.html` (Google-Doc-ready)
-or `usdx-oracle-spec.md` (deep technical). Google-Doc-ready plan: `usdx-oracle-plan.html`._
+> **Migration note (2026-08).** The on-chain half migrated to the upstream generic
+> TEE oracle contracts (`TeeOracleInstructionsSender` + `TeeOracleFeedStore`, op type
+> `TEE_ORACLE`, `FeedUpdate` payload). Items below that reference the old contracts,
+> op types (`USDX_ORACLE`/`USDX_CONFIG`/`GET_PRICE`), or `UsdxPriceStore` are a record
+> of the plan as it stood; the current model is in `usdx-oracle-flows.md` and
+> `docs/deployment-steps.md`.
+
+_Working plan. Evidence and reference data: `usdx-oracle-spec.md` (deep technical)._
 
 _**Implementation findings — including security issues found while building — are in
 `usdx-oracle-findings.md`.** Read it before touching the extension: it records eight

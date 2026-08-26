@@ -78,15 +78,48 @@ bash ./scripts/use-chain.sh <chain>
 
 Copies `.env.<chain>` → `.env`, which all scripts auto-load.
 
-## 4. Register the extension on-chain
+## 4. The oracle contracts are deployed upstream — nothing to deploy here
+
+This repo deploys **no contracts**. The `TeeOracleInstructionsSender` and one
+`TeeOracleFeedStore` per feed are deployed by
+`flare-smart-contracts-v2`'s own script, and the USDX extension is a *reserved*
+extension with a fixed id:
+
+| Fact | Value | Where it's pinned |
+| ---- | ----- | ----------------- |
+| Extension id | `1` (reserved) | `go/internal/config` + upstream `teeOracleExtensionId` |
+| Feed id (USDX/USD) | `0x20555344582f555344…` (category `0x20` + `USDX/USD`) | `go/internal/config` |
+
+So there is no `pre-build.sh` and no locally-minted `EXTENSION_ID`. The on-chain
+side is run from the contracts repo and finished by governance:
 
 ```bash
-bash ./scripts/pre-build.sh
+# in flare-smart-contracts-v2
+./deployment/scripts/deploy-tee-oracle.sh <network>      # deploys sender + store(s)
 ```
 
-Compiles Solidity, deploys `InstructionSender`, registers the extension on-chain. Writes `EXTENSION_ID` and `INSTRUCTION_SENDER` to `config/extension.env`.
+then the follow-ups the script prints (it cannot do them itself) —
+`registerReserved(extensionId, owner)` by Flare governance (timelocked), then
+`setExtensionContracts` by the extension owner, then the `TEE_ORACLE` operation-fee
+rows and `FtsoV2.addCustomFeeds` through governance again. See that repo's
+`docs/specs/FCC/TeeOracle.md` for the full list.
 
-Read the new values — `EXTENSION_ID` is part of the hand-off in Step 6:
+Once deployed, import the two addresses into this repo's addresses file so the
+tooling can find them by name (`TeeOracleFeedStore`, `TeeOracleInstructionsSender`):
+
+```bash
+./scripts/import-upstream-addresses.sh coston2     # or coston
+```
+
+Then wire the reserved extension — the extension-owner share, idempotent, and a
+prerequisite for `register-tee`'s availability check (`setExtensionContracts`):
+
+```bash
+cd tools && go run ./cmd/wire-extension -a ../config/coston2/deployed-addresses.json -c $CHAIN_URL
+```
+
+The scripts here only need the identity, which is fixed — `full-setup.sh` writes
+`EXTENSION_ID=1` to `config/extension.env`:
 
 ```bash
 cat config/extension.env
@@ -216,34 +249,36 @@ bash ./scripts/post-build.sh
 
 ## 9. End-to-end test
 
-```bash
-bash ./scripts/test.sh
-```
+Getting a price on-chain takes three steps — publish the endpoint configuration
+and the admin set to the machine(s), install the credentials, then run a keeper
+cycle that requests an observation and relays the signed update into the
+`TeeOracleFeedStore`. The store checks both commitment hashes, so a machine
+missing either configuration cannot land an update.
 
-Sends test instructions through the deployed TEE and verifies the round-trip.
-
-**That verifies the round-trip, not the feed.** `test.sh` stops at the proxy: it proves the
-machine produced a valid signed report, and nothing more. Getting a price on-chain needs three
-further steps — publish the endpoint configuration and the admin set, then relay the signed
-report into `UsdxPriceStore`. The store checks both hashes, so a machine missing either one
-cannot land a price:
-
-```bash
-cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -config ../testdata/endpoints/public-only.json
-```
+Publish to every machine in one call each (`-tee` is a comma-separated list,
+`-feedId` defaults to USDX/USD). On a production deployment these are
+governance calls; the tools' direct-send path works before
+`switchToProductionMode`:
 
 ```bash
-cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../testdata/admins/dev-wellknown-keys.json
+cd tools && go run ./cmd/send-endpoints -store <STORE> -tee <TEE1>,<TEE2> -config ../testdata/endpoints/public-only.json
 ```
 
-> `dev-wellknown-keys.json` names the addresses of private keys 1, 2 and 3. It is for local
-> and testnet work only — anyone can sign as those admins. It publishes two sets: `backing`
-> (1-of-1, for `hex_api_key`) and `providers` (2-of-3, for the RPC credentials). Publish real
-> sets before any deployment serving a live feed.
+```bash
+cd tools && go run ./cmd/send-admins -store <STORE> -tee <TEE1>,<TEE2> -config ../testdata/admins/dev-wellknown-keys.json
+```
 
-Then install the credentials. **Two uploads, by two different parties, under two different
-admin sets** — the split is the point, so whoever holds the Hex credential never needs an RPC
-key and neither of them needs this repo's deployment context:
+> `<STORE>` is the `TeeOracleFeedStore` address; the instructions sender is
+> derived from the store's own pointer. `dev-wellknown-keys.json` names the
+> addresses of private keys 1, 2 and 3 — local/testnet only, anyone can sign as
+> those admins. It publishes two roles: `backing` (1-of-1, for `hex_api_key`)
+> and `providers` (2-of-3, for the RPC credentials). Publish real sets before
+> any deployment serving a live feed.
+
+Then install the credentials. **Two uploads, by two different parties, under two
+different admin sets** — the split is the point, so whoever holds the Hex
+credential never needs an RPC key and neither of them needs this repo's
+deployment context:
 
 ```bash
 ./scripts/upload-hex-key.sh
@@ -253,28 +288,35 @@ key and neither of them needs this repo's deployment context:
 ./scripts/upload-rpc-keys.sh
 ```
 
-Both verify the machine against the chain before encrypting anything to it, read every secret
-from the environment or a hidden prompt rather than argv, and confirm afterwards from the
-machine's own published state. `upload-rpc-keys.sh` uploads whatever the machine reports as
-`missingSecretRefs`, and hands the envelope off when it does not hold enough admin keys to
-meet the `providers` threshold.
+Both verify the machine against the chain before encrypting anything to it, read
+every secret from the environment or a hidden prompt rather than argv, and
+confirm afterwards from the machine's own published state. `upload-rpc-keys.sh`
+uploads whatever the machine reports as `missingSecretRefs`, and hands the
+envelope off when it does not hold enough admin keys to meet the `providers`
+threshold.
 
 > **For a live feed, follow [usdx-oracle-production-setup.md](usdx-oracle-production-setup.md)
-> instead of the commands above** — it covers who holds which key, the multi-admin signing
-> handoff, and what to do on restart and rotation. [testing.md](testing.md) is the same flow
-> with throwaway keys.
+> instead of the commands above** — it covers who holds which key, the multi-admin
+> signing handoff, and what to do on restart and rotation. [testing.md](testing.md)
+> is the same flow with throwaway keys.
 
-> **Per machine, and lost on restart.** Each machine has its own TEE key, so an envelope
-> built for one cannot be replayed into another — run both scripts once per machine, with
-> that machine's proxy URL. Credentials live in memory only, so a restarted machine needs
-> them again. `fleet-status` shows `missingSecretRefs` for the whole fleet at once.
+> **Per machine, and lost on restart.** Each machine has its own TEE key, so an
+> envelope built for one cannot be replayed into another — run both scripts once
+> per machine, with that machine's proxy URL. Credentials live in memory only, so
+> a restarted machine needs them again. `fleet-status` shows `missingSecretRefs`
+> for the whole fleet at once.
+
+Finally run one keeper cycle — it requests a feed update from the named machines,
+polls for the signed result, and submits it to the store:
 
 ```bash
-cd tools && go run ./cmd/submit-price -instructionSender <SENDER>
+./scripts/oracle-cycle.sh -tee <TEE1>,<TEE2>
 ```
 
-The full walkthrough, including what to check at each hop and what each revert means, is in
-[testing.md](testing.md) under "Running the USDX oracle end to end yourself".
+Add `--dry-run` to run the preflight without submitting, or `--loop 10m` to keep
+cycling on a timer. The full walkthrough, including what to check at each hop and
+what each revert means, is in [testing.md](testing.md) under "Running the USDX
+oracle end to end yourself".
 
 ---
 
@@ -283,14 +325,21 @@ The full walkthrough, including what to check at each hop and what each revert m
 1. Rebuild and hand off the new image.
 2. The VM is re-deployed → `codeHash` changes.
 3. `bash ./scripts/post-build.sh` whitelists the new codeHash.
-4. `bash ./scripts/test.sh`.
+4. Run a keeper cycle to confirm the feed still advances:
+   `./scripts/oracle-cycle.sh -tee <TEE1>,<TEE2>`.
 
 ## When the `FlareTeeManager` diamond is re-deployed
 
-All extension registrations on that chain are wiped:
+All extension registrations on that chain are wiped. Because the USDX extension
+is a *reserved* id, it is re-registered by governance at the same id rather than
+minted afresh:
 
-1. `bash ./scripts/pre-build.sh` — mints a fresh `EXTENSION_ID`.
-2. Send the new `EXTENSION_ID` to the VM operator. They restart the container with `EXTENSION_ID=<new value>` as a launch-policy env override — no image rebuild needed.
-3. Re-curl `/info` and confirm `extensionId` matches.
+1. Re-run the upstream deploy + governance follow-ups (Step 4) — `registerReserved`
+   restores extension id `1`, and the sender/store addresses may change, so
+   re-slot them into the addresses file.
+2. The `EXTENSION_ID` handed to the VM is unchanged (`1`), so no container
+   restart is needed unless the sender/store addresses moved.
+3. Re-curl `/info` and confirm `extensionId` is still `1`.
 4. `bash ./scripts/post-build.sh`.
-5. `bash ./scripts/test.sh`.
+5. Re-publish endpoints and admins (Step 9) — the wipe clears the per-machine
+   commitments — then run a keeper cycle.

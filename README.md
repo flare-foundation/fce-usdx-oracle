@@ -14,7 +14,7 @@ price   = min(1, backing / supply)        capped at par: USDX redeems at $1
 
 ## TL;DR
 
-- **A price nobody in the delivery path can alter.** The computation runs inside a TEE pinned by a code hash registered on-chain. The keeper that relays the result holds *no authority* — `UsdxPriceStore` verifies the enclave's signature against Flare's TEE machine registry, so a compromised keeper costs gas, not correctness, and anyone may submit.
+- **A price nobody in the delivery path can alter.** The computation runs inside a TEE pinned by a code hash registered on-chain. The keeper that relays the result holds *no authority* — the `TeeOracleFeedStore` verifies the enclave's signature against Flare's TEE machine registry (the signer must be a registered PRODUCTION machine on the extension), so a compromised keeper costs gas, not correctness, and anyone may submit.
 - **Credentials reach the enclave without ever touching the chain.** The restricted reserves API key and the keyed RPC credentials arrive ECIES-encrypted over the direct channel, authorised by *M-of-N admin signatures* published on-chain as addresses. They live in memory only and die with the process.
 - **Fail closed, always.** A source down, a value implausible, an observation older than 10 minutes: publish nothing and let the on-chain timestamp age. A frozen feed is the designed failure mode. **Consumers must check the timestamp** — the feed cannot revert, because `FtsoV2` forwards the call and a revert would take down every consumer at once.
 - **Every published price commits to the configuration it was computed under.** The signed report carries the hash of the endpoint config *and* the admin set the machine was running, and the store rejects any report whose hashes are not the ones governance published for that machine.
@@ -31,7 +31,7 @@ FCC collapses the question from "do I trust the operator" to "do I trust the cod
 2. **The private input stays private and still counts.** The restricted cash-reserves figure is fetched inside the enclave with a credential the enclave alone can decrypt. It moves the published price without ever being published — and `GET /state`, `ActionResult.Log` and every error path are held to a closed vocabulary precisely so it cannot leak by accident.
 3. **Configuration is a governed, on-chain fact.** Which RPC providers a machine reads, and who may install credentials in it, are published by transaction and enforced *by the store at submission time*. A machine running a stale configuration cannot publish at all.
 
-**The honest caveat, stated up front:** `setEndpoints` has no host allowlist, so the owner key chooses the RPC sources and is therefore **price-controlling alongside the code hash**. That is a deliberate trade — pinning provider URLs in the build would mean a code-hash rollout every time an endpoint died — and it is written up in [findings §15](docs/usdx-oracle-findings.md). The Hex reserve URLs *are* pinned in the build, because redirecting them would hand an operator the numerator.
+**The honest caveat, stated up front:** `setEndpoints` has no host allowlist, so whoever publishes the endpoint configuration — Flare governance, through the sender's `onlyGovernance` guard — chooses the RPC sources and is therefore **price-controlling alongside the code hash**. That is a deliberate trade — pinning provider URLs in the build would mean a code-hash rollout every time an endpoint died — and it is written up in [findings §15](docs/usdx-oracle-findings.md). The Hex reserve URLs *are* pinned in the build, because redirecting them would hand an operator the numerator.
 
 ---
 
@@ -39,21 +39,24 @@ FCC collapses the question from "do I trust the operator" to "do I trust the cod
 
 | | |
 | --- | --- |
-| `UsdxCustomFeed` | [`0x56c5F1b7…a12D`](https://coston2-explorer.flare.network/address/0x56c5F1b72DCA580F7b2B0c07c63973C58627a12D#code) — feed id `USDX/USD`, category 32 — ✅ verified |
-| `UsdxPriceStore` | [`0x4E2f462c…73aE`](https://coston2-explorer.flare.network/address/0x4E2f462cfB6CC8567D6A918666B15c04E03B73aE#code) — ✅ verified |
-| `UsdxOracleInstructionSender` | [`0x1562e092…a8F6`](https://coston2-explorer.flare.network/address/0x1562e092C807a823fE22dc832b6F20cCe169a8F6#code) — ⚠️ **not verified** |
-| Extension id | `66281` (`0x102e9`) |
-| Store parameters | bounds `[$0.50, $1.00]` · `maxAge` 3600s · not paused · not invalidated |
+| `TeeOracleFeedStore` | `<address>` — from the flare-smart-contracts-v2 deployment. Implements the FTSO custom-feed interface itself; there is no separate feed adapter |
+| `TeeOracleInstructionsSender` | `<address>` — from the flare-smart-contracts-v2 deployment. Holds the expected endpoints/admins hashes the store enforces |
+| Extension id | `1` — the RESERVED id, registered by Flare governance, pinned as a build fact |
+| Feed id | `0x20555344582f555344000000000000000000000000` — category 0x20 + "USDX/USD" |
 
 ```bash
-cast call --rpc-url https://coston2-api.flare.network/ext/C/rpc 0x56c5F1b72DCA580F7b2B0c07c63973C58627a12D 'getCurrentFeed()(uint256,int8,uint64)'
+cast call --rpc-url https://coston2-api.flare.network/ext/C/rpc <TeeOracleFeedStore> 'getCurrentFeed()(uint256,int8,uint64)'
 ```
 
 Returns `(value, decimals, observedAt)` — read it as `value / 10^decimals`, and **always check the age**. It currently returns `100000000, 8` — `$1.00000000`.
 
-The store and the feed are verified, so they can be read from the explorer. The instruction sender is not, and that matters more than it looks: it is the contract holding the owner key that chooses the price sources, so until `./scripts/verify-contracts.sh` covers it, the one component a consumer most needs to audit is the one they cannot read.
+The contracts are upstream, so their explorer verification is Flare's as part of the
+flare-smart-contracts-v2 deployment — check the addresses above show verified source before
+relying on them. The sender matters more than it looks: it holds the configuration
+commitments that decide which sources the price is read from, so it is the one component a
+consumer most needs to audit.
 
-> Addresses above are read back from the chain. `config/coston2/deployed-addresses.json` is what the tooling uses — check this table against it after any redeploy, because nothing enforces that the two agree.
+> Addresses come from the flare-smart-contracts-v2 deployment. `config/coston2/deployed-addresses.json` is what the tooling reads — check this table against it after any upstream deploy, because nothing enforces that the two agree.
 
 ---
 
@@ -62,31 +65,31 @@ The store and the feed are verified, so they can be read from the explorer. The 
 ```mermaid
 flowchart LR
   K[Keeper<br/>no authority]
-  O[Owner key]
+  G[Flare governance]
   ADM[Admins<br/>M-of-N]
-  IS[InstructionSender.sol<br/>entry point + config source]
+  IS[TeeOracleInstructionsSender<br/>entry point + config commitments]
   P[TEE Proxy<br/>public]
   DP[Data Providers<br/>≥50% weight]
   T[TEE Machine<br/>attested code hash]
   OBS[(Latest observation<br/>+ credentials<br/><br/>in-memory)]
   SRC[Flare · Ethereum · Songbird RPC<br/>Hex Trust reserves APIs]
-  ST[UsdxPriceStore.sol]
-  F[UsdxCustomFeed → FtsoV2]
+  ST[TeeOracleFeedStore<br/>implements IICustomFeed]
+  F[FtsoV2]
 
-  K -- "tx: requestPriceUpdate()" --> IS
-  O -- "tx: setEndpoints / setAdmins" --> IS
+  K -- "tx: requestFeedUpdate(feedId, teeIds)" --> IS
+  G -- "tx: setEndpoints / setAdmins" --> IS
   IS -- "instruction event" --> DP
   DP -- "cosigned instruction" --> P
-  K -- "POST /direct<br/>GET_PRICE, GET_READINESS" --> P
+  K -- "POST /direct<br/>GET_READINESS" --> P
   ADM -- "POST /direct<br/>SET_SECRET (ECIES)" --> P
   P -- "action queue" --> T
   T --- OBS
   T -- "every 2 min" --> SRC
-  T -- "signed report" --> P
+  T -- "signed feed update" --> P
   P -- "result" --> K
-  K -- "tx: submitPrice(body, sig)" --> ST
-  ST -- "verify sig vs TeeMachineRegistry" --> ST
-  ST -- "verify config + admins hash" --> IS
+  K -- "tx: submitFeedUpdate(update, sig)" --> ST
+  ST -- "verify sig vs TEE machine registry" --> ST
+  ST -- "verify endpoints + admins hash" --> IS
   ST --> F
 ```
 
@@ -94,11 +97,15 @@ Two ways into the TEE, and the choice of channel is a security control rather th
 
 | Direction | Channel | Used for |
 |---|---|---|
-| In (on-chain) | `InstructionSender` → data providers → proxy → TEE | `SET_ENDPOINTS`, `SET_ADMINS` — authorised by the sender's owner-only check. `GET_PRICE` also, as the permissionless path |
-| In (off-chain) | Client → proxy → TEE (a "direct action") | `SET_SECRET` — a ciphertext on-chain would be permanent and public. `GET_PRICE` and `GET_READINESS` — no fee, no transaction |
-| Out | TEE → proxy → keeper → chain | `submitPrice(body, signature)` — anyone may relay a signed report |
+| In (on-chain) | `TeeOracleInstructionsSender` → data providers → proxy → TEE | `SET_ENDPOINTS`, `SET_ADMINS` — authorised by the sender's `onlyGovernance` check. `GET_FEED` — the permissionless path, and the only one it accepts |
+| In (off-chain) | Client → proxy → TEE (a "direct action") | `SET_SECRET` — a ciphertext on-chain would be permanent and public. `GET_READINESS` — a status answer stale within minutes is not worth a fee |
+| Out | TEE → proxy → keeper → chain | `submitFeedUpdate(update, signature)` — anyone may relay a signed update |
 
-Accepting a command over the wrong channel would bypass its authorisation, so each one is pinned to exactly the channels it is valid over. `GET_PRICE` is the deliberate exception, valid over both: it is authorised by nothing because it *grants* nothing — it signs an observation the enclave already made on its own timer.
+All five commands share the one `TEE_ORACLE` op type; accepting a command over the wrong
+channel would bypass its authorisation, so each one states its own guard and is pinned to
+exactly the channels it is valid over. `GET_FEED` is instruction-only: it is authorised by
+nothing because it *grants* nothing — it signs an observation the enclave already made on its
+own timer — but a direct-channel copy would be a fallback path nobody notices has broken.
 
 ---
 
@@ -143,15 +150,19 @@ sequenceDiagram
   participant K as Keeper
   participant P as TEE Proxy
   participant T as TEE
-  K->>P: GET_PRICE (direct, or on-chain via requestPriceUpdate)
+  K->>P: GET_FEED (on-chain via requestFeedUpdate)
   P->>T: action
   T->>T: latest observation — fail closed if older than 10 min
-  T->>T: body = abi(domain, price, decimals, observedAt,<br/>instructionId, endpointsHash, adminsHash)
-  T->>T: sign with the enclave identity key (EIP-191)
-  T-->>K: abi.encode(body, signature)
+  T->>T: update = FeedUpdate(extensionId, feedId, value, decimals,<br/>observedAt, endpointsHash, adminsHash)
+  T->>T: sign keccak(abi(TEE_ORACLE_FEED, chainId, keccak(abi(update))))<br/>with the enclave identity key (EIP-191)
+  T-->>K: abi.encode(update, signature)
 ```
 
-Nothing is resampled at signing time, which would put a fresh timestamp on stale inputs. The `instructionId` binds the report to one request; `observedAt` is the store's monotonicity key; the two hashes commit the price to the configuration and admin set in force *when the inputs were read*.
+Nothing is resampled at signing time, which would put a fresh timestamp on stale inputs. The
+`extensionId` and `feedId` bind the update to one feed served by one extension, and `chainId`
+is signed too, so it can never be replayed onto another feed or another chain; `observedAt` is
+the store's monotonicity key; the two hashes commit the value to the configuration and admin
+set in force *when the inputs were read*.
 
 A missing cash figure does not stop the feed — but it can never change the number. Cash is non-negative and the price caps at par, so a bonds-only price that already reaches par *is* the full result. Below par it fails closed rather than publishing a degraded figure.
 
@@ -162,16 +173,16 @@ The extension boots **unprovisioned**, and that is the normal state after every 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant O as Owner key
-  participant IS as InstructionSender
+  participant G as Flare governance
+  participant IS as TeeOracleInstructionsSender
   participant A as Admins (M of N)
   participant P as TEE Proxy
   participant T as TEE
-  O->>IS: setEndpoints(teeId, config)
-  IS->>IS: expectedConfigHash[teeId] = keccak256(config)
+  G->>IS: setEndpoints(feedId, teeIds, groups, claimBack)
+  IS->>IS: expectedEndpointsHash[feedId][teeId] = keccak256(payload)
   IS-->>T: cosigned instruction → applied, hash recorded as received
-  O->>IS: setAdmins(teeId, {backing, providers})
-  IS->>IS: expectedAdminsHash[teeId] = keccak256(config)
+  G->>IS: setAdmins(feedId, teeIds, roles, claimBack)
+  IS->>IS: expectedAdminsHash[feedId][teeId] = keccak256(payload)
   IS-->>T: cosigned instruction → both signer sets installed, or neither
   A->>A: ct = ECIES(TEE pubkey, secret)
   A->>A: body = abi(domain, chainId, teeId, version, issuedAt, ref, keccak256(ct))
@@ -182,8 +193,8 @@ sequenceDiagram
   T->>T: decrypt in-enclave, hold in memory only
 ```
 
-- **`SET_ENDPOINTS`** decides which RPC sources a machine reads. Instruction-only, because its authorisation *is* the owner-only check in the sender.
-- **`SET_ADMINS`** decides who may put credentials in the machine. Also instruction-only, and it publishes **two** signer sets — `backing` governs the pinned Hex API key (1-of-N is allowed: a wrong value degrades the feed rather than moving the price), `providers` governs every RPC credential (2-of-N minimum: those get substituted into URLs the owner key chose). Which set governs which credential is pinned **in the build**, never read from the payload — otherwise whoever publishes admins could move a credential under whichever set they happen to hold.
+- **`SET_ENDPOINTS`** decides which RPC sources a machine reads. Instruction-only, because its authorisation *is* the `onlyGovernance` check in the sender.
+- **`SET_ADMINS`** decides who may put credentials in the machine. Also instruction-only, and it publishes **two** signer sets — `backing` governs the pinned Hex API key (1-of-N is allowed: a wrong value degrades the feed rather than moving the price), `providers` governs every RPC credential (2-of-N minimum: those get substituted into URLs governance chose). Which set governs which credential is pinned **in the build**, never read from the payload — otherwise whoever publishes admins could move a credential under whichever set they happen to hold.
 - **`SET_SECRET`** carries the credential itself. Direct-only. Every rejection returns the same error, so the endpoint cannot be used to probe the admin set or the freshness window.
 
 All three are memory-only. For admins that is load-bearing rather than incidental: a restarted machine fails closed on `SET_SECRET` until `SET_ADMINS` is republished, so there is no window in which a first-come envelope could claim the enclave.
@@ -192,13 +203,13 @@ All three are memory-only. For admins that is load-bearing rather than incidenta
 
 ### 4. Relay and acceptance
 
-The keeper requests, polls, decodes, preflights every store guard, and submits. It holds no authority and it is not allowed to compute or adjust anything — the signed body is relayed byte for byte.
+The keeper requests, polls, decodes, preflights every store guard, and submits. It holds no authority and it is not allowed to compute or adjust anything — the signed update is relayed as signed.
 
-`UsdxPriceStore.submitPrice` then checks, in order: not paused · 65-byte low-s signature recovering under EIP-191 · signer registered to **this** extension and in `PRODUCTION` · body exactly seven ABI words · domain and decimals · `expectedConfigHash` and `expectedAdminsHash` published *and matching* · `observedAt` strictly greater than stored · not more than 2 minutes in the future · not older than `maxAge` · price inside `[minPrice, maxPrice]`, rejected rather than clamped.
+`TeeOracleFeedStore.submitFeedUpdate` then checks: the TEE signature verifies through `Fdc2Verification` — the signer is a registered `PRODUCTION` machine on **this** extension, and the extension is not emergency-paused · the update names the store's extension id and feed id · it carries the `endpointsHash` and `adminsHash` the sender currently publishes for that machine (`expectedEndpointsHash` / `expectedAdminsHash`) · `observedAt` strictly increases and is strictly older than the accepting block. There are no price bounds and no maximum-age window: acceptance is anchored by the signature, the commitments and monotonicity alone.
 
 Strictly increasing `observedAt` is what makes replay and out-of-order delivery harmless in a fire-and-forget system. With two or more keepers, exactly one submission wins per cycle and the losers report `NotNewer` — **that is success, not an alert**.
 
-Accepting a report also writes `lastReport[teeId]`: what that machine proved it was *running*, as against the sender's mappings, which record what was *sent* to it. `isProvenConfigured(teeId)` is the difference, and it goes false the moment a new config is published, until that machine lands a price under it.
+The store keeps no per-machine bookkeeping: one global `observedAt` stamp is all it holds, and the `FeedUpdated` event's indexed `teeId` says which machine won. What was *sent* to each machine lives on the sender (`expectedEndpointsHash` / `expectedAdminsHash` plus versions); what a machine is *running* shows up when its updates pass the store's commitment checks — `fleet-status` reconciles the two.
 
 ---
 
@@ -214,11 +225,11 @@ Accepting a report also writes `lastReport[teeId]`: what that machine proved it 
 
 **What it does not guarantee**
 
-- **Input provenance.** Consumers verify *what* computed the price, not where its inputs came from. `setEndpoints` has no host allowlist, so the owner key is price-controlling alongside the code hash ([findings §15](docs/usdx-oracle-findings.md)).
+- **Input provenance.** Consumers verify *what* computed the price, not where its inputs came from. `setEndpoints` has no host allowlist, so whoever publishes the endpoint configuration — Flare governance — is price-controlling alongside the code hash ([findings §15](docs/usdx-oracle-findings.md)).
 - **Ordering.** FCC is explicitly fire-and-forget. Two actions submitted in quick succession may arrive in either order; the design assumes it throughout.
 - **Liveness.** The public proxy can delay or drop actions, and a sustained outage freezes the feed. That is the designed failure mode, not a fault — which is exactly why consumers must check the timestamp.
 - **Hardware trust.** If a TEE vendor is compromised or the attestation chain breaks, the code-hash guarantee collapses. Mitigated operationally, not by FCC.
-- **Target binding.** A genuinely signed report is replayable into any other store registered under the same extension. Accepted trade-off, [findings §18](docs/usdx-oracle-findings.md).
+- **Target binding.** The signed update names the extension id and the feed id (and the chain id), so it cannot be replayed onto another feed or another chain — but a second store registered for the *same* feed under the same extension would still accept it. Accepted trade-off, [findings §18](docs/usdx-oracle-findings.md).
 - **Clock independence.** `observedAt` is a global ratchet across machines: one enclave with a fast clock suppresses the others until chain time catches up.
 
 Two more worth knowing before you touch anything: **stub mode is indistinguishable from a healthy fully-backed feed** on the wire (both print `$1.00000000` — `Extension.StubMode()` is what tells them apart), and **`/state` counters describe prices served, not the poller** — a machine nobody queries reports zeroes while its observation loop fails every two minutes. Alert on on-chain feed *age*, or query `GET_READINESS`.
@@ -241,12 +252,12 @@ cd go && go run ./cmd/devserver
 ./scripts/set-endpoints.sh testdata/endpoints/public-only.json 8099
 ```
 
-Then POST a `GET_PRICE` action. Healthy output is `lastPrice: "100000000"` with `hex_cash: not_configured`.
+`./scripts/oracle-observe.sh` runs this whole sequence — mock signing node, dev server, endpoint provisioning, one `GET_FEED` request — and prints the price and per-source health. Healthy output is `lastPrice: "100000000"` with `hex_cash: not_configured`.
 
 For the full stack — redis, proxy and the extension TEE in containers, against a local chain or Coston2 — see [docs/local-stack.md](docs/local-stack.md):
 
 ```bash
-./scripts/full-setup.sh --test
+./scripts/full-setup.sh
 ```
 
 ---
@@ -260,9 +271,9 @@ cd go && go test ./... && cd .. && ./scripts/test-conformance.sh go && forge tes
 ```
 
 - **Unit tests** — `go test ./...` in `go/` and in `tools/`, covering the quorum procedure, price arithmetic, decimal parsing, the provisioning verifier, the wire encodings and the keeper cycle.
-- **Contract tests** — `forge test` drives every `UsdxPriceStore` guard, including the ones easiest to get wrong: unprefixed digests, unnormalised recovery ids, malleable signatures, overlong bodies, and republished configs withdrawing a machine's proof.
+- **Contract tests** — `forge test` prints Solidity's own ABI encoding of the wire payloads (endpoints, admins, the signed feed update) into `testdata/wire/`, which both Go codecs assert against. The structs are imported from the vendored `ITeeOracle*` interfaces, so the fixtures cannot drift from the ABI the bindings are generated off.
 - **Conformance** — `./scripts/test-conformance.sh` replays the golden wire fixtures in `testdata/conformance/` against a running extension and diffs the responses. No chain, no proxy, no Docker. This is the acceptance test for any new language implementation.
-- **On-chain end-to-end** — `./scripts/test.sh` stops at the proxy, proving the machine produced a valid signed report without putting anything on-chain. To drive the full feed, follow *"Running the USDX oracle end to end yourself"* in [docs/testing.md](docs/testing.md).
+- **On-chain end-to-end** — `./scripts/oracle-cycle.sh -tee @<machine> --dry-run` preflights the addressed machines without submitting; dropping `--dry-run` drives one full request → sign → relay cycle. To drive the full feed, follow *"Running the USDX oracle end to end yourself"* in [docs/testing.md](docs/testing.md).
 
 Three things that are easy to misread as failures:
 
@@ -278,16 +289,15 @@ Three things that are easy to misread as failures:
 
 | Layer | Where | What |
 |---|---|---|
-| On-chain entry | `contracts/InstructionSender.sol` | `requestPriceUpdate` (anyone), `setEndpoints`/`setAdmins` (owner). Also the `IUsdxConfigSource` the store reads expected hashes from |
-| On-chain acceptance | `contracts/UsdxPriceStore.sol` | Every guard that protects the feed. All authority lives here |
-| FTSO adapter | `contracts/UsdxCustomFeed.sol` | Thin `IICustomFeed` read adapter — must never revert |
+| On-chain entry | upstream `TeeOracleInstructionsSender` (vendored interface: `contracts/interfaces/ITeeOracleInstructionsSender.sol`) | `requestFeedUpdate` (anyone), `setEndpoints`/`setAdmins` (governance). Also the expected endpoints/admins hashes the store enforces |
+| On-chain acceptance | upstream `TeeOracleFeedStore` (vendored interface: `contracts/interfaces/ITeeOracleFeedStore.sol`) | Every guard that protects the feed — all authority lives here. Implements the FTSO custom-feed interface (`IICustomFeed`) itself and is registered with FtsoV2 directly |
 | Observation | `go/internal/{supply,backing,price,decimal}` | Quorum RPC reads, Hex HTTP reads, the arithmetic, exact money parsing |
 | Orchestration | `go/internal/{oracle,observe}` | One observation start to finish; the timer, the cache and the staleness bound |
 | Provisioning | `go/internal/{provision,runtimecfg}` | M-of-N envelope verification; the only mutable state in the process |
 | Wire formats | `go/internal/{report,readiness,failure}` | The signed payloads, and the closed public error vocabulary |
 | HTTP surface | `go/internal/extension` | `POST /action` routing and `GET /state` |
 | Ops CLI | `go/cmd/usdxprov` | Build / sign / submit a `SET_SECRET` envelope |
-| Tooling & keeper | `tools/` | Deployment, registration, the keeper cycle, preflight. **Language-neutral** — it re-declares the wire layout rather than importing it |
+| Tooling & keeper | `tools/` | Registration, configuration publication, the keeper cycle, preflight, fleet status. **Language-neutral** — it re-declares the wire layout rather than importing it |
 | Conformance | `testdata/conformance/` | Golden wire fixtures, asserted against any implementation |
 
 This repository implements the oracle in **Go only**. The scaffold it derives from supports Python and TypeScript via `LANGUAGE=<dir>`, and the tooling, contracts and conformance harness here are still language-neutral — but no other implementation is checked in, and the fixtures in `testdata/conformance/` are the acceptance test if you add one.
@@ -314,12 +324,6 @@ This repository implements the oracle in **Go only**. The scaffold it derives fr
 
 - [Spec](docs/usdx-oracle-spec.md) — price definition, inputs, verified addresses, work packages · [Plan & TODO](docs/usdx-oracle-plan.md) · [Operational flows](docs/usdx-oracle-flows.md) · [Mint/redeem dynamics](docs/usdx-oracle-mint-redeem-dynamics.md)
 - [Extension Container Contract](docs/extension-contract.md) — the normative wire and container spec · [Testing Guide](docs/testing.md) · [Reproducibility](REPRODUCIBILITY.md)
-
-**Forking this as a template**
-
-- [Extension Development Guide](docs/extension-guide.md) · [Working in Multiple Languages](docs/languages.md) · [Making It Your Own](docs/manual-setup.md) · [InstructionSender Contract](docs/instruction-sender.md)
-
-> The HTML bundle at `docs/usdx-oracle-*.html` is a **stale snapshot** from an earlier design round — it predates the admin-set split, `GET_READINESS`, and the current block-selection rule. Read the Markdown.
 
 ---
 

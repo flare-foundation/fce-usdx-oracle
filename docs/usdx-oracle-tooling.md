@@ -40,14 +40,21 @@ machine an instruction goes to.
 
 **Two channels, and the choice is a security control.** An **instruction** goes on-chain and is
 authorised by the sender contract's owner check; a **direct** action is `POST /direct` on the
-proxy, authorised by `DIRECT_API_KEY` and, for credentials, by admin signatures. `SET_ENDPOINTS`
-and `SET_ADMINS` are refused over direct — that would skip the owner check. `SET_SECRET` is
-refused over instruction — that would put a ciphertext in permanent public storage.
+proxy, authorised by `DIRECT_API_KEY` and, for credentials, by admin signatures. Every command
+is valid over exactly one of them, and the extension refuses the other:
+
+| Command | Channel | Why the other is refused |
+| --- | --- | --- |
+| `GET_FEED` | instruction | direct is free and unrecorded, which would leave the permissionless path unexercised |
+| `SET_ENDPOINTS`, `SET_ADMINS` | instruction | direct would skip the sender's governance check |
+| `SET_SECRET` | direct | on-chain would put a ciphertext in permanent public storage |
+| `GET_READINESS` | direct | a status answer stale within minutes is not worth a fee and permanent calldata |
 
 **Fees are read, never hard-coded.** Anything that raises an on-chain instruction reads the
-current fee from the registry, using the op type and command taken from the deployed contract's
-own constants. A stale constant would revert every request with nothing in the repo to explain
-it.
+current fee from the registry's `OperationFees` for the `(TEE_ORACLE, command)` pair. The op
+type and command are file-level constants upstream (no longer per-contract getters), so the tools
+pin their own copy in `pkg/utils` — a divergence would revert every request with nothing in the
+repo to explain it.
 
 **Fire-and-forget, so publishers confirm.** An instruction may never be delivered, and the
 extension may reject it. `send-endpoints` and `send-admins` therefore poll the machine's own
@@ -64,19 +71,19 @@ rejected payload costs a transaction *and* leaves the machine unable to land pri
 
 | Stage | Run | Doc |
 | --- | --- | --- |
-| 1. deploy contracts, register extension | `pre-build.sh` → `extension-setup.sh` | [deployment-steps.md](deployment-steps.md) |
-| 2. build + start the containers | `start-services.sh` | |
+| 1. deploy the oracle contracts | upstream `deploy-tee-oracle.sh` + governance follow-ups | [deployment-steps.md](deployment-steps.md) |
+| 2. build + start the containers | `full-setup.sh` → `start-services.sh` | |
 | 3. register the machine on-chain | `post-build.sh` | |
-| 4. prove the round trip | `test.sh` | |
-| 5. publish endpoints + admins | `send-endpoints`, `send-admins` | [production setup](usdx-oracle-production-setup.md) |
-| 6. install credentials | `upload-hex-key.sh`, `upload-rpc-keys.sh` | |
-| 7. commission + run the feed | `keeper` | [keeper](usdx-oracle-keeper.md) |
-| 8. retire, replace or upgrade a machine | `pause`, `register-tee`, `addTeeVersion` | [lifecycle](usdx-oracle-machine-lifecycle.md) |
+| 4. publish endpoints + admins | `send-endpoints`, `send-admins` | [production setup](usdx-oracle-production-setup.md) |
+| 5. install credentials | `upload-hex-key.sh`, `upload-rpc-keys.sh` | |
+| 6. commission + run the feed | `keeper`, `oracle-cycle.sh` | [keeper](usdx-oracle-keeper.md) |
+| 7. retire, replace or upgrade a machine | `pause`, `register-tee`, `addTeeVersion` | [lifecycle](usdx-oracle-machine-lifecycle.md) |
 
-`full-setup.sh` runs 1–4 end to end. Everything after that is deliberately manual: it moves
-credentials and money.
+`full-setup.sh` pins the extension identity (the reserved id 1), starts the stack, and runs
+post-build. Everything after stage 3 is deliberately manual: it moves credentials and money.
 
-Stages 3 and 5–7 repeat **per machine**; there is no fleet-wide form of any of them. Stage 8 is
+Stages 3, 5 and 7 repeat **per machine**. Stages 4 and 6 are fleet-wide: `send-endpoints` /
+`send-admins` take every machine in one `-tee` list, and one keeper serves them all. Stage 7 is
 not exceptional — a rebuild mints a new enclave key, so replacing a machine is the ordinary
 consequence of shipping a change, and the identity it replaces has to be paused or it stays
 registered forever.
@@ -88,22 +95,26 @@ registered forever.
 | Tool | What it does |
 | --- | --- |
 | `use-chain.sh <chain>` | Copies `.env.<chain>` → `.env`, which every script auto-loads. Run it first, and again whenever you edit the chain's env. |
-| `pre-build.sh` | Deploys `InstructionSender` and registers the extension on-chain. Writes `EXTENSION_ID` and `INSTRUCTION_SENDER` to `config/extension.env`. |
-| `extension-setup.sh` | Runs between pre-build and Docker: deploys `UsdxPriceStore` + `UsdxCustomFeed` via `deploy-store` and records their addresses. |
+| `import-upstream-addresses.sh <chain>` | Copies the sender + feed store addresses from a flare-smart-contracts-v2 deploy into `config/<chain>/deployed-addresses.json`. Re-run after every upstream deploy. |
+| `full-setup.sh` | Pins the extension identity (`EXTENSION_ID=1`, reserved), starts the stack, runs post-build — in one command. |
 | `start-services.sh` | Builds the extension image and brings up the compose stack (extension-tee, proxy, redis). `--local` runs the host-process variant instead. |
-| `post-build.sh` | Whitelists the image's code hash (`allow-tee-version`) and registers the machine (`register-tee`). |
-| `extension-post-setup.sh` | Extension-specific hook after post-build, once the machine is live and registered. |
-| `test.sh` | Sends instructions on-chain, polls for results, validates the round trip. Stops at the proxy — it proves the machine signed a valid report, and puts nothing on-chain. |
-| `full-setup.sh` | pre-build → start → post-build → test, in one command. |
+| `post-build.sh` | Whitelists the image's code hash (`allow-tee-version`), sets TEE governance (`set-governance`) and registers the machine (`register-tee`). |
 | `stop-services.sh` | Tears the stack down. |
+
+The oracle contracts (`TeeOracleInstructionsSender` + `TeeOracleFeedStore`) are **not** deployed
+by this repo — that is upstream's `deploy-tee-oracle.sh` plus governance follow-ups
+(`registerReserved`, the `TEE_ORACLE` fee rows, `addCustomFeeds`). See
+[deployment-steps.md](deployment-steps.md). After the upstream deploy,
+`import-upstream-addresses.sh <chain>` slots the deployed addresses into
+`config/<chain>/deployed-addresses.json` so the tools resolve them by name, and
+`wire-extension` performs the extension-owner share (`setExtensionContracts`, machine-owner
+allowlist, EVM key type) once governance has run `registerReserved`.
 
 ### The Go commands behind them
 
 | Command | What it does | Key flags |
 | --- | --- | --- |
-| `deploy-contract` | Deploys `InstructionSender`, checking the registry addresses have code first. | `-o` output file, `-preflight-only` |
-| `deploy-store` | Deploys `UsdxPriceStore` and `UsdxCustomFeed` and wires them to the extension. | `-extensionId` `-instructionSender` `-decimals` `-minPrice` `-maxPrice` `-governance` `-feedName` |
-| `register-extension` | Registers the extension against the sender, mints the `EXTENSION_ID`. | `-instructionSender` `-governanceHash` |
+| `wire-extension` | Wires a RESERVED extension after governance runs `registerReserved`: `setExtensionContracts` (the sender — required before `register-tee`'s availability check), machine-owner allowlist, EVM key type. Idempotent. | `-extensionId`, `-sender` |
 | `set-governance` | Publishes the TEE governance signer set + threshold from `GOVERNANCE_SIGNERS` / `GOVERNANCE_THRESHOLD`. **Must match what the TEE node was launched with**, or `register-tee` fails `InvalidGovernanceHash`. | |
 | `allow-tee-version` | Whitelists a code hash + platform for the extension, read from the proxy's `/info`. Idempotent — skips if already active. | `-version` |
 | `register-tee` | Registers the machine and takes it to `PRODUCTION`, in four resumable steps. | `-command`, `-state`, `-resume` |
@@ -126,54 +137,62 @@ file so a failed run resumes instead of repeating on-chain steps.
 
 ## Publishing configuration on-chain
 
-Both take `-config <file>`, deliver it **verbatim** as calldata, and record its keccak256 on the
-sender so the store can check what a machine proves against what was published. Both address one
-machine, chosen by `-p`. Neither carries a secret — the payloads are public forever.
+Both take `-config <file>` (JSON, for operator convenience), build the ABI-encoded payload from
+it, and target every machine named by `-tee` in one call. The sender assigns the version, records
+the payload hash per (feed, machine), and dispatches one instruction per target. Neither carries
+a secret — the payloads are public forever. On a production deployment `setEndpoints`/`setAdmins`
+are governance-only — the sender is in production mode from the moment upstream's deploy script
+finishes — so the normal path here is `-out <file>`: the tool predicts the version and payload
+hash, resolves the fee, and writes the exact calldata to a JSON **hand-off** for the Flare
+governance executor, who runs it through the timelock and attaches the fee at execution. The
+direct path (no `-out`) sends the call itself and works only while the caller is still
+governance — before `switchToProductionMode`, i.e. local and test deployments.
 
 ### `send-endpoints` — which RPC sources the machine reads
 
 ```bash
-cd tools && go run ./cmd/send-endpoints -dry-run -p <PROXY_URL> -instructionSender <SENDER> -config <ENDPOINTS_JSON>
+cd tools && go run ./cmd/send-endpoints -dry-run -tee <TEE1>,<TEE2> -feedId <FEED_ID> -config <ENDPOINTS_JSON>
 ```
 
-The payload names each provider URL, its chain, the quorum threshold, and — for private
-endpoints — the **ref** whose credential is substituted for `{secret}` at dial time. Values
-never appear; only names.
+The sender resolves from the `TeeOracleInstructionsSender` entry in the addresses file (or
+`-instructionSender`). For the governance path, add `-out <file>` and hand the file over.
 
-What happens: `setEndpoints(teeId, cfg)` writes `expectedConfigHash[teeId]`, then dispatches the
-instruction through the registry. The extension validates and applies it, and from then on every
-report it signs carries that hash. The tool then polls until the machine reports the matching
-`endpointsHash`, and tells you to re-commission — a new config hash decommissions the machine
-until it lands a price under it.
+The JSON names each group (a tagged endpoint list), its quorum threshold, and each endpoint as
+PUBLIC (`url`) or PRIVATE (`urlHash` + `secretRef`). The chain RPC groups are public; the
+restricted `hex_cash` reserve endpoint is private, so its URL never lands in calldata. Values
+never appear; only names and commitments.
 
-Validation mirrors the extension's exactly: pinned chains only, every pinned chain present,
-`1 ≤ threshold ≤ providers`, https only, `{secret}` and `secret` used together, and
-`hex_api_key` refused as a provider secret.
+What happens: the tool ABI-encodes `Endpoints{version, feedId, groups}`, predicts the version
+(`endpointsVersion(feedId) + 1`) and the hash, and calls
+`setEndpoints(feedId, teeIds, groups, claimBack)`. The sender writes
+`expectedEndpointsHash[feedId][teeId]` before dispatch. The extension validates and applies it,
+and from then on every update it signs carries that hash. With `-wait`, the tool polls until the
+machine reports the matching `endpointsHash` — a new config hash decommissions the machine until
+it lands an update under it.
+
+Validation mirrors the extension's exactly: known groups only, every pinned chain present,
+`1 ≤ threshold ≤ endpoints`, https only, `{secret}` and `secretRef` used together, `hex_api_key`
+refused as a provider secret, and `hex_cash` required to be a single PRIVATE endpoint under
+`hex_cash_url`.
 
 ### `send-admins` — who may install credentials in the machine
 
 ```bash
-cd tools && go run ./cmd/send-admins -dry-run -p <PROXY_URL> -instructionSender <SENDER> -config <ADMINS_JSON>
+cd tools && go run ./cmd/send-admins -dry-run -tee <TEE1>,<TEE2> -feedId <FEED_ID> -config <ADMINS_JSON>
 ```
 
-The payload is a `version`, and two signer sets: `backing` (governs `hex_api_key`, floor 1) and
+The JSON is two role-tagged signer sets: `backing` (governs `hex_api_key`, floor 1) and
 `providers` (governs every other ref, floor 2). Addresses and thresholds only — private keys go
-nowhere near this tool.
+nowhere near this tool, and the operator does not pick the version (the contract assigns it).
 
-What happens: identical shape to `send-endpoints` — `expectedAdminsHash[teeId]` is written, the
-instruction dispatched, the machine confirmed. The extension installs both sets or neither, so a
-rejected half cannot leave it running a mixture of old and new authorities.
+What happens: identical shape to `send-endpoints` — `Admins{version, feedId, roles}` is encoded,
+`expectedAdminsHash[feedId][teeId]` written, the instruction dispatched, the machine confirmed.
+The extension installs all roles or none, so a rejected half cannot leave it running a mixture of
+old and new authorities.
 
 **Which set governs which ref is pinned in the extension build and is not read from this
 payload.** Otherwise whoever publishes admins could move a credential under whichever set they
 hold, and the split would authorise nothing.
-
-### `set-store-extension`
-
-Repoints `UsdxPriceStore` at a new extension generation after a re-registration, so you do not
-redeploy the store — which would reset the stored price and invalidate the custom-feed
-registration. Governance-only, and both values move together: `-extensionId` and
-`-instructionSender`.
 
 ---
 
@@ -219,32 +238,28 @@ by any local process through `ps`. The upload scripts prompt hidden for anything
 
 | Tool | What it does |
 | --- | --- |
-| `keeper` | The production process. Requests a price, polls for the signed result, relays it to the store, emits one JSON record per cycle. |
-| `submit-price` | One keeper cycle by hand, with the decoded report and what a consumer sees afterwards. |
-| `oracle-cycle.sh` | Wraps both against the deployed stack, loading `.env`. `--dry-run`, `--loop 10m`, `--on-chain`. |
+| `keeper` | The production process. Requests a feed update, polls for the signed result, relays it to the store, emits one JSON record per cycle. |
+| `oracle-cycle.sh` | Wraps one keeper cycle against the deployed stack, loading `.env`. `-tee <a,b,c>`, `--dry-run`, `--loop 10m`. |
 
-The keeper defaults to the **direct** channel — no registry fee, no trigger transaction — and
-raises one on-chain instruction every `-onChainEvery` (2h) to keep the permissionless path
-proven. Before its first cycle it **sweeps** the fleet: one direct request per registered
-machine, submitted oldest-observation-first so all of them land and are commissioned. Then it
-rotates over the machines, one per cycle.
+Every cycle requests on-chain through `requestFeedUpdate(feedId, teeIds)`, dispatching one
+instruction to each machine named by `-tee`. The keeper picks the targets, so it polls every
+named machine's proxy for the result. Before paying it asks those machines over `GET_READINESS`
+whether they would sign at all; if none would, the cycle ends `request_skipped` and no fee is
+spent.
 
 | Flag | Effect |
 | --- | --- |
+| `-tee` | comma-separated target machine addresses (required); the fee scales with the count |
+| `-store` | the `TeeOracleFeedStore` (default: the addresses-file entry); the sender is derived from it |
+| `-feedId` | the feed to request (default USDX/USD) |
 | `-interval` | how often a cycle starts (default 10m) |
-| `-onChainEvery` | how often a cycle goes on-chain instead (default 2h, `0` never) |
-| `-direct=false` | every cycle on-chain; disables the sweep |
-| `-sweep` | the startup sweep (default on; off under `-once`) |
 | `-once` | a single cycle, for a cron-driven deployment |
+| `-directApiKey` | key for the `GET_READINESS` preflight; without it every cycle pays unasked |
 | `-records <file>` | append cycle records somewhere other than stdout |
 | `-keeperId` | tells instances apart in the records — run at least two |
 
-`submit-price` is the same code path plus operator detail. `-direct -p <PROXY_URL>` addresses one
-named machine, which is what commissions it; `-instructionId 0x…` relays a result you already
-have, costing no fee; `-dry-run` runs every store guard and sends nothing.
-
-Both preflight the store's guards before spending gas, so a rejection arrives named —
-`StaleConfig`, `NotNewer`, `TooOld` — instead of as a bare revert.
+The keeper preflights the store's guards before spending gas, so a rejection arrives named —
+`StaleEndpoints`, `StaleAdmins`, `NotNewer`, `TooFarAhead` — instead of as a bare revert.
 
 ---
 
@@ -252,13 +267,12 @@ Both preflight the store's guards before spending gas, so a rejection arrives na
 
 | Tool | Answers |
 | --- | --- |
-| `fleet-status` | "Which machines are configured, and are they all running the same thing?" Registry status, config sent vs proven, live state, commissioned — for every machine at once. `-json` for machines. |
+| `fleet-status` | "Which machines are configured for the feed, and are they all running the same thing?" Registry status, `isTeeIdConfigured`, the sender's expected endpoints/admins hashes vs each machine's live state — for every machine at once. `-store`/`-feedId`, `-json`. |
 | `oracle-status.sh` | What the oracle publishes right now: the feed, the store, the registry, and the machine's `/state`. Reads only. |
 | `oracle-observe.sh` | Runs the real observation against live sources with no chain, Docker or TEE. The highest-value local check: if this is wrong, everything downstream is. |
 | `query-tee` | Raw registry lookup — `-ext <id>` lists the active machines and their URLs. |
 | `audit-deploy` | Sanity-checks `deployed-addresses.json` against a chain: code present, supported platforms and code hashes, and replays a failing `addTeeVersion` as `eth_call` to decode the custom error. |
-| `verify-deploy` | Post-deploy assertions by stage: `-step deploy\|register\|services\|tee-version\|tee-machine\|test\|all`, `-checks D5,R2` to narrow, `-json` for machines. |
-| `run-test` | Sets the extension id if needed, sends a `GET_PRICE` instruction, validates the result. What `test.sh` calls. |
+| `verify-deploy` | Post-deploy assertions by stage: `-step register\|services\|tee-version\|tee-machine\|all`, `-checks D5,R2` to narrow, `-json` for machines. |
 
 `fleet-status` is the one to reach for first — it is built around the three sources disagreeing.
 A machine can be registered, sent a config it rejected, and still report `ready: true` while
@@ -324,12 +338,13 @@ cannot help, because the siblings build's context root is `tee/`, not the repo.
 
 | Tool | What it does |
 | --- | --- |
-| `generate-bindings.sh` | Compiles the Solidity and regenerates the Go bindings. **Run after editing any contract.** |
+| `vendor-interfaces.sh` | Re-vendors the upstream TEE oracle interfaces into `contracts/interfaces/`, rewriting imports and stamping the upstream commit. Run when upstream moves. |
+| `generate-bindings.sh` | Compiles the vendored interfaces and regenerates the Go bindings. **Run after re-vendoring.** |
+| `regen-wire-fixtures.sh` | Regenerates `testdata/wire/` from the Forge vector tests (the ABI ground truth both Go codecs assert against). |
 | `build-node-base.sh` | Builds the shared tee-node base image, needed by non-Go language images. |
 | `check-versions.sh` | Fails when the dependency pins drift apart. |
 | `test-unit.sh` | A language implementation's unit tests. |
 | `test-conformance.sh` | Verifies an implementation against [extension-contract.md](extension-contract.md). |
-| `verify-contracts.sh` | Publishes contract source to the block explorer, so an address can be read rather than trusted. |
 
 ---
 

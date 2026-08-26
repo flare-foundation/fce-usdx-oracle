@@ -8,9 +8,9 @@ If you are adding a new language, this is the specification you are implementing
 > TypeScript implementations and this document is written for all three. **Only Go is
 > checked in here** (`go/`), so passages describing `python/` or `typescript/` files
 > describe the scaffold, not this repo. The scaffold's `SAY_HELLO` / `SAY_GOODBYE`
-> examples are likewise illustrative — this extension's operations are
-> `USDX_ORACLE/{GET_PRICE, GET_READINESS}` and
-> `USDX_CONFIG/{SET_ENDPOINTS, SET_ADMINS, SET_SECRET}`. Of those, only `GET_PRICE`,
+> examples are likewise illustrative — this extension's operations all sit under
+> one op type, `TEE_ORACLE/{GET_FEED, GET_READINESS, SET_ENDPOINTS, SET_ADMINS,
+> SET_SECRET}`. Of those, only `GET_FEED`,
 > the `/state` shape and the routing rules are pinned by conformance fixtures;
 > the provisioning commands and `GET_READINESS` are specified in
 > [usdx-oracle-codebase.md](usdx-oracle-codebase.md) §6 and
@@ -152,25 +152,30 @@ Source: `go-flare-common/pkg/tee/instruction/instruction.go`.
 
 `originalMessage` is what a handler receives. Its interpretation is entirely up to the extension — the scaffold's `SAY_HELLO` treats it as UTF-8 JSON, `SAY_GOODBYE` treats it as ABI-encoded `(string,string)`.
 
-**It may not be empty.** `TeeExtensionRegistry.sendInstructions` rejects an empty
-`message` with `MessageEmpty()`, so an operation that needs no input from the
+**It may not be empty.** The instructions facet rejects an empty `message`
+with `MessageEmpty()`, so an operation that needs no input from the
 caller still has to send *something*. Found on Coston2, 5 Aug 2026, when
-`requestPriceUpdate()` — which passed `message: ""` — reverted before any
+the first request path — which passed `message: ""` — reverted before any
 machine saw it (findings §22).
 
-USDX_ORACLE/GET_PRICE therefore carries a **one-byte request envelope**,
-`0x01`, declared as `GET_PRICE_REQUEST_V1` in `contracts/InstructionSender.sol`
-and `config.GetPriceRequestV1` in the extension. Every implementation must
-require **exactly** that byte and fail the action otherwise:
+TEE_ORACLE/GET_FEED therefore carries an **ABI-encoded `FeedUpdateRequest`
+envelope**: the 21-byte feed id in a single 32-byte word
+(`abi.encode(FeedUpdateRequest{feedId})`, the field being static so it encodes
+inline). The envelope names the feed to observe, because one instructions sender
+serves every feed of its extension. The envelope is assembled by
+`TeeOracleInstructionsSender` upstream and decoded by `report.DecodeFeedRequest`
+in the extension. Every implementation must require **exactly** that word — for
+the feed it serves — and fail the action otherwise:
 
 | `originalMessage` | Expected result |
 | --- | --- |
-| `0x01` | status 1, signed price report |
+| the 32-byte `FeedUpdateRequest` for this feed | status 1, signed feed update |
 | `0x` (empty) | status 0, `instruction carries an unexpected payload` |
+| a request for a different feed | status 0, `instruction carries an unexpected payload` |
 | anything else | status 0, `instruction carries an unexpected payload` |
 
 Accepting-and-ignoring is not equivalent: a caller must not be able to come to
-depend on bytes the extension silently drops, and a future envelope version must
+depend on bytes the extension silently drops, and a request for another feed must
 not be mistakable for this one. Conformance fixtures 01 and 03 pin both halves.
 
 ### 4.4 `ActionResult` — response body of `POST /action`
@@ -303,8 +308,11 @@ RUN git clone --filter=blob:none https://github.com/flare-foundation/tee-node.gi
 
 ## 8. Adding a language
 
+Only the Go implementation is checked in; the scaffold's `LANGUAGE=<dir>` dispatch still works,
+so a port is possible but is not something this repo currently ships.
+
 1. Create `<language>/` with a `Dockerfile` producing an image that satisfies §2, §4, §6.
-2. Implement the framework layer (`base/`): HTTP server, wire types, bytes32 helpers, dispatch registry, serialization. Reuse `python/base/` or `typescript/src/base/` as a reference.
-3. Implement the example (`app/`): `GREETING`/`SAY_HELLO` and `GREETING`/`SAY_GOODBYE`, behaviourally identical to the other languages — `tools/cmd/run-test` asserts on the exact greeting strings and counters.
-4. Run `./scripts/test-conformance.sh <language>`. No chain, no registration, no proxy required.
-5. Set `LANGUAGE=<language>` in `.env` and run the normal flow. Nothing in `scripts/`, `tools/`, `contracts/` or `docker-compose.yaml` needs to change — language selection resolves by directory convention.
+2. Implement the framework layer (`base/`): HTTP server, wire types, bytes32 helpers, dispatch registry, serialization.
+3. Implement the oracle: the `TEE_ORACLE` commands (`GET_FEED`, `GET_READINESS`, `SET_ENDPOINTS`, `SET_ADMINS`, `SET_SECRET`) with the `FeedUpdate` wire format, behaviourally identical to the Go implementation.
+4. Run `./scripts/test-conformance.sh <language>`. No chain, no registration, no proxy required — it replays the fixtures in `testdata/conformance/`.
+5. Set `LANGUAGE=<language>` in `.env` and run the normal flow. Nothing in `scripts/`, `tools/` or `docker-compose.yaml` needs to change — language selection resolves by directory convention.

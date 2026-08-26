@@ -1,5 +1,13 @@
 # USDX oracle — design rationale
 
+> **Migration note (2026-08).** The on-chain half moved to the upstream generic TEE
+> oracle contracts (`TeeOracleInstructionsSender` + `TeeOracleFeedStore`, op type
+> `TEE_ORACLE`, `FeedUpdate` payload). The rationale below for the *enclave* — the
+> price formula, supply quorum, reserve handling, fail-closed behaviour, credential
+> split — still applies. Where it names the old contracts, op types, or store guards
+> (`UsdxPriceStore`, `GET_PRICE`, `minPrice`/`maxAge`), read it against the new model
+> in `usdx-oracle-flows.md`.
+
 Why the code is shaped the way it is. This was originally carried as long
 package-doc comments in `go/internal/*` and `tools/pkg/*`; it was moved here so
 the code stays readable and the reasoning stays available. The code keeps a

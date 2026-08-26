@@ -63,7 +63,7 @@ non-negative and the price is capped. Below par it proves nothing, so it refuses
 **The operational consequence.** Because `R_bonds ≈ S`, the cash-less path sits within half a ULP
 of refusing. While cash is unavailable, if bonds fall behind supply by more than ~0.13 USD at
 current scale, the extension stops publishing entirely — `BackingUnavailable`, status 0, no price —
-and the feed ages out past the store's `maxAge` of 3600s.
+and the on-chain feed's timestamp ages (there is no store-side `maxAge` any more — staleness is the consumer's check).
 
 It does **not** print 0.99. In cash-less mode a sub-par price is unobservable by construction.
 
@@ -101,8 +101,8 @@ Three things make that safe:
 What survives is narrower and true: `last_update` is still parsed (unparseable → `BackingMalformed`)
 and a stamp in the **future** is still refused as `BackingTimestamp` — clock skew or a broken
 upstream, where nothing else in the response is trustworthy either. Staleness is now bounded only
-where it can be measured honestly: `MaxObservationAge` (10 min) on our own observation, and the
-store's `maxAge` (3600s) on the published feed.
+where it can be measured honestly: `MaxObservationAge` (10 min) on our own observation. The store
+itself no longer enforces a `maxAge` on the published feed — staleness there is the consumer's check.
 
 **What this changes operationally.** `hex_cash` now reads `ok` whenever it answers, so the health
 map no longer distinguishes "answered with a figure from this morning" from "answered with a fresh
@@ -130,9 +130,31 @@ path in the next section goes back to being the exceptional case it was written 
 | RPC quorum unmet | `SupplyUnavailable` | no price |
 | supply reads zero | `SupplyZero` | no price — an undefined ratio, not an infinite one |
 | observation older than 10 min | `ObservationStale` | refuses to sign |
+| observation older than 10 min *by the requesting block's clock* | `ClockBehindChain` | refuses to sign — the machine's clock is behind chain time |
+| GET_FEED instruction with no block timestamp | `MissingRequestTime` | refuses to sign — a zero would disable the bound above |
 | price outside plausible range | `PriceImplausible` | no price |
 
 Everything above is **fail-closed**. The feed stops; it does not guess.
+
+### The 10-minute bound is measured twice
+
+`MaxObservationAge` is checked against two different clocks, and the pair is the point.
+`Latest()` uses the machine's own — which is what catches upstreams that have stopped, but is
+also the clock that stamped `observedAt`, so a uniformly skewed host passes its own check no
+matter how far off it is. `Report()` then re-checks the same age against the **requesting
+instruction's block timestamp**, which the data-provider quorum cosigned and the host cannot
+move. `ObservationStale` means the upstreams stopped; `ClockBehindChain` means this machine's
+clock did.
+
+The bound runs in one direction only. An observation *newer* than the requesting block is
+ordinary, not suspicious: delivery is fire-and-forget, so an instruction can sit in a queue
+while the poller keeps observing. The enclave cannot tell a slow relay from a fast clock, so it
+does not try — the store covers that side by requiring `observedAt < block.timestamp` strictly
+(`TooFarAhead`), with no skew tolerance since multi-feed support removed the acceptance window.
+
+The requesting timestamp is never published. What gets signed as `observedAt` is still the
+moment the inputs were **read**; using the request time instead would stamp cached figures as
+fresh, which is the one thing the bound exists to prevent.
 
 ### `down` is five different things
 
@@ -156,21 +178,22 @@ The RPC side is finer-grained, and the distinctions are load-bearing:
 
 ## The store's own guards
 
-Even a correctly signed price can be refused on-chain. Live values:
+Even a correctly signed update can be refused on-chain. `TeeOracleFeedStore.submitFeedUpdate`:
 
-| Guard | Value | Behaviour |
-| --- | --- | --- |
-| `minPrice` / `maxPrice` | 0.50 / 1.00 | outside → `OutOfBounds`, the feed **freezes rather than publishing a collapse** |
-| `maxAge` | 3600 s | consumers see the feed as stale; the store does not revert |
-| `observedAt` | strictly increasing | replay guard; a non-newer report is `NotNewer` |
-| signer status | must be `PRODUCTION` | otherwise `UnknownSigner` |
-| config / admins hash | must match published | otherwise `StaleConfig` / `StaleAdmins` |
+| Guard | Behaviour |
+| --- | --- |
+| signature | recovered through `Fdc2Verification`; signer must be on the store's extension and `PRODUCTION`, and the extension not emergency paused |
+| `extensionId` / `feedId` | must match the store's, otherwise `WrongExtensionId` / `WrongFeedId` |
+| endpoints / admins hash | must match what was published for this (feed, machine), otherwise `StaleEndpoints` / `StaleAdmins` (or `NoEndpointsPublished` / `NoAdminsPublished`) |
+| `observedAt` | strictly increasing (`NotNewer`) and strictly before `block.timestamp` (`TooFarAhead`) |
 
-`maxPrice` of exactly 1.00 mirrors the extension's par cap, so the two halves agree by
-construction. `minPrice` of 0.50 is a judgement: a genuine collapse below 50c is treated as more
-likely to be a fault than a fact, and freezing is preferred to publishing it. That is a deliberate
-trade — see `OutOfBounds` in [usdx-oracle-monitoring.md](usdx-oracle-monitoring.md), which argues it
-deserves its own alert precisely because it is the one guard that can hide a real event.
+The store no longer enforces a `[minPrice, maxPrice]` band or a `maxAge` window. The price bound
+is now applied **in the enclave before signing** (the par cap at 1.00, plus the implausibility
+bounds in package `backing`/`price`), and staleness is the consumer's check — the store returns
+the last value with an ageing timestamp rather than reverting. A genuine collapse below the
+enclave's lower bound therefore surfaces as a status-0 result with an `implausible_value` class,
+not as an on-chain revert — see the cause-6 note in
+[usdx-oracle-monitoring.md](usdx-oracle-monitoring.md).
 
 `NotNewer` is **not** a fault: with more than one keeper, exactly one submission wins each cycle and
 the rest correctly record `race_lost`.

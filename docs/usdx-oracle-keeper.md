@@ -4,39 +4,36 @@
 **Built:** 2026-08-05
 
 _The cycle lives in `tools/pkg/keeper`: it triggers, polls with a bounded deadline and
-exponential backoff, treats pending as pending, decodes `data` into `(body, signature)` and
-relays the body verbatim. It preflights every store guard so a rejection arrives named —
-`StaleConfig`, `NotNewer`, `TooOld` — instead of as a bare revert. `tools/cmd/keeper` wraps it
-in the timer; `tools/cmd/submit-price` runs the same code once by hand, so what an operator
-proves interactively is what runs unattended._
+exponential backoff, treats pending as pending, decodes `data` into the signed feed update and
+relays it. It preflights every store guard so a rejection arrives named — `StaleEndpoints`,
+`NotNewer` — instead of as a bare revert. `tools/cmd/keeper` wraps it in the timer;
+`scripts/oracle-cycle.sh` runs the same code once by hand, so what an operator proves
+interactively is what runs unattended._
 
-_The timer requests over the **direct channel** and rotates over the registered machines, raising
-one on-chain instruction every `-onChainEvery` (default 2h) to keep the permissionless path
-exercised. Before the first cycle it **sweeps** the fleet — one direct request per machine, then
-their submissions ordered by ascending `observedAt` — so every machine is commissioned on-chain
-without an operator running `submit-price` per machine._
+_Every cycle raises its request on-chain through `requestFeedUpdate(feedId, teeIds)`, naming
+the target machines explicitly. The result is polled on the fleet's proxies and the update's
+own signature says which machine answered. Before paying the fee it asks those machines over
+`GET_READINESS` whether they would sign at all — a fee spent on a machine with a stale
+observation buys a predictable failure._
 
 _**Not built, and tracked below:** replace-by-fee bumping, the ≥2-instance deployment, and the
 chain-age watcher — which by design must run outside this process's failure domain._
 
-_Companion docs: architecture and flow in `usdx-oracle-spec.md` §4 and WP5, keeper design notes
-in `usdx-oracle-operations.html` §1, missed-update alerting in `usdx-oracle-monitoring.md`,
-working plan in `usdx-oracle-plan.md`. Google-Doc-ready: `usdx-oracle-keeper.html`._
+_Companion docs: architecture and flow in `usdx-oracle-spec.md` §4 and WP5, missed-update
+alerting in `usdx-oracle-monitoring.md`, working plan in `usdx-oracle-plan.md`._
 
 ---
 
 ## Scope
 
-The keeper is the only moving part between an instruction and a stored price. It does three
-things, on a timer:
+The keeper is the only moving part between an instruction and a stored feed value. It does
+three things, on a timer:
 
-1. **Trigger** — raise `GET_PRICE`, on the chosen machine's proxy or, on a slow cadence,
-   through `requestPriceUpdate()` on `InstructionSender`.
-2. **Collect** — poll the TEE proxy for the resulting `ActionResult`.
-3. **Relay** — decode the signed payload and call `submitPrice()` on `UsdxPriceStore`.
-
-Plus one thing before the timer starts — the **sweep**: one direct request to every machine the
-registry lists for the extension, so each lands a price and is commissioned on-chain.
+1. **Trigger** — raise `GET_FEED` through `requestFeedUpdate(feedId, teeIds)` on the
+   `TeeOracleInstructionsSender` ("the sender").
+2. **Collect** — poll the target machines' proxies for the resulting `ActionResult`.
+3. **Relay** — decode the signed payload and call `submitFeedUpdate()` on the
+   `TeeOracleFeedStore` ("the store").
 
 Plus the keeper-side half of the alerting specified in `usdx-oracle-monitoring.md`.
 
@@ -45,9 +42,11 @@ substance of this document**, and they are where a straightforward implementatio
 
 ### Non-goals
 
-The keeper holds no authority. The store verifies the TEE signature against
-`TeeMachineRegistry`, so a compromised keeper costs gas, not correctness. It must therefore
-never:
+The keeper holds no authority. The store verifies the TEE signature through
+`Fdc2Verification` against the TEE machine registry — the signer must be a registered
+PRODUCTION machine on the store's extension — so a compromised keeper costs gas, not
+correctness. Anyone may submit; colliding submissions are harmless, exactly one wins per
+cycle. It must therefore never:
 
 - compute, derive, adjust or sanity-"fix" a price;
 - cache a price, or resubmit an old result on a later cycle;
@@ -59,38 +58,33 @@ never:
 ## The cycle
 
 ```
-at start:                                 # the sweep — see "Commissioning a machine"
-    fleet   = machineRegistry.getActiveTeeMachines(store.extensionId())
-    reports = parallel(collect(m) for m in fleet)         # no transaction yet
-    for r in sorted(reports, key = observedAt):           # ascending, or all but one revert
-        relay(r)
-
 every T:                                  # single-flight — never overlap cycles
+    fleet = machineRegistry.getActiveTeeMachines(store.extensionId())   # re-read each tick
+
+    # 0. preflight — ask before paying
+    if all(not readiness(m).wouldSign for m in fleet):     # best effort; unknown means "try"
+        emit(cycle, outcome = "request_skipped")           # no fee spent
+        continue
+
     # 1. trigger
-    if now - lastOnChain >= T_onchain:                    # default 2h
-        fee     = operationFees.getOperationFee(USDX_ORACLE, GET_PRICE)
-        tx      = sender.requestPriceUpdate{value: fee}()
-        receipt = waitMined(tx, deadline = T_request)
-        id      = receipt.logs.first(PriceUpdateRequested).instructionId
-        proxies = every machine's url                     # the registry chose the machine
-        tag     = "threshold"
-    else:                                                 # every other cycle: no fee, no tx
-        machine = fleet[next++ % len(fleet)]
-        id      = POST machine.url + "/direct" {opType, opCommand, message}
-        proxies = [machine.url]
-        tag     = "submit"
+    fee     = operationFees.getOperationFee(TEE_ORACLE, GET_FEED) × len(teeIds)
+    tx      = sender.requestFeedUpdate{value: fee}(feedId, teeIds)
+    receipt = waitMined(tx, deadline = T_request)
+    id      = receipt.logs.first(FeedUpdateRequested).instructionId
 
     # 2. collect
-    result  = poll(proxies, "/action/result/" + id.hex() + "?submissionTag=" + tag,
+    proxies = every target machine's url
+    result  = poll(proxies, "/action/result/" + id.hex() + "?submissionTag=threshold",
                    deadline = T_poll, backoff = exponential,
-                   until    = result.status in {0, 1})    # anything else is pending
+                   until    = result.status in {0, 1})     # anything else is pending
     if result.status != 1:
-        emit(cycle, errorClass = result.log)              # fail closed — relay nothing
+        emit(cycle, errorClass = result.log)               # fail closed — relay nothing
         continue
 
     # 3. relay
-    (body, signature) = abi.decode(result.data, (bytes, bytes))
-    submit(store.submitPrice(body, signature), deadline = T_submit)
+    (update, signature) = abi.decode(result.data, (FeedUpdate, Signature))
+    preflight(update)                                       # every store guard, named
+    submit(store.submitFeedUpdate(update, signature), deadline = T_submit)
 ```
 
 ---
@@ -103,40 +97,46 @@ every T:                                  # single-flight — never overlap cycl
 | Trigger and collect, sending nothing | `keeper.Collect` — `tools/pkg/keeper/cycle.go` |
 | Preflight and submit | `keeper.Relay` — `tools/pkg/keeper/cycle.go` |
 | Store guards, named before gas is spent | `keeper.Preflight` — `tools/pkg/keeper/preflight.go` |
-| Timer, channel schedule, rotation | `keeper.Run` — `tools/pkg/keeper/keeper.go` |
-| The startup sweep, and its ordering | `keeper.Sweep` — `tools/pkg/keeper/sweep.go` |
-| Listing the fleet, whose turn it is | `keeper.ActiveMachines`, `fleet` — `tools/pkg/keeper/fleet.go` |
+| Timer and fleet refresh | `keeper.Run` — `tools/pkg/keeper/keeper.go` |
+| The readiness preflight | `keeper.wouldRefuse` — `tools/pkg/keeper/readiness.go` |
+| Listing the fleet | `keeper.ActiveMachines`, `fleet` — `tools/pkg/keeper/fleet.go` |
 | Cycle records and the outcome taxonomy | `keeper.Record`, `keeper.Outcome` — `tools/pkg/keeper/record.go` |
 | Long-running process, signals, flags | `tools/cmd/keeper` |
-| One cycle by hand, with read-back | `tools/cmd/submit-price` |
+| One cycle by hand, with read-back | `scripts/oracle-cycle.sh` (builds `tools/cmd/keeper` with `-once`) |
 
 `RunCycle` never exits the process and returns a `Record` for every outcome, which is what
-lets the same code serve a one-shot and a timer. It is `Collect` then `Relay`; the two are split
-so the sweep can hold reports from several machines and choose the order it submits them in.
-Run it:
+lets the same code serve a one-shot and a timer. It is `Collect` then `Relay`, split so a caller
+can inspect a decoded update before deciding to submit it — which is what `oracle-cycle.sh
+--dry-run` does. Run it:
 
 ```
-go run ./cmd/keeper -instructionSender 0x… -interval 10m -keeperId keeper-a
+go run ./cmd/keeper -tee @a,@b,@c -interval 10m -keeperId keeper-a
 ```
 
-`-once` runs a single cycle and exits, for a cron-driven deployment — it picks a machine at
-random rather than rotating, since the process is what repeats, and it does not sweep unless
-`-sweep` is passed. `-records <file>` appends the JSON records somewhere other than stdout.
+The store resolves from `-store` or the `TeeOracleFeedStore` entry in the addresses file, and
+the instructions sender is derived from the store's own `instructionsSender()` unless given
+explicitly with `-instructionSender`. `-once` runs a single cycle and exits, for a cron-driven
+deployment where the process is what repeats. `-records <file>` appends the JSON records
+somewhere other than stdout.
 
-### Flags that decide the channel
+### Flags
 
 | Flag | Default | What it does |
 | --- | --- | --- |
-| `-direct` | `true` | Request over the proxy. `-direct=false` puts every cycle on-chain and disables the sweep. |
-| `-onChainEvery` | `2h` | How often a cycle goes on-chain anyway. `0` never does. |
-| `-sweep` | `true` | Land a price from every machine before the first cycle. Off by default under `-once`. |
-| `-sweepAttempts` | `3` | Retries for a machine that did not land a price. |
-| `-sweepRetryDelay` | `2m` | Wait before a retry — one `ObservationInterval`, or the retry has nothing newer to offer. |
-| `-p` | `$EXT_PROXY_URL` | Given explicitly, overrides *every* machine's registered url. Right only with one machine. |
+| `-tee` | — required | Comma-separated TEE machine addresses to request from. The sender dispatches to these, and the fee scales with the count. |
+| `-feedId` | the USDX/USD id | The feed to observe; must match the store's. |
+| `-store` | `TeeOracleFeedStore` entry of the addresses file | The store to submit to. The sender is derived from its `instructionsSender()` unless `-instructionSender` is given. |
+| `-interval` | `10m` | How often a cycle starts. Match the source refresh; faster costs a fee per cycle and buys nothing. |
+| `-pollTimeout` | `5m` | How long to wait for a terminal `ActionResult`. |
+| `-submitTimeout` | `3m` | How long to wait for the `submitFeedUpdate` receipt. |
+| `-directApiKey` | `$DIRECT_API_KEY` | Key for the `GET_READINESS` preflight. Without it every cycle pays the fee unasked. |
+| `-p` | `$EXT_PROXY_URL` | Where the result is looked for first, and the machine the readiness preflight asks. Given explicitly, overrides *every* machine's registered url (right only with one machine); otherwise each machine is reached at its own registered url and this is the fallback when the registry lists none. |
 
-`DIRECT_API_KEY` (or `-directApiKey`) is required unless `-direct=false`, and is checked at
-startup rather than at the first cycle: a keeper that starts and then fails every tick on a
-missing key looks like an outage.
+`-directApiKey` is **not** required — the preflight is a saving, not a gate, and a cycle without
+it simply requests. The keeper warns at startup when it is missing, because the symptom otherwise
+is fees quietly spent on machines that were always going to refuse. The key reaches the proxy's
+`/direct` endpoint, which on this extension carries `GET_READINESS` and `SET_SECRET`; a feed
+update never goes that way.
 
 ---
 
@@ -144,13 +144,15 @@ missing key looks like an outage.
 
 ### Getting the instruction ID
 
-`requestPriceUpdate()` returns `bytes32 _instructionId` and emits it in
-`PriceUpdateRequested(address indexed requester, bytes32 indexed instructionId)`. Both exist
-because they serve different callers: the return value is for contract callers, and **a
-transaction returns nothing to an off-chain caller**, so a keeper reads the event.
+`requestFeedUpdate(feedId, teeIds)` returns `bytes32 _instructionId` and emits it in
+`FeedUpdateRequested(address indexed requester, bytes21 indexed feedId, bytes32 indexed
+instructionId)`. Both exist because they serve different callers: the return value is for
+contract callers, and **a transaction returns nothing to an off-chain caller**, so a keeper
+reads the event.
 
-The registry's own `TeeInstructionsSent` carries the same value, but parsing it would couple
-every caller to the registry's event ABI for a value our own contract already has.
+The registry's own `TeeInstructionsSent` carries the same id, but the sender's own event is
+preferred: parsing the registry's logs would couple every caller to the registry's event ABI,
+and the sender's event also proves which feed was requested.
 
 Scan the receipt for the event rather than indexing by position — the receipt also contains the
 registry's logs, and a positional assumption breaks the moment the emit order changes. The
@@ -159,188 +161,168 @@ zero hash. `tools/pkg/utils/instructions.go` is the reference.
 
 ### The fee
 
-`requestPriceUpdate()` is `payable` and forwards `msg.value` to the registry. Read the fee;
-never hard-code it:
+`requestFeedUpdate()` is `payable`; `msg.value` is the instruction fee, and it is what bounds
+spam on the permissionless path. Read the fee; never hard-code it:
 
 ```
-fee = operationFees.getOperationFee(OP_TYPE_USDX_ORACLE, OP_COMMAND_GET_PRICE)
-      ?: operationFees.getDefaultFee()
+fee = operationFees.getOperationFee(TEE_ORACLE, GET_FEED) × len(teeIds)
+      ?: operationFees.getDefaultFee() × len(teeIds)
 ```
 
 The fee is governance-settable, and a stale constant fails closed in the worst way: every
-request reverts, no price is published, and nothing in the repo changed to explain it. Take the
-op type and command from the deployed sender's own public constants so the lookup cannot drift
-from the instruction actually sent.
+request reverts, no feed update is published, and nothing in the repo changed to explain it.
+The op type and commands are file-level `bytes32 constant`s in the vendored
+`ITeeOracleInstructionsSender` — shared by every deployed instance — so the lookup keys on
+exactly the identifiers the instruction carries; the same constants are pinned in
+`go/internal/config`, and a mismatch prices the wrong row and the instruction is rejected for
+an underpaid fee. Upstream's deployment leaves the `TEE_ORACLE` rows unset, so the default fee
+is the normal state on a fresh deployment; the lookup falls back to it rather than erroring.
 
-`calculateFeeByTeeIds` is the more precise call but is not usable here — `requestPriceUpdate`
-selects its machine internally via `getRandomTeeIds`, so the caller cannot know the tee id in
-advance.
+The fee scales with the target count — one request dispatches to every named machine, so a
+single-machine fee would underpay a fleet-wide request and revert.
 
-Overpayment is recoverable — `requestPriceUpdate` sets `claimBackAddress: msg.sender`, so any
-refund goes to the keeper's own wallet.
+### Named machines per request
 
-### One machine per request
+`requestFeedUpdate(feedId, teeIds)` dispatches the request to **the machines the caller
+names** — there is no random selection any more, and `-tee` is what routes the cycle. The
+result is retrievable only from the proxy of the machine that served it. Consequences the
+keeper must respect:
 
-`requestPriceUpdate()` calls `getRandomTeeIds(extensionId, 1)`. Each cycle is dispatched to
-**one randomly selected machine**. Consequences the keeper must respect:
-
+- **Poll every target's proxy.** Only the machine that served the instruction holds the result.
+  `Config.ResultProxies` is filled from the registry each tick, and the record names whichever
+  proxy answered.
+- **`teeId` comes from the signature, not the request.** The recovered signer is the only thing
+  that says which machine actually produced the update.
+- Every target must already have endpoints AND admins published for the feed, or the request
+  reverts `TeeIdNotConfigured` before any fee is spent. `isTeeIdConfigured(feedId, teeId)` is
+  the check, and `fleet-status` reads it for the whole fleet.
 - A failed cycle may mean one bad machine, not a broken data source. This is why
   `usdx-oracle-monitoring.md` requires cross-machine correlation before a single `status == 0`
   is allowed to page.
-- Running ≥2 keepers means ≥2 independent machine selections per interval, which is
-  redundancy at the machine level as well as at the keeper level. That is a feature, and it is
-  the reason the wasted gas from losing a race is worth paying.
+- Running ≥2 keepers means ≥2 independent requests per interval, which is redundancy at the
+  keeper level. That is a feature, and it is the reason the wasted gas from losing a race is
+  worth paying.
 
-What several machines buy today is **availability, not integrity**. `UsdxPriceStore` accepts a
-signed price from any `PRODUCTION` machine registered to the extension; the first valid newer
-report wins and the rest revert `NotNewer`. There is no cross-machine agreement, so a second
+What several machines buy today is **availability, not integrity**. The store accepts a signed
+feed update from any `PRODUCTION` machine registered to the extension; the first valid newer
+update wins and the rest revert `NotNewer`. There is no cross-machine agreement, so a second
 machine covers the first being down — it does not corroborate its number. Quorum across machines
 would be a real change to the store, and worth being clear about what it would and would not fix:
-every machine takes its configuration from the same owner key (findings §15), so it would defend
-against one machine being compromised or malfunctioning, not against a hostile configuration
-pointing all of them at the same bad provider.
+every machine takes its configuration from the same governance publication (findings §15), so
+it would defend against one machine being compromised or malfunctioning, not against a hostile
+configuration pointing all of them at the same bad provider.
 
-### The direct channel
+### One channel, and why
 
-The keeper raises the action on a machine's proxy (`POST <proxy>/direct`) instead of on-chain,
-which saves the registry fee and one transaction per cycle. That is the default, and at a
-10-minute interval it is the difference between paying the fee ~144 times a day and ~12.
+The proxy also exposes `POST <proxy>/direct`, which raises an action on **that** machine without
+a fee or a transaction. `GET_FEED` used to be served over it and no longer is: the extension
+refuses a direct `GET_FEED` with `wrong action type`.
 
-It costs nothing in trust, and the reason is worth stating precisely: `GET_PRICE` grants no
-authority. It signs the observation the enclave already made on its own timer — the enclave does
-not observe on request — and `submitPrice` verifies that signature against `TeeMachineRegistry`
-however the signature was asked for. A caller holding `DIRECT_API_KEY` can make a machine sign
-its own latest observation more often than usual. It cannot make it sign anything else.
+The saving was real — at a 10-minute interval, paying the registry fee ~144 times a day instead
+of never — and it bought the one thing the on-chain path cannot give you, which is the ability to
+address a **named** machine. What it cost is the property the on-chain path exists for:
 
-What it does cost is permissionlessness, which is why **both channels stay**:
-
-| | instruction | direct |
+| | instruction (`requestFeedUpdate`) | direct (removed for `GET_FEED`) |
 | --- | --- | --- |
-| Who can call it | anyone, by paying the registry fee | whoever holds `DIRECT_API_KEY` |
+| Who can call it | anyone, by paying the instruction fee | whoever holds `DIRECT_API_KEY` |
 | Cost per cycle | fee + trigger tx + submit tx | submit tx |
-| Which machine serves it | random, via `getRandomTeeIds` | the one behind the proxy URL |
-| Result submission tag | `threshold` | `submit` |
+| Which machine serves it | the machines named in the request | the one behind the proxy URL |
+| On the record | the request is a transaction | nothing on-chain |
 
-The last two rows matter more than they look:
+A direct `GET_FEED` could not forge a price — the enclave signs only what it observed on its own
+timer, and `submitFeedUpdate` verifies that signature against the TEE machine registry however
+it was asked for. What it did was hand the same signed update to anyone holding one API key, for
+free and with no on-chain trace of the request. Running the feed that way means the permissionless
+path is the one nobody uses, and a path nobody uses is a path nobody notices has broken.
 
-- **Machine selection.** With N machines an on-chain request goes to a random one, and its result
-  is retrievable only from *that machine's* proxy. A keeper polling a single URL therefore misses
-  roughly (N−1)/N of its own requests and reports `no_result` — which is why an on-chain cycle
-  polls **every** machine's proxy (`Config.ResultProxies`, filled from the registry) and the
-  record names whichever one answered. The direct channel has no such ambiguity: you address a
-  machine by addressing its proxy, which is what makes per-machine commissioning possible at all.
-- **Submission tag.** A direct action is filed under `submit`, an instruction under `threshold`,
-  and `GET /action/result/{id}` defaults to `threshold`. Ask for the wrong one and the endpoint
-  returns 404 for the whole poll window; the cycle then reports a timeout that looks exactly like
-  a dropped instruction.
+So there is one channel now, and every cycle exercises it.
 
-### Why the on-chain path stays on a timer
+`/direct` itself stays enabled and stays keyed: `SET_SECRET` and `GET_READINESS` — both
+commands under the `TEE_ORACLE` op type — have no on-chain counterpart and still go through it.
 
-Both channels produce the same signed report, so the on-chain one buys exactly one thing: it is
-the permissionless path. Anyone can pay the registry fee and get a price published, with no API
-key and no network reach to the proxy. That property is only worth anything if it still works,
-and the way to know it still works is to use it — so the keeper spends the fee on a slow cadence
-(`-onChainEvery`, default 2h) rather than on every cycle or never.
-
-The clock starts at launch, so the first cycle after the sweep is a direct one and a restart does
-not pay the fee. A keeper restarting more often than `-onChainEvery` therefore never exercises
-the on-chain path, which is the right trade: a crash loop must not also burn fees. The stamp is
-also taken *before* the cycle runs, not after it succeeds, so a failing on-chain request is not
-retried — at a fee each time — on every tick.
-
-### Rotation
-
-A direct cycle addresses the next machine in the registry's list, round-robin. Two reasons:
-
-- **Commissioning stays current.** `isProvenConfigured` goes false the moment a new config or
-  admin set is published for a machine. A keeper that only ever talked to one machine would
-  leave the others silently decommissioned until someone read `fleet-status`.
-- **One broken machine costs one cycle in N**, not all of them.
+### Keeping the fleet list current
 
 The list is re-read every tick, so machines added or suspended mid-run are picked up without a
 restart; a registry read that fails keeps the previous list, because an empty fleet would stop
-the feed. The rotation index is the only state the timer keeps, and it is deliberately not
-correctness-bearing — any registered machine may serve any cycle, so a restart that resets it
-costs nothing.
+the feed. Machines the registry lists **without a URL are dropped**, with a warning — there is
+nowhere to poll for their results.
 
-Machines the registry lists **without a URL are dropped**, with a warning. Substituting another
-machine's URL would send a request meant for one enclave to another and record the wrong machine
-as commissioned.
+### The readiness preflight
+
+Before paying, the keeper asks every machine it is about to request from over `GET_READINESS`
+whether it would sign right now. If *all* of them say no, the cycle ends `request_skipped` with
+no fee spent. All of them, because a fee spent entirely on machines that will refuse buys a
+predictable failure — one willing machine is enough to make the request worth paying for.
+
+Every uncertainty resolves to "request anyway": no API key, no reachable machine, a failed query.
+"Not known" is not "do not try", and a preflight that suppressed real requests would be worse
+than the fee it saves. It returns on the first machine that would sign, so the healthy path costs
+one round trip.
 
 ---
 
 ## Commissioning a machine
 
-A machine is *commissioned* once it has landed one price on-chain, which is what writes
-`lastReport[teeId]` in `UsdxPriceStore` and makes `isProvenConfigured(teeId)` true.
+A machine is *commissioned* once it has signed one feed update the store accepted — its teeId
+appears in a `FeedUpdated` event. The store keeps no per-machine bookkeeping any more: one
+global `observedAt` stamp is all it holds, so commissioning is an event-log fact, not a storage
+one. This is deliberately lean: `submitFeedUpdate` already proves both facts it needs — it
+verified the signature through the machine registry, and it checked the signer's configuration
+commitments against the published ones — so a separate attestation entry point would be more
+machinery for something that falls out of the normal one.
 
-This is deliberately not a contract mechanism. `submitPrice` already proves both facts it needs —
-it recovered the signer, and it checked that signer's config hash against the published one — so
-recording them costs three storage writes on a path that already runs. A separate attestation
-entry point would be more machinery for something that falls out of the normal one.
+**Everything addresses specific machines now.** `requestFeedUpdate(feedId, teeIds)` takes the
+target list, so commissioning a particular machine is a matter of naming it in `-tee`; there is
+no waiting for a random turn. `isTeeIdConfigured(feedId, teeId)` is the sender's check that both
+commitments are published for the feed, and it is the precondition `requestFeedUpdate` enforces
+per target — a machine without configuration cannot even be asked, which is what makes
+commissioning state visible before any fee is spent.
 
-**The keeper sweeps the fleet at startup**, so in the ordinary case this happens by itself: one
-direct request to every registered machine, then one `submitPrice` each. It runs at every start,
-not only for machines that have never landed a price, because a re-pushed config or admin set
-decommissions a machine silently and a start is the cheapest moment to find out.
+Order still matters when bringing a machine up, because each step is what makes the next
+possible:
 
-The sweep collects from every machine **concurrently and submits strictly sequentially, oldest
-observation first**. Both halves are load-bearing. Collection sends no transaction, so it is safe
-to run at once; two in-flight submissions would take two nonces and could land out of order. And
-`observedAt` must strictly increase, so submitting in registry order lands one report and rejects
-every other as `NotNewer` — the sweep would commission one machine per pass however often it ran.
-Ascending, the whole fleet lands in one pass. A machine still rejected is retried after
-`-sweepRetryDelay`, which needs to be at least one `ObservationInterval` or the retry has nothing
-newer to offer.
-
-A sweep entry that reports `race_lost` did **not** commission its machine — someone else's report
-landed. That is the opposite of what the same outcome means on a timed cycle, which is why sweep
-records carry `phase: "bootstrap"`.
-
-The manual path below is still what an operator runs for one machine — during commissioning, or
-when the sweep reports one machine still failing. Order matters, because each step is what makes
-the next one possible:
-
-1. Register the machine and get it to `PRODUCTION` in `TeeMachineRegistry`.
-2. `send-endpoints -p <that machine's proxy>` — publishes its config and waits until the machine
-   reports the matching `endpointsHash`. It will not report success until the machine is actually
-   running what was published.
-3. `upload-hex-key.sh` and `upload-rpc-keys.sh` — deposit its credentials. Two uploads under
+1. Register the machine and get it to `PRODUCTION` in the TEE machine registry —
+   `post-build.sh` runs `allow-tee-version` → `set-governance` → `register-tee`.
+2. `send-endpoints -tee <machine> -feedId <feed>` — publishes its endpoint configuration and
+   waits until the machine reports the matching `endpointsHash`. It will not report success
+   until the machine is actually running what was published.
+3. `send-admins -tee <machine> -feedId <feed>` — same for the admin signer sets. The store
+   requires both commitments, so a machine with endpoints but no admin set still cannot land an
+   update — it reverts `NoAdminsPublished`.
+4. `upload-hex-key.sh` and `upload-rpc-keys.sh` — deposit its credentials. Two uploads under
    two admin sets: the backing set governs `hex_api_key`, the providers set governs the RPC
    credentials. Each machine has its own TEE key, so envelopes are per machine and cannot be
    reused.
-4. Confirm `ready: true` and an empty `missingSecretRefs` in `fleet-status`.
-5. Land one price from *this* machine:
-   ```
-   go run ./cmd/submit-price -direct -p <that machine's proxy> -instructionSender 0x…
-   ```
-6. `fleet-status` should now show `commissioned yes` for it.
+5. Confirm `configured`, `ready: true` and an empty `missingSecretRefs` in `fleet-status` —
+   which reads the sender's commitments on-chain and asks the machine directly over
+   `GET_READINESS`, and so does not depend on it having landed anything.
+6. Let the keeper run with the machine in `-tee`; `oracle-cycle.sh -tee @<machine>` drives one
+   cycle by hand. Its first accepted update is its commissioning.
 
-Two things to expect at step 5:
+Two things to expect at step 6:
 
-- **`NotNewer` when commissioning several machines back to back.** `observedAt` must strictly
-  increase, and each machine stamps its own from its own observation timer. If machine B's cached
-  observation is older than the one machine A just landed, B is rejected. Space the runs by about
-  one `ObservationInterval` and retry — or let the keeper's sweep do it, which is precisely the
-  problem its ascending-`observedAt` ordering solves. The cycle record distinguishes the two
-  cases: `race_lost` means the store is ahead of B, `stale_submission` means B relayed something
-  old.
-- **Re-pushing a config decommissions the machine.** `isProvenConfigured` goes false the moment
-  `setEndpoints` publishes something new, because the machine has not yet proven it runs the new
-  config. That is correct and self-announcing — repeat step 5, or restart the keeper and let the
-  sweep do it. `send-endpoints` prints the command on success for this reason.
+- **`NotNewer` while a fleet settles.** `observedAt` must strictly increase, and each machine
+  stamps its own from its own observation timer. A machine whose cached observation is older than
+  the one already stored is rejected. The record distinguishes the cases: `race_lost` means the
+  store is ahead, `stale_submission` means the machine relayed something old. Both resolve on
+  their own within about one observation interval.
+- **Re-pushing a configuration strands the machine on the old one until it applies the new.**
+  The sender's `expectedEndpointsHash` moves the moment `setEndpoints` publishes, so a machine
+  still running the previous configuration fails every submission with `StaleEndpoints` until
+  it catches up. `send-endpoints` checks delivery and says so on success; `fleet-status`
+  reconciles the fleet.
 
-`lastReport` is a record of **commissioning, not liveness**. Only the machine that wins a given
-cycle updates its entry, so a stale `acceptedAt` means "has not won lately", not "unhealthy". For
-liveness, read each machine's `GET /state` — which is what `fleet-status` does.
+For liveness, read each machine's `GET /state` or ask it over `GET_READINESS` — which is what
+`fleet-status` does.
 
 ---
 
 ## Step 2 — collect
 
-Poll `GET <proxy>/action/result/<instructionId>?submissionTag=<tag>` until the status is terminal.
-The tag is `threshold` for an instruction and `submit` for a direct action; it is not optional,
-because the endpoint's default silently 404s for the other kind.
+Poll `GET <proxy>/action/result/<instructionId>?submissionTag=threshold` until the status is
+terminal. `threshold` is the tag an instruction's result is filed under, and it happens to be the
+endpoint's default — but pass it explicitly: a readiness query files its result under `submit`,
+and asking for the wrong one 404s for the whole poll window rather than erroring.
 
 | `status` | Meaning | Keeper action |
 | --- | --- | --- |
@@ -373,20 +355,20 @@ guarantee, so this is an expected outcome, not an exceptional one. Record it and
 `ActionResult` has **no `signature` field**. The extension returns:
 
 ```
-body = abi.encode(PriceReport)          # 6 static words, 192 bytes
-data = abi.encode(body, signature)      # ActionResult.data
+update = FeedUpdate struct                  # 7 static words, 224 bytes
+data   = abi.encode(update, signature)      # ActionResult.data — 10 words, 320 bytes
 ```
 
-so the keeper must ABI-decode `result.data` into `(bytes body, bytes signature)` and pass both
-to `submitPrice(body, signature)`. `report.DecodeData` in `go/internal/report/report.go` is
-exactly this, and its doc comment names the caller: *"Used by tests and tooling; the store does
-the equivalent on-chain."*
+so the keeper ABI-decodes `result.data` into the update and its signature and hands both to
+`submitFeedUpdate(update, signature)`. `feedupdate.Decode` in `tools/pkg/feedupdate` is exactly
+this — it restates the wire layout rather than importing the enclave's copy in
+`go/internal/report`, so the relayer is an independent check on the machine instead of a mirror
+of it; both are pinned to the same Solidity-generated fixtures in `testdata/wire`.
 
-**The body must be relayed verbatim.** Never decode it into fields and re-encode. The store
-verifies the signature over exactly the bytes it received and only then decodes them;
-re-encoding would make acceptance depend on the keeper's encoder matching the TEE's byte for
-byte, and any divergence would surface as an invalid signature rather than as the encoding bug
-it is.
+**The old verbatim rule is retired for this payload.** Every `FeedUpdate` field is static, so
+its ABI encoding is canonical — exactly one valid byte string per set of values — and the store
+itself re-encodes from calldata. The rule still binds for the dynamic `SET_ENDPOINTS` and
+`SET_ADMINS` payloads, which must never be re-serialised by a relayer.
 
 ### Classifying the outcome
 
@@ -435,35 +417,20 @@ two in-flight instructions from one keeper, two nonce-consuming transactions, an
 of submitting reports out of order — burning fees to accomplish nothing, since the store
 accepts only the newer one.
 
-### The deadline budget must fit inside `maxAge`
+### The deadline budget is a liveness budget, not an acceptance one
 
-`submitPrice` reverts `TooOld` when `block.timestamp - reportedAt > maxAge`, and `reportedAt`
-is stamped **inside the enclave** at the end of the observation, before signing. Every
-subsequent step spends that budget:
-
-```
-observedAt ──────────────────────────────────────────────► submitPrice mined
-             sign │ return to proxy │ T_poll │ build+send │ mine
-             └──────────────── must stay under maxAge ─────────────┘
-```
-
-So the keeper's own timeouts are bounded by a store constant:
-
-```
-T_poll + T_submit  <  maxAge − (signing + proxy return latency + mining)
-```
-
-`deploy-store` defaults `maxAge` to **3600 s**, and `usdx-oracle-operations.html` suggests
-`T_poll = T/2` — 300 s at the planned 10-minute cadence. That is comfortable today. It is
-written down because it is not obviously coupled: **tightening `maxAge` toward the poll window
-makes `TooOld` reachable on every slow cycle**, and the symptom would appear as a flaky feed
-rather than as the configuration change it was.
+The upstream store has no acceptance window — no maximum-age bound, no minimum-age bound. Its
+only time rules are that `observedAt` strictly increases (`NotNewer`) and is strictly older than the
+accepting block (`TooFarAhead`), and `observedAt` is the timestamp of an on-chain event emitted
+during observation — always in the past by construction — so `TooFarAhead` is unreachable for
+an honestly produced update. A slow cycle therefore does not revert; it just loses the race to
+a fresher one. `T_poll` and `T_submit` bound liveness, not acceptability: keep them tight so a
+cycle lands before the next one supersedes it, not because the store will reject a late one.
 
 ### Stuck transactions
 
-A submission that misses its window is not worth chasing — the next cycle supersedes it, and a
-replacement landing after `maxAge` reverts `TooOld` anyway. So the implementation waits for the
-receipt until `submitTimeout`, records `not_mined`, and gives up.
+A submission that misses its window is not worth chasing — the next cycle supersedes it. So the
+implementation waits for the receipt until `submitTimeout`, records `not_mined`, and gives up.
 
 **Replace-by-fee is deliberately not implemented.** Bumping a transaction that is about to be
 superseded buys nothing, and the bounded-ceiling machinery would be state the keeper otherwise
@@ -482,10 +449,12 @@ It is reported, not retried into: the fix is operational.
 | Key | Notes |
 | --- | --- |
 | `T` | Cycle interval. Match the ~10-minute Hex refresh; polling faster costs a fee and gas per cycle and buys nothing. **Open** — spec WP5. |
-| `T_request`, `T_poll`, `T_submit` | Per-step deadlines. Must satisfy the `maxAge` inequality above. |
-| Instruction fee | Read from the registry, not hard-coded. See step 1. |
-| `InstructionSender`, `UsdxPriceStore` addresses | From `config/<chain>/deployed-addresses.json`. |
-| Proxy URL | For `/action/result/<id>`. |
+| `T_request`, `T_poll`, `T_submit` | Per-step deadlines. Liveness bounds, not acceptance bounds — see the deadline budget above. |
+| Instruction fee | Read from `OperationFees` (`TEE_ORACLE`, `GET_FEED`), not hard-coded; scales with the target count. See step 1. |
+| Feed id | `0x20555344582f555344000000000000000000000000` — category 0x20 + "USDX/USD", 21 bytes. Named in the request and inside the signed update; a mismatch with the store reverts. |
+| `TeeOracleInstructionsSender`, `TeeOracleFeedStore` addresses | From `config/<chain>/deployed-addresses.json`; the keeper resolves the store entry and derives the sender from the store's `instructionsSender()`. |
+| Target machines | The `-tee` list — named explicitly in every request. |
+| Proxy URLs | Read from the registry per machine, for `/action/result/<id>`. `-p` overrides all of them. |
 | Chain RPC | The keeper's own endpoint — a failure here is cause 2, distinct from the extension's supply RPCs. |
 | Hot wallet key | Low-value, monitored, funded. Compromise costs gas, not correctness. |
 | `keeperId` | Stable identifier, so cross-keeper correlation and dedup can tell instances apart. |
@@ -501,26 +470,25 @@ owes it is one **cycle record per tick**, emitted regardless of outcome — impl
 | Field | Emitted after |
 | --- | --- |
 | `keeperId`, `cycleStartedAt`, `cycleEndedAt` | always |
-| `channel` (`direct` / `instruction`), `phase` (`bootstrap` on sweep entries) | always |
-| `requestTxStatus`, `instructionId` | step 1 |
+| `requestTxStatus` (`mined` / `failed`), `instructionId` | step 1 |
 | `resultStatus` (`1` / `0` / `timeout`), `errorClass` | step 2 |
 | `proxy`, `teeId` — which machine served the cycle | step 2 |
 | `sourceHealth` | step 2, from proxy `GET /info` |
 | `submitOutcome` (`accepted` / revert name / not attempted) | step 3 |
 | `storeObservedAtAfter` | step 3 |
 
-`teeId` is recovered from the report's own signature, so on the instruction channel it is the
-only thing that names the machine the registry routed to. With a rotating keeper, `proxy` and
-`teeId` are what attribute a failure to one machine rather than to the feed.
+`teeId` is recovered from the report's own signature, which is the only thing that names the
+machine the registry routed to — the request itself does not choose one. Together with `proxy`,
+it is what attributes a failure to one machine rather than to the feed.
 
 Two constraints carried over from the monitoring doc, because they are keeper-side:
 
 - **The keeper must not be the only thing watching.** The page comes from on-chain feed age,
   evaluated by a process outside the keepers' failure domain — a dead keeper reports nothing,
   and its silence is indistinguishable from health.
-- **`NotNewer` must never alert** on a timed cycle. It is the designed outcome of the ≥2-instance
-  topology. On a `phase: "bootstrap"` entry it means the opposite — that machine was not
-  commissioned — so the two must not be collapsed.
+- **`NotNewer` must never alert.** It is the designed outcome of the ≥2-instance topology, and
+  it is reported as `race_lost` rather than a failure. `stale_submission` is the one to watch:
+  same revert, but the store was *behind* the report, so something relayed something old.
 
 ---
 
@@ -533,14 +501,15 @@ because the reasoning explains why the code looks the way it does.
 
 | # | Gap | Fix |
 | --- | --- | --- |
-| **1** | `id = sender.requestPriceUpdate{value: fee}()` — the function returned `void`, and its `PriceUpdateRequested` event carried only the caller, so the ID was reachable only by parsing the registry's `TeeInstructionsSent` out of the receipt. | `requestPriceUpdate()` now returns the id and emits it in `PriceUpdateRequested`. Tooling reads our own event. |
-| **2** | `store.submitPrice(result.data, result.signature)` — `ActionResult` has no `signature` field, and the E2E test still JSON-decoded the Phase-2 stub shape, so it only passed against a stub extension. | `run-test` now ABI-decodes `data` into `(body, signature)` and asserts the domain, the instruction binding, the signature form and the config hash. |
-| **3** | The instruction fee was a hard-coded `instructionFeeWei` constant. Fine for a test, a silent feed-stopper in a keeper. | Both instruction paths now read the fee from `OperationFees`, with the op constants taken from the deployed sender. |
+| **1** | `id = sender.requestFeedUpdate{value: fee}()` — the function returned `void`, and its `FeedUpdateRequested` event carried only the caller, so the ID was reachable only by parsing the registry's `TeeInstructionsSent` out of the receipt. | `requestFeedUpdate()` now returns the id and emits it in `FeedUpdateRequested`. Tooling reads the sender's own event. |
+| **2** | `store.submitFeedUpdate(result.data, result.signature)` — `ActionResult` has no `signature` field, and the E2E test still JSON-decoded the Phase-2 stub shape, so it only passed against a stub extension. | The keeper / `oracle-cycle.sh` now ABI-decodes `data` into the signed feed update and asserts the domain, the feed binding, the signature form and both configuration commitments. |
+| **3** | The instruction fee was a hard-coded `instructionFeeWei` constant. Fine for a test, a silent feed-stopper in a keeper. | Both instruction paths now read the fee from `OperationFees`, with the op constants pinned to the vendored interface. |
 
-**Not fixed, and deliberately:** `setEndpoints` still emits `EndpointsSet(address,bytes32)`
-without an instruction id, so its tooling continues to scan the registry event. Changing that
-signature would break the `endpointsSetTopic` constant that other tooling matches on, for a path
-no keeper runs on a timer. Worth doing if that event is ever revised for another reason.
+**Not fixed, and deliberately:** `setEndpoints` still emits
+`EndpointsSet(feedId, teeId, version, endpointsHash)` without an instruction id. Nothing scans
+for it any more — `send-endpoints` sends the transaction itself and reads the receipt — so there
+is no registry-event coupling left to break. Worth revisiting only if that event is ever revised
+for another reason.
 
 ---
 
@@ -549,10 +518,10 @@ no keeper runs on a timer. Worth doing if that event is ever revised for another
 | # | Question | Owner | Blocking |
 | --- | --- | --- | --- |
 | 1 | Cycle interval `T`, and the fee/gas budget it implies. Straw man in spec WP5 is 5 min; the plan argues for ~10 to match the source refresh. | Engineering | Build |
-| ~~2~~ | ~~Should `PriceUpdateRequested` carry the instruction ID?~~ **Done 5 Aug 2026** — it does, and `requestPriceUpdate()` returns it too. | Engineering | Closed |
+| ~~2~~ | ~~Should `FeedUpdateRequested` carry the instruction ID?~~ **Done 5 Aug 2026** — it does, and `requestFeedUpdate()` returns it too. | Engineering | Closed |
 | 3 | Where does the keeper run, and who operates it? Open as spec WP5.7. Interacts with the monitoring doc's requirement that the chain-age watcher sit in a different failure domain. | Infra | Build |
 | 4 | Is an immediate off-schedule update on large deviation wanted? Straw man in spec WP5. Shares an owner with the deviation guard, spec §6.2. | _TBD — risk owner_ | No |
-| 5 | `maxSkew` has no `deploy-store` flag and no value in the generated binding, so its deployed value is currently undetermined. Confirm before the budget inequality can be checked end to end. | Engineering | No |
+| ~~5~~ | ~~Confirm the deployed `maxSkew` before the budget inequality can be checked end to end.~~ **Moot** — the upstream store has no acceptance-window knobs at all; the only time rules left are strict monotonicity and `TooFarAhead`, and the latter is unreachable because `observedAt` is an on-chain event timestamp. | Engineering | Closed |
 
 Questions 1 and 4 share an owner with the deviation guard (spec §6.2) and the fail-closed
 question in `usdx-oracle-availability.md`.
