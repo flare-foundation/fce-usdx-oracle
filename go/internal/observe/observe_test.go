@@ -61,14 +61,16 @@ const testRequestedAt uint64 = 1_800_000_000
 
 func observationAt(unix uint64) oracle.Observation {
 	return oracle.Observation{
-		Value:         100_000_000,
-		Decimals:      8,
-		ExtensionID:   big.NewInt(66281),
-		FeedID:        [21]byte{0x20, 'U', 'S', 'D', 'X'},
-		ObservedAt:    unix,
-		EndpointsHash: common.HexToHash("0x9f3c"),
-		AdminsHash:    common.HexToHash("0x5e21"),
-		Health:        map[string]string{"hex_bonds": "ok"},
+		Value:      100_000_000,
+		Decimals:   8,
+		ObservedAt: unix,
+		Binding: oracle.Binding{
+			ExtensionID:   big.NewInt(66281),
+			FeedID:        [21]byte{0x20, 'U', 'S', 'D', 'X'},
+			EndpointsHash: common.HexToHash("0x9f3c"),
+			AdminsHash:    common.HexToHash("0x5e21"),
+		},
+		Health: map[string]string{"hex_bonds": "ok"},
 	}
 }
 
@@ -233,21 +235,22 @@ func TestReport_SigningFailurePublishesNothing(t *testing.T) {
 
 // --- the loop ---
 
-type fakeResolver struct {
-	mu    sync.Mutex
-	cfg   oracle.Config
-	err   error
-	calls int
+type fakeOpener struct {
+	mu      sync.Mutex
+	src     oracle.Sources
+	binding oracle.Binding
+	err     error
+	calls   int
 }
 
-func (r *fakeResolver) Resolve() (oracle.Config, error) {
+func (r *fakeOpener) Open() (oracle.Sources, oracle.Binding, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
-	return r.cfg, r.err
+	return r.src, r.binding, r.err
 }
 
-func (r *fakeResolver) count() int {
+func (r *fakeOpener) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.calls
@@ -256,7 +259,7 @@ func (r *fakeResolver) count() int {
 // Run observes immediately rather than waiting out the first interval: a
 // restart must not leave the feed unanswerable for two minutes.
 func TestRun_ObservesImmediately(t *testing.T) {
-	r := &fakeResolver{err: failure.NotConfigured}
+	r := &fakeOpener{err: failure.NotConfigured}
 	p := New(r, &fakeSigner{})
 	p.interval = time.Hour // so only the immediate observation can run
 
@@ -285,7 +288,7 @@ func TestRun_ObservesImmediately(t *testing.T) {
 // An unresolvable configuration is the normal state at boot and after every
 // restart. The loop must keep running through it, not exit.
 func TestRun_SurvivesAnUnresolvableConfig(t *testing.T) {
-	r := &fakeResolver{err: failure.NotConfigured}
+	r := &fakeOpener{err: failure.NotConfigured}
 	p := New(r, &fakeSigner{})
 	p.interval = 10 * time.Millisecond
 

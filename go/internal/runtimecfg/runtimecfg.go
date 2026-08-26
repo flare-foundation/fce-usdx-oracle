@@ -2,7 +2,7 @@
 // admin signer sets, and credentials. All other config is fixed in internal/config.
 //
 //	ApplyEndpoints ─┐
-//	ApplyAdmins    ─┼─► Store ──► Resolve() ──► oracle.Config
+//	ApplyAdmins    ─┼─► Store ──► Open() ──► oracle.Sources + Binding
 //	ApplySecret    ─┘
 //
 // On-chain payloads are ABI-encoded structs from TeeOracleInstructionsSender.
@@ -568,24 +568,25 @@ func (s *Store) required() []string {
 	return refs
 }
 
-// Resolve turns the stored configuration into a live oracle.Config, once per
-// observation. Cheap: an HTTP RPC client opens no connection until used.
-func (s *Store) Resolve() (oracle.Config, error) {
+// Open turns the stored configuration into live sources and the binding they
+// were opened under, once per observation. Cheap: an HTTP RPC client opens no
+// connection until used.
+func (s *Store) Open() (oracle.Sources, oracle.Binding, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.endpoints == nil {
-		return oracle.Config{}, failure.NotConfigured
+		return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
 	}
 	// An update that cannot commit to published admin sets would be rejected by
 	// the store anyway; refusing to observe says so at the honest point.
 	if !s.adminsSet {
-		return oracle.Config{}, failure.NotConfigured
+		return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
 	}
 
 	bonds, err := newBacking(config.BondsSource())
 	if err != nil {
-		return oracle.Config{}, failure.Internal
+		return oracle.Sources{}, oracle.Binding{}, failure.Internal
 	}
 
 	// A nil cash source is how "running cash-less" is carried; the oracle then
@@ -597,28 +598,28 @@ func (s *Store) Resolve() (oracle.Config, error) {
 		if cashKey := string(s.secrets[config.HexAPIKeyRef]); cashKey != "" {
 			cash, err = newBacking(config.CashSource(url, cashKey))
 			if err != nil {
-				return oracle.Config{}, failure.Internal
+				return oracle.Sources{}, oracle.Binding{}, failure.Internal
 			}
 		}
 	}
 
-	chains := make([]supply.ChainConfig, 0, len(config.Chains))
+	chains := make([]supply.ChainSource, 0, len(config.Chains))
 	for _, pinned := range config.Chains {
 		g, ok := s.endpoints.Groups[pinned.Name]
 		if !ok {
 			// A missing chain undercounts supply, which OVERSTATES the price.
-			return oracle.Config{}, failure.NotConfigured
+			return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
 		}
 
 		providers := make([]supply.Provider, 0, len(g.Endpoints))
 		for i, ep := range g.Endpoints {
 			url, err := s.endpointURL(ep)
 			if err != nil {
-				return oracle.Config{}, failure.NotConfigured
+				return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
 			}
 			client, err := ethclient.Dial(url)
 			if err != nil {
-				return oracle.Config{}, failure.NotConfigured
+				return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
 			}
 			// Positional names, so nothing an operator supplies reaches /state.
 			providers = append(providers, supply.Provider{
@@ -627,7 +628,7 @@ func (s *Store) Resolve() (oracle.Config, error) {
 			})
 		}
 
-		chains = append(chains, supply.ChainConfig{
+		chains = append(chains, supply.ChainSource{
 			Name:      pinned.Name,
 			Token:     common.HexToAddress(pinned.Token),
 			Providers: providers,
@@ -639,17 +640,18 @@ func (s *Store) Resolve() (oracle.Config, error) {
 		})
 	}
 
-	cfg := oracle.Config{
-		Chains: chains, Bonds: bonds, Cash: cash,
+	sources := oracle.Sources{Chains: chains, Bonds: bonds, Cash: cash}
+	if err := sources.Validate(); err != nil {
+		return oracle.Sources{}, oracle.Binding{}, failure.Internal
+	}
+
+	binding := oracle.Binding{
 		ExtensionID:   config.ExtensionID,
 		FeedID:        config.FeedID,
 		EndpointsHash: s.endpointsHash,
 		AdminsHash:    s.adminsHash,
 	}
-	if err := cfg.Validate(); err != nil {
-		return oracle.Config{}, failure.Internal
-	}
-	return cfg, nil
+	return sources, binding, nil
 }
 
 // endpointURL resolves one endpoint to a dialable URL. Callers hold at least

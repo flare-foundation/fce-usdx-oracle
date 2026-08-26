@@ -55,7 +55,11 @@ type Provider struct {
 	Client Caller
 }
 
-type ChainConfig struct {
+// ChainSource is one chain, opened and ready to read: the pinned facts it was
+// built from, the agreement policy, and the RPC providers to ask. Built per
+// observation from config.Chain plus the published endpoints — it holds live
+// clients, so it is not configuration and outlives nothing.
+type ChainSource struct {
 	Name  string
 	Token common.Address
 
@@ -98,7 +102,7 @@ type Reading struct {
 
 // Validate returns an ordinary error: a bad config must stop startup, not
 // surface through the feed.
-func (c ChainConfig) Validate() error {
+func (c ChainSource) Validate() error {
 	if c.Name == "" {
 		return errors.New("supply: chain name is required")
 	}
@@ -124,38 +128,38 @@ func (c ChainConfig) Validate() error {
 
 // Read returns the chain's supply, or a publishable failure. Either way the
 // Reading carries per-provider standing.
-func Read(ctx context.Context, cfg ChainConfig) (Reading, error) {
+func Read(ctx context.Context, ch ChainSource) (Reading, error) {
 	// Everyone starts healthy and is demoted by the calls below. Sound because
 	// agreedBlock contacts every provider before anything else can fail.
-	health := make(map[string]string, len(cfg.Providers))
-	for _, p := range cfg.Providers {
+	health := make(map[string]string, len(ch.Providers))
+	for _, p := range ch.Providers {
 		health[p.Name] = config.HealthOK
 	}
 	failed := func(err error) (Reading, error) {
-		return Reading{Chain: cfg.Name, Providers: health}, err
+		return Reading{Chain: ch.Name, Providers: health}, err
 	}
 
-	block, err := agreedBlock(ctx, cfg, health)
+	block, err := agreedBlock(ctx, ch, health)
 	if err != nil {
 		return failed(err)
 	}
 
 	at := new(big.Int).SetUint64(block)
 
-	blockTime, err := agreedBlockTime(ctx, cfg, at, health)
+	blockTime, err := agreedBlockTime(ctx, ch, at, health)
 	if err != nil {
 		return failed(err)
 	}
-	if cfg.MaxBlockAge > 0 && time.Since(blockTime) > cfg.MaxBlockAge {
+	if ch.MaxBlockAge > 0 && time.Since(blockTime) > ch.MaxBlockAge {
 		return failed(failure.SupplyBlockStale)
 	}
 
-	decimals, err := readDecimals(ctx, cfg, at, health)
+	decimals, err := readDecimals(ctx, ch, at, health)
 	if err != nil {
 		return failed(err)
 	}
 
-	raw, err := readTotalSupply(ctx, cfg, at, health)
+	raw, err := readTotalSupply(ctx, ch, at, health)
 	if err != nil {
 		return failed(err)
 	}
@@ -165,7 +169,7 @@ func Read(ctx context.Context, cfg ChainConfig) (Reading, error) {
 	amount := new(big.Rat).SetFrac(raw, scale)
 
 	return Reading{
-		Chain:       cfg.Name,
+		Chain:       ch.Name,
 		Amount:      amount,
 		Block:       block,
 		BlockTime:   blockTime,
@@ -177,15 +181,15 @@ func Read(ctx context.Context, cfg ChainConfig) (Reading, error) {
 
 // agreedBlock returns the Quorum-th highest head — the highest block at least
 // Quorum providers can serve. The package comment says why not the minimum.
-func agreedBlock(ctx context.Context, cfg ChainConfig, health map[string]string) (uint64, error) {
+func agreedBlock(ctx context.Context, ch ChainSource, health map[string]string) (uint64, error) {
 	type result struct {
 		n   uint64
 		err error
 	}
-	results := make([]result, len(cfg.Providers))
+	results := make([]result, len(ch.Providers))
 
 	var wg sync.WaitGroup
-	for i, p := range cfg.Providers {
+	for i, p := range ch.Providers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -211,7 +215,7 @@ func agreedBlock(ctx context.Context, cfg ChainConfig, health map[string]string)
 	heads := make([]uint64, 0, len(results))
 	for i, r := range results {
 		if r.err != nil {
-			health[cfg.Providers[i].Name] = config.HealthDown
+			health[ch.Providers[i].Name] = config.HealthDown
 			continue
 		}
 		heads = append(heads, r.n)
@@ -219,14 +223,14 @@ func agreedBlock(ctx context.Context, cfg ChainConfig, health map[string]string)
 
 	// Fewer than Quorum providers answered at all, so no block can reach Quorum
 	// agreement later either.
-	if len(heads) < cfg.Quorum {
+	if len(heads) < ch.Quorum {
 		return 0, failure.SupplyUnavailable
 	}
 
 	// Descending, then the Quorum-th: exactly Quorum providers reported a head
 	// at or above it, so at least that many hold the state.
 	sort.Slice(heads, func(i, j int) bool { return heads[i] > heads[j] })
-	pinned := heads[cfg.Quorum-1]
+	pinned := heads[ch.Quorum-1]
 
 	// Block 0 is a freshly reset devnet, not a chain with USDX on it.
 	if pinned == 0 {
@@ -236,8 +240,8 @@ func agreedBlock(ctx context.Context, cfg ChainConfig, health map[string]string)
 	// Tolerated — it is what Quorum < len(Providers) is for — but recorded, because
 	// it is also the shape a provider takes when it tries to rewind the observation.
 	for i, r := range results {
-		if r.err == nil && r.n < pinned && health[cfg.Providers[i].Name] == config.HealthOK {
-			health[cfg.Providers[i].Name] = config.HealthLagging
+		if r.err == nil && r.n < pinned && health[ch.Providers[i].Name] == config.HealthOK {
+			health[ch.Providers[i].Name] = config.HealthLagging
 		}
 	}
 
@@ -248,13 +252,13 @@ func agreedBlock(ctx context.Context, cfg ChainConfig, health map[string]string)
 // Quorum providers. Trusting whichever provider proposed the block would let one
 // liar pair an ancient number with a fresh stamp. Rationale §6.
 func agreedBlockTime(
-	ctx context.Context, cfg ChainConfig, at *big.Int, health map[string]string,
+	ctx context.Context, ch ChainSource, at *big.Int, health map[string]string,
 ) (time.Time, error) {
-	stamps := make([]uint64, len(cfg.Providers))
-	okAt := make([]bool, len(cfg.Providers))
+	stamps := make([]uint64, len(ch.Providers))
+	okAt := make([]bool, len(ch.Providers))
 
 	var wg sync.WaitGroup
-	for i, p := range cfg.Providers {
+	for i, p := range ch.Providers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -271,7 +275,7 @@ func agreedBlockTime(
 		return time.Time{}, failure.SupplyTimeout
 	}
 
-	answers := make([][]byte, len(cfg.Providers))
+	answers := make([][]byte, len(ch.Providers))
 	for i, ok := range okAt {
 		if !ok {
 			continue
@@ -279,11 +283,11 @@ func agreedBlockTime(
 		answers[i] = new(big.Int).SetUint64(stamps[i]).Bytes()
 	}
 
-	best, agreed, answered := vote(cfg, answers, health)
-	if answered < cfg.Quorum {
+	best, agreed, answered := vote(ch, answers, health)
+	if answered < ch.Quorum {
 		return time.Time{}, failure.SupplyUnavailable
 	}
-	if agreed < cfg.Quorum {
+	if agreed < ch.Quorum {
 		return time.Time{}, failure.SupplyNoQuorum
 	}
 
@@ -295,17 +299,17 @@ func agreedBlockTime(
 }
 
 func readTotalSupply(
-	ctx context.Context, cfg ChainConfig, at *big.Int, health map[string]string,
+	ctx context.Context, ch ChainSource, at *big.Int, health map[string]string,
 ) (*big.Int, error) {
-	best, agreed, answered := vote(cfg, callAll(ctx, cfg, selectorTotalSupply, at), health)
+	best, agreed, answered := vote(ch, callAll(ctx, ch, selectorTotalSupply, at), health)
 
-	if answered < cfg.Quorum {
+	if answered < ch.Quorum {
 		if answered == 0 {
 			return nil, failure.SupplyUnavailable
 		}
 		return nil, failure.SupplyNoQuorum
 	}
-	if agreed < cfg.Quorum {
+	if agreed < ch.Quorum {
 		return nil, failure.SupplyNoQuorum
 	}
 
@@ -320,13 +324,13 @@ func readTotalSupply(
 // hard-coded: USDX is 6 on Flare and Songbird but 18 on Ethereum, and assuming
 // a value would misprice a chain by 10^12.
 func readDecimals(
-	ctx context.Context, cfg ChainConfig, at *big.Int, health map[string]string,
+	ctx context.Context, ch ChainSource, at *big.Int, health map[string]string,
 ) (uint8, error) {
-	best, agreed, answered := vote(cfg, callAll(ctx, cfg, selectorDecimals, at), health)
-	if answered < cfg.Quorum {
+	best, agreed, answered := vote(ch, callAll(ctx, ch, selectorDecimals, at), health)
+	if answered < ch.Quorum {
 		return 0, failure.SupplyUnavailable
 	}
-	if agreed < cfg.Quorum {
+	if agreed < ch.Quorum {
 		return 0, failure.SupplyNoQuorum
 	}
 
@@ -338,15 +342,15 @@ func readDecimals(
 }
 
 // callAll performs the same eth_call against every provider concurrently. The
-// result is index-aligned with cfg.Providers — nil means no usable answer — so
+// result is index-aligned with ch.Providers — nil means no usable answer — so
 // the caller can still say WHICH provider failed.
-func callAll(ctx context.Context, cfg ChainConfig, selector []byte, at *big.Int) [][]byte {
-	answers := make([][]byte, len(cfg.Providers))
+func callAll(ctx context.Context, ch ChainSource, selector []byte, at *big.Int) [][]byte {
+	answers := make([][]byte, len(ch.Providers))
 
-	call := ethereum.CallMsg{To: &cfg.Token, Data: selector}
+	call := ethereum.CallMsg{To: &ch.Token, Data: selector}
 
 	var wg sync.WaitGroup
-	for i, p := range cfg.Providers {
+	for i, p := range ch.Providers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -368,7 +372,7 @@ func callAll(ctx context.Context, cfg ChainConfig, selector []byte, at *big.Int)
 // vote returns the most common answer, how many gave it, how many answered at all,
 // and records each provider's standing. Demote only. The winner must be UNIQUE: a tie
 // reports zero agreement, else the provider ORDER would pick the supply figure.
-func vote(cfg ChainConfig, answers [][]byte, health map[string]string) (best []byte, agreed, answered int) {
+func vote(ch ChainSource, answers [][]byte, health map[string]string) (best []byte, agreed, answered int) {
 	// Tallied per distinct answer, not per provider, so the runner-up is visible.
 	type tally struct {
 		value []byte
@@ -407,7 +411,7 @@ func vote(cfg ChainConfig, answers [][]byte, health map[string]string) (best []b
 	}
 
 	for i, a := range answers {
-		name := cfg.Providers[i].Name
+		name := ch.Providers[i].Name
 		switch {
 		case a == nil:
 			// A lagging provider is EXPECTED to fail here — it does not hold the

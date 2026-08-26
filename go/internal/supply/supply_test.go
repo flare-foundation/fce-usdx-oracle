@@ -101,13 +101,13 @@ func client(head uint64, supply string, decimals uint8) *fakeClient {
 	return &fakeClient{head: head, supply: s, decimals: decimals}
 }
 
-func cfg(t *testing.T, quorum int, clients ...*fakeClient) ChainConfig {
+func cfg(t *testing.T, quorum int, clients ...*fakeClient) ChainSource {
 	t.Helper()
 	providers := make([]Provider, len(clients))
 	for i, c := range clients {
 		providers[i] = Provider{Name: "rpc_test_" + string(rune('a'+i)), Client: c}
 	}
-	return ChainConfig{
+	return ChainSource{
 		Name: "testchain", Token: testToken, Providers: providers,
 		Quorum: quorum,
 	}
@@ -376,7 +376,7 @@ func TestRead_EvenSplitFailsClosedWhateverTheOrder(t *testing.T) {
 		client(1000, "1000000", 6),
 	)
 
-	for name, c := range map[string]ChainConfig{"honest first": honestFirst, "liars first": liarsFirst} {
+	for name, c := range map[string]ChainSource{"honest first": honestFirst, "liars first": liarsFirst} {
 		got, err := Read(context.Background(), c)
 		if !errors.Is(err, failure.SupplyNoQuorum) {
 			t.Errorf("%s: expected SupplyNoQuorum, got %v (value %v)", name, err, got.Amount)
@@ -529,15 +529,15 @@ func TestValidate(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		mutate func(*ChainConfig)
+		mutate func(*ChainSource)
 	}{
-		{"no name", func(c *ChainConfig) { c.Name = "" }},
-		{"no token", func(c *ChainConfig) { c.Token = common.Address{} }},
-		{"no providers", func(c *ChainConfig) { c.Providers = nil }},
-		{"quorum zero", func(c *ChainConfig) { c.Quorum = 0 }},
-		{"quorum above provider count", func(c *ChainConfig) { c.Quorum = 99 }},
-		{"provider without name", func(c *ChainConfig) { c.Providers[0].Name = "" }},
-		{"provider without client", func(c *ChainConfig) { c.Providers[0].Client = nil }},
+		{"no name", func(c *ChainSource) { c.Name = "" }},
+		{"no token", func(c *ChainSource) { c.Token = common.Address{} }},
+		{"no providers", func(c *ChainSource) { c.Providers = nil }},
+		{"quorum zero", func(c *ChainSource) { c.Quorum = 0 }},
+		{"quorum above provider count", func(c *ChainSource) { c.Quorum = 99 }},
+		{"provider without name", func(c *ChainSource) { c.Providers[0].Name = "" }},
+		{"provider without client", func(c *ChainSource) { c.Providers[0].Client = nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

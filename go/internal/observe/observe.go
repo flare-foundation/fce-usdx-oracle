@@ -31,16 +31,17 @@ import (
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 )
 
-// Resolver produces the configuration for the next observation. Called per
-// observation, so a rotated credential takes effect without a restart.
-type Resolver interface {
-	Resolve() (oracle.Config, error)
+// Opener opens the sources for the next observation and reports the binding
+// they were opened under. Called per observation, so a rotated credential takes
+// effect without a restart.
+type Opener interface {
+	Open() (oracle.Sources, oracle.Binding, error)
 }
 
 // Poller observes on a timer and keeps the most recent result.
 type Poller struct {
-	resolver Resolver
-	signer   oracle.Signer
+	opener Opener
+	signer oracle.Signer
 
 	// Fields rather than direct constant reads so tests can drive the loop
 	// without sleeping. New always sets the real ones.
@@ -60,9 +61,9 @@ type Poller struct {
 	failures     int
 }
 
-func New(resolver Resolver, signer oracle.Signer) *Poller {
+func New(opener Opener, signer oracle.Signer) *Poller {
 	return &Poller{
-		resolver: resolver,
+		opener:   opener,
 		signer:   signer,
 		interval: config.ObservationInterval,
 		maxAge:   config.MaxObservationAge,
@@ -90,14 +91,14 @@ func (p *Poller) Run(ctx context.Context) {
 }
 
 func (p *Poller) observeOnce(ctx context.Context) {
-	cfg, err := p.resolver.Resolve()
+	src, binding, err := p.opener.Open()
 	if err != nil {
 		// Unprovisioned is the normal state at boot; not worth a log line each tick.
 		p.record(oracle.Observation{}, err)
 		return
 	}
 
-	obs, err := oracle.Observe(ctx, cfg)
+	obs, err := oracle.Observe(ctx, src, binding)
 	if err != nil {
 		// Safe to log: failure vocabulary is constant text.
 		logger.Warnf("observation failed: %s", err)

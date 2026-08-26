@@ -197,9 +197,9 @@ func provisioned(t *testing.T) *Store {
 // The point of the simplification: the pinned policy is what reaches the supply
 // reader, and nothing in a payload can change it.
 func TestPinnedPolicyIsUsed(t *testing.T) {
-	cfg, err := provisioned(t).Resolve()
+	cfg, _, err := provisioned(t).Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 
 	if len(cfg.Chains) != len(config.Chains) {
@@ -222,9 +222,9 @@ func TestPinnedPolicyIsUsed(t *testing.T) {
 // The bonds source stays pinned in the build. hex_cash is the deliberate
 // exception and travels as a commitment; nothing else may be redirected.
 func TestBondsSourceStaysPinned(t *testing.T) {
-	cfg, err := provisioned(t).Resolve()
+	cfg, _, err := provisioned(t).Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	if cfg.Bonds == nil || cfg.Bonds.Name() != config.HexBondsName {
 		t.Fatalf("bonds source = %v", cfg.Bonds)
@@ -235,9 +235,9 @@ func TestBondsSourceStaysPinned(t *testing.T) {
 }
 
 func TestProviderNamesAreDerived(t *testing.T) {
-	cfg, err := provisioned(t).Resolve()
+	cfg, _, err := provisioned(t).Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	for _, ch := range cfg.Chains {
 		for i, p := range ch.Providers {
@@ -397,9 +397,9 @@ func TestSetEndpoints_RejectsInconsistentKind(t *testing.T) {
 // --- thresholds ---
 
 func TestThresholdIsConfigurable(t *testing.T) {
-	cfg, err := provisioned(t).Resolve()
+	cfg, _, err := provisioned(t).Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	want := map[string]int{"flare": 2, "ethereum": 2, "songbird": 1}
 	for _, ch := range cfg.Chains {
@@ -463,23 +463,23 @@ func TestSetEndpoints_RejectsNonIncreasingVersion(t *testing.T) {
 // A rejected publication must leave the working configuration alone.
 func TestSetEndpoints_RejectedPublicationKeepsPreviousSnapshot(t *testing.T) {
 	s := provisioned(t)
-	before, err := s.Resolve()
+	before, binding, err := s.Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 
 	if err := setEndpoints(s, 2, withoutGroup(t, "songbird")); err == nil {
 		t.Fatal("expected rejection")
 	}
 
-	after, err := s.Resolve()
+	after, binding, err := s.Open()
 	if err != nil {
 		t.Fatalf("Resolve after rejection: %v", err)
 	}
 	if len(after.Chains) != len(before.Chains) {
 		t.Fatalf("chains changed after a rejected publication")
 	}
-	if s.Readiness().EndpointsHash != before.EndpointsHash.Hex() {
+	if s.Readiness().EndpointsHash != binding.EndpointsHash.Hex() {
 		t.Error("endpoints hash changed after a rejected publication")
 	}
 }
@@ -504,10 +504,10 @@ func TestSetEndpoints_RejectsBackingCredentialAsProviderSecret(t *testing.T) {
 
 // --- the private cash URL ---
 
-func TestResolve_CashURLComesFromTheCommitment(t *testing.T) {
-	cfg, err := provisioned(t).Resolve()
+func TestOpen_CashURLComesFromTheCommitment(t *testing.T) {
+	cfg, _, err := provisioned(t).Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	if cfg.Cash == nil {
 		t.Fatal("cash source is missing")
@@ -612,7 +612,7 @@ func TestStore_StartsUnconfigured(t *testing.T) {
 	if r.Ready || r.EndpointsSet || r.AdminsSet {
 		t.Errorf("a fresh store must not be ready: %+v", r)
 	}
-	if _, err := s.Resolve(); !errors.Is(err, failure.NotConfigured) {
+	if _, _, err := s.Open(); !errors.Is(err, failure.NotConfigured) {
 		t.Errorf("Resolve = %v, want NotConfigured", err)
 	}
 }
@@ -655,7 +655,7 @@ func TestStore_CashURLIsRequired(t *testing.T) {
 
 // Running cash-less is a state, not a failure: the oracle then publishes only
 // where the figure provably cannot change the answer.
-func TestResolve_WithoutHexKeyYieldsNoCashSource(t *testing.T) {
+func TestOpen_WithoutHexKeyYieldsNoCashSource(t *testing.T) {
 	s := newStore(t)
 	if err := setEndpoints(s, 1, testGroups(t)); err != nil {
 		t.Fatalf("SetEndpoints: %v", err)
@@ -666,9 +666,9 @@ func TestResolve_WithoutHexKeyYieldsNoCashSource(t *testing.T) {
 	}
 	setSecret(t, s, config.HexCashURLRef, testCashBlob(t))
 
-	cfg, err := s.Resolve()
+	cfg, _, err := s.Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	if cfg.Cash != nil {
 		t.Error("without the API key there must be no cash source")
@@ -676,7 +676,7 @@ func TestResolve_WithoutHexKeyYieldsNoCashSource(t *testing.T) {
 }
 
 // The same state, reached the other way: the key is there but the URL is not.
-func TestResolve_WithoutCashURLYieldsNoCashSource(t *testing.T) {
+func TestOpen_WithoutCashURLYieldsNoCashSource(t *testing.T) {
 	s := newStore(t)
 	if err := setEndpoints(s, 1, testGroups(t)); err != nil {
 		t.Fatalf("SetEndpoints: %v", err)
@@ -687,9 +687,9 @@ func TestResolve_WithoutCashURLYieldsNoCashSource(t *testing.T) {
 	}
 	setSecret(t, s, config.HexAPIKeyRef, []byte("key"))
 
-	cfg, err := s.Resolve()
+	cfg, _, err := s.Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	if cfg.Cash != nil {
 		t.Error("without the committed URL there must be no cash source")
@@ -707,31 +707,31 @@ func TestStore_BecomesReadyWhenEverythingArrives(t *testing.T) {
 	}
 }
 
-func TestResolve_CarriesTheFeedBinding(t *testing.T) {
-	cfg, err := provisioned(t).Resolve()
+func TestOpen_CarriesTheFeedBinding(t *testing.T) {
+	_, binding, err := provisioned(t).Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
-	if cfg.ExtensionID == nil || cfg.ExtensionID.Cmp(config.ExtensionID) != 0 {
-		t.Errorf("extension id = %v, want %v", cfg.ExtensionID, config.ExtensionID)
+	if binding.ExtensionID == nil || binding.ExtensionID.Cmp(config.ExtensionID) != 0 {
+		t.Errorf("extension id = %v, want %v", binding.ExtensionID, config.ExtensionID)
 	}
-	if cfg.FeedID != config.FeedID {
-		t.Errorf("feed id = %x, want %x", cfg.FeedID, config.FeedID)
+	if binding.FeedID != config.FeedID {
+		t.Errorf("feed id = %x, want %x", binding.FeedID, config.FeedID)
 	}
 }
 
-func TestResolve_CarriesTheConfigHashes(t *testing.T) {
+func TestOpen_CarriesTheConfigHashes(t *testing.T) {
 	s := provisioned(t)
-	cfg, err := s.Resolve()
+	_, binding, err := s.Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	r := s.Readiness()
-	if cfg.EndpointsHash.Hex() != r.EndpointsHash {
-		t.Errorf("endpoints hash = %s, want %s", cfg.EndpointsHash.Hex(), r.EndpointsHash)
+	if binding.EndpointsHash.Hex() != r.EndpointsHash {
+		t.Errorf("endpoints hash = %s, want %s", binding.EndpointsHash.Hex(), r.EndpointsHash)
 	}
-	if cfg.AdminsHash.Hex() != r.AdminsHash {
-		t.Errorf("admins hash = %s, want %s", cfg.AdminsHash.Hex(), r.AdminsHash)
+	if binding.AdminsHash.Hex() != r.AdminsHash {
+		t.Errorf("admins hash = %s, want %s", binding.AdminsHash.Hex(), r.AdminsHash)
 	}
 }
 
@@ -790,7 +790,7 @@ func TestApplyAdmins_RequiredBeforeAnythingElse(t *testing.T) {
 	setSecret(t, s, config.HexAPIKeyRef, []byte("k"))
 	setSecret(t, s, config.HexCashURLRef, testCashBlob(t))
 
-	if _, err := s.Resolve(); !errors.Is(err, failure.NotConfigured) {
+	if _, _, err := s.Open(); !errors.Is(err, failure.NotConfigured) {
 		t.Errorf("Resolve without admins = %v, want NotConfigured", err)
 	}
 }
@@ -931,9 +931,9 @@ func TestStore_SecretRotationTakesEffect(t *testing.T) {
 	s := provisioned(t)
 	setSecret(t, s, "ankr_flare_key", []byte("rotated"))
 
-	cfg, err := s.Resolve()
+	cfg, _, err := s.Open()
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	// Resolve is called per observation, so a rotated credential takes effect
 	// without a restart. The URL itself never reaches /state, so this only

@@ -36,18 +36,24 @@ type Signer interface {
 	Sign(ctx context.Context, message []byte) ([]byte, error)
 }
 
-// Config carries the feed binding the store checks. Where a signed update lands
-// is still settled by the store's registered-machine check, but WHICH feed it
-// may land on is now named in the payload: the store rejects an update that
-// does not carry its own extension and feed ids.
-type Config struct {
-	Chains []supply.ChainConfig
+// Sources are the upstreams one observation reads. Opened per observation and
+// discarded after it, which is what lets a rotated credential take effect on the
+// next tick without a restart.
+type Sources struct {
+	Chains []supply.ChainSource
 	Bonds  backing.Source
 
 	// Nil when no credential for the restricted endpoint has been provisioned;
 	// the observation then runs through price.ComputeWithoutCash.
 	Cash backing.Source
+}
 
+// Binding is what the signed update commits to. It is copied verbatim into the
+// payload and checked field by field by the store, so it is fixed when the
+// inputs are read and never re-derived at signing time.
+//
+// Inert, unlike Sources: no I/O, nothing to open, safe to copy.
+type Binding struct {
 	// The extension this machine serves and the feed it speaks for, both pinned
 	// in the build. Zero values are rejected at signing time rather than here,
 	// so a build without them still serves GET /state and the conformance stub.
@@ -58,24 +64,24 @@ type Config struct {
 	// the store can refuse a value from a machine running something else.
 	EndpointsHash common.Hash
 
-	// Commits the signed report to the admin set in force when it was computed,
+	// Commits the signed update to the admin set in force when it was computed,
 	// on the same terms: the store refuses a price from a machine whose
 	// provisioning authority is not the one governance published.
 	AdminsHash common.Hash
 }
 
-// Validate checks a configuration at startup.
-func (c Config) Validate() error {
-	if len(c.Chains) == 0 {
+// Validate checks the sources before an observation reads them.
+func (s Sources) Validate() error {
+	if len(s.Chains) == 0 {
 		return errors.New("oracle: at least one chain is required")
 	}
-	for _, ch := range c.Chains {
+	for _, ch := range s.Chains {
 		if err := ch.Validate(); err != nil {
 			return err
 		}
 	}
 	// Cash is optional; without bonds there is no numerator at all.
-	if c.Bonds == nil {
+	if s.Bonds == nil {
 		return errors.New("oracle: the bonds backing source is required")
 	}
 	return nil
@@ -93,18 +99,9 @@ type Observation struct {
 
 	ObservedAt uint64
 
-	// The feed this observation is for, copied from the Config. Carried on the
-	// Observation for the same reason the hashes below are: everything the
-	// signature commits to is fixed at observation time, not at request time.
-	ExtensionID *big.Int
-	FeedID      [21]byte
-
-	// The configuration this price was computed under, so a later Sign commits
-	// to the config in force at observation time, not at request time.
-	EndpointsHash common.Hash
-
-	// The admin set in force at observation time, on the same terms.
-	AdminsHash common.Hash
+	// Carried whole so a later Sign commits to what was in force when the inputs
+	// were read, not to whatever is current when the request arrives.
+	Binding Binding
 
 	// Health maps each source identifier to a config.Health* value.
 	Health map[string]string
@@ -121,20 +118,20 @@ func (o Observation) Age(now time.Time) time.Duration {
 
 // Observe performs one complete observation. The returned error is always a
 // failure.Failure, safe to publish.
-func Observe(ctx context.Context, cfg Config) (Observation, error) {
+func Observe(ctx context.Context, src Sources, binding Binding) (Observation, error) {
 	ctx, cancel := context.WithTimeout(ctx, config.ObservationDeadline)
 	defer cancel()
 
-	health := newHealth(cfg)
+	health := newHealth(src)
 
 	// S — supply, one pass, each chain pinned to its own agreed block.
-	supplies, err := readAllChains(ctx, cfg, health)
+	supplies, err := readAllChains(ctx, src, health)
 	if err != nil {
 		return Observation{Health: health}, err
 	}
 
 	// B — reserves.
-	bonds, cash, cashOK, err := readBacking(ctx, cfg, health)
+	bonds, cash, cashOK, err := readBacking(ctx, src, health)
 	if err != nil {
 		return Observation{Health: health}, err
 	}
@@ -182,14 +179,11 @@ func Observe(ctx context.Context, cfg Config) (Observation, error) {
 	}
 
 	return Observation{
-		Value:         scaled,
-		Decimals:      config.PriceDecimals,
-		ObservedAt:    observedAt,
-		ExtensionID:   cfg.ExtensionID,
-		FeedID:        cfg.FeedID,
-		EndpointsHash: cfg.EndpointsHash,
-		AdminsHash:    cfg.AdminsHash,
-		Health:        health,
+		Value:      scaled,
+		Decimals:   config.PriceDecimals,
+		ObservedAt: observedAt,
+		Binding:    binding,
+		Health:     health,
 	}, nil
 }
 
@@ -212,13 +206,13 @@ func Sign(ctx context.Context, signer Signer, obs Observation) (Observation, err
 
 func signPayload(ctx context.Context, signer Signer, obs Observation) ([]byte, error) {
 	update := report.FeedUpdate{
-		ExtensionID:   obs.ExtensionID,
-		FeedID:        obs.FeedID,
+		ExtensionID:   obs.Binding.ExtensionID,
+		FeedID:        obs.Binding.FeedID,
 		Value:         obs.Value,
 		Decimals:      obs.Decimals,
 		ObservedAt:    obs.ObservedAt,
-		EndpointsHash: obs.EndpointsHash,
-		AdminsHash:    obs.AdminsHash,
+		EndpointsHash: obs.Binding.EndpointsHash,
+		AdminsHash:    obs.Binding.AdminsHash,
 	}
 
 	// The signer is handed the SignedPayload PREIMAGE: tee-node hashes what it
@@ -258,12 +252,12 @@ func homeBlockTime(supplies []supply.Reading) (uint64, error) {
 
 // readAllChains reads every chain concurrently. Any chain failing fails the
 // whole observation: a partial sum is a wrong supply, not a smaller one.
-func readAllChains(ctx context.Context, cfg Config, health map[string]string) ([]supply.Reading, error) {
-	readings := make([]supply.Reading, len(cfg.Chains))
-	errs := make([]error, len(cfg.Chains))
+func readAllChains(ctx context.Context, src Sources, health map[string]string) ([]supply.Reading, error) {
+	readings := make([]supply.Reading, len(src.Chains))
+	errs := make([]error, len(src.Chains))
 
 	var wg sync.WaitGroup
-	for i, ch := range cfg.Chains {
+	for i, ch := range src.Chains {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -274,7 +268,7 @@ func readAllChains(ctx context.Context, cfg Config, health map[string]string) ([
 
 	var firstErr error
 	for i, err := range errs {
-		name := chainHealthKey(cfg.Chains[i].Name)
+		name := chainHealthKey(src.Chains[i].Name)
 
 		// Reported whether or not the chain read succeeded. Quorum lets a chain
 		// stay "ok" while one of its providers is dead, dissenting or lagging,
@@ -302,7 +296,7 @@ func readAllChains(ctx context.Context, cfg Config, health map[string]string) ([
 // fatal: bonds has no substitute, cash has one narrow case where it is not
 // needed.
 func readBacking(
-	ctx context.Context, cfg Config, health map[string]string,
+	ctx context.Context, src Sources, health map[string]string,
 ) (bonds backing.Reading, cash backing.Reading, cashOK bool, err error) {
 	var (
 		bondsErr, cashErr error
@@ -312,20 +306,20 @@ func readBacking(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		bonds, bondsErr = cfg.Bonds.Fetch(ctx)
+		bonds, bondsErr = src.Bonds.Fetch(ctx)
 	}()
-	if cfg.Cash != nil {
+	if src.Cash != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cash, cashErr = cfg.Cash.Fetch(ctx)
+			cash, cashErr = src.Cash.Fetch(ctx)
 		}()
 	}
 	wg.Wait()
 
-	health[cfg.Bonds.Name()] = healthOf(bondsErr)
-	if cfg.Cash != nil {
-		health[cfg.Cash.Name()] = healthOf(cashErr)
+	health[src.Bonds.Name()] = healthOf(bondsErr)
+	if src.Cash != nil {
+		health[src.Cash.Name()] = healthOf(cashErr)
 	} else {
 		// Distinct from "down": an outage and a missing SET_SECRET need
 		// different responses from whoever reads GET /state.
@@ -335,7 +329,7 @@ func readBacking(
 	if bondsErr != nil {
 		return backing.Reading{}, backing.Reading{}, false, asFailure(bondsErr, failure.BackingUnavailable)
 	}
-	return bonds, cash, cfg.Cash != nil && cashErr == nil, nil
+	return bonds, cash, src.Cash != nil && cashErr == nil, nil
 }
 
 func healthOf(err error) string {
@@ -382,9 +376,9 @@ func checkWindow(window time.Duration, supplies []supply.Reading, readings ...ba
 
 // newHealth seeds every known source as unknown. Absence must never read as
 // health: an empty map looks like "everything fine" on GET /state.
-func newHealth(cfg Config) map[string]string {
-	h := make(map[string]string, len(cfg.Chains)*3+2)
-	for _, ch := range cfg.Chains {
+func newHealth(src Sources) map[string]string {
+	h := make(map[string]string, len(src.Chains)*3+2)
+	for _, ch := range src.Chains {
 		h[chainHealthKey(ch.Name)] = config.HealthUnknown
 		// Seeded so a provider that was never reached still appears. An absent
 		// key reads as "fine" to anything consuming /state, which is the one
@@ -393,11 +387,11 @@ func newHealth(cfg Config) map[string]string {
 			h[p.Name] = config.HealthUnknown
 		}
 	}
-	if cfg.Bonds != nil {
-		h[cfg.Bonds.Name()] = config.HealthUnknown
+	if src.Bonds != nil {
+		h[src.Bonds.Name()] = config.HealthUnknown
 	}
-	if cfg.Cash != nil {
-		h[cfg.Cash.Name()] = config.HealthUnknown
+	if src.Cash != nil {
+		h[src.Cash.Name()] = config.HealthUnknown
 	} else {
 		h[config.HexCashName] = config.HealthNotConfigured
 	}
@@ -416,29 +410,30 @@ func asFailure(err error, fallback failure.Failure) error {
 	return fallback
 }
 
-// Runner binds a Config and a Signer together. A convenience for tests and
-// one-shot use; production goes through internal/observe.
+// Runner binds sources, a binding and a Signer together. A convenience for
+// tests and one-shot use; production goes through internal/observe.
 type Runner struct {
-	cfg    Config
-	signer Signer
+	sources Sources
+	binding Binding
+	signer  Signer
 }
 
-// NewRunner validates cfg so a misconfiguration surfaces at startup rather
-// than later as a mysteriously unavailable feed.
-func NewRunner(cfg Config, signer Signer) (*Runner, error) {
-	if err := cfg.Validate(); err != nil {
+// NewRunner validates the sources so a misconfiguration surfaces at startup
+// rather than later as a mysteriously unavailable feed.
+func NewRunner(sources Sources, binding Binding, signer Signer) (*Runner, error) {
+	if err := sources.Validate(); err != nil {
 		return nil, err
 	}
 	if signer == nil {
 		return nil, errors.New("oracle: signer is required")
 	}
-	return &Runner{cfg: cfg, signer: signer}, nil
+	return &Runner{sources: sources, binding: binding, signer: signer}, nil
 }
 
 // Observe performs one observation and signs it, back to back. Does not fit
 // inside tee-node's 2s action timeout; kept for tests and tooling.
 func (r *Runner) Observe(ctx context.Context) (Observation, error) {
-	obs, err := Observe(ctx, r.cfg)
+	obs, err := Observe(ctx, r.sources, r.binding)
 	if err != nil {
 		return obs, err
 	}
