@@ -121,18 +121,54 @@ type Envelope struct {
 	Payload []byte
 }
 
-var bodyArgs = mustArgs("bytes32", "uint256", "address", "uint64", "uint64", "string", "bytes32")
+var bodyArgs = mustArgs(
+	argSpec{"Domain", "bytes32"},
+	argSpec{"ChainID", "uint256"},
+	argSpec{"TeeID", "address"},
+	argSpec{"Version", "uint64"},
+	argSpec{"IssuedAt", "uint64"},
+	argSpec{"Ref", "string"},
+	argSpec{"PayloadHash", "bytes32"},
+)
 
-var outerArgs = mustArgs("bytes", "bytes[]", "bytes")
+var outerArgs = mustArgs(
+	argSpec{"Body", "bytes"},
+	argSpec{"Signatures", "bytes[]"},
+	argSpec{"Payload", "bytes"},
+)
 
-func mustArgs(types ...string) abi.Arguments {
-	args := make(abi.Arguments, len(types))
-	for i, t := range types {
-		ty, err := abi.NewType(t, "", nil)
+// wireBody and wireOuter are the decoded forms of the two argument lists. Their
+// field names are what Arguments.Copy matches the argument names against, so
+// each layout is declared once rather than once per direction.
+type wireBody struct {
+	Domain      common.Hash
+	ChainID     *big.Int
+	TeeID       common.Address
+	Version     uint64
+	IssuedAt    uint64
+	Ref         string
+	PayloadHash common.Hash
+}
+
+type wireOuter struct {
+	Body       []byte
+	Signatures [][]byte
+	Payload    []byte
+}
+
+// argSpec is one ABI argument's name and type. Names do not affect the encoding
+// — they are what Arguments.Copy maps onto struct fields, and an unnamed
+// argument cannot be copied into a struct at all.
+type argSpec struct{ name, typ string }
+
+func mustArgs(specs ...argSpec) abi.Arguments {
+	args := make(abi.Arguments, len(specs))
+	for i, spec := range specs {
+		ty, err := abi.NewType(spec.typ, "", nil)
 		if err != nil {
-			panic("provision: invalid ABI type " + t + ": " + err.Error())
+			panic("provision: invalid ABI type " + spec.typ + ": " + err.Error())
 		}
-		args[i] = abi.Argument{Type: ty}
+		args[i] = abi.Argument{Name: spec.name, Type: ty}
 	}
 	return args
 }
@@ -403,48 +439,39 @@ var halfOrder, _ = new(big.Int).SetString(
 	"7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0", 16)
 
 func decode(message []byte) (Envelope, [][]byte, error) {
-	outer, err := outerArgs.Unpack(message)
-	if err != nil || len(outer) != 3 {
+	values, err := outerArgs.Unpack(message)
+	if err != nil || len(values) != 3 {
 		return Envelope{}, nil, errors.New("bad outer encoding")
 	}
 
-	body, ok := outer[0].([]byte)
-	if !ok {
-		return Envelope{}, nil, errors.New("bad body")
-	}
-	sigs, ok := outer[1].([][]byte)
-	if !ok {
-		return Envelope{}, nil, errors.New("bad signatures")
-	}
-	payload, ok := outer[2].([]byte)
-	if !ok {
-		return Envelope{}, nil, errors.New("bad payload")
+	// Copy matches on the argument names, so a field added or reordered above is
+	// an error here rather than a silently zeroed value.
+	var outer wireOuter
+	if err := outerArgs.Copy(&outer, values); err != nil {
+		return Envelope{}, nil, errors.New("bad outer encoding")
 	}
 
-	values, err := bodyArgs.Unpack(body)
+	values, err = bodyArgs.Unpack(outer.Body)
 	if err != nil || len(values) != 7 {
 		return Envelope{}, nil, errors.New("bad body encoding")
 	}
 
-	domain, _ := values[0].([32]byte)
-	if common.Hash(domain) != Domain() {
+	var body wireBody
+	if err := bodyArgs.Copy(&body, values); err != nil {
+		return Envelope{}, nil, errors.New("bad body encoding")
+	}
+
+	if body.Domain != Domain() {
 		return Envelope{}, nil, errors.New("wrong domain")
 	}
 
-	chainID, _ := values[1].(*big.Int)
-	teeID, _ := values[2].(common.Address)
-	version, _ := values[3].(uint64)
-	issuedAt, _ := values[4].(uint64)
-	ref, _ := values[5].(string)
-	payloadHash, _ := values[6].([32]byte)
-
 	return Envelope{
-		ChainID:     chainID,
-		TeeID:       teeID,
-		Version:     version,
-		IssuedAt:    issuedAt,
-		Ref:         strings.TrimSpace(ref),
-		PayloadHash: common.Hash(payloadHash),
-		Payload:     payload,
-	}, sigs, nil
+		ChainID:     body.ChainID,
+		TeeID:       body.TeeID,
+		Version:     body.Version,
+		IssuedAt:    body.IssuedAt,
+		Ref:         strings.TrimSpace(body.Ref),
+		PayloadHash: body.PayloadHash,
+		Payload:     outer.Payload,
+	}, outer.Signatures, nil
 }
