@@ -28,8 +28,6 @@ func (f *fakeNode) Decrypt(ctx context.Context, ciphertext []byte) ([]byte, erro
 	return ciphertext, nil
 }
 
-func (f *fakeNode) TeeID(ctx context.Context) (common.Address, error) { return f.teeID, nil }
-
 // testTeeID must be non-zero: a zero teeId never satisfies Verify's machine
 // binding, so every envelope would be rejected before reaching the logic under
 // test. The verifier and the fake node are given the same one so real envelopes

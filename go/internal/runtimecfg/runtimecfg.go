@@ -91,13 +91,15 @@ type Endpoint struct {
 	SecretRef string
 }
 
-// Node is the subset of tee-node this package needs.
-type Node interface {
+// Decryptor unseals a credential that was encrypted to the machine's public
+// key. tee-node does this inside the enclave, so the plaintext exists nowhere
+// else; narrowed to the one method this package calls, which is also what lets
+// the tests run without a signing service.
+type Decryptor interface {
 	Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error)
-	TeeID(ctx context.Context) (common.Address, error)
 }
 
-// Store receives provisioning messages and resolves them into an oracle.Config.
+// Store receives provisioning messages and opens the sources they describe.
 type Store struct {
 	// applyMu covers a whole Apply* call including the verifier's version map; mu
 	// covers only the data fields, and is never held across a tee-node round trip,
@@ -138,10 +140,10 @@ type Store struct {
 	secrets map[string][]byte
 
 	verifier *provision.Verifier
-	node     Node
+	node     Decryptor
 }
 
-func New(verifier *provision.Verifier, node Node) *Store {
+func New(verifier *provision.Verifier, node Decryptor) *Store {
 	return &Store{secrets: map[string][]byte{}, verifier: verifier, node: node}
 }
 
