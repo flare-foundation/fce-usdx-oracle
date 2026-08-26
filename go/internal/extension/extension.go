@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net/http"
 	"strconv"
 	"sync"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"github.com/flare-foundation/go-flare-common/pkg/tee/instruction"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
@@ -79,22 +77,18 @@ func NewWithObserver(extensionPort, signPort int, observer Observer) *Extension 
 	return NewWithProvisioner(extensionPort, signPort, observer, nil)
 }
 
-// NewWithProvisioner builds a fully wired Extension. A nil observer panics —
-// see NewWithObserver.
+// NewWithProvisioner builds a fully wired Extension.
+//
+// A nil observer panics rather than degrading to a hard-coded price: the
+// scaffold's New() silently produced one, which is how the production
+// entrypoint once served $1.00 while reading no source at all.
 func NewWithProvisioner(
 	extensionPort, signPort int, observer Observer, provisioner Provisioner,
 ) *Extension {
 	if observer == nil {
-		panic("extension: observer is nil — build a stub with NewStub, never by passing nil")
+		panic("extension: observer is nil")
 	}
 	return newExtension(extensionPort, signPort, observer, provisioner)
-}
-
-// NewStub answers GET_FEED with an unsigned $1.00, for
-// scripts/test-conformance.sh, which runs the extension with no tee-node, no
-// chain and no credentials. It must never be called outside that harness.
-func NewStub(extensionPort, signPort int) *Extension {
-	return newExtension(extensionPort, signPort, nil, nil)
 }
 
 func newExtension(
@@ -115,11 +109,6 @@ func newExtension(
 	e.Server = &http.Server{Addr: fmt.Sprintf(":%d", extensionPort), Handler: mux}
 	return e
 }
-
-// StubMode reports whether this extension is serving a hard-coded price.
-// Surface it in health checks: it is otherwise indistinguishable from a
-// healthy, fully-backed feed.
-func (e *Extension) StubMode() bool { return e.observer == nil }
 
 func (e *Extension) stateHandler(w http.ResponseWriter, r *http.Request) {
 	// Read readiness outside the lock: the provisioner has its own.
@@ -280,10 +269,6 @@ func (e *Extension) processGetFeed(action teetypes.Action, df *instruction.DataF
 		return e.fail(action, df, failure.UnexpectedPayload)
 	}
 
-	if e.observer == nil {
-		return e.stubFeed(action, df)
-	}
-
 	// df.Timestamp is the block timestamp of the instruction event, cosigned by
 	// the data-provider quorum along with the rest of DataFixed. The observer
 	// treats it as the clock this machine is checked against; it never becomes
@@ -334,36 +319,6 @@ func (e *Extension) processGetReadiness(
 	if err != nil {
 		return e.fail(action, df, failure.Coerce(err, failure.Internal))
 	}
-
-	return buildResult(action, df, data, 1, nil)
-}
-
-// stubFeed returns an unsigned $1.00 so the wire contract can be exercised
-// without credentials. Only reachable when no observer is configured.
-func (e *Extension) stubFeed(action teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
-	price := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(config.PriceDecimals)), nil)
-
-	resp := types.GetPriceResponse{
-		Price:      price.String(),
-		Decimals:   config.PriceDecimals,
-		ObservedAt: df.Timestamp,
-	}
-
-	// Cannot fail for these field types, but handled anyway and mapped to the
-	// vocabulary: the uniform rule is that no raw error ever reaches Log.
-	data, err := json.Marshal(resp)
-	if err != nil {
-		logger.Errorf("encoding GET_FEED response: %v", err)
-		return e.fail(action, df, failure.Internal)
-	}
-
-	e.mu.Lock()
-	e.lastPrice = resp.Price
-	e.lastDecimals = resp.Decimals
-	e.lastObservedAt = resp.ObservedAt
-	e.updateCount++
-	e.lastErrorClass = failure.ClassNone
-	e.mu.Unlock()
 
 	return buildResult(action, df, data, 1, nil)
 }

@@ -314,5 +314,5 @@ so a port is possible but is not something this repo currently ships.
 1. Create `<language>/` with a `Dockerfile` producing an image that satisfies §2, §4, §6.
 2. Implement the framework layer (`base/`): HTTP server, wire types, bytes32 helpers, dispatch registry, serialization.
 3. Implement the oracle: the `TEE_ORACLE` commands (`GET_FEED`, `GET_READINESS`, `SET_ENDPOINTS`, `SET_ADMINS`, `SET_SECRET`) with the `FeedUpdate` wire format, behaviourally identical to the Go implementation.
-4. Run `./scripts/test-conformance.sh <language>`. No chain, no registration, no proxy required — it replays the fixtures in `testdata/conformance/`.
+4. Run `cd go && go test ./internal/extension/ -run TestConformance`. No chain, no registration, no proxy required — it replays the fixtures in `testdata/conformance/`.
 5. Set `LANGUAGE=<language>` in `.env` and run the normal flow. Nothing in `scripts/`, `tools/` or `docker-compose.yaml` needs to change — language selection resolves by directory convention.

@@ -267,12 +267,12 @@ For the full stack — redis, proxy and the extension TEE in containers, against
 Start with the checks that need no chain. They catch most breakage in seconds:
 
 ```bash
-cd go && go test ./... && cd .. && ./scripts/test-conformance.sh go && forge test
+cd go && go test ./... && cd .. && forge test
 ```
 
 - **Unit tests** — `go test ./...` in `go/` and in `tools/`, covering the quorum procedure, price arithmetic, decimal parsing, the provisioning verifier, the wire encodings and the keeper cycle.
 - **Contract tests** — `forge test` prints Solidity's own ABI encoding of the wire payloads (endpoints, admins, the signed feed update) into `testdata/wire/`, which both Go codecs assert against. The structs are imported from the vendored `ITeeOracle*` interfaces, so the fixtures cannot drift from the ABI the bindings are generated off.
-- **Conformance** — `./scripts/test-conformance.sh` replays the golden wire fixtures in `testdata/conformance/` against a running extension and diffs the responses. No chain, no proxy, no Docker. This is the acceptance test for any new language implementation.
+- **Conformance** — `TestConformance` in `go/internal/extension` replays the golden wire fixtures in `testdata/conformance/` against a running extension and diffs the responses. No chain, no proxy, no Docker. This is the acceptance test for any new language implementation.
 - **On-chain end-to-end** — `./scripts/oracle-cycle.sh -tee @<machine> --dry-run` preflights the addressed machines without submitting; dropping `--dry-run` drives one full request → sign → relay cycle. To drive the full feed, follow *"Running the USDX oracle end to end yourself"* in [docs/testing.md](docs/testing.md).
 
 Three things that are easy to misread as failures:

@@ -85,7 +85,7 @@ EXTENSION_PORT=8080 go run ./cmd
 ## Verify
 
 ```bash
-./scripts/test-conformance.sh go
+go test ./internal/extension/ -run TestConformance
 ```
 
 Replays the golden wire fixtures against this implementation. Run it before committing a handler change.

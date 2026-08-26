@@ -17,7 +17,7 @@ Both script-driven layers accept a language or `--all`:
 ```
 
 ```bash
-./scripts/test-conformance.sh --all
+cd go && go test ./internal/extension/ -run TestConformance
 ```
 
 They dispatch through `LANGUAGE_TEST_CMD` in each `<lang>/language.env`, so they work for any language you add without modification.
@@ -29,7 +29,7 @@ This is the layer that keeps multiple implementations honest, and the acceptance
 `scripts/test-conformance.sh` starts **only the extension process** — no tee-node, no proxy, no chain, no Docker — replays the 16 fixtures in `testdata/conformance/`, and diffs every response field. The response payload is compared **byte-for-byte**, because tee-node hashes it and signs the result.
 
 ```bash
-./scripts/test-conformance.sh --all
+cd go && go test ./internal/extension/ -run TestConformance
 ```
 
 It runs in seconds, which is what makes writing a new language port tractable: a correctness signal without a full deploy cycle.
@@ -154,7 +154,7 @@ cd go && go test ./... && cd ..
 ```
 
 ```bash
-./scripts/test-conformance.sh go
+cd go && go test ./internal/extension/ -run TestConformance
 ```
 
 ```bash

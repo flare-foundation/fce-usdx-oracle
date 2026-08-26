@@ -54,8 +54,17 @@ func encodeFeedRequest(t *testing.T, feedID [21]byte) []byte {
 	return message
 }
 
+// newTestExtension builds an extension answering with one fixed observation, so
+// a test that is not about the observer does not have to set one up.
 func newTestExtension() *Extension {
 	return &Extension{
+		observer: &fakeObserver{obs: oracle.Observation{
+			Value:      100_000_000,
+			Decimals:   config.PriceDecimals,
+			ObservedAt: testTimestamp,
+			Data:       []byte{0xAB, 0xCD},
+			Health:     map[string]string{},
+		}},
 		lastErrorClass: failure.ClassNone,
 		sourceHealth:   map[string]string{},
 	}
@@ -198,51 +207,6 @@ func TestProcessAction_UnknownOPCommand(t *testing.T) {
 }
 
 // --- GET_FEED ---
-
-func TestProcessGetFeed_Success(t *testing.T) {
-	e := newTestExtension()
-
-	status, body := e.processAction(getFeedAction(t))
-	result := mustResult(t, status, body, http.StatusOK)
-
-	if result.Status != 1 {
-		t.Fatalf("expected ActionResult.Status=1, got %d: %s", result.Status, result.Log)
-	}
-
-	var resp types.GetPriceResponse
-	if err := json.Unmarshal(result.Data, &resp); err != nil {
-		t.Fatalf("failed to unmarshal GetPriceResponse: %v", err)
-	}
-
-	// The stub extension returns its hard-coded $1.00 at 8 decimals.
-	if want := "100000000"; resp.Price != want {
-		t.Errorf("expected price %q, got %q", want, resp.Price)
-	}
-	if resp.Decimals != config.PriceDecimals {
-		t.Errorf("expected decimals %d, got %d", config.PriceDecimals, resp.Decimals)
-	}
-	if resp.ObservedAt != testTimestamp {
-		t.Errorf("expected observedAt %d, got %d", testTimestamp, resp.ObservedAt)
-	}
-}
-
-// The price is a JSON string, not a number. On-chain it is a uint256, which does
-// not survive a float64 round-trip, so the encoding has to be a string from the
-// start rather than being widened later.
-func TestProcessGetFeed_PriceIsJSONString(t *testing.T) {
-	e := newTestExtension()
-
-	status, body := e.processAction(getFeedAction(t))
-	result := mustResult(t, status, body, http.StatusOK)
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(result.Data, &raw); err != nil {
-		t.Fatalf("failed to unmarshal data: %v", err)
-	}
-	if got := string(raw["price"]); !strings.HasPrefix(got, `"`) {
-		t.Errorf("expected price to be JSON-encoded as a string, got %s", got)
-	}
-}
 
 // GET_FEED carries exactly the ABI-encoded FeedUpdateRequest naming the feed.
 // A caller that supplies anything else must be rejected rather than silently
@@ -637,10 +601,10 @@ func TestProcessGetFeed_FailureKeepsLastGoodPrice(t *testing.T) {
 	}
 }
 
-// Stub mode must be impossible to enter accidentally: the production constructors
-// panic on a nil observer, and NewStub is the only stub path. A hard-coded par price
-// produces no errors, no alerts and no stale timestamp — a banner is no defence.
-func TestStubMode_CannotBeEnteredAccidentally(t *testing.T) {
+// A nil observer must panic rather than build something that answers anyway. A
+// hard-coded par price produces no errors, no alerts and no stale timestamp, so
+// nothing downstream would notice one.
+func TestNilObserverPanics(t *testing.T) {
 	mustPanic := func(name string, f func()) {
 		t.Helper()
 		defer func() {
@@ -652,47 +616,6 @@ func TestStubMode_CannotBeEnteredAccidentally(t *testing.T) {
 	}
 	mustPanic("NewWithObserver", func() { NewWithObserver(0, 0, nil) })
 	mustPanic("NewWithProvisioner", func() { NewWithProvisioner(0, 0, nil, nil) })
-
-	stub := NewStub(0, 0)
-	if !stub.StubMode() {
-		t.Error("StubMode() must report true for a NewStub extension")
-	}
-
-	live := NewWithObserver(0, 0, &fakeObserver{})
-	if live.StubMode() {
-		t.Error("StubMode() must report false once an observer is configured")
-	}
-}
-
-// The stub's payload is JSON; a live observation's payload is the ABI-encoded
-// signed report. They are NOT the same wire format, which is why conformance
-// fixtures generated in stub mode do not pin the production payload.
-func TestStubMode_PayloadDiffersFromObserverPayload(t *testing.T) {
-	stub := newTestExtension() // observer nil
-	_, stubBody := stub.processAction(getFeedAction(t))
-	stubResult := mustResult(t, http.StatusOK, stubBody, http.StatusOK)
-
-	// The stub emits JSON, which must parse as GetPriceResponse.
-	var resp types.GetPriceResponse
-	if err := json.Unmarshal(stubResult.Data, &resp); err != nil {
-		t.Fatalf("stub payload is not the JSON shape: %v", err)
-	}
-
-	live := newTestExtension()
-	live.observer = &fakeObserver{obs: oracle.Observation{
-		Value: 1, Decimals: 8, ObservedAt: 1,
-		Data: []byte{0xDE, 0xAD}, Health: map[string]string{},
-	}}
-	_, liveBody := live.processAction(getFeedAction(t))
-	liveResult := mustResult(t, http.StatusOK, liveBody, http.StatusOK)
-
-	if bytes.Equal(stubResult.Data, liveResult.Data) {
-		t.Error("stub and observer payloads coincidentally matched; the test proves nothing")
-	}
-	if err := json.Unmarshal(liveResult.Data, &resp); err == nil {
-		t.Error("the observer payload parsed as the stub's JSON shape; " +
-			"these are meant to be different formats and the difference must stay visible")
-	}
 }
 
 // doStateRequest performs GET /state against the handler and returns the body.

@@ -5,19 +5,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// GetPriceResponse is the stub shape returned in ActionResult.Data. The real
-// wire format is abi.encode(abi.encode(report), signature) — see internal/report.
-type GetPriceResponse struct {
-	// truncate(price * 10^Decimals) as a decimal string, not a number: the
-	// on-chain type is uint256 and JSON numbers are float64 in most parsers.
-	Price string `json:"price"`
-
-	Decimals int8 `json:"decimals"`
-
-	// Unix timestamp of the observation; the price store's monotonicity key.
-	ObservedAt uint64 `json:"observedAt"`
-}
-
 // State is PUBLIC: tee-node polls GET /state, folds it into TEEState.state, and
 // the proxy republishes it at GET /info. Nothing here may carry raw supply
 // figures, reserve components, API responses, credentials or endpoint URLs.
