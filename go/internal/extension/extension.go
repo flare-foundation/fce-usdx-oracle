@@ -3,7 +3,6 @@ package extension
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -272,7 +271,7 @@ func (e *Extension) processGetFeed(action teetypes.Action, df *instruction.DataF
 	// ActionResult.Log is public.
 	feedID, reqErr := report.DecodeFeedRequest(df.OriginalMessage)
 	if reqErr != nil {
-		return e.fail(action, df, asFailure(reqErr))
+		return e.fail(action, df, failure.Coerce(reqErr, failure.Internal))
 	}
 	// Refused here rather than observed and signed. An update naming another feed
 	// would be rejected by that feed's store anyway, but only after this machine
@@ -298,7 +297,7 @@ func (e *Extension) processGetFeed(action teetypes.Action, df *instruction.DataF
 	e.mu.Unlock()
 
 	if err != nil {
-		return e.fail(action, df, asFailure(err))
+		return e.fail(action, df, failure.Coerce(err, failure.Internal))
 	}
 
 	e.mu.Lock()
@@ -333,7 +332,7 @@ func (e *Extension) processGetReadiness(
 	data, err := e.observer.ReadinessReport(
 		context.Background(), df.InstructionID, e.provisioner.Readiness())
 	if err != nil {
-		return e.fail(action, df, asFailure(err))
+		return e.fail(action, df, failure.Coerce(err, failure.Internal))
 	}
 
 	return buildResult(action, df, data, 1, nil)
@@ -367,15 +366,6 @@ func (e *Extension) stubFeed(action teetypes.Action, df *instruction.DataFixed) 
 	e.mu.Unlock()
 
 	return buildResult(action, df, data, 1, nil)
-}
-
-// asFailure keeps anything outside the vocabulary out of the public Log.
-func asFailure(err error) failure.Failure {
-	var f failure.Failure
-	if errors.As(err, &f) {
-		return f
-	}
-	return failure.Internal
 }
 
 // fail records a failed observation and returns a status-0 result. It takes a

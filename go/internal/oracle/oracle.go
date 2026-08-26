@@ -287,7 +287,7 @@ func readAllChains(ctx context.Context, src Sources, health map[string]string) (
 		health[name] = config.HealthOK
 	}
 	if firstErr != nil {
-		return nil, asFailure(firstErr, failure.SupplyUnavailable)
+		return nil, failure.Coerce(firstErr, failure.SupplyUnavailable)
 	}
 	return readings, nil
 }
@@ -327,7 +327,7 @@ func readBacking(
 	}
 
 	if bondsErr != nil {
-		return backing.Reading{}, backing.Reading{}, false, asFailure(bondsErr, failure.BackingUnavailable)
+		return backing.Reading{}, backing.Reading{}, false, failure.Coerce(bondsErr, failure.BackingUnavailable)
 	}
 	return bonds, cash, src.Cash != nil && cashErr == nil, nil
 }
@@ -399,16 +399,6 @@ func newHealth(src Sources) map[string]string {
 }
 
 func chainHealthKey(chain string) string { return "rpc_" + chain }
-
-// asFailure passes a Failure through and replaces anything else with a safe
-// default, so nothing outside the vocabulary reaches a public surface.
-func asFailure(err error, fallback failure.Failure) error {
-	var f failure.Failure
-	if errors.As(err, &f) {
-		return f
-	}
-	return fallback
-}
 
 // Runner binds sources, a binding and a Signer together. A convenience for
 // tests and one-shot use; production goes through internal/observe.

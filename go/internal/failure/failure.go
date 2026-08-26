@@ -3,6 +3,25 @@
 // fields and no constructor: only the values below exist. Log debug detail apart.
 package failure
 
+import "errors"
+
+// Coerce returns the Failure err carries, or fallback if it carries none.
+//
+// The single conversion from an arbitrary error into something publishable, so
+// there is one place to look when asking whether a surface can leak. An error
+// from outside the vocabulary — a *url.Error holding an API key, a parse error
+// holding a reserve figure — becomes fallback and its text is dropped.
+//
+// A nil err yields fallback rather than a zero Failure, which would read as
+// "no failure" on a path that has already decided there was one.
+func Coerce(err error, fallback Failure) Failure {
+	var f Failure
+	if errors.As(err, &f) {
+		return f
+	}
+	return fallback
+}
+
 // Class is the coarse taxonomy reported by GET /state as lastErrorClass.
 type Class string
 

@@ -114,7 +114,7 @@ func (p *Poller) record(obs oracle.Observation, err error) {
 
 	if err != nil {
 		p.failures++
-		p.lastErr = asFailure(err)
+		p.lastErr = failure.Coerce(err, failure.Internal)
 		// The previous observation stays and ages out via maxAge: one flapping
 		// RPC provider should not stop the feed.
 		if obs.Health != nil {
@@ -248,14 +248,14 @@ func (p *Poller) ReadinessReport(
 		PayloadHash:   crypto.Keccak256Hash(payload),
 	})
 	if err != nil {
-		return nil, asFailure(err)
+		return nil, failure.Coerce(err, failure.Internal)
 	}
 
 	// asFailure, not the raw error: a signer's own words can name the endpoint it
 	// failed to reach, and this must not depend on the signer keeping to vocabulary.
 	signature, err := p.signer.Sign(ctx, body)
 	if err != nil {
-		return nil, asFailure(err)
+		return nil, failure.Coerce(err, failure.Internal)
 	}
 
 	// payload verbatim: the signature commits to these exact bytes, and
@@ -268,14 +268,4 @@ func (p *Poller) Stats() (observations, failures int) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.observations, p.failures
-}
-
-// asFailure keeps anything outside the vocabulary off the public surfaces:
-// lastErr reaches ActionResult.Log, which is world-readable.
-func asFailure(err error) error {
-	var f failure.Failure
-	if errors.As(err, &f) {
-		return f
-	}
-	return failure.Internal
 }
