@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
-	"github.com/flare-foundation/go-flare-common/pkg/tee/instruction"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
@@ -31,13 +31,18 @@ func (e *Extension) actionHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-func buildResult(a teetypes.Action, df *instruction.DataFixed, data []byte, status uint8, err error) teetypes.ActionResult {
+// buildResult assembles the result envelope. OPType is this extension's own,
+// not the received value: nothing reaches here until checkOPType has confirmed
+// the two are equal.
+func buildResult(
+	a teetypes.Action, opCommand common.Hash, data []byte, status uint8, err error,
+) teetypes.ActionResult {
 	ar := teetypes.ActionResult{
 		ID:            a.Data.ID,
 		SubmissionTag: a.Data.SubmissionTag,
 		Version:       config.Version,
-		OPType:        df.OPType,
-		OPCommand:     df.OPCommand,
+		OPType:        config.OPTypeTeeOracle,
+		OPCommand:     opCommand,
 		Data:          data,
 		Status:        status,
 	}

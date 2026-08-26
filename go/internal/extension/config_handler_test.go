@@ -1,7 +1,6 @@
 package extension
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/pkg/types"
 
+	"github.com/ethereum/go-ethereum/common"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
@@ -55,8 +55,8 @@ func (f *fakeProvisioner) Readiness() types.Readiness { return f.readiness }
 // configAction builds a provisioning action in the envelope its channel really uses: a
 // DataFixed for an instruction, a DirectInstruction for a direct action. Building both
 // as DataFixed hid that the extension could not read a real direct payload.
-func configAction(command string, actionType teetypes.ActionType, payload []byte) teetypes.Action {
-	opType, opCommand := toHash(config.OPTypeTeeOracle), toHash(command)
+func configAction(command common.Hash, actionType teetypes.ActionType, payload []byte) teetypes.Action {
+	opType, opCommand := config.OPTypeTeeOracle, command
 
 	if actionType == teetypes.Direct {
 		return buildDirectAction(opType, opCommand, payload)
@@ -95,45 +95,6 @@ func TestSetSecret_DirectEnvelopeDeliversThePayload(t *testing.T) {
 	}
 }
 
-// A direct action has no instruction id, so the proxy's action id has to stand
-// in. Left zero, every readiness report would answer the same id and none could
-// be bound to the request that asked for it.
-func TestParseActionData_DirectBindsTheActionID(t *testing.T) {
-	a := buildDirectAction(toHash(config.OPTypeTeeOracle), toHash(config.OPCommandGetReadiness),
-		[]byte{config.ReadinessRequestV1})
-
-	df, err := parseActionData(a)
-	if err != nil {
-		t.Fatalf("parseActionData: %v", err)
-	}
-	if df.InstructionID != testDirectActionID {
-		t.Errorf("instruction id = %s, want the action id %s",
-			df.InstructionID.Hex(), testDirectActionID.Hex())
-	}
-	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.ReadinessRequestV1 {
-		t.Errorf("payload = %v, want the one-byte request envelope", df.OriginalMessage)
-	}
-}
-
-// The instruction envelope must keep parsing as it always did — the GET_FEED
-// message became an ABI-encoded FeedUpdateRequest, but that is the handler's
-// business, not the action parser's.
-func TestParseActionData_InstructionUnchanged(t *testing.T) {
-	a := buildTestAction(toHash(config.OPTypeTeeOracle), toHash(config.OPCommandGetFeed),
-		feedRequest(t))
-
-	df, err := parseActionData(a)
-	if err != nil {
-		t.Fatalf("parseActionData: %v", err)
-	}
-	if df.InstructionID != testInstructionID {
-		t.Errorf("instruction id = %s, want %s", df.InstructionID.Hex(), testInstructionID.Hex())
-	}
-	if !bytes.Equal(df.OriginalMessage, feedRequest(t)) {
-		t.Errorf("payload = %v, want the encoded feed request", df.OriginalMessage)
-	}
-}
-
 // --- channel enforcement ---
 
 // GET_FEED is raised through requestFeedUpdate(), which pays the registry fee
@@ -142,7 +103,7 @@ func TestParseActionData_InstructionUnchanged(t *testing.T) {
 func TestGetPrice_RejectedOverDirectChannel(t *testing.T) {
 	e := newTestExtension()
 
-	action := buildDirectAction(toHash(config.OPTypeTeeOracle), toHash(config.OPCommandGetFeed),
+	action := buildDirectAction(config.OPTypeTeeOracle, config.OPCommandGetFeed,
 		feedRequest(t))
 	status, body := e.processAction(action)
 	result := mustResult(t, status, body, http.StatusOK)
@@ -225,7 +186,7 @@ func TestSetSecret_RejectedOverInstructionChannel(t *testing.T) {
 func TestConfig_AcceptsOverCorrectChannel(t *testing.T) {
 	cases := []struct {
 		name       string
-		command    string
+		command    common.Hash
 		actionType teetypes.ActionType
 		calls      func(*fakeProvisioner) int
 	}{
@@ -357,7 +318,7 @@ func TestConfig_WithoutProvisionerIsNotConfigured(t *testing.T) {
 
 func TestConfig_UnknownCommandIs501(t *testing.T) {
 	e := newProvisionedExtension(&fakeProvisioner{})
-	status, _ := e.processAction(configAction("NOT_A_COMMAND", teetypes.Direct, []byte("x")))
+	status, _ := e.processAction(configAction(toHash("NOT_A_COMMAND"), teetypes.Direct, []byte("x")))
 	if status != http.StatusNotImplemented {
 		t.Errorf("status = %d, want 501", status)
 	}

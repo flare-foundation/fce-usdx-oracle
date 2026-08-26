@@ -340,8 +340,8 @@ func submit(args []string) error {
 // postDirect submits through the proxy, which is the production path.
 func postDirect(proxyURL, apiKey string, message []byte) error {
 	payload := map[string]string{
-		"opType":    b32(config.OPTypeTeeOracle),
-		"opCommand": b32(config.OPCommandSetSecret),
+		"opType":    config.OPTypeTeeOracle.Hex(),
+		"opCommand": config.OPCommandSetSecret.Hex(),
 		"message":   "0x" + hex.EncodeToString(message),
 	}
 	raw, _ := json.Marshal(payload)
@@ -375,8 +375,8 @@ func postDirect(proxyURL, apiKey string, message []byte) error {
 // DirectInstruction — what the proxy really sends — never a DataFixed.
 func postAction(actionURL string, message []byte) error {
 	di := map[string]any{
-		"opType":    b32(config.OPTypeTeeOracle),
-		"opCommand": b32(config.OPCommandSetSecret),
+		"opType":    config.OPTypeTeeOracle.Hex(),
+		"opCommand": config.OPCommandSetSecret.Hex(),
 		"message":   "0x" + hex.EncodeToString(message),
 	}
 	diRaw, _ := json.Marshal(di)
@@ -485,12 +485,6 @@ func setNameFor(ref string) string {
 // internal/config rather than string literals: the extension routes on exactly
 // those constants, and a literal here would keep compiling after a retag while
 // every envelope bounced as an unsupported op type.
-func b32(s string) string {
-	b := make([]byte, 32)
-	copy(b, s)
-	return "0x" + hex.EncodeToString(b)
-}
-
 func hexBytes(s string) ([]byte, error) {
 	return hex.DecodeString(strings.TrimPrefix(s, "0x"))
 }

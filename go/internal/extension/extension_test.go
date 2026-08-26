@@ -99,7 +99,10 @@ func buildTestAction(opType, opCommand common.Hash, originalMessage []byte) teet
 
 	return teetypes.Action{
 		Data: teetypes.ActionData{
-			ID:            common.HexToHash("0x1234"),
+			// The same id as the payload's: tee-node builds an instruction action
+			// with Data.ID set to the instruction id, and processAction refuses a
+			// pair that disagrees.
+			ID:            testInstructionID,
 			Type:          teetypes.Instruction,
 			SubmissionTag: "submit",
 			Message:       msg,
@@ -136,7 +139,7 @@ func buildDirectAction(opType, opCommand common.Hash, message []byte) teetypes.A
 // FeedUpdateRequest for this build's feed, exactly as requestFeedUpdate() emits it.
 func getFeedAction(t *testing.T) teetypes.Action {
 	t.Helper()
-	return buildTestAction(toHash(config.OPTypeTeeOracle), toHash(config.OPCommandGetFeed),
+	return buildTestAction(config.OPTypeTeeOracle, config.OPCommandGetFeed,
 		feedRequest(t))
 }
 
@@ -158,7 +161,7 @@ func mustResult(t *testing.T, status int, body []byte, wantStatus int) teetypes.
 
 func TestProcessAction_UnknownOPType(t *testing.T) {
 	e := newTestExtension()
-	action := buildTestAction(toHash("UNKNOWN_TYPE"), toHash(config.OPCommandGetFeed), nil)
+	action := buildTestAction(toHash("UNKNOWN_TYPE"), config.OPCommandGetFeed, nil)
 
 	status, body := e.processAction(action)
 
@@ -173,17 +176,17 @@ func TestProcessAction_UnknownOPType(t *testing.T) {
 	if receivedHash := toHash("UNKNOWN_TYPE").Hex(); !contains(bodyStr, receivedHash) {
 		t.Errorf("expected body to contain received hash %s", receivedHash)
 	}
-	if expectedHash := toHash(config.OPTypeTeeOracle).Hex(); !contains(bodyStr, expectedHash) {
+	if expectedHash := config.OPTypeTeeOracle.Hex(); !contains(bodyStr, expectedHash) {
 		t.Errorf("expected body to contain expected hash %s", expectedHash)
 	}
-	if !contains(bodyStr, config.OPTypeTeeOracle) {
+	if !contains(bodyStr, config.OpName(config.OPTypeTeeOracle)) {
 		t.Errorf("expected body to contain %q", config.OPTypeTeeOracle)
 	}
 }
 
 func TestProcessAction_UnknownOPCommand(t *testing.T) {
 	e := newTestExtension()
-	action := buildTestAction(toHash(config.OPTypeTeeOracle), toHash("UNKNOWN_COMMAND"), nil)
+	action := buildTestAction(config.OPTypeTeeOracle, toHash("UNKNOWN_COMMAND"), nil)
 
 	status, body := e.processAction(action)
 
@@ -198,10 +201,10 @@ func TestProcessAction_UnknownOPCommand(t *testing.T) {
 	if receivedHash := toHash("UNKNOWN_COMMAND").Hex(); !contains(bodyStr, receivedHash) {
 		t.Errorf("expected body to contain received hash %s", receivedHash)
 	}
-	if cmdHash := toHash(config.OPCommandGetFeed).Hex(); !contains(bodyStr, cmdHash) {
+	if cmdHash := config.OPCommandGetFeed.Hex(); !contains(bodyStr, cmdHash) {
 		t.Errorf("expected body to contain hash for %s: %s", config.OPCommandGetFeed, cmdHash)
 	}
-	if !contains(bodyStr, config.OPCommandGetFeed) {
+	if !contains(bodyStr, config.OpName(config.OPCommandGetFeed)) {
 		t.Errorf("expected body to contain command name %q", config.OPCommandGetFeed)
 	}
 }
@@ -220,8 +223,8 @@ func TestProcessGetFeed_RejectsPayload(t *testing.T) {
 	payload := []byte(`{"` + sentinel + `":"` + sentinel + `"}`)
 
 	action := buildTestAction(
-		toHash(config.OPTypeTeeOracle),
-		toHash(config.OPCommandGetFeed),
+		config.OPTypeTeeOracle,
+		config.OPCommandGetFeed,
 		payload,
 	)
 
@@ -282,7 +285,7 @@ func TestProcessGetFeed_RequiresTheRequestEnvelope(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e := newTestExtension()
 			action := buildTestAction(
-				toHash(config.OPTypeTeeOracle), toHash(config.OPCommandGetFeed), c.payload)
+				config.OPTypeTeeOracle, config.OPCommandGetFeed, c.payload)
 
 			status, body := e.processAction(action)
 			result := mustResult(t, status, body, http.StatusOK)
@@ -311,6 +314,7 @@ func TestProcessAction_InvalidDataMessage(t *testing.T) {
 	action := teetypes.Action{
 		Data: teetypes.ActionData{
 			ID:      common.HexToHash("0xabcd"),
+			Type:    teetypes.Instruction,
 			Message: []byte(`not json at all`),
 		},
 	}
@@ -323,6 +327,50 @@ func TestProcessAction_InvalidDataMessage(t *testing.T) {
 	}
 	if !contains(string(body), "decoding fixed data") {
 		t.Errorf("expected body to mention 'decoding fixed data', got %q", string(body))
+	}
+}
+
+// An action whose type is neither of the two known ones must be refused, not
+// treated as an instruction. The instruction router is the privileged one — it
+// is where SET_ENDPOINTS and SET_ADMINS live, authorised by nothing but having
+// arrived on that channel — so an unrecognised type falling through to it would
+// hand governance writes to whatever produced it.
+// An action whose envelope and payload name different instructions is refused.
+// tee-node sets Data.ID to the instruction id, so a mismatch is not something
+// the honest path produces, and reconciling it would mean choosing which of two
+// disagreeing sources to believe.
+func TestProcessAction_ActionIDMustMatchInstructionID(t *testing.T) {
+	e := newTestExtension()
+
+	action := getFeedAction(t)
+	action.Data.ID = common.HexToHash("0xdead")
+
+	status, body := e.processAction(action)
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, body)
+	}
+	if !contains(string(body), "does not match the instruction id") {
+		t.Errorf("expected the body to name the cause, got %q", string(body))
+	}
+}
+
+func TestProcessAction_UnknownActionTypeIsRefused(t *testing.T) {
+	e := newTestExtension()
+
+	action := teetypes.Action{
+		Data: teetypes.ActionData{
+			ID:      common.HexToHash("0xabcd"),
+			Type:    teetypes.ActionType("neither"),
+			Message: []byte(`{}`),
+		},
+	}
+
+	status, body := e.processAction(action)
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, status, body)
+	}
+	if !contains(string(body), "unknown action type") {
+		t.Errorf("expected the body to name the cause, got %q", string(body))
 	}
 }
 
@@ -370,8 +418,8 @@ func TestState_SuccessClearsErrorClass(t *testing.T) {
 	e := newTestExtension()
 
 	bad := buildTestAction(
-		toHash(config.OPTypeTeeOracle),
-		toHash(config.OPCommandGetFeed),
+		config.OPTypeTeeOracle,
+		config.OPCommandGetFeed,
 		[]byte(`{"unexpected":"payload"}`),
 	)
 	e.processAction(bad)

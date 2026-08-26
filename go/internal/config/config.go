@@ -9,30 +9,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
 )
 
 const (
 	Version = "0.1.0"
-
-	// Must match the upstream sender's bytes32 constants exactly. One op type
-	// covers every command, so the per-command action-type guards in extension.go
-	// are the only fence between permissionless and governance-only commands.
-	OPTypeTeeOracle = "TEE_ORACLE"
-
-	// Instruction-only: the on-chain path is the permissionless one, and a
-	// fallback path is one nobody notices has broken. Enforced in extension.go.
-	OPCommandGetFeed = "GET_FEED"
-
-	// Direct-only, no counterpart in the sender: a status answer is stale within
-	// minutes and not worth a fee. Enforced in extension.go.
-	OPCommandGetReadiness = "GET_READINESS"
-
-	// SET_ENDPOINTS/SET_ADMINS are instruction-only: the direct channel would skip
-	// the sender's onlyGovernance check. SET_SECRET is direct-only: a ciphertext
-	// on-chain would be permanent and public. Enforced in config_handler.go.
-	OPCommandSetEndpoints = "SET_ENDPOINTS"
-	OPCommandSetAdmins    = "SET_ADMINS"
-	OPCommandSetSecret    = "SET_SECRET"
 
 	TimeoutShutdown = 5 * time.Second
 
@@ -47,6 +30,40 @@ const (
 	// on the wire caps at ~21.47, and internal/report fails closed out of range.
 	PriceDecimals int8 = 8
 )
+
+// The op type and commands as they travel: bytes32, the name's ASCII
+// right-padded with zeros. Defined as the hash because that is the only form
+// the handlers ever compare against, and building it here means no call site
+// can pad it differently.
+//
+// Must match the upstream sender's bytes32 constants exactly. One op type
+// covers every command, so the per-command action-type guards in extension.go
+// are the only fence between permissionless and governance-only commands.
+var (
+	OPTypeTeeOracle = teeutils.ToHash("TEE_ORACLE")
+
+	// Instruction-only: the on-chain path is the permissionless one, and a
+	// fallback path is one nobody notices has broken. Enforced in extension.go.
+	OPCommandGetFeed = teeutils.ToHash("GET_FEED")
+
+	// Direct-only, no counterpart in the sender: a status answer is stale within
+	// minutes and not worth a fee. Enforced in extension.go.
+	OPCommandGetReadiness = teeutils.ToHash("GET_READINESS")
+
+	// SET_ENDPOINTS/SET_ADMINS are instruction-only: the direct channel would skip
+	// the sender's onlyGovernance check. SET_SECRET is direct-only: a ciphertext
+	// on-chain would be permanent and public. Enforced in config_handler.go.
+	OPCommandSetEndpoints = teeutils.ToHash("SET_ENDPOINTS")
+	OPCommandSetAdmins    = teeutils.ToHash("SET_ADMINS")
+	OPCommandSetSecret    = teeutils.ToHash("SET_SECRET")
+)
+
+// OpName recovers the ASCII an op hash was built from, so a rejection can name
+// the command a machine understood rather than making an operator decode a
+// bytes32 by hand. The padding is zeros, so trimming them is exact.
+func OpName(h common.Hash) string {
+	return strings.TrimRight(string(h[:]), "\x00")
+}
 
 // Source health per upstream in GET /state. Unknown is the zero value: a source
 // that has never been polled must not read as healthy.

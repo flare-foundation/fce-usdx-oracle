@@ -146,133 +146,210 @@ func (e *Extension) stateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// parseActionData extracts the op identifiers and payload from a DataFixed
-// (instruction) or a DirectInstruction (direct). Parsing one as the other yields an
-// EMPTY payload rather than an error, so the envelope comes from Data.Type.
-func parseActionData(action teetypes.Action) (*instruction.DataFixed, error) {
-	if action.Data.Type != teetypes.Direct {
-		return processorutils.Parse[instruction.DataFixed](action.Data.Message)
-	}
-
-	di, err := processorutils.Parse[teetypes.DirectInstruction](action.Data.Message)
-	if err != nil {
-		return nil, err
-	}
-
-	// No on-chain instruction behind it, so the proxy's action id is the
-	// correlator. The feed store no longer records one at all — GET_READINESS
-	// still binds it, which is why it is carried here.
-	return &instruction.DataFixed{
-		InstructionID:   action.Data.ID,
-		OPType:          di.OPType,
-		OPCommand:       di.OPCommand,
-		OriginalMessage: di.Message,
-	}, nil
-}
-
+// processAction parses whichever envelope the action carries and hands it to
+// that channel's router.
+//
+// The envelope is chosen by Data.Type, never guessed: parsing one as the other
+// does not fail — encoding/json drops unknown fields — it yields an EMPTY
+// payload. An unrecognised type is refused rather than treated as an
+// instruction, because the instruction router is the privileged one.
 func (e *Extension) processAction(action teetypes.Action) (int, []byte) {
-	dataFixed, err := parseActionData(action)
-	if err != nil {
-		return http.StatusBadRequest, []byte(fmt.Sprintf("decoding fixed data: %v", err))
-	}
-
-	if dataFixed.OPType != teeutils.ToHash(config.OPTypeTeeOracle) {
-		return http.StatusNotImplemented, []byte(fmt.Sprintf(
-			"unsupported op type: received %s, expected %s (%s)",
-			dataFixed.OPType.Hex(), teeutils.ToHash(config.OPTypeTeeOracle).Hex(), config.OPTypeTeeOracle,
-		))
-	}
-	return e.processTeeOracle(action, dataFixed)
-}
-
-// processTeeOracle routes every command this extension serves. One op type
-// covers all of them upstream, so the switch below is the whole routing table
-// and each arm's action-type guard is the only fence left between a
-// permissionless read and a governance-published write. There is deliberately
-// no default arm that accepts both channels: an unrecognised command is a 501,
-// and a recognised one arriving over the wrong channel is a refusal.
-func (e *Extension) processTeeOracle(action teetypes.Action, df *instruction.DataFixed) (int, []byte) {
-	switch {
-	case df.OPCommand == teeutils.ToHash(config.OPCommandGetFeed):
-		// Instruction only. An update is requested through requestFeedUpdate() on
-		// the on-chain sender, which pays the registry fee and has the cosigning
-		// quorum behind it; the direct channel would hand the same signed update
-		// to anyone holding the proxy API key, for free and off the record.
-		if action.Data.Type != teetypes.Instruction {
-			return respond(e, action, df, failure.WrongActionType)
+	switch action.Data.Type {
+	case teetypes.Instruction:
+		df, err := processorutils.Parse[instruction.DataFixed](action.Data.Message)
+		if err != nil {
+			return http.StatusBadRequest, []byte(fmt.Sprintf("decoding fixed data: %v", err))
 		}
-
-		ar := e.processGetFeed(action, df)
-		b, _ := json.Marshal(ar)
-		return http.StatusOK, b
-
-	case df.OPCommand == teeutils.ToHash(config.OPCommandGetReadiness):
-		// Direct only. See config.OPCommandGetReadiness: a price is worth making
-		// permissionless, an operational status report is not.
-		if action.Data.Type != teetypes.Direct {
-			return respond(e, action, df, failure.WrongActionType)
+		if code, body, bad := checkOPType(df.OPType); bad {
+			return code, body
 		}
-
-		ar := e.processGetReadiness(action, df)
-		b, _ := json.Marshal(ar)
-		return http.StatusOK, b
-
-	// The provisioning commands. Their guards live with their handlers in
-	// config_handler.go, one per command.
-	case df.OPCommand == teeutils.ToHash(config.OPCommandSetEndpoints):
-		if e.provisioner == nil {
-			return respond(e, action, df, failure.NotConfigured)
+		// The action id and the id inside the cosigned payload name the same
+		// instruction by construction. A disagreement means the envelope and its
+		// contents describe different instructions, which nothing legitimate
+		// produces, so it is refused rather than reconciled.
+		if action.Data.ID != df.InstructionID {
+			return http.StatusBadRequest, []byte("action id does not match the instruction id")
 		}
-		return e.processSetEndpoints(action, df)
+		return e.processInstruction(action, df)
 
-	case df.OPCommand == teeutils.ToHash(config.OPCommandSetAdmins):
-		if e.provisioner == nil {
-			return respond(e, action, df, failure.NotConfigured)
+	case teetypes.Direct:
+		di, err := processorutils.Parse[teetypes.DirectInstruction](action.Data.Message)
+		if err != nil {
+			return http.StatusBadRequest, []byte(fmt.Sprintf("decoding direct instruction: %v", err))
 		}
-		return e.processSetAdmins(action, df)
-
-	case df.OPCommand == teeutils.ToHash(config.OPCommandSetSecret):
-		if e.provisioner == nil {
-			return respond(e, action, df, failure.NotConfigured)
+		if code, body, bad := checkOPType(di.OPType); bad {
+			return code, body
 		}
-		return e.processSetSecret(action, df)
+		return e.processDirect(action, di)
 
 	default:
-		return http.StatusNotImplemented, []byte(fmt.Sprintf(
-			"unsupported op command: received %s, expected one of [%s (%s), %s (%s), %s (%s), %s (%s), %s (%s)]",
-			df.OPCommand.Hex(),
-			teeutils.ToHash(config.OPCommandGetFeed).Hex(), config.OPCommandGetFeed,
-			teeutils.ToHash(config.OPCommandGetReadiness).Hex(), config.OPCommandGetReadiness,
-			teeutils.ToHash(config.OPCommandSetEndpoints).Hex(), config.OPCommandSetEndpoints,
-			teeutils.ToHash(config.OPCommandSetAdmins).Hex(), config.OPCommandSetAdmins,
-			teeutils.ToHash(config.OPCommandSetSecret).Hex(), config.OPCommandSetSecret,
-		))
+		return http.StatusBadRequest, []byte(fmt.Sprintf(
+			"unknown action type %q", action.Data.Type))
 	}
+}
+
+// checkOPType rejects an action raised for another extension.
+//
+// A plain-text 501 rather than a failure value, and deliberately more
+// forthcoming than any other rejection here. tee-node turns a non-200 into an
+// error carrying this body, and processorutils.Invalid puts that into
+// ActionResult.Log — so it does reach the public result endpoint, by a different
+// route than e.fail.
+//
+// Chatty anyway, because the only runtime value echoed is the opType the caller
+// just sent, next to constants compiled into this build. Nothing is disclosed
+// that the caller did not already have, and a mismatch reported as two bare
+// hashes is undebuggable. Contrast processGetFeed, which echoes nothing: there
+// the payload is attacker-chosen data about OUR state.
+func checkOPType(got common.Hash) (int, []byte, bool) {
+	if got == config.OPTypeTeeOracle {
+		return 0, nil, false
+	}
+	return http.StatusNotImplemented, []byte(fmt.Sprintf(
+		"unsupported op type: received %s, expected %s (%s)",
+		got.Hex(), config.OPTypeTeeOracle.Hex(), config.OpName(config.OPTypeTeeOracle),
+	)), true
+}
+
+// processInstruction routes the commands raised on-chain, through
+// TeeOracleInstructionsSender. Reaching this router IS the authorisation: the
+// sender's governance check has already run and the data providers have
+// cosigned the instruction. Nothing here may become reachable from processDirect.
+func (e *Extension) processInstruction(
+	action teetypes.Action, df *instruction.DataFixed,
+) (int, []byte) {
+	switch df.OPCommand {
+	case config.OPCommandGetFeed:
+		// Requested through requestFeedUpdate(), which pays the registry fee and
+		// has the cosigning quorum behind it.
+		return e.result(action, df.OPCommand, e.processGetFeed(df))
+
+	case config.OPCommandSetEndpoints:
+		if e.provisioner == nil {
+			return e.result(action, df.OPCommand, refuse(failure.NotConfigured))
+		}
+		return e.result(action, df.OPCommand, e.processSetEndpoints(df))
+
+	case config.OPCommandSetAdmins:
+		if e.provisioner == nil {
+			return e.result(action, df.OPCommand, refuse(failure.NotConfigured))
+		}
+		return e.result(action, df.OPCommand, e.processSetAdmins(df))
+
+	case config.OPCommandGetReadiness, config.OPCommandSetSecret:
+		// Direct-only, and named here rather than left to the default so the
+		// refusal says "wrong channel" instead of "unknown command".
+		return e.result(action, df.OPCommand, refuse(failure.WrongActionType))
+
+	default:
+		return unsupportedCommand(df.OPCommand)
+	}
+}
+
+// processDirect routes the commands raised on the proxy. Nothing here is
+// authorised by having arrived: SET_SECRET carries its own M-of-N admin
+// signatures, and GET_READINESS grants nothing.
+func (e *Extension) processDirect(
+	action teetypes.Action, di *teetypes.DirectInstruction,
+) (int, []byte) {
+	switch di.OPCommand {
+	case config.OPCommandGetReadiness:
+		// A price is worth making permissionless; an operational status report is
+		// not, and it is stale within minutes.
+		return e.result(action, di.OPCommand, e.processGetReadiness(di, action.Data.ID))
+
+	case config.OPCommandSetSecret:
+		if e.provisioner == nil {
+			return e.result(action, di.OPCommand, refuse(failure.NotConfigured))
+		}
+		return e.result(action, di.OPCommand, e.processSetSecret(di))
+
+	case config.OPCommandGetFeed, config.OPCommandSetEndpoints, config.OPCommandSetAdmins:
+		// Instruction-only. Over this channel GET_FEED would hand the same signed
+		// update to anyone holding the proxy API key, and the two SET_ commands
+		// would skip the sender's onlyGovernance check entirely.
+		return e.result(action, di.OPCommand, refuse(failure.WrongActionType))
+
+	default:
+		return unsupportedCommand(di.OPCommand)
+	}
+}
+
+// unsupportedCommand names every command this build serves, on the same terms as
+// checkOPType: whoever reads it is debugging a mismatch.
+func unsupportedCommand(cmd common.Hash) (int, []byte) {
+	return http.StatusNotImplemented, []byte(fmt.Sprintf(
+		"unsupported op command: received %s, expected one of [%s (%s), %s (%s), %s (%s), %s (%s), %s (%s)]",
+		cmd.Hex(),
+		config.OPCommandGetFeed.Hex(), config.OpName(config.OPCommandGetFeed),
+		config.OPCommandGetReadiness.Hex(), config.OpName(config.OPCommandGetReadiness),
+		config.OPCommandSetEndpoints.Hex(), config.OpName(config.OPCommandSetEndpoints),
+		config.OPCommandSetAdmins.Hex(), config.OpName(config.OPCommandSetAdmins),
+		config.OPCommandSetSecret.Hex(), config.OpName(config.OPCommandSetSecret),
+	))
+}
+
+// outcome is what a handler produces: the payload it answers with, or the
+// failure it refuses with.
+//
+// Handlers are handed their own decoded input and nothing else — no action
+// envelope — so nothing from the envelope can be echoed back by accident. The
+// router assembles the result around this.
+type outcome struct {
+	data []byte
+
+	// Zero value means success. A Failure, never an error: a raw error cannot
+	// reach the world-readable Log even by accident.
+	fail failure.Failure
+}
+
+func succeed(data []byte) outcome      { return outcome{data: data} }
+func refuse(f failure.Failure) outcome { return outcome{fail: f} }
+
+// result turns an outcome into the wire result, and records a refusal in the
+// counters GET /state publishes.
+func (e *Extension) result(
+	action teetypes.Action, opCommand common.Hash, o outcome,
+) (int, []byte) {
+	status, err := uint8(1), error(nil)
+	if !o.fail.IsZero() {
+		status, err = 0, o.fail
+
+		e.mu.Lock()
+		e.failureCount++
+		e.lastErrorClass = o.fail.Class()
+		e.mu.Unlock()
+	}
+
+	b, _ := json.Marshal(buildResult(action, opCommand, o.data, status, err))
+	return http.StatusOK, b
 }
 
 // processGetFeed signs the latest observation and returns the payload. Fails
 // closed: never guesses, never falls back to a cached price. A frozen feed with
 // an ageing timestamp is the designed failure mode.
-func (e *Extension) processGetFeed(action teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
+func (e *Extension) processGetFeed(df *instruction.DataFixed) outcome {
 	// The request names a feed, because one sender serves every feed of its
 	// extension. Anything that is not exactly one ABI-encoded FeedUpdateRequest
 	// is refused rather than guessed at, and nothing about it is echoed back:
 	// ActionResult.Log is public.
 	feedID, reqErr := report.DecodeFeedRequest(df.OriginalMessage)
 	if reqErr != nil {
-		return e.fail(action, df, failure.Coerce(reqErr, failure.Internal))
+		return refuse(failure.Coerce(reqErr, failure.Internal))
 	}
 	// Refused here rather than observed and signed. An update naming another feed
 	// would be rejected by that feed's store anyway, but only after this machine
 	// had spent an observation on it and published the answer to a public log.
 	if feedID != config.FeedID {
-		return e.fail(action, df, failure.UnexpectedPayload)
+		return refuse(failure.UnexpectedPayload)
 	}
 
 	// df.Timestamp is the block timestamp of the instruction event, cosigned by
-	// the data-provider quorum along with the rest of DataFixed. The observer
-	// treats it as the clock this machine is checked against; it never becomes
-	// the update's observedAt, which must stay the moment the inputs were read.
+	// the data-provider quorum along with the rest of DataFixed. Always a real
+	// block here — GET_FEED is instruction-only, so this handler has one. The
+	// observer treats it as the clock this machine is checked against; it never
+	// becomes the update's observedAt, which must stay the moment the inputs
+	// were read.
 	obs, err := e.observer.Report(context.Background(), df.Timestamp)
 
 	// Health is reported either way: on failure it is what tells an operator
@@ -282,7 +359,7 @@ func (e *Extension) processGetFeed(action teetypes.Action, df *instruction.DataF
 	e.mu.Unlock()
 
 	if err != nil {
-		return e.fail(action, df, failure.Coerce(err, failure.Internal))
+		return refuse(failure.Coerce(err, failure.Internal))
 	}
 
 	e.mu.Lock()
@@ -293,46 +370,34 @@ func (e *Extension) processGetFeed(action teetypes.Action, df *instruction.DataF
 	e.lastErrorClass = failure.ClassNone
 	e.mu.Unlock()
 
-	return buildResult(action, df, obs.Data, 1, nil)
+	return succeed(obs.Data)
 }
 
 // processGetReadiness answers with the machine's own account of itself, signed.
 // Never fails closed — "nothing is configured" is the answer. Leaves the /state
 // counters alone: those describe prices served, and polling is not production.
-func (e *Extension) processGetReadiness(
-	action teetypes.Action, df *instruction.DataFixed,
-) teetypes.ActionResult {
+//
+// correlator is the proxy's action id, taken as an argument because the signed
+// report binds it: direct-only, so there is no instruction id, and a zero would
+// make every readiness answer bind the same one.
+func (e *Extension) processGetReadiness(di *teetypes.DirectInstruction, correlator common.Hash) outcome {
 	// The pinned envelope or nothing, and neither the length nor the content is
 	// echoed back into the public log.
-	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.ReadinessRequestV1 {
-		return e.fail(action, df, failure.UnexpectedPayload)
+	if len(di.Message) != 1 || di.Message[0] != config.ReadinessRequestV1 {
+		return refuse(failure.UnexpectedPayload)
 	}
 
-	// Both halves are needed, and in stub mode neither exists. Reporting
-	// NotConfigured is honest: a stub has no configuration to describe.
+	// Both halves are needed, and without a provisioner neither exists.
+	// Reporting NotConfigured is honest: there is no configuration to describe.
 	if e.observer == nil || e.provisioner == nil {
-		return e.fail(action, df, failure.NotConfigured)
+		return refuse(failure.NotConfigured)
 	}
 
 	data, err := e.observer.ReadinessReport(
-		context.Background(), df.InstructionID, e.provisioner.Readiness())
+		context.Background(), correlator, e.provisioner.Readiness())
 	if err != nil {
-		return e.fail(action, df, failure.Coerce(err, failure.Internal))
+		return refuse(failure.Coerce(err, failure.Internal))
 	}
 
-	return buildResult(action, df, data, 1, nil)
-}
-
-// fail records a failed observation and returns a status-0 result. It takes a
-// failure.Failure, not an error, and that is the safety property: a raw error
-// cannot reach the world-readable Log even by accident.
-func (e *Extension) fail(
-	action teetypes.Action, df *instruction.DataFixed, f failure.Failure,
-) teetypes.ActionResult {
-	e.mu.Lock()
-	e.failureCount++
-	e.lastErrorClass = f.Class()
-	e.mu.Unlock()
-
-	return buildResult(action, df, nil, 0, f)
+	return succeed(data)
 }
