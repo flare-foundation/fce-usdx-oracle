@@ -21,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/crypto/ecies"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
+	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
 // devSeed produces a fixed key so a walkthrough is reproducible.
@@ -45,13 +46,15 @@ type decryptResponse struct {
 
 // infoResponse mirrors the TEE proxy's GET /info, so the provisioning CLI reads
 // the public key the same way against both.
+//
+// The coordinates are teetypes.PublicKey — the declaration tee-node serialises
+// from — and not a local pair of strings. Formatting them by hand produced
+// MINIMAL hex, so a coordinate with a leading zero byte came out 62 characters
+// and any consumer decoding into common.Hash rejected it.
 type infoResponse struct {
 	TEEInfo struct {
-		TeeID     string `json:"teeId"`
-		PublicKey struct {
-			X string `json:"x"`
-			Y string `json:"y"`
-		} `json:"publicKey"`
+		TeeID     string             `json:"teeId"`
+		PublicKey teetypes.PublicKey `json:"publicKey"`
 	} `json:"teeInfo"`
 }
 
@@ -123,8 +126,7 @@ func infoHandler(key *ecdsa.PrivateKey, addr fmt.Stringer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var resp infoResponse
 		resp.TEEInfo.TeeID = addr.String()
-		resp.TEEInfo.PublicKey.X = fmt.Sprintf("0x%x", key.PublicKey.X)
-		resp.TEEInfo.PublicKey.Y = fmt.Sprintf("0x%x", key.PublicKey.Y)
+		resp.TEEInfo.PublicKey = teetypes.PubKeyToStruct(&key.PublicKey)
 		_ = json.NewEncoder(w).Encode(resp)
 	}
 }

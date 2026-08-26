@@ -32,6 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/crypto/ecies"
+	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
 // envelopeFile is the on-disk intermediate passed between the subcommands.
@@ -430,30 +431,22 @@ func fetchKey(base string) (*ecdsa.PublicKey, common.Address, error) {
 	// The response carries no teeId field: the machine identity is the address
 	// of the attested publicKey and must be derived from it — the same
 	// derivation fccutils.TeeProxyId and tee-proxy's ParseTeeID use.
+	//
+	// teetypes.PublicKey rather than a local pair of strings, so the coordinates
+	// are decoded by the same declaration tee-node serialises them from, and the
+	// on-curve check is the one it applies.
 	var info struct {
 		TEEInfo struct {
-			PublicKey struct {
-				X string `json:"x"`
-				Y string `json:"y"`
-			} `json:"publicKey"`
+			PublicKey teetypes.PublicKey `json:"publicKey"`
 		} `json:"teeInfo"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return nil, common.Address{}, fmt.Errorf("parsing /info: %w", err)
 	}
 
-	x, ok := new(big.Int).SetString(strings.TrimPrefix(info.TEEInfo.PublicKey.X, "0x"), 16)
-	if !ok {
-		return nil, common.Address{}, fmt.Errorf("/info has no usable public key")
-	}
-	y, ok := new(big.Int).SetString(strings.TrimPrefix(info.TEEInfo.PublicKey.Y, "0x"), 16)
-	if !ok {
-		return nil, common.Address{}, fmt.Errorf("/info has no usable public key")
-	}
-
-	pub := &ecdsa.PublicKey{Curve: crypto.S256(), X: x, Y: y}
-	if !pub.Curve.IsOnCurve(x, y) {
-		return nil, common.Address{}, fmt.Errorf("/info public key is not on the secp256k1 curve")
+	pub, err := teetypes.ParsePubKey(info.TEEInfo.PublicKey)
+	if err != nil {
+		return nil, common.Address{}, fmt.Errorf("/info public key: %w", err)
 	}
 	return pub, crypto.PubkeyToAddress(*pub), nil
 }
