@@ -421,9 +421,13 @@ func recover(digest []byte, sig []byte) (common.Address, bool) {
 		return common.Address{}, false
 	}
 
-	// Reject the high-s form, so one signature means one thing.
+	// go-ethereum's own validation, with homestead set so the high-s form is
+	// rejected and one signature means one thing. Wider than the hand-rolled
+	// low-s test it replaces, which admitted r or s of zero and either at or
+	// above the curve order.
+	r := new(big.Int).SetBytes(normalised[:32])
 	s := new(big.Int).SetBytes(normalised[32:64])
-	if s.Cmp(halfOrder) > 0 {
+	if !crypto.ValidateSignatureValues(normalised[64], r, s, true) {
 		return common.Address{}, false
 	}
 
@@ -433,10 +437,6 @@ func recover(digest []byte, sig []byte) (common.Address, bool) {
 	}
 	return crypto.PubkeyToAddress(*pub), true
 }
-
-// halfOrder is secp256k1's n/2.
-var halfOrder, _ = new(big.Int).SetString(
-	"7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0", 16)
 
 func decode(message []byte) (Envelope, [][]byte, error) {
 	values, err := outerArgs.Unpack(message)
