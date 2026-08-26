@@ -397,33 +397,3 @@ func newHealth(src Sources) map[string]string {
 	}
 	return h
 }
-
-// Runner binds sources, a binding and a Signer together. A convenience for
-// tests and one-shot use; production goes through internal/observe.
-type Runner struct {
-	sources Sources
-	binding Binding
-	signer  Signer
-}
-
-// NewRunner validates the sources so a misconfiguration surfaces at startup
-// rather than later as a mysteriously unavailable feed.
-func NewRunner(sources Sources, binding Binding, signer Signer) (*Runner, error) {
-	if err := sources.Validate(); err != nil {
-		return nil, err
-	}
-	if signer == nil {
-		return nil, errors.New("oracle: signer is required")
-	}
-	return &Runner{sources: sources, binding: binding, signer: signer}, nil
-}
-
-// Observe performs one observation and signs it, back to back. Does not fit
-// inside tee-node's 2s action timeout; kept for tests and tooling.
-func (r *Runner) Observe(ctx context.Context) (Observation, error) {
-	obs, err := Observe(ctx, r.sources, r.binding)
-	if err != nil {
-		return obs, err
-	}
-	return Sign(ctx, r.signer, obs)
-}
