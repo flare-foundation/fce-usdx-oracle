@@ -158,7 +158,7 @@ func Encode(e Envelope, signatures [][]byte) ([]byte, error) {
 }
 
 // Verifier checks envelopes against the installed admin set and tracks versions.
-// NOT SAFE FOR CONCURRENT USE: Verify, SetTeeID and SetAdmins all write
+// NOT SAFE FOR CONCURRENT USE: Verify and SetAdmins both write
 // unsynchronised state. runtimecfg.Store holds applyMu across every call.
 type Verifier struct {
 	chainID *big.Int
@@ -177,11 +177,6 @@ type Verifier struct {
 
 	now func() time.Time
 }
-
-func (v *Verifier) HasTeeID() bool { return v.teeID != (common.Address{}) }
-
-// SetTeeID is called once, lazily: tee-node may not be reachable at startup.
-func (v *Verifier) SetTeeID(id common.Address) { v.teeID = id }
 
 // HasAdmins reports whether every role's signer set has been installed. All or
 // nothing, so a machine cannot provision one class of credential and not the other.
@@ -255,6 +250,12 @@ func checkSet(s AdminSet, floor int) error {
 // NewVerifier builds a verifier with no admin sets installed. backingRefs names
 // the credentials the backing set governs; it is pinned policy, not payload.
 func NewVerifier(chainID *big.Int, teeID common.Address, backingRefs []string) *Verifier {
+	// A zero teeID would match the zero address an envelope carries when its
+	// machine binding was never filled in, so every such envelope would pass the
+	// one check that ties a credential to one enclave.
+	if teeID == (common.Address{}) {
+		panic("provision: teeID is zero — resolve the machine's address before building a verifier")
+	}
 	return &Verifier{
 		chainID:     chainID,
 		teeID:       teeID,
@@ -294,7 +295,7 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 		return Envelope{}, failure.ProvisionRejected
 	}
 	// Bound to one machine, so a captured envelope cannot be redirected.
-	if !v.HasTeeID() || e.TeeID != v.teeID {
+	if e.TeeID != v.teeID {
 		return Envelope{}, failure.ProvisionRejected
 	}
 	if e.Ref == "" || len(e.Ref) > 64 {

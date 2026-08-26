@@ -401,14 +401,6 @@ func (s *Store) ApplySecret(ctx context.Context, message []byte) error {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
 
-	if !s.verifier.HasTeeID() {
-		teeID, err := s.node.TeeID(ctx)
-		if err != nil {
-			return failure.ProvisionRejected
-		}
-		s.verifier.SetTeeID(teeID)
-	}
-
 	env, err := s.verifier.Verify(message)
 	if err != nil {
 		return err

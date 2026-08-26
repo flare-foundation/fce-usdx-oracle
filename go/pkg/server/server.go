@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math/big"
 	"time"
 
@@ -16,18 +18,40 @@ import (
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 )
 
+// teeIDTimeout bounds the startup wait for tee-node's signing service. Sized
+// for a service coming up alongside this process, not for one that is down:
+// past it the extension refuses to start rather than serving without an
+// identity.
+const teeIDTimeout = time.Minute
+
+// teeIDRetry is the gap between resolution attempts during startup.
+const teeIDRetry = time.Second
+
 // StartExtension starts the HTTP server and the observation loop, returning a channel
 // that receives any ListenAndServe failure. The extension boots UNPROVISIONED and that
 // is normal: it serves not_configured until SET_ENDPOINTS and SET_SECRET land.
 func StartExtension(extensionPort, signPort int) <-chan error {
+	errCh := make(chan error, 1)
+
 	node := teenode.New(signPort, 10*time.Second)
 
-	// The machine's own address is resolved lazily on first provisioning.
+	// Resolved before the verifier exists, because the verifier is built around
+	// it: a provisioning envelope names the machine it is for, and that binding
+	// is what stops a captured envelope being redirected to another enclave.
+	teeID, err := resolveTeeID(context.Background(), node)
+	if err != nil {
+		errCh <- err
+		return errCh
+	}
+	// The address is public: it is what governance names in setEndpoints and
+	// what the machine registry publishes.
+	logger.Infof("tee identity resolved: %s", teeID.Hex())
+
 	// config.BackingRefs() is pinned as the backing credential set here, in the
 	// build, so no published admin payload can move one of them under the
 	// providers set — role TAGS come off the wire, the ref-to-role mapping does not.
 	verifier := provision.NewVerifier(
-		new(big.Int).SetUint64(config.ChainID), common.Address{}, config.BackingRefs())
+		new(big.Int).SetUint64(config.ChainID), teeID, config.BackingRefs())
 	store := runtimecfg.New(verifier, node)
 
 	poller := observe.New(store, node)
@@ -42,11 +66,43 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 	logger.Infof("observing every %s, refusing to sign anything older than %s",
 		config.ObservationInterval, config.MaxObservationAge)
 
-	errCh := make(chan error, 1)
 	go func() {
 		if err := e.Server.ListenAndServe(); err != nil {
 			errCh <- err
 		}
 	}()
 	return errCh
+}
+
+// resolveTeeID waits for tee-node to report this machine's own address.
+//
+// Retried rather than attempted once: the signing service shares this process
+// and is routinely not listening yet when the extension reaches this point.
+// Exhausting the deadline is fatal rather than deferred, because an identity
+// that never arrives leaves the machine unable to accept any credential.
+func resolveTeeID(ctx context.Context, node *teenode.Client) (common.Address, error) {
+	ctx, cancel := context.WithTimeout(ctx, teeIDTimeout)
+	defer cancel()
+
+	for attempt := 1; ; attempt++ {
+		teeID, err := node.TeeID(ctx)
+		if err == nil && teeID == (common.Address{}) {
+			// Reported rather than passed on: NewVerifier panics on a zero
+			// address, and a malfunctioning signing service should not read as
+			// a programmer error.
+			err = errors.New("signing service reported the zero address")
+		}
+		if err == nil {
+			return teeID, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return common.Address{}, fmt.Errorf(
+				"tee identity unresolved after %s, so the extension cannot be provisioned: %w",
+				teeIDTimeout, err)
+		case <-time.After(teeIDRetry):
+			logger.Warnf("attempt %d: tee identity not resolved (%v); retrying", attempt, err)
+		}
+	}
 }
