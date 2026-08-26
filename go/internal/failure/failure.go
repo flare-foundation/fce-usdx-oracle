@@ -1,6 +1,11 @@
 // Package failure defines the extension's complete public error vocabulary.
 // ActionResult.Log and GET /state are world-readable, so Failure has unexported
 // fields and no constructor: only the values below exist. Log debug detail apart.
+//
+// Not the only route to that field, though: a non-200 from POST /action reaches
+// Log too, because tee-node wraps the response body into a status-0 result. The
+// two 501 handlers in internal/extension are the only paths that do it, and the
+// comments there say why they may.
 package failure
 
 import "errors"
