@@ -1,13 +1,6 @@
 // Package failure defines the extension's complete public error vocabulary.
-//
-// ActionResult.Log and GET /state are both world-readable, and ordinary Go
-// error strings carry exactly what must not appear there — API keys inside
-// *url.Error, reserve figures inside parse errors. A Failure has unexported
-// fields and no exported constructor, so it can only be one of the values
-// declared below: the compiler, not review, keeps runtime data out.
-//
-// Debug detail does not belong in a Failure. Log it separately, and only
-// values known to be safe — source name, HTTP status, duration.
+// ActionResult.Log and GET /state are world-readable, so Failure has unexported
+// fields and no constructor: only the values below exist. Log debug detail apart.
 package failure
 
 // Class is the coarse taxonomy reported by GET /state as lastErrorClass.
@@ -22,12 +15,17 @@ const (
 	ClassSignFailed    Class = "sign_failed"
 	ClassInternal      Class = "internal"
 
-	// Not a fault in a data source but an operational state, so monitoring can route it differently.
+	// An operational state rather than a source fault, so monitoring can route it
+	// differently.
 	ClassNotConfigured Class = "not_configured"
+
+	// Also not a source fault: the fix is on the machine (NTP), not upstream and
+	// not in this code.
+	ClassClockSkew Class = "clock_skew"
 )
 
-// Failure is a fault that is safe to describe publicly. Error() text is always
-// a compile-time constant, never formatted from runtime data.
+// Failure is a fault that is safe to describe publicly. Error() text is always a
+// compile-time constant, never formatted from runtime data.
 type Failure struct {
 	class  Class
 	reason string
@@ -39,25 +37,21 @@ func (f Failure) Class() Class { return f.class }
 
 func (f Failure) IsZero() bool { return f.class == ClassNone && f.reason == "" }
 
-// The complete public error vocabulary. Wording rule: name the subsystem and
-// the nature of the fault, never the value, the endpoint, or the threshold.
+// The complete public error vocabulary. Wording rule: name the subsystem and the
+// nature of the fault, never the value, the endpoint, or the threshold.
 var (
 	// --- instruction handling ---
 
 	UnexpectedPayload = Failure{ClassSourceInvalid, "instruction carries an unexpected payload"}
 
-	// SET_SECRET is direct-only and SET_ENDPOINTS instruction-only; accepting
-	// either over the other channel would bypass its authorisation path.
+	// Accepting a command over the other channel would bypass its authorisation.
 	WrongActionType = Failure{ClassSourceInvalid, "command arrived over the wrong action type"}
 
-	// --- provisioning ---
-
-	// The ONLY failure a provisioning command may report. One reason for every
-	// cause, so the endpoint cannot be used to probe the admin set or the
-	// freshness window.
+	// The ONLY failure a provisioning command may report: one reason for every
+	// cause, so it cannot be used to probe the admin set or the freshness window.
 	ProvisionRejected = Failure{ClassSourceInvalid, "provisioning envelope rejected"}
 
-	// Credentials are memory-only, so this is the expected state after every restart.
+	// Credentials are memory-only, so this is expected after every restart.
 	NotConfigured = Failure{ClassNotConfigured, "extension is not provisioned"}
 
 	// --- backing sources (Hex APIs) ---
@@ -67,11 +61,9 @@ var (
 	BackingMalformed   = Failure{ClassSourceInvalid, "backing source returned a malformed response"}
 	BackingCurrency    = Failure{ClassSourceInvalid, "backing source reported an unexpected currency"}
 
-	// There is no "backing data is stale": last_update moves on a mint or a
-	// redemption, not on a schedule, so an old figure is usually the correct
-	// one. Only a timestamp in the FUTURE is a fault, and it is a broken
-	// upstream or a skewed clock rather than an aged reading — kept distinct
-	// from BackingMalformed so those get routed differently.
+	// There is no "backing data is stale" — an old figure is usually the correct
+	// one. Only a FUTURE stamp is a fault, and it means a broken upstream or a
+	// skewed clock, so it stays distinct from BackingMalformed.
 	BackingTimestamp = Failure{ClassSourceInvalid, "backing source reported a timestamp in the future"}
 
 	BackingImplausible = Failure{ClassImplausible, "backing source returned an implausible value"}
@@ -84,9 +76,8 @@ var (
 	SupplyNoQuorum    = Failure{ClassQuorumFailed, "supply providers did not reach quorum"}
 	SupplyImplausible = Failure{ClassImplausible, "supply read produced an implausible value"}
 
-	// The block every provider was asked about is too far behind wall-clock. Distinct
-	// from the quorum failures because the reads all SUCCEED and AGREE: this catches a
-	// provider lying about which block to read, not about what is in it.
+	// Distinct from the quorum failures because the reads all SUCCEED and AGREE:
+	// this catches a provider lying about WHICH block to read, not what is in it.
 	SupplyBlockStale = Failure{ClassSourceInvalid, "supply block is too far behind"}
 
 	// --- observation consistency ---
@@ -98,9 +89,19 @@ var (
 	// observation simply not finished yet.
 	NoObservation = Failure{ClassSourceDown, "no observation available yet"}
 
-	// Signing a stale observation would publish a price whose timestamp says it
-	// is fresh; failing closed lets the on-chain value age visibly instead.
+	// Signing a stale observation would publish a price whose timestamp says it is
+	// fresh; failing closed lets the on-chain value age visibly instead.
 	ObservationStale = Failure{ClassSourceDown, "no recent observation"}
+
+	// --- clock agreement with the requesting instruction ---
+
+	// Fails closed rather than treating a zero as "no bound".
+	MissingRequestTime = Failure{ClassSourceInvalid, "instruction carries no block timestamp"}
+
+	// Observation older than the requesting block by more than MaxObservationAge
+	// while the LOCAL bound passed — only a slow clock does that. Bounded this
+	// direction only; the store's MAX_FUTURE_SKEW covers the other.
+	ClockBehindChain = Failure{ClassClockSkew, "machine clock is behind chain time"}
 
 	// --- price computation ---
 
@@ -128,6 +129,7 @@ var All = []Failure{
 	SupplyNoQuorum, SupplyImplausible, SupplyBlockStale,
 	WindowExceeded, Deadline,
 	NoObservation, ObservationStale,
+	MissingRequestTime, ClockBehindChain,
 	SupplyZero, PriceImplausible,
 	SignUnavailable, SignRejected,
 	Internal,

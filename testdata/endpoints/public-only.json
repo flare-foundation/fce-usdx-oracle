@@ -1,22 +1,41 @@
 {
   "flare": {
     "threshold": 2,
-    "providers": [
-      { "url": "https://flare-api.flare.network/ext/C/rpc" },
-      { "url": "https://flare.rpc.thirdweb.com" }
+    "endpoints": [
+      {
+        "url": "https://flare-api.flare.network/ext/C/rpc"
+      },
+      {
+        "url": "https://flare.rpc.thirdweb.com"
+      }
     ]
   },
   "ethereum": {
     "threshold": 2,
-    "providers": [
-      { "url": "https://ethereum-rpc.publicnode.com" },
-      { "url": "https://eth.drpc.org" }
+    "endpoints": [
+      {
+        "url": "https://ethereum-rpc.publicnode.com"
+      },
+      {
+        "url": "https://eth.drpc.org"
+      }
     ]
   },
   "songbird": {
     "threshold": 1,
-    "providers": [
-      { "url": "https://songbird-api.flare.network/ext/C/rpc" }
+    "endpoints": [
+      {
+        "url": "https://songbird-api.flare.network/ext/C/rpc"
+      }
+    ]
+  },
+  "hex_cash": {
+    "threshold": 1,
+    "endpoints": [
+      {
+        "urlHash": "0xabababababababababababababababababababababababababababababababab",
+        "secret": "hex_cash_url"
+      }
     ]
   }
 }

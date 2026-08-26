@@ -1,5 +1,4 @@
 {
-  "version": 1,
   "backing": {
     "threshold": 1,
     "admins": [

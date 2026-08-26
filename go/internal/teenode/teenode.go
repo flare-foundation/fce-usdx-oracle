@@ -153,7 +153,7 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 }
 
 // NormalizeV converts a go-ethereum recovery id (0 or 1) into the v ecrecover
-// requires (27 or 28). Done here rather than in the contract so UsdxPriceStore
+// requires (27 or 28). Done here rather than in the contract so the feed store
 // uses stock OpenZeppelin. Idempotent.
 func NormalizeV(sig []byte) ([]byte, error) {
 	if len(sig) != SignatureLength {

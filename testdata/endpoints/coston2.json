@@ -1,23 +1,47 @@
 {
   "flare": {
     "threshold": 2,
-    "providers": [
-      { "url": "https://flare-api.flare.network/ext/C/rpc" },
-      { "url": "https://rpc.ankr.com/flare/{secret}", "secret": "ankr_flare_key" },
-      { "url": "https://flare-mainnet.g.alchemy.com/v2/{secret}", "secret": "alchemy_flare_key" }
+    "endpoints": [
+      {
+        "url": "https://flare-api.flare.network/ext/C/rpc"
+      },
+      {
+        "url": "https://rpc.ankr.com/flare/{secret}",
+        "secret": "ankr_flare_key"
+      },
+      {
+        "url": "https://flare-mainnet.g.alchemy.com/v2/{secret}",
+        "secret": "alchemy_flare_key"
+      }
     ]
   },
   "ethereum": {
     "threshold": 2,
-    "providers": [
-      { "url": "https://ethereum-rpc.publicnode.com" },
-      { "url": "https://rpc.ankr.com/eth/{secret}", "secret": "ankr_eth_key" }
+    "endpoints": [
+      {
+        "url": "https://ethereum-rpc.publicnode.com"
+      },
+      {
+        "url": "https://rpc.ankr.com/eth/{secret}",
+        "secret": "ankr_eth_key"
+      }
     ]
   },
   "songbird": {
     "threshold": 1,
-    "providers": [
-      { "url": "https://songbird-api.flare.network/ext/C/rpc" }
+    "endpoints": [
+      {
+        "url": "https://songbird-api.flare.network/ext/C/rpc"
+      }
+    ]
+  },
+  "hex_cash": {
+    "threshold": 1,
+    "endpoints": [
+      {
+        "urlHash": "0xabababababababababababababababababababababababababababababababab",
+        "secret": "hex_cash_url"
+      }
     ]
   }
 }

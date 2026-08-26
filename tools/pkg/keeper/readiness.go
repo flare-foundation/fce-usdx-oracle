@@ -1,24 +1,30 @@
 package keeper
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"time"
 
 	"fce-usdx-oracle/tools/pkg/readinessreport"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
 	"github.com/pkg/errors"
 )
 
-// Declared here, not read off the sender the way GET_PRICE is: readiness exists
-// only on the direct channel and has no contract counterpart to drift from.
-// These must match go/internal/config.
+// Declared here rather than read off the instruction sender: GET_READINESS is
+// the one command with no on-chain counterpart, so there is nothing to drift
+// from. These must match go/internal/config.
 const (
-	opTypeUsdxOracle      = "USDX_ORACLE"
+	opTypeTeeOracle       = "TEE_ORACLE"
 	opCommandGetReadiness = "GET_READINESS"
 )
 
@@ -28,8 +34,9 @@ const (
 var readinessRequestV1 = []byte{0x01}
 
 // QueryReadiness asks one machine for its signed readiness report: one direct
-// action, no fee, no transaction. Verified, but still a self-report — see
-// tools/pkg/readinessreport for what that does and does not settle.
+// action, no fee, no transaction. This is the only thing the keeper sends over
+// the direct channel — a price is always an on-chain instruction. Verified, but
+// still a self-report; see tools/pkg/readinessreport for what that settles.
 func QueryReadiness(
 	ctx context.Context, proxyURL, apiKey string, timeout time.Duration,
 ) (readinessreport.Report, error) {
@@ -37,14 +44,14 @@ func QueryReadiness(
 		return readinessreport.Report{}, errors.New("readiness needs a proxy URL")
 	}
 	if apiKey == "" {
-		// Same reasoning as RequestDirect: a proxy that wants a key answers 401,
-		// which reads like an outage rather than a missing setting.
+		// A proxy that wants a key answers 401, which reads like an outage rather
+		// than a missing setting, so refuse before the request goes out.
 		return readinessreport.Report{}, errors.New(
 			"readiness needs an API key (-directApiKey or DIRECT_API_KEY)")
 	}
 
 	id, err := postDirectAction(ctx, proxyURL, apiKey,
-		teeutils.ToHash(opTypeUsdxOracle), teeutils.ToHash(opCommandGetReadiness),
+		teeutils.ToHash(opTypeTeeOracle), teeutils.ToHash(opCommandGetReadiness),
 		readinessRequestV1)
 	if err != nil {
 		return readinessreport.Report{}, err
@@ -141,4 +148,53 @@ func QueryReadinessSigner(
 			report.Signer.Hex(), want.Hex())
 	}
 	return report, nil
+}
+
+// postDirectAction enqueues one direct action on a proxy and returns the id it
+// assigned. Takes the op pair loose rather than reading it off the instruction
+// sender: GET_READINESS has no on-chain counterpart to read it from.
+func postDirectAction(
+	ctx context.Context, proxyURL, apiKey string,
+	opType, opCommand common.Hash, message []byte,
+) (common.Hash, error) {
+	body, err := json.Marshal(map[string]string{
+		"opType":    opType.Hex(),
+		"opCommand": opCommand.Hex(),
+		"message":   hexutil.Encode(message),
+	})
+	if err != nil {
+		return common.Hash{}, errors.Errorf("encoding the direct instruction: %s", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(proxyURL, "/")+"/direct", bytes.NewReader(body))
+	if err != nil {
+		return common.Hash{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-API-Key", apiKey)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return common.Hash{}, errors.Errorf("posting to the proxy: %s", err)
+	}
+	defer resp.Body.Close()
+
+	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// The body is the proxy's own error text; 401 here means the API key,
+		// not the extension.
+		return common.Hash{}, errors.Errorf("proxy returned %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(out)))
+	}
+
+	// The proxy echoes the action it enqueued, which is where the id comes from.
+	var action teetypes.Action
+	if err := json.Unmarshal(out, &action); err != nil {
+		return common.Hash{}, errors.Errorf("decoding the proxy response: %s", err)
+	}
+	if action.Data.ID == (common.Hash{}) {
+		return common.Hash{}, errors.New("the proxy returned no action id")
+	}
+	return action.Data.ID, nil
 }

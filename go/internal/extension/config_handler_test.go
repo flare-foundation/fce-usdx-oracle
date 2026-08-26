@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -51,11 +52,11 @@ func (f *fakeProvisioner) ApplySecret(ctx context.Context, message []byte) error
 
 func (f *fakeProvisioner) Readiness() types.Readiness { return f.readiness }
 
-// configAction builds a USDX_CONFIG action in the envelope its channel really uses: a
+// configAction builds a provisioning action in the envelope its channel really uses: a
 // DataFixed for an instruction, a DirectInstruction for a direct action. Building both
 // as DataFixed hid that the extension could not read a real direct payload.
 func configAction(command string, actionType teetypes.ActionType, payload []byte) teetypes.Action {
-	opType, opCommand := toHash(config.OPTypeUsdxConfig), toHash(command)
+	opType, opCommand := toHash(config.OPTypeTeeOracle), toHash(command)
 
 	if actionType == teetypes.Direct {
 		return buildDirectAction(opType, opCommand, payload)
@@ -95,11 +96,11 @@ func TestSetSecret_DirectEnvelopeDeliversThePayload(t *testing.T) {
 }
 
 // A direct action has no instruction id, so the proxy's action id has to stand
-// in. Left zero, every direct price would land on-chain with the same
-// observedAtInstructionID and none could be traced back to its request.
+// in. Left zero, every readiness report would answer the same id and none could
+// be bound to the request that asked for it.
 func TestParseActionData_DirectBindsTheActionID(t *testing.T) {
-	a := buildDirectAction(toHash(config.OPTypeUsdxOracle), toHash(config.OPCommandGetPrice),
-		[]byte{config.GetPriceRequestV1})
+	a := buildDirectAction(toHash(config.OPTypeTeeOracle), toHash(config.OPCommandGetReadiness),
+		[]byte{config.ReadinessRequestV1})
 
 	df, err := parseActionData(a)
 	if err != nil {
@@ -109,15 +110,17 @@ func TestParseActionData_DirectBindsTheActionID(t *testing.T) {
 		t.Errorf("instruction id = %s, want the action id %s",
 			df.InstructionID.Hex(), testDirectActionID.Hex())
 	}
-	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.GetPriceRequestV1 {
+	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.ReadinessRequestV1 {
 		t.Errorf("payload = %v, want the one-byte request envelope", df.OriginalMessage)
 	}
 }
 
-// The instruction envelope must keep parsing as it always did.
+// The instruction envelope must keep parsing as it always did — the GET_FEED
+// message became an ABI-encoded FeedUpdateRequest, but that is the handler's
+// business, not the action parser's.
 func TestParseActionData_InstructionUnchanged(t *testing.T) {
-	a := buildTestAction(toHash(config.OPTypeUsdxOracle), toHash(config.OPCommandGetPrice),
-		[]byte{config.GetPriceRequestV1})
+	a := buildTestAction(toHash(config.OPTypeTeeOracle), toHash(config.OPCommandGetFeed),
+		feedRequest(t))
 
 	df, err := parseActionData(a)
 	if err != nil {
@@ -126,12 +129,34 @@ func TestParseActionData_InstructionUnchanged(t *testing.T) {
 	if df.InstructionID != testInstructionID {
 		t.Errorf("instruction id = %s, want %s", df.InstructionID.Hex(), testInstructionID.Hex())
 	}
-	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.GetPriceRequestV1 {
-		t.Errorf("payload = %v, want the one-byte request envelope", df.OriginalMessage)
+	if !bytes.Equal(df.OriginalMessage, feedRequest(t)) {
+		t.Errorf("payload = %v, want the encoded feed request", df.OriginalMessage)
 	}
 }
 
 // --- channel enforcement ---
+
+// GET_FEED is raised through requestFeedUpdate(), which pays the registry fee
+// and leaves the request on-chain. Serving it over /direct would hand the same
+// signed report to anyone holding the proxy API key, for free and unrecorded.
+func TestGetPrice_RejectedOverDirectChannel(t *testing.T) {
+	e := newTestExtension()
+
+	action := buildDirectAction(toHash(config.OPTypeTeeOracle), toHash(config.OPCommandGetFeed),
+		feedRequest(t))
+	status, body := e.processAction(action)
+	result := mustResult(t, status, body, http.StatusOK)
+
+	if result.Status != 0 {
+		t.Fatalf("expected rejection, got status %d", result.Status)
+	}
+	if result.Log != "error: "+failure.WrongActionType.Error() {
+		t.Errorf("log = %q", result.Log)
+	}
+	if e.updateCount != 0 {
+		t.Error("a refused request must not count as an update")
+	}
+}
 
 // SET_ENDPOINTS is authorised by the owner-only check in the on-chain sender.
 // Accepting it as a direct action would skip that check entirely.

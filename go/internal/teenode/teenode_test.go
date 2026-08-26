@@ -208,7 +208,7 @@ func TestSignedReportRecoversAfterNormalisation(t *testing.T) {
 		t.Fatalf("v is %d; ecrecover requires 27 or 28", normalised[64])
 	}
 
-	// What UsdxPriceStore will do: ECDSA.recover(toEthSignedMessageHash(keccak256(body)), sig).
+	// What the feed store will do: ECDSA.recover(toEthSignedMessageHash(keccak256(body)), sig).
 	// crypto.SigToPub needs the 0/1 form, so undo the offset for this check —
 	// the contract's ecrecover does the equivalent internally.
 	forRecovery := make([]byte, SignatureLength)

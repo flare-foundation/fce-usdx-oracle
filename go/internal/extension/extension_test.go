@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/oracle"
+	"fce-usdx-oracle/internal/report"
 	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -33,6 +33,27 @@ func toHash(s string) common.Hash { return teeutils.ToHash(s) }
 // newTestExtension builds an Extension the way New() does, without binding a
 // listener. Constructing &Extension{} directly leaves sourceHealth nil, which
 // hides map-initialisation bugs that only surface via GET /state.
+// feedRequest is the GET_FEED instruction message for the feed this build
+// serves — abi.encode(FeedUpdateRequest{feedId}).
+func feedRequest(t *testing.T) []byte {
+	t.Helper()
+	return encodeFeedRequest(t, config.FeedID)
+}
+
+func encodeFeedRequest(t *testing.T, feedID [21]byte) []byte {
+	t.Helper()
+	// The zero id has no valid encoding through report, and is wanted verbatim
+	// by one of the rejection cases.
+	if feedID == ([21]byte{}) {
+		return make([]byte, report.RequestLength)
+	}
+	message, err := report.EncodeFeedRequest(feedID)
+	if err != nil {
+		t.Fatalf("EncodeFeedRequest: %v", err)
+	}
+	return message
+}
+
 func newTestExtension() *Extension {
 	return &Extension{
 		lastErrorClass: failure.ClassNone,
@@ -102,11 +123,12 @@ func buildDirectAction(opType, opCommand common.Hash, message []byte) teetypes.A
 	}
 }
 
-// getPriceAction builds a well-formed GET_PRICE action carrying the fixed
-// request envelope, exactly as requestPriceUpdate() emits it.
-func getPriceAction() teetypes.Action {
-	return buildTestAction(toHash(config.OPTypeUsdxOracle), toHash(config.OPCommandGetPrice),
-		[]byte{config.GetPriceRequestV1})
+// getFeedAction builds a well-formed GET_FEED action carrying the encoded
+// FeedUpdateRequest for this build's feed, exactly as requestFeedUpdate() emits it.
+func getFeedAction(t *testing.T) teetypes.Action {
+	t.Helper()
+	return buildTestAction(toHash(config.OPTypeTeeOracle), toHash(config.OPCommandGetFeed),
+		feedRequest(t))
 }
 
 // mustResult unwraps an ActionResult from a handler body, failing the test if it
@@ -127,7 +149,7 @@ func mustResult(t *testing.T, status int, body []byte, wantStatus int) teetypes.
 
 func TestProcessAction_UnknownOPType(t *testing.T) {
 	e := newTestExtension()
-	action := buildTestAction(toHash("UNKNOWN_TYPE"), toHash(config.OPCommandGetPrice), nil)
+	action := buildTestAction(toHash("UNKNOWN_TYPE"), toHash(config.OPCommandGetFeed), nil)
 
 	status, body := e.processAction(action)
 
@@ -142,17 +164,17 @@ func TestProcessAction_UnknownOPType(t *testing.T) {
 	if receivedHash := toHash("UNKNOWN_TYPE").Hex(); !contains(bodyStr, receivedHash) {
 		t.Errorf("expected body to contain received hash %s", receivedHash)
 	}
-	if expectedHash := toHash(config.OPTypeUsdxOracle).Hex(); !contains(bodyStr, expectedHash) {
+	if expectedHash := toHash(config.OPTypeTeeOracle).Hex(); !contains(bodyStr, expectedHash) {
 		t.Errorf("expected body to contain expected hash %s", expectedHash)
 	}
-	if !contains(bodyStr, config.OPTypeUsdxOracle) {
-		t.Errorf("expected body to contain %q", config.OPTypeUsdxOracle)
+	if !contains(bodyStr, config.OPTypeTeeOracle) {
+		t.Errorf("expected body to contain %q", config.OPTypeTeeOracle)
 	}
 }
 
 func TestProcessAction_UnknownOPCommand(t *testing.T) {
 	e := newTestExtension()
-	action := buildTestAction(toHash(config.OPTypeUsdxOracle), toHash("UNKNOWN_COMMAND"), nil)
+	action := buildTestAction(toHash(config.OPTypeTeeOracle), toHash("UNKNOWN_COMMAND"), nil)
 
 	status, body := e.processAction(action)
 
@@ -167,20 +189,20 @@ func TestProcessAction_UnknownOPCommand(t *testing.T) {
 	if receivedHash := toHash("UNKNOWN_COMMAND").Hex(); !contains(bodyStr, receivedHash) {
 		t.Errorf("expected body to contain received hash %s", receivedHash)
 	}
-	if cmdHash := toHash(config.OPCommandGetPrice).Hex(); !contains(bodyStr, cmdHash) {
-		t.Errorf("expected body to contain hash for %s: %s", config.OPCommandGetPrice, cmdHash)
+	if cmdHash := toHash(config.OPCommandGetFeed).Hex(); !contains(bodyStr, cmdHash) {
+		t.Errorf("expected body to contain hash for %s: %s", config.OPCommandGetFeed, cmdHash)
 	}
-	if !contains(bodyStr, config.OPCommandGetPrice) {
-		t.Errorf("expected body to contain command name %q", config.OPCommandGetPrice)
+	if !contains(bodyStr, config.OPCommandGetFeed) {
+		t.Errorf("expected body to contain command name %q", config.OPCommandGetFeed)
 	}
 }
 
-// --- GET_PRICE ---
+// --- GET_FEED ---
 
-func TestProcessGetPrice_Success(t *testing.T) {
+func TestProcessGetFeed_Success(t *testing.T) {
 	e := newTestExtension()
 
-	status, body := e.processAction(getPriceAction())
+	status, body := e.processAction(getFeedAction(t))
 	result := mustResult(t, status, body, http.StatusOK)
 
 	if result.Status != 1 {
@@ -192,7 +214,7 @@ func TestProcessGetPrice_Success(t *testing.T) {
 		t.Fatalf("failed to unmarshal GetPriceResponse: %v", err)
 	}
 
-	// SCAFFOLD: $1.00 at 8 decimals.
+	// The stub extension returns its hard-coded $1.00 at 8 decimals.
 	if want := "100000000"; resp.Price != want {
 		t.Errorf("expected price %q, got %q", want, resp.Price)
 	}
@@ -207,10 +229,10 @@ func TestProcessGetPrice_Success(t *testing.T) {
 // The price is a JSON string, not a number. On-chain it is a uint256, which does
 // not survive a float64 round-trip, so the encoding has to be a string from the
 // start rather than being widened later.
-func TestProcessGetPrice_PriceIsJSONString(t *testing.T) {
+func TestProcessGetFeed_PriceIsJSONString(t *testing.T) {
 	e := newTestExtension()
 
-	status, body := e.processAction(getPriceAction())
+	status, body := e.processAction(getFeedAction(t))
 	result := mustResult(t, status, body, http.StatusOK)
 
 	var raw map[string]json.RawMessage
@@ -222,10 +244,10 @@ func TestProcessGetPrice_PriceIsJSONString(t *testing.T) {
 	}
 }
 
-// requestPriceUpdate() sends no payload. A caller that supplies one must be
-// rejected rather than silently ignored, so nobody builds on a field the
-// extension drops.
-func TestProcessGetPrice_RejectsPayload(t *testing.T) {
+// GET_FEED carries exactly the ABI-encoded FeedUpdateRequest naming the feed.
+// A caller that supplies anything else must be rejected rather than silently
+// ignored, so nobody builds on a field the extension drops.
+func TestProcessGetFeed_RejectsPayload(t *testing.T) {
 	e := newTestExtension()
 
 	// A sentinel that cannot collide with the vocabulary's own wording, so a hit
@@ -234,8 +256,8 @@ func TestProcessGetPrice_RejectsPayload(t *testing.T) {
 	payload := []byte(`{"` + sentinel + `":"` + sentinel + `"}`)
 
 	action := buildTestAction(
-		toHash(config.OPTypeUsdxOracle),
-		toHash(config.OPCommandGetPrice),
+		toHash(config.OPTypeTeeOracle),
+		toHash(config.OPCommandGetFeed),
 		payload,
 	)
 
@@ -271,24 +293,32 @@ func TestProcessGetPrice_RejectsPayload(t *testing.T) {
 // The request envelope is exactly one byte and exactly this value; anything else is
 // refused rather than ignored. Empty is included deliberately: the registry rejects
 // it first, but the handler must not rely on that — direct is not the registry.
-func TestProcessGetPrice_RequiresTheRequestEnvelope(t *testing.T) {
+func TestProcessGetFeed_RequiresTheRequestEnvelope(t *testing.T) {
+	// A request for a DIFFERENT feed of the same extension: well-formed, and
+	// refused. One sender serves every feed now, so this is the case the old
+	// one-byte envelope could not even express.
+	otherFeed := config.FeedID
+	otherFeed[20] ^= 0x01
+
 	cases := []struct {
 		name    string
 		payload []byte
 		accept  bool
 	}{
-		{"the v1 envelope", []byte{config.GetPriceRequestV1}, true},
+		{"this feed", feedRequest(t), true},
 		{"empty", nil, false},
-		{"a future version", []byte{0x02}, false},
-		{"the right byte, twice", []byte{config.GetPriceRequestV1, config.GetPriceRequestV1}, false},
-		{"zero byte", []byte{0x00}, false},
+		{"the old one-byte envelope", []byte{0x01}, false},
+		{"another feed on this extension", encodeFeedRequest(t, otherFeed), false},
+		{"the zero feed id", encodeFeedRequest(t, [21]byte{}), false},
+		{"a short word", feedRequest(t)[:31], false},
+		{"a trailing word", append(feedRequest(t), make([]byte, 32)...), false},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			e := newTestExtension()
 			action := buildTestAction(
-				toHash(config.OPTypeUsdxOracle), toHash(config.OPCommandGetPrice), c.payload)
+				toHash(config.OPTypeTeeOracle), toHash(config.OPCommandGetFeed), c.payload)
 
 			status, body := e.processAction(action)
 			result := mustResult(t, status, body, http.StatusOK)
@@ -338,7 +368,7 @@ func TestState_UpdateCountIncrementsAcrossCalls(t *testing.T) {
 	e := newTestExtension()
 
 	for i := 1; i <= 3; i++ {
-		status, body := e.processAction(getPriceAction())
+		status, body := e.processAction(getFeedAction(t))
 		result := mustResult(t, status, body, http.StatusOK)
 		if result.Status != 1 {
 			t.Fatalf("call %d: expected status 1, got %d: %s", i, result.Status, result.Log)
@@ -352,7 +382,7 @@ func TestState_UpdateCountIncrementsAcrossCalls(t *testing.T) {
 func TestState_ReflectsLastObservation(t *testing.T) {
 	e := newTestExtension()
 
-	if _, body := e.processAction(getPriceAction()); len(body) == 0 {
+	if _, body := e.processAction(getFeedAction(t)); len(body) == 0 {
 		t.Fatal("expected a result body")
 	}
 
@@ -376,8 +406,8 @@ func TestState_SuccessClearsErrorClass(t *testing.T) {
 	e := newTestExtension()
 
 	bad := buildTestAction(
-		toHash(config.OPTypeUsdxOracle),
-		toHash(config.OPCommandGetPrice),
+		toHash(config.OPTypeTeeOracle),
+		toHash(config.OPCommandGetFeed),
 		[]byte(`{"unexpected":"payload"}`),
 	)
 	e.processAction(bad)
@@ -385,7 +415,7 @@ func TestState_SuccessClearsErrorClass(t *testing.T) {
 		t.Fatal("expected an error class to be recorded")
 	}
 
-	e.processAction(getPriceAction())
+	e.processAction(getFeedAction(t))
 	if e.lastErrorClass != failure.ClassNone {
 		t.Errorf("expected error class cleared after success, got %q", e.lastErrorClass)
 	}
@@ -401,7 +431,7 @@ func TestState_SuccessClearsErrorClass(t *testing.T) {
 // carries only operational fields — no supply, reserves, endpoints or secrets.
 func TestState_ExposesOnlyOperationalFields(t *testing.T) {
 	e := newTestExtension()
-	e.processAction(getPriceAction())
+	e.processAction(getFeedAction(t))
 
 	b, err := json.Marshal(types.State{
 		Readiness:      types.Readiness{MissingRefs: []string{}},
@@ -461,11 +491,19 @@ type fakeObserver struct {
 	readiness    []byte
 	readinessErr error
 
-	mu               sync.Mutex
-	calls            int
+	mu    sync.Mutex
+	calls int
+
+	// Written by ReadinessReport only. The feed path no longer takes an
+	// instruction id — the store dropped the field — so nothing request-specific
+	// reaches the observer there. See readiness_test.go for the binding that
+	// remains.
 	lastID           common.Hash
 	readinessCalls   int
 	lastProvisioning types.Readiness
+
+	// The requesting block's timestamp, as forwarded by processGetFeed.
+	lastRequestedAt uint64
 }
 
 func (f *fakeObserver) ReadinessReport(
@@ -485,17 +523,17 @@ func (f *fakeObserver) ReadinessReport(
 	return f.readiness, nil
 }
 
-func (f *fakeObserver) Report(ctx context.Context, instructionID common.Hash) (oracle.Observation, error) {
+func (f *fakeObserver) Report(ctx context.Context, requestedAt uint64) (oracle.Observation, error) {
 	f.mu.Lock()
 	f.calls++
-	f.lastID = instructionID
+	f.lastRequestedAt = requestedAt
 	f.mu.Unlock()
 	return f.obs, f.err
 }
 
-func TestProcessGetPrice_UsesObserverResult(t *testing.T) {
+func TestProcessGetFeed_UsesObserverResult(t *testing.T) {
 	obs := oracle.Observation{
-		Price:      big.NewInt(95_374_751),
+		Value:      95_374_751,
 		Decimals:   8,
 		ObservedAt: 1_700_000_123,
 		Data:       []byte{0xAB, 0xCD},
@@ -505,7 +543,7 @@ func TestProcessGetPrice_UsesObserverResult(t *testing.T) {
 	e := newTestExtension()
 	e.observer = o
 
-	status, body := e.processAction(getPriceAction())
+	status, body := e.processAction(getFeedAction(t))
 	result := mustResult(t, status, body, http.StatusOK)
 
 	if result.Status != 1 {
@@ -526,27 +564,8 @@ func TestProcessGetPrice_UsesObserverResult(t *testing.T) {
 	}
 }
 
-// The instruction id must reach the observer, since it is bound into the signed
-// report to tie the price to the request that asked for it.
-func TestProcessGetPrice_PassesInstructionID(t *testing.T) {
-	o := &fakeObserver{obs: oracle.Observation{
-		Price: big.NewInt(1), Decimals: 8, ObservedAt: 1, Data: []byte{0x01},
-	}}
-	e := newTestExtension()
-	e.observer = o
-
-	e.processAction(getPriceAction())
-
-	if o.calls != 1 {
-		t.Fatalf("expected 1 observation, got %d", o.calls)
-	}
-	if o.lastID != testInstructionID {
-		t.Errorf("observer got instruction id %s, want %s", o.lastID.Hex(), testInstructionID.Hex())
-	}
-}
-
 // A failed observation must publish nothing and surface only the vocabulary.
-func TestProcessGetPrice_ObserverFailureFailsClosed(t *testing.T) {
+func TestProcessGetFeed_ObserverFailureFailsClosed(t *testing.T) {
 	o := &fakeObserver{
 		err: failure.BackingUnavailable,
 		obs: oracle.Observation{Health: map[string]string{"hex_bonds": config.HealthDown}},
@@ -554,7 +573,7 @@ func TestProcessGetPrice_ObserverFailureFailsClosed(t *testing.T) {
 	e := newTestExtension()
 	e.observer = o
 
-	status, body := e.processAction(getPriceAction())
+	status, body := e.processAction(getFeedAction(t))
 	result := mustResult(t, status, body, http.StatusOK)
 
 	if result.Status != 0 {
@@ -576,12 +595,12 @@ func TestProcessGetPrice_ObserverFailureFailsClosed(t *testing.T) {
 }
 
 // A non-vocabulary error must not reach the public Log.
-func TestProcessGetPrice_ForeignErrorIsNotPublished(t *testing.T) {
+func TestProcessGetFeed_ForeignErrorIsNotPublished(t *testing.T) {
 	o := &fakeObserver{err: errors.New("dial tcp 10.0.0.1:8545?apikey=SECRET: refused")}
 	e := newTestExtension()
 	e.observer = o
 
-	status, body := e.processAction(getPriceAction())
+	status, body := e.processAction(getFeedAction(t))
 	result := mustResult(t, status, body, http.StatusOK)
 
 	if strings.Contains(string(body), "SECRET") || strings.Contains(string(body), "10.0.0.1") {
@@ -594,21 +613,21 @@ func TestProcessGetPrice_ForeignErrorIsNotPublished(t *testing.T) {
 
 // A failed observation must not overwrite the last good price: the feed freezes
 // at its last value with an ageing timestamp rather than going blank.
-func TestProcessGetPrice_FailureKeepsLastGoodPrice(t *testing.T) {
+func TestProcessGetFeed_FailureKeepsLastGoodPrice(t *testing.T) {
 	o := &fakeObserver{obs: oracle.Observation{
-		Price: big.NewInt(100_000_000), Decimals: 8, ObservedAt: 1_700_000_000,
+		Value: 100_000_000, Decimals: 8, ObservedAt: 1_700_000_000,
 		Data: []byte{0x01}, Health: map[string]string{},
 	}}
 	e := newTestExtension()
 	e.observer = o
 
-	e.processAction(getPriceAction())
+	e.processAction(getFeedAction(t))
 	if e.lastPrice != "100000000" {
 		t.Fatalf("setup: lastPrice = %q", e.lastPrice)
 	}
 
 	o.err = failure.BackingUnavailable
-	e.processAction(getPriceAction())
+	e.processAction(getFeedAction(t))
 
 	if e.lastPrice != "100000000" {
 		t.Errorf("lastPrice = %q; a failure must not clear the last good price", e.lastPrice)
@@ -650,7 +669,7 @@ func TestStubMode_CannotBeEnteredAccidentally(t *testing.T) {
 // fixtures generated in stub mode do not pin the production payload.
 func TestStubMode_PayloadDiffersFromObserverPayload(t *testing.T) {
 	stub := newTestExtension() // observer nil
-	_, stubBody := stub.processAction(getPriceAction())
+	_, stubBody := stub.processAction(getFeedAction(t))
 	stubResult := mustResult(t, http.StatusOK, stubBody, http.StatusOK)
 
 	// The stub emits JSON, which must parse as GetPriceResponse.
@@ -661,10 +680,10 @@ func TestStubMode_PayloadDiffersFromObserverPayload(t *testing.T) {
 
 	live := newTestExtension()
 	live.observer = &fakeObserver{obs: oracle.Observation{
-		Price: big.NewInt(1), Decimals: 8, ObservedAt: 1,
+		Value: 1, Decimals: 8, ObservedAt: 1,
 		Data: []byte{0xDE, 0xAD}, Health: map[string]string{},
 	}}
-	_, liveBody := live.processAction(getPriceAction())
+	_, liveBody := live.processAction(getFeedAction(t))
 	liveResult := mustResult(t, http.StatusOK, liveBody, http.StatusOK)
 
 	if bytes.Equal(stubResult.Data, liveResult.Data) {
@@ -695,3 +714,45 @@ func newRecorder() *recorder { return &recorder{hdr: http.Header{}} }
 func (r *recorder) Header() http.Header         { return r.hdr }
 func (r *recorder) Write(b []byte) (int, error) { r.body = append(r.body, b...); return len(b), nil }
 func (r *recorder) WriteHeader(s int)           { r.status = s }
+
+// The observer's staleness bound is only as good as the clock it is measured
+// against, and the only trustworthy one available is the requesting block's.
+// Dropping it on the floor here would leave the machine checking itself.
+func TestProcessGetFeed_ForwardsTheRequestingBlockTimestamp(t *testing.T) {
+	o := &fakeObserver{obs: oracle.Observation{
+		Value: 100_000_000, Decimals: 8, ObservedAt: testTimestamp, Data: []byte{0x01},
+	}}
+	e := newTestExtension()
+	e.observer = o
+
+	status, body := e.processAction(getFeedAction(t))
+	mustResult(t, status, body, http.StatusOK)
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.lastRequestedAt != testTimestamp {
+		t.Errorf("requestedAt = %d, want the instruction's block timestamp %d",
+			o.lastRequestedAt, testTimestamp)
+	}
+}
+
+// A clock refusal is ordinary vocabulary: it reaches the caller as a status-0
+// result with a publishable reason, and is counted as a failure like any other.
+func TestProcessGetFeed_ClockRefusalIsPublishable(t *testing.T) {
+	o := &fakeObserver{err: failure.ClockBehindChain}
+	e := newTestExtension()
+	e.observer = o
+
+	status, body := e.processAction(getFeedAction(t))
+	result := mustResult(t, status, body, http.StatusOK)
+
+	if result.Status != 0 {
+		t.Fatalf("expected status 0, got %d", result.Status)
+	}
+	if result.Log != "error: "+failure.ClockBehindChain.Error() {
+		t.Errorf("log = %q, want %q", result.Log, failure.ClockBehindChain.Error())
+	}
+	if e.lastErrorClass != failure.ClassClockSkew {
+		t.Errorf("lastErrorClass = %q, want %q", e.lastErrorClass, failure.ClassClockSkew)
+	}
+}

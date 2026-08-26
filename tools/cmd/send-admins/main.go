@@ -1,16 +1,27 @@
-// Command send-admins publishes an admin signer set on-chain, so the addressed
-// TEE machine receives it as a SET_ADMINS instruction.
+// Command send-admins publishes an admin signer set on-chain through
+// TeeOracleInstructionsSender, so the addressed TEE machines receive it as a
+// SET_ADMINS instruction.
 //
-// The payload is addresses and a threshold — nothing secret, and public on
+// The payload is addresses and thresholds — nothing secret, and public on
 // purpose: who may provision a machine should be as verifiable as which
 // providers it reads. Private keys never go anywhere near this tool; admins sign
 // provisioning envelopes with usdxprov.
 //
-// The teeId is derived from the attested publicKey on /info, not a field there.
+// The contract ABI-encodes Admins{version, feedId, roles} and assigns the
+// version; this tool takes a role-tagged JSON file and builds the typed AdminRole
+// list from it. It predicts the version (adminsVersion(feedId) + 1) so it can
+// predict the hash every later feed update and SET_SECRET will have to carry.
+//
+// One publication fans out to every machine named with -tee in a single
+// transaction, and the fee is operationFee × len(teeIds). In production mode
+// setAdmins is governance-only and the calldata goes through the timelock; the
+// direct Send path works only before switchToProductionMode. On a real
+// deployment (where the upstream deploy script has already switched to
+// production mode) use -out to export the governance hand-off — calldata, fee
+// and predicted hash — for the Flare governance executor instead of sending.
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -27,7 +38,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"github.com/pkg/errors"
 )
@@ -36,20 +46,57 @@ func main() {
 	af := flag.String("a", configs.AddressesFile, "file with deployed addresses")
 	cf := flag.String("c", configs.ChainNodeURL, "chain node url")
 	pf := flag.String("p", configs.ExtensionProxyURL, "extension proxy url")
-	instructionSenderF := flag.String("instructionSender", "", "instructionSender address")
-	configF := flag.String("config", "", "admin set JSON file, delivered verbatim")
+	instructionSenderF := flag.String("instructionSender", "",
+		"TeeOracleInstructionsSender address (default: the TeeOracleInstructionsSender "+
+			"entry in the addresses file)")
+	configF := flag.String("config", "", "admin set JSON file")
+	feedIDF := flag.String("feedId", "0x20555344582f555344000000000000000000000000",
+		"feed id (bytes21 hex); defaults to USDX/USD")
+	teeF := flag.String("tee", "",
+		"comma-separated TEE machine addresses to publish to (required)")
+	claimBackF := flag.String("claimBack", "",
+		"address that can claim back unspent fees; zero (default) to skip")
 	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
 		"proxy API key, used to confirm delivery via a signed GET_READINESS when the "+
 			"proxy publishes no attested state (default: $DIRECT_API_KEY)")
 	waitF := flag.Duration("wait", 90*time.Second,
 		"how long to wait for the machine to report the new admins hash; 0 skips the check")
-	dryRunF := flag.Bool("dry-run", false, "validate the payload and print the hash, but send nothing")
+	dryRunF := flag.Bool("dry-run", false, "validate the payload and print the predicted hash, but send nothing")
+	outF := flag.String("out", "",
+		"write the governance hand-off (calldata, fee, predicted hash) to this JSON file "+
+			"instead of sending — the path for production-mode senders, where setAdmins "+
+			"is governance-only and Flare executes it through the timelock")
 	flag.Parse()
 
-	if *instructionSenderF == "" || *configF == "" {
-		fccutils.FatalWithCause(errors.New("both -instructionSender and -config are required"))
+	if *configF == "" || *teeF == "" {
+		fccutils.FatalWithCause(errors.New("-config and -tee are both required"))
 	}
-	instructionSenderAddress := common.HexToAddress(*instructionSenderF)
+	instructionSenderAddress, err := configs.ResolveContract(*instructionSenderF, *af, "TeeOracleInstructionsSender")
+	if err != nil {
+		fccutils.FatalWithCause(errors.Errorf("resolving the instructions sender: %s — pass -instructionSender "+
+			"or run scripts/import-upstream-addresses.sh after the upstream deploy", err))
+	}
+
+	feedID, err := parseFeedID(*feedIDF)
+	if err != nil {
+		fccutils.FatalWithCause(err)
+	}
+
+	teeIDs, err := parseAddresses(*teeF)
+	if err != nil {
+		fccutils.FatalWithCause(errors.Errorf("-tee: %s", err))
+	}
+	if len(teeIDs) == 0 {
+		fccutils.FatalWithCause(errors.New("-tee must name at least one machine"))
+	}
+
+	var claimBack common.Address
+	if *claimBackF != "" {
+		if !common.IsHexAddress(*claimBackF) {
+			fccutils.FatalWithCause(errors.Errorf("-claimBack %q is not an address", *claimBackF))
+		}
+		claimBack = common.HexToAddress(*claimBackF)
+	}
 
 	configBytes, err := os.ReadFile(*configF)
 	if err != nil {
@@ -59,82 +106,142 @@ func main() {
 		fccutils.FatalWithCause(errors.Errorf("%s is not valid JSON", *configF))
 	}
 
-	// Decode against the REAL schema before spending gas, for the reason on the
-	// admins type: a rejected rotation stops prices AND stops the new admins.
-	parsed, err := parseAdmins(configBytes)
+	// Decode against the REAL schema before spending gas: a rejected rotation
+	// stops updates AND stops the new admins landing.
+	roles, err := parseAdmins(configBytes)
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("%s: %s", *configF, err))
 	}
-	if err := validateAdmins(parsed); err != nil {
+	if err := validateAdmins(roles); err != nil {
 		fccutils.FatalWithCause(errors.Errorf("%s: %s", *configF, err))
 	}
 
-	var prettyConfig bytes.Buffer
-	if err := json.Indent(&prettyConfig, configBytes, "", "  "); err != nil {
-		fccutils.FatalWithCause(errors.Errorf("formatting config JSON: %s", err))
-	}
-	logger.Infof("Admin set from %s (%d bytes, delivered verbatim on-chain):", *configF, len(configBytes))
-	logger.Info(prettyConfig.String())
-	logger.Infof("Validated against the extension's schema:")
-	logger.Info("\n" + summarise(parsed))
+	logger.Infof("Admin set from %s:", *configF)
+	logger.Info(summarise(roles))
 
 	testSupport, err := support.DefaultSupport(*af, *cf)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
 
-	teeID, _, err := fccutils.GetTeeProxyID(*pf)
-	if err != nil {
-		fccutils.FatalWithCause(errors.Errorf("deriving TEE identity from %s/info: %s", *pf, err))
-	}
-	logger.Infof("TEE identity derived from attested publicKey: %s", teeID.Hex())
-
-	adminsHash := crypto.Keccak256Hash(configBytes)
-
-	if *dryRunF {
-		logger.Infof("Dry run: payload is valid. adminsHash would be %s", adminsHash.Hex())
-		return
-	}
-
-	instructionID, txHash, err := instrutils.SetAdmins(testSupport, instructionSenderAddress, teeID, configBytes)
+	sender, err := instrutils.Sender(testSupport, instructionSenderAddress)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
+	currentVersion, err := sender.AdminsVersion(nil, feedID)
+	if err != nil {
+		fccutils.FatalWithCause(errors.Errorf("reading adminsVersion: %s", err))
+	}
+	version := currentVersion + 1
+
+	publication, err := instrutils.EncodeSetAdmins(feedID, teeIDs, roles, claimBack, version)
+	if err != nil {
+		fccutils.FatalWithCause(errors.Errorf("encoding setAdmins: %s", err))
+	}
+	if err := publication.ResolveFee(testSupport, "SET_ADMINS"); err != nil {
+		fccutils.FatalWithCause(errors.Errorf("resolving the fee: %s", err))
+	}
+
+	logger.Infof("Publishing to %d machine(s) for feed %s:", len(teeIDs), *feedIDF)
+	for _, id := range teeIDs {
+		logger.Infof("  tee: %s", id.Hex())
+	}
+	logger.Infof("  predicted version:    %d (current %d)", publication.Version, currentVersion)
+	logger.Infof("  predicted adminsHash: %s", publication.PayloadHash.Hex())
+	logger.Infof("  fee (× %d machine(s)): %s wei", len(teeIDs), publication.Fee)
+
+	if *dryRunF {
+		logger.Infof("Dry run: nothing sent. The sender assigns the version, so the predicted " +
+			"hash is only right if no other SET_ADMINS for this feed lands first.")
+		return
+	}
+
+	// Governance hand-off: on a real deployment the sender is already in
+	// production mode, setAdmins is governance-only, and Flare governance
+	// executes it through the timelock. This repo's contribution is the exact
+	// calldata plus the fee, written out for the executor.
+	if *outF != "" {
+		handoff, err := publication.Handoff(instructionSenderAddress, "setAdmins")
+		if err != nil {
+			fccutils.FatalWithCause(err)
+		}
+		data, err := json.MarshalIndent(handoff, "", "  ")
+		if err != nil {
+			fccutils.FatalWithCause(errors.Errorf("encoding the hand-off: %s", err))
+		}
+		if err := os.WriteFile(*outF, append(data, '\n'), 0o644); err != nil {
+			fccutils.FatalWithCause(errors.Errorf("writing %s: %s", *outF, err))
+		}
+		logger.Infof("Hand-off written to %s — hand it to the Flare governance executor.", *outF)
+		logger.Infof("Nothing was sent: setAdmins is governance-only once the sender is in production mode.")
+		return
+	}
+
+	// Direct submission: works only while the caller is governance (before
+	// switchToProductionMode). On a real deployment this reverts with the
+	// governance guard; the calldata then has to go through executeGovernanceCall.
+	txHash, err := publication.Send(testSupport, instructionSenderAddress)
+	if err != nil {
+		fccutils.FatalWithCause(errors.Errorf("publishing admins: %s", err))
+	}
 
 	logger.Infof("Admin set published on-chain:")
-	logger.Infof("  tx:          %s", txHash.Hex())
-	logger.Infof("  instruction: %s", instructionID.Hex())
-	logger.Infof("  adminsHash:  %s", adminsHash.Hex())
+	logger.Infof("  tx:         %s", txHash.Hex())
+	logger.Infof("  version:    %d", publication.Version)
+	logger.Infof("  adminsHash: %s", publication.PayloadHash.Hex())
 
 	if *waitF <= 0 {
 		// Stated as a conditional, not a fact: whether the machine applied this
 		// is exactly what skipping the check leaves unknown.
 		logger.Warnf("Skipping the delivery check (-wait 0), so whether the machine applied %s "+
-			"is unknown. If it did not, every price it signs is rejected with StaleAdmins.",
-			adminsHash.Hex())
+			"is unknown. If it did not, every update it signs is rejected with StaleAdmins.",
+			publication.PayloadHash.Hex())
 		return
 	}
 
-	// expectedAdminsHash is written, so the machine can now only submit prices while
-	// actually RUNNING this set — and a non-increasing version is rejected outright,
-	// so confirm. A contradicting hash is a failure; no state at all is not.
-	if err := waitForAdmins(*pf, *apiKeyF, adminsHash, *waitF); err != nil {
+	// The delivery check confirms against the primary proxy only. With multiple
+	// machines use cmd/fleet-status to reconcile every machine's live hash.
+	if err := waitForAdmins(*pf, *apiKeyF, publication.PayloadHash, *waitF); err != nil {
 		if errors.Is(err, fccutils.ErrNoAttestedState) {
 			logger.Infof("Delivery not confirmed: %s", err)
 			return
 		}
 		logger.Errorf("%s", err)
-		logger.Errorf("The machine is NOT running the published admin set, so its prices will be " +
+		logger.Errorf("The machine is NOT running the published admin set, so its updates will be " +
 			"rejected with StaleAdmins until it is, and SET_SECRET signed by these admins will " +
 			"be rejected too. Check the extension's logs:")
 		logger.Errorf("  docker compose logs extension-tee | grep SET_ADMINS")
 		os.Exit(1)
 	}
 
-	logger.Infof("Confirmed: the machine reports adminsHash %s", adminsHash.Hex())
-	logger.Infof("Now re-commission it, or it stays uncommissioned in fleet-status:")
-	logger.Infof("  go run ./cmd/submit-price -direct -p %s -instructionSender %s",
-		*pf, instructionSenderAddress.Hex())
+	logger.Infof("Confirmed: the machine reports adminsHash %s", publication.PayloadHash.Hex())
+}
+
+// parseFeedID decodes a bytes21 feed id.
+func parseFeedID(s string) ([21]byte, error) {
+	var id [21]byte
+	raw := common.FromHex(s)
+	if len(raw) != 21 {
+		return id, errors.Errorf("feedId %q is not 21 bytes", s)
+	}
+	copy(id[:], raw)
+	return id, nil
+}
+
+// parseAddresses splits a comma-separated list of hex addresses.
+func parseAddresses(s string) ([]common.Address, error) {
+	var out []common.Address
+	for _, raw := range strings.Split(s, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if !common.IsHexAddress(raw) {
+			return nil, errors.Errorf("%q is not an address", raw)
+		}
+		out = append(out, common.HexToAddress(raw))
+	}
+	return out, nil
 }
 
 // waitForAdmins polls the machine's own /state until it reports the hash just
@@ -232,9 +339,6 @@ func fetchAdminsHash(proxyURL string) (string, error) {
 		return "", errors.Errorf("decoding /info: %s", err)
 	}
 
-	// Distinguished before unmarshalling: an empty state would otherwise fail as
-	// "unexpected end of JSON input", which reads like a corrupt response rather
-	// than an absent one.
 	if len(info.TeeInfo.State.State) == 0 {
 		return "", fccutils.ErrNoAttestedState
 	}

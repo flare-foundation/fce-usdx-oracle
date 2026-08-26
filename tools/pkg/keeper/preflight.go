@@ -1,12 +1,22 @@
+// Preflight checks a decoded feed update against every store guard before
+// spending gas. Each check duplicates one the contract makes, turning a revert
+// into a named, actionable reason.
+//
+// The store verifies the TEE signature through Fdc2Verification, so the keeper
+// holds no authority — the worst a wrong call can do is waste gas. Nothing here
+// may compute or adjust a price, and the update is relayed byte for byte.
 package keeper
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"math/big"
+	"strings"
 
-	"fce-usdx-oracle/tools/pkg/contracts/usdxoracle"
-	"fce-usdx-oracle/tools/pkg/contracts/usdxstore"
-	"fce-usdx-oracle/tools/pkg/pricereport"
+	"fce-usdx-oracle/tools/pkg/contracts/teeoraclesender"
+	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
+	"fce-usdx-oracle/tools/pkg/feedupdate"
 	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -14,14 +24,36 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Rejection is a report the store will not accept, named by the guard that rejects
-// it. The name matters more than the message: StaleConfig needs a setEndpoints call,
-// NotNewer usually needs nothing, and "execution reverted" distinguishes neither.
+// feedID is the one feed this keeper serves. Pinned here because the store has
+// no feedId getter — it is checked at init and never read again — so a preflight
+// that wanted it would have to trust the caller. The keeper's configured feed
+// matches the store's by construction (same deployment), and the signed update
+// names the same id, so this is a sanity check rather than a load-bearing one.
+//
+// It mirrors internal/config.FeedID; the two cannot share a definition because
+// tools/ is a separate module and internal/ is not importable from here.
+var feedID = mustFeedID("0x20555344582f555344000000000000000000000000")
+
+func mustFeedID(s string) [21]byte {
+	raw, err := hex.DecodeString(strings.TrimPrefix(s, "0x"))
+	if err != nil || len(raw) != 21 {
+		panic("keeper: invalid feed id " + s)
+	}
+	var id [21]byte
+	copy(id[:], raw)
+	return id
+}
+
+// Rejection is an update the store will not accept, named by the guard that
+// rejects it. The name matters more than the message: StaleEndpoints needs a
+// setEndpoints call, NotNewer usually needs nothing, and "execution reverted"
+// distinguishes neither.
 type Rejection struct {
 	Guard string
 	Msg   string
 
-	// Set for NotNewer, so the caller can tell a lost race from a stale submission.
+	// Set for NotNewer, so the caller can tell a lost race from a stale
+	// submission by comparing against the update's observedAt.
 	StoreObservedAt uint64
 }
 
@@ -40,186 +72,111 @@ func AsRejection(err error) (*Rejection, bool) {
 	return nil, false
 }
 
-// Preflight checks a report against every store guard before spending gas.
-// Each check duplicates one the contract makes, turning a revert into a named,
-// actionable reason before a transaction is paid for.
-func Preflight(s *support.Support, storeAddr common.Address, r pricereport.Report) error {
-	store, err := usdxstore.NewUsdxPriceStoreCaller(storeAddr, s.ChainClient)
+// Preflight checks u against the store at storeAddr. chainID is the chain the
+// store is on — the same chain the update was signed against, since the chain
+// id is inside the signed payload.
+func Preflight(s *support.Support, storeAddr common.Address, chainID *big.Int, u feedupdate.Update) error {
+	store, err := teeoraclestore.NewIITeeOracleFeedStoreCaller(storeAddr, s.ChainClient)
 	if err != nil {
 		return errors.Errorf("binding the store: %s", err)
 	}
 	opts := &bind.CallOpts{Context: context.Background()}
 
-	domain, err := store.DOMAIN(opts)
+	// Recover the signer once. The store does the same through
+	// Fdc2Verification.verifyTeeSignature, and every check below needs the
+	// machine id; recovering here turns a BadSignature into a named rejection
+	// rather than a revert the keeper cannot distinguish from a registry fault.
+	teeID, err := u.Signer(chainID)
 	if err != nil {
-		return errors.Errorf(
-			"reading DOMAIN from %s: %s — check the address really is a UsdxPriceStore",
-			storeAddr.Hex(), err)
-	}
-	if common.Hash(domain) != r.Domain {
-		return reject("WrongDomain", "report carries %s, the store expects %s",
-			r.Domain.Hex(), common.Hash(domain).Hex())
-	}
-
-	if decimals, err := store.DECIMALS(opts); err != nil {
-		return errors.Errorf("reading DECIMALS: %s", err)
-	} else if decimals != r.Decimals {
-		return reject("WrongDecimals", "report is scaled to %d, the store to %d",
-			r.Decimals, decimals)
-	}
-
-	if paused, err := store.Paused(opts); err != nil {
-		return errors.Errorf("reading paused: %s", err)
-	} else if paused {
-		return reject("IsPaused", "the store is paused and accepts no submissions")
-	}
-
-	observedAt, err := store.ObservedAt(opts)
-	if err != nil {
-		return errors.Errorf("reading observedAt: %s", err)
-	}
-	if r.ObservedAt <= observedAt {
-		rj := reject("NotNewer",
-			"the store already holds observedAt=%d and this report is stamped %d",
-			observedAt, r.ObservedAt)
-		rj.StoreObservedAt = observedAt
-		return rj
-	}
-
-	if err := checkBounds(store, opts, r); err != nil {
-		return err
-	}
-	if err := checkAge(s, store, opts, r); err != nil {
-		return err
-	}
-	return checkSignerAndConfig(s, store, opts, r)
-}
-
-func checkBounds(store *usdxstore.UsdxPriceStoreCaller, opts *bind.CallOpts, r pricereport.Report) error {
-	minPrice, err := store.MinPrice(opts)
-	if err != nil {
-		return errors.Errorf("reading minPrice: %s", err)
-	}
-	maxPrice, err := store.MaxPrice(opts)
-	if err != nil {
-		return errors.Errorf("reading maxPrice: %s", err)
-	}
-	if r.Price.Cmp(minPrice) < 0 || r.Price.Cmp(maxPrice) > 0 {
-		// Bounds set at par mean a genuine depeg reverts here rather than
-		// publishing — a governance decision, not a tooling bug.
-		return reject("OutOfBounds", "price %s is outside the accepted band [%s, %s]",
-			r.Price, minPrice, maxPrice)
-	}
-	return nil
-}
-
-func checkAge(s *support.Support, store *usdxstore.UsdxPriceStoreCaller, opts *bind.CallOpts, r pricereport.Report) error {
-	head, err := s.ChainClient.HeaderByNumber(opts.Context, nil)
-	if err != nil {
-		return errors.Errorf("reading chain head: %s", err)
-	}
-	now := head.Time
-
-	skew, err := store.MAXFUTURESKEW(opts)
-	if err != nil {
-		return errors.Errorf("reading MAX_FUTURE_SKEW: %s", err)
-	}
-	if r.ObservedAt > now+skew {
-		return reject("TooFarAhead",
-			"report is stamped %d, chain time is %d and the skew allowance is %ds — check the TEE's clock",
-			r.ObservedAt, now, skew)
-	}
-
-	maxAge, err := store.MaxAge(opts)
-	if err != nil {
-		return errors.Errorf("reading maxAge: %s", err)
-	}
-	if r.ObservedAt < now && now-r.ObservedAt > maxAge {
-		return reject("TooOld",
-			"report is %ds old and the store accepts %ds — the poll and submit deadlines have to fit inside maxAge",
-			now-r.ObservedAt, maxAge)
-	}
-	return nil
-}
-
-// checkSignerAndConfig asks the store's two questions: is this machine
-// registered to our extension, and is it running the configuration we published?
-func checkSignerAndConfig(
-	s *support.Support, store *usdxstore.UsdxPriceStoreCaller, opts *bind.CallOpts, r pricereport.Report,
-) error {
-	teeID, err := r.Signer()
-	if err != nil {
-		return reject("BadSignature", "report does not recover to a signer: %s", err)
+		return reject("BadSignature", "the update does not recover to a signer: %s", err)
 	}
 
 	extensionID, err := store.ExtensionId(opts)
 	if err != nil {
-		return errors.Errorf("reading extensionId: %s", err)
+		return errors.Errorf("reading extensionId from %s: %s", storeAddr.Hex(), err)
 	}
-	signerExtension, err := s.TeeMachineRegistry.GetExtensionId(opts, teeID)
-	if err != nil {
-		return reject("UnknownSigner",
-			"the registry does not know %s — is the machine registered? (%s)", teeID.Hex(), err)
-	}
-	if signerExtension.Cmp(extensionID) != 0 {
-		return reject("UnknownSigner", "%s is registered to extension %s, the store accepts %s",
-			teeID.Hex(), signerExtension, extensionID)
+	if u.ExtensionID == nil || u.ExtensionID.Cmp(extensionID) != 0 {
+		return reject("WrongExtensionId",
+			"the update names extension %s, the store accepts %s",
+			u.ExtensionID, extensionID)
 	}
 
-	status, err := store.REQUIREDTEESTATUS(opts)
-	if err != nil {
-		return errors.Errorf("reading REQUIRED_TEE_STATUS: %s", err)
-	}
-	machineStatus, err := s.TeeMachineRegistry.GetTeeMachineStatus(opts, teeID)
-	if err != nil {
-		return errors.Errorf("reading the machine status of %s: %s", teeID.Hex(), err)
-	}
-	if machineStatus != status {
-		return reject("UnknownSigner", "machine %s is in status %d, the store requires %d (PRODUCTION)",
-			teeID.Hex(), machineStatus, status)
+	// feedId has no getter (it is checked at init and never read again), so a
+	// mismatch reverts WrongFeedId on chain rather than here. The keeper's
+	// pinned feedID matches the store's by construction, and the signed update
+	// names the same id — a divergence means a deployment error, not a stale
+	// configuration, and the revert names it precisely.
+	if u.FeedID != feedID {
+		return reject("WrongFeedId",
+			"the update names feed %#x, this keeper serves %#x",
+			u.FeedID, feedID)
 	}
 
-	configSource, err := store.ConfigSource(opts)
+	senderAddr, err := store.InstructionsSender(opts)
 	if err != nil {
-		return errors.Errorf("reading configSource: %s", err)
+		return errors.Errorf("reading the instructions sender: %s", err)
 	}
-	sender, err := usdxoracle.NewUsdxOracleInstructionSenderCaller(configSource, s.ChainClient)
+	sender, err := teeoraclesender.NewIITeeOracleInstructionsSenderCaller(senderAddr, s.ChainClient)
 	if err != nil {
-		return errors.Errorf("binding the config source: %s", err)
+		return errors.Errorf("binding the sender: %s", err)
 	}
-	expected, err := sender.ExpectedConfigHash(opts, teeID)
+
+	// The registry checks that the signer is on this extension and in
+	// PRODUCTION, but the store's verifyTeeSignature already enforces both —
+	// and rejects while the extension is emergency paused. Re-checking here
+	// would duplicate the on-chain call and could drift from it; the rejection
+	// that matters is the one the store actually raises.
+
+	expectedEndpoints, err := sender.ExpectedEndpointsHash(opts, u.FeedID, teeID)
 	if err != nil {
-		return reject("ConfigSourceUnavailable", "reading expectedConfigHash from %s: %s",
-			configSource.Hex(), err)
+		return reject("SenderUnavailable", "reading expectedEndpointsHash: %s", err)
 	}
-	if common.Hash(expected) == (common.Hash{}) {
-		return reject("NoConfigPublished",
-			"no endpoint configuration has been sent to %s — run send-endpoints first", teeID.Hex())
+	if common.Hash(expectedEndpoints) == (common.Hash{}) {
+		return reject("NoEndpointsPublished",
+			"no endpoint configuration has been sent to %s for feed %#x — run send-endpoints first",
+			teeID.Hex(), u.FeedID)
 	}
-	if common.Hash(expected) != r.ConfigHash {
-		return reject("StaleConfig",
-			"the machine computed this price under %s but %s expects %s; "+
+	if common.Hash(expectedEndpoints) != u.EndpointsHash {
+		return reject("StaleEndpoints",
+			"the machine computed this update under endpoints %s but the sender expects %s; "+
 				"the machine never applied the published configuration, or a newer one was sent",
-			r.ConfigHash.Hex(), configSource.Hex(), common.Hash(expected).Hex())
+			u.EndpointsHash.Hex(), common.Hash(expectedEndpoints).Hex())
 	}
 
-	// The same check for the admin set. Without it this preflight would report a
-	// submittable report and the transaction would then revert StaleAdmins,
-	// which is exactly the confusion it exists to prevent.
-	expectedAdmins, err := sender.ExpectedAdminsHash(opts, teeID)
+	expectedAdmins, err := sender.ExpectedAdminsHash(opts, u.FeedID, teeID)
 	if err != nil {
-		return reject("ConfigSourceUnavailable", "reading expectedAdminsHash from %s: %s",
-			configSource.Hex(), err)
+		return reject("SenderUnavailable", "reading expectedAdminsHash: %s", err)
 	}
 	if common.Hash(expectedAdmins) == (common.Hash{}) {
 		return reject("NoAdminsPublished",
-			"no admin set has been sent to %s — run send-admins first", teeID.Hex())
+			"no admin set has been sent to %s for feed %#x — run send-admins first",
+			teeID.Hex(), u.FeedID)
 	}
-	if common.Hash(expectedAdmins) != r.AdminsHash {
+	if common.Hash(expectedAdmins) != u.AdminsHash {
 		return reject("StaleAdmins",
-			"the machine computed this price under admin set %s but %s expects %s; "+
+			"the machine computed this update under admin set %s but the sender expects %s; "+
 				"the machine never applied the published admin set, or a newer one was sent",
-			r.AdminsHash.Hex(), configSource.Hex(), common.Hash(expectedAdmins).Hex())
+			u.AdminsHash.Hex(), common.Hash(expectedAdmins).Hex())
 	}
+
+	// Strictly increasing observedAt — the only time rule left. The store
+	// rejects TooFarAhead (observedAt < block.timestamp) and NotNewer; there is
+	// no maxAge and no maxFutureSkew, so the keeper's own cycle timing is what
+	// keeps a relayed update inside the window. An update newer than the chain
+	// is now impossible by construction (observedAt is the home chain's block
+	// header timestamp, which is always in the past), so only NotNewer is
+	// checked here.
+	stored, err := store.ObservedAt(opts)
+	if err != nil {
+		return errors.Errorf("reading observedAt: %s", err)
+	}
+	if u.ObservedAt <= stored {
+		rj := reject("NotNewer",
+			"the store already holds observedAt=%d and this update is stamped %d",
+			stored, u.ObservedAt)
+		rj.StoreObservedAt = stored
+		return rj
+	}
+
 	return nil
 }

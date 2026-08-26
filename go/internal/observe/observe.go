@@ -4,6 +4,13 @@
 // slow half runs here and the handler does only the signing round trip.
 // Caching adds a staleness mode, so Latest fails closed past
 // config.MaxObservationAge.
+//
+// That bound is measured twice, against two different clocks. Latest uses this
+// machine's, which is what catches upstreams that have stopped — but it is also
+// the clock that stamped the observation, so it cannot catch itself being wrong.
+// Report measures the same age again against the requesting instruction's block
+// timestamp, which the data-provider quorum cosigned and the host cannot move.
+// See checkClock.
 package observe
 
 import (
@@ -140,14 +147,42 @@ func (p *Poller) Latest() (oracle.Observation, error) {
 	return p.last, nil
 }
 
-// Report returns the latest observation signed for instructionID — the whole
-// of what a GET_PRICE request costs.
-func (p *Poller) Report(ctx context.Context, instructionID common.Hash) (oracle.Observation, error) {
+// Report returns the latest observation, signed — the whole of what a GET_FEED
+// request costs. The update carries no instruction id: the store dropped the
+// field, so nothing binds a signature to the request that asked for it.
+//
+// requestedAt is the block timestamp of the instruction event that asked for
+// this update, taken from the cosigned DataFixed. It is not published — what
+// gets signed is still the moment the inputs were READ — but it is the clock
+// checkClock measures against. Nothing about the request may enter the payload;
+// see the note on Sign.
+func (p *Poller) Report(ctx context.Context, requestedAt uint64) (oracle.Observation, error) {
 	obs, err := p.Latest()
 	if err != nil {
 		return obs, err
 	}
-	return oracle.Sign(ctx, p.signer, obs, instructionID)
+	if err := checkClock(obs.ObservedAt, requestedAt, p.maxAge); err != nil {
+		// Health still travels: a clock fault says nothing about the sources, and
+		// an operator reading a refusal needs to see they are fine.
+		return oracle.Observation{Health: obs.Health}, err
+	}
+	return oracle.Sign(ctx, p.signer, obs)
+}
+
+// checkClock enforces observation staleness against the block's timestamp,
+// ensuring only fresh data is reported for a given feed update request.
+// Only older (stale) observations can be flagged; newer observations are allowed.
+// Returns an error if the bound is not met.
+func checkClock(observedAt, requestedAt uint64, maxAge time.Duration) error {
+	// Zero requestedAt means a malformed instruction.
+	if requestedAt == 0 {
+		return failure.MissingRequestTime
+	}
+	// Flag if observed data is too old relative to the request.
+	if requestedAt > observedAt && requestedAt-observedAt > uint64(maxAge.Seconds()) {
+		return failure.ClockBehindChain
+	}
+	return nil
 }
 
 // ReadinessReport assembles what the poller knows about itself, binds it to one

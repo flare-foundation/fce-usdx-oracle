@@ -1,8 +1,8 @@
 {
   "fixtures": [
-    "01-get-price-success",
-    "02-get-price-is-deterministic",
-    "03-get-price-rejects-payload",
+    "01-get-feed-success",
+    "02-get-feed-is-deterministic",
+    "03-get-feed-rejects-payload",
     "04-unknown-op-type",
     "05-unknown-op-command",
     "06-invalid-action-json",
@@ -12,6 +12,6 @@
     "10-post-state-not-allowed",
     "11-unknown-path",
     "12-get-state",
-    "13-get-price-direct"
+    "13-get-feed-refused-over-direct"
   ]
 }

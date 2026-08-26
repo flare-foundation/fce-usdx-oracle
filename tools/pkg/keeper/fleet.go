@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"fce-usdx-oracle/tools/pkg/contracts/usdxstore"
+	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
 	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -20,15 +20,18 @@ type Machine struct {
 	Proxy string
 }
 
-// ActiveMachines lists the machines registered to the store's extension. The id is
-// read off the store, not configured, so the keeper cannot rotate over a fleet whose
-// prices the store would reject. Machines listed without a URL are dropped.
+// ActiveMachines lists the machines registered to extension extensionID.
+//
+// The id is read off the store, not configured, so the keeper cannot poll a
+// fleet whose updates the store would reject. Machines listed without a URL
+// are dropped — a machine reachable at a different address than it registered
+// can be reached via ProxyOverride on LoopConfig.
 func ActiveMachines(
 	ctx context.Context, s *support.Support, storeAddr common.Address, proxyOverride string,
 ) ([]Machine, error) {
 	opts := &bind.CallOpts{Context: ctx}
 
-	store, err := usdxstore.NewUsdxPriceStoreCaller(storeAddr, s.ChainClient)
+	store, err := teeoraclestore.NewIITeeOracleFeedStoreCaller(storeAddr, s.ChainClient)
 	if err != nil {
 		return nil, errors.Errorf("binding the store: %s", err)
 	}
@@ -65,12 +68,13 @@ func machineList(teeIDs []common.Address, urls []string, proxyOverride string) [
 	return machines
 }
 
-// fleet is the keeper's view of the machines it may send to, plus whose turn it is
-// next. The rotation index is the only state the loop keeps across cycles, and it
-// is not correctness-bearing: any registered machine may serve any cycle.
+// fleet is the keeper's view of the machines that could serve its instruction.
+// It holds no state across cycles: the sender now names the target machines
+// explicitly (no longer getRandomTeeIds), so there is nothing for the keeper to
+// decide — but every target is still polled for the result, because only the
+// machine the sender picked holds it.
 type fleet struct {
 	machines []Machine
-	next     int
 }
 
 // refresh re-reads the registry so machines added or suspended mid-run are picked
@@ -93,24 +97,10 @@ func (f *fleet) refresh(ctx context.Context, s *support.Support, storeAddr commo
 		logger.Infof("fleet is now %d machine(s)", len(machines))
 	}
 	f.machines = machines
-	if f.next >= len(f.machines) {
-		f.next = 0
-	}
 }
 
-// take returns the machine whose turn it is and advances the rotation.
-func (f *fleet) take() (Machine, bool) {
-	if len(f.machines) == 0 {
-		return Machine{}, false
-	}
-	m := f.machines[f.next%len(f.machines)]
-	f.next = (f.next + 1) % len(f.machines)
-	return m, true
-}
-
-// proxies is every machine's URL, which is what an on-chain cycle has to poll:
-// the instruction goes to a machine the registry picks at random and the result
-// is retrievable only from that machine's own proxy.
+// proxies is every machine's URL, which is what a cycle has to poll: the sender
+// picks the target and the result is retrievable only from that machine's proxy.
 func (f *fleet) proxies() []string {
 	out := make([]string, 0, len(f.machines))
 	for _, m := range f.machines {

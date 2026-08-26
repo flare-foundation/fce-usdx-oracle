@@ -17,7 +17,7 @@ import (
 // which is the only one it is valid on.
 func readinessAction() teetypes.Action {
 	return buildDirectAction(
-		toHash(config.OPTypeUsdxOracle),
+		toHash(config.OPTypeTeeOracle),
 		toHash(config.OPCommandGetReadiness),
 		[]byte{config.ReadinessRequestV1},
 	)
@@ -88,7 +88,7 @@ func TestGetReadiness_RejectsInstructionChannel(t *testing.T) {
 	e := readinessExtension(o, &fakeProvisioner{})
 
 	action := buildTestAction(
-		toHash(config.OPTypeUsdxOracle),
+		toHash(config.OPTypeTeeOracle),
 		toHash(config.OPCommandGetReadiness),
 		[]byte{config.ReadinessRequestV1},
 	)
@@ -118,7 +118,7 @@ func TestGetReadiness_RejectsUnexpectedPayload(t *testing.T) {
 			e := readinessExtension(o, &fakeProvisioner{})
 
 			action := buildDirectAction(
-				toHash(config.OPTypeUsdxOracle),
+				toHash(config.OPTypeTeeOracle),
 				toHash(config.OPCommandGetReadiness),
 				tc.payload,
 			)

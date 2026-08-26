@@ -66,18 +66,20 @@ curl -sf -m 2 "http://127.0.0.1:$EXT_PORT/state" >/dev/null 2>&1 || {
 head "Provisioning endpoints from $(basename "$CONFIG")"
 "$SCRIPT_DIR/set-endpoints.sh" "$CONFIG" "$EXT_PORT"
 
-head "Requesting a price"
-# originalMessage must be exactly 0x01 — the GET_PRICE_REQUEST_V1 envelope. An
-# empty message is rejected outright.
+head "Requesting a feed update"
+# originalMessage is abi.encode(FeedUpdateRequest{feedId}): the 21-byte feed id
+# in a single 32-byte word (its only field is static, so the tuple encodes
+# inline). This replaced the old GET_FEED_REQUEST_V1 = 0x01 byte when one sender
+# started serving several feeds. 0x20555344582f555344 = category 0x20 + "USDX/USD".
 REQ="$(python3 -c "
 import json
 b32 = lambda s: '0x' + s.encode().ljust(32, b'\x00').hex()
 df = {
     'instructionId': '0x' + 'c1' * 32, 'teeId': '0x' + '22' * 20,
     'timestamp': 1785945000, 'rewardEpochId': 0,
-    'opType': b32('USDX_ORACLE'), 'opCommand': b32('GET_PRICE'),
+    'opType': b32('TEE_ORACLE'), 'opCommand': b32('GET_FEED'),
     'cosigners': [], 'cosignersThreshold': 0,
-    'originalMessage': '0x01', 'additionalFixedMessage': '0x',
+    'originalMessage': '0x20555344582f55534400000000000000000000000000000000000000000000', 'additionalFixedMessage': '0x',
 }
 print(json.dumps({
     'data': {'id': '0x' + 'c1' * 32, 'type': 'instruction', 'submissionTag': 'submit',
@@ -87,7 +89,7 @@ print(json.dumps({
 }))")"
 
 # Observation happens on a background timer, never on the request path — a
-# GET_PRICE costs one signature and nothing more, which is what keeps it inside
+# GET_FEED costs one signature and nothing more, which is what keeps it inside
 # tee-node's 2s action budget. So the first request after provisioning is served
 # from the failed boot-time observation and returns not_configured; the price
 # only appears once the poller ticks again. Wait that out rather than reporting

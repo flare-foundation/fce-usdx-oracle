@@ -6,24 +6,20 @@
 // and the signed body is relayed byte for byte.
 //
 // A cycle keeps no state: every partial cycle is harmless, and observedAt
-// monotonicity makes duplicate submissions safe by construction. The timer
-// keeps two pieces — whose turn it is in the rotation, and when the last
-// on-chain instruction went out — and neither is correctness-bearing: any
-// registered machine may serve any cycle, so a restart that resets them costs
-// nothing beyond one extra on-chain fee.
+// monotonicity makes duplicate submissions safe by construction. Every cycle
+// raises its request on-chain through requestFeedUpdate(feedId, teeIds), naming
+// the target machines explicitly, and a restart costs nothing.
 package keeper
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
-	"fce-usdx-oracle/tools/pkg/contracts/usdxstore"
-	"fce-usdx-oracle/tools/pkg/pricereport"
+	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
+	"fce-usdx-oracle/tools/pkg/feedupdate"
 	"fce-usdx-oracle/tools/pkg/support"
 	instrutils "fce-usdx-oracle/tools/pkg/utils"
 
@@ -50,42 +46,38 @@ type Config struct {
 	Sender common.Address
 	Store  common.Address
 
-	// Proxy is the machine this cycle talks to: the direct request goes there,
-	// and it is the first place the result is looked for.
+	// FeedID is the one feed this keeper serves. Named in the on-chain request
+	// and inside the signed update, so a mismatch with the store reverts.
+	FeedID [21]byte
+
+	// TeeIDs are the machines to ask. The sender dispatches one instruction per
+	// target and the fee scales with the count, so this is both a routing and a
+	// cost decision. Empty is a configuration error caught before any request.
+	TeeIDs []common.Address
+
+	// Proxy is the first place the result is looked for, and the machine the
+	// readiness preflight asks before paying the registry fee.
 	Proxy string
 
-	// TeeID names the machine behind Proxy, when the caller knows it. Recorded
-	// and logged only — the report's own signature is what decides which machine
-	// actually answered.
-	TeeID common.Address
-
-	// ResultProxies are further proxies to look for the result on, for the on-chain
-	// channel: getRandomTeeIds picks the machine and only its proxy holds the
-	// result. Empty on the direct channel, where there is only one candidate.
+	// ResultProxies are further proxies to look for the result on: only the
+	// machine the sender picked holds the result, but every target is a
+	// candidate until one answers.
 	ResultProxies []string
 
-	// Direct raises GET_PRICE on the proxy instead of on-chain, saving the fee and a
-	// transaction. It costs nothing in trust and buys the ability to address ONE
-	// named machine, which commissioning needs. See Run's OnChainEvery.
-	Direct       bool
+	// DirectAPIKey unlocks the proxy's /direct endpoint, which the readiness
+	// preflight uses. GET_FEED never goes that way — it is an on-chain
+	// instruction and nothing else — so an empty key only costs the preflight.
 	DirectAPIKey string
 
-	// Both are spent out of the store's maxAge budget: observedAt is stamped in
-	// the enclave before signing, so every second here counts against the
-	// report's age.
+	// PollTimeout bounds the wait for a terminal action result. There is no
+	// maxAge on the store any more — the acceptance window went away with
+	// multi-feed support — so this is the only deadline on the observation's
+	// age from the keeper's side.
 	PollTimeout   time.Duration
 	SubmitTimeout time.Duration
 
 	// DryRun stops after preflight, sending no transaction.
 	DryRun bool
-}
-
-// Channel names how the action was raised, for the cycle record.
-func (c Config) Channel() string {
-	if c.Direct {
-		return "direct"
-	}
-	return "instruction"
 }
 
 // RunCycle performs one complete keeper cycle. It never exits the process on an
@@ -98,77 +90,61 @@ func RunCycle(ctx context.Context, s *support.Support, cfg Config) (Record, erro
 	return Relay(ctx, s, cfg, rec, report)
 }
 
-// Collect is the first half of a cycle: raise the action, wait for a terminal
-// result, decode the report. It sends no transaction, which is what lets Sweep run
-// it against several machines. Its Record is half-filled on success; pass it to Relay.
-func Collect(ctx context.Context, s *support.Support, cfg Config) (pricereport.Report, Record, error) {
+// Collect is the first half of a cycle: raise the instruction, wait for a terminal
+// result, decode the report. Split from Relay so a caller can inspect the report
+// before submitting it. Its Record is half-filled on success; pass it to Relay.
+func Collect(ctx context.Context, s *support.Support, cfg Config) (feedupdate.Update, Record, error) {
 	rec := Record{
 		KeeperID:       cfg.KeeperID,
 		CycleStartedAt: time.Now().UTC(),
 		Outcome:        OutcomeInternal,
 		SubmitOutcome:  "not_attempted",
-		Channel:        cfg.Channel(),
 		Proxy:          cfg.Proxy,
-	}
-	if cfg.TeeID != (common.Address{}) {
-		rec.TeeID = cfg.TeeID.Hex()
 	}
 
 	// A stuck transaction blocks every later one behind it. Recorded rather than
 	// acted on: the fix is operational, not something to retry into.
 	rec.PendingNonceGap = pendingNonceGap(ctx, s)
 
-	fail := func(out Outcome, err error) (pricereport.Report, Record, error) {
+	fail := func(out Outcome, err error) (feedupdate.Update, Record, error) {
 		rec, err = finish(ctx, s, cfg, rec, out, err)
-		return pricereport.Report{}, rec, err
+		return feedupdate.Update{}, rec, err
 	}
 
 	// --- 1. trigger ---
-	// Both channels yield an id and a tag; nothing downstream depends on which.
-	var (
-		actionID common.Hash
-		tag      teetypes.SubmissionTag
-		err      error
-	)
-	if cfg.Direct {
-		actionID, err = RequestDirect(ctx, s, cfg)
-		// Direct actions are filed under "submit"; the endpoint defaults to
-		// "threshold", and the wrong tag 404s until the deadline.
-		tag = teetypes.Submit
-		rec.RequestTxStatus = "not_applicable"
-	} else {
-		// Ask before paying: a machine whose observation has aged out will refuse
-		// whatever it is asked, so the fee would buy a predictable failure. Only on
-		// this path — the direct channel is already free. Best effort throughout.
-		if skip, why := wouldRefuse(ctx, cfg); skip {
-			return fail(OutcomeRequestSkipped, errors.New(why))
-		}
-
-		actionID, _, err = instrutils.RequestPriceUpdate(s, cfg.Sender)
-		tag = teetypes.Threshold
-		if err == nil {
-			rec.RequestTxStatus = "mined"
-		} else {
-			rec.RequestTxStatus = "failed"
-		}
+	// Ask before paying: a machine whose observation has aged out will refuse
+	// whatever it is asked, so the fee would buy a predictable failure. Best
+	// effort throughout — an unreadable machine means requesting anyway.
+	if len(cfg.TeeIDs) == 0 {
+		return fail(OutcomeInternal, errors.New("no target machines configured"))
 	}
+
+	if skip, why := wouldRefuse(ctx, cfg); skip {
+		return fail(OutcomeRequestSkipped, errors.New(why))
+	}
+
+	actionID, _, err := instrutils.RequestFeedUpdate(s, cfg.Sender, cfg.FeedID, cfg.TeeIDs)
 	if err != nil {
+		rec.RequestTxStatus = "failed"
 		return fail(OutcomeRequestFailed, err)
 	}
+	rec.RequestTxStatus = "mined"
 	rec.InstructionID = actionID.Hex()
-	logger.Infof("[%s] %s action %s%s", cfg.KeeperID, cfg.Channel(), actionID.Hex(), targetSuffix(cfg))
+	logger.Infof("[%s] instruction %s", cfg.KeeperID, actionID.Hex())
 
 	// --- 2. collect ---
+	// An instruction's result is filed under "threshold"; the wrong tag 404s
+	// until the deadline rather than erroring.
 	targets := cfg.pollTargets()
-	result, from, err := PollResultAny(ctx, targets, actionID, tag, cfg.PollTimeout)
+	result, from, err := PollResultAny(ctx, targets, actionID, teetypes.Threshold, cfg.PollTimeout)
 	if err != nil {
 		rec.ResultStatus = "timeout"
 		rec.SourceHealth = sourceHealth(cfg.Proxy)
 		return fail(OutcomeNoResult, err)
 	}
 
-	// The answering proxy, which on the on-chain channel is the one the registry
-	// happened to route to rather than the one configured.
+	// The answering proxy: the one the registry happened to route to, rather
+	// than the one configured.
 	rec.Proxy = from
 
 	// Recorded either way: on failure it is what says WHICH source broke.
@@ -184,30 +160,31 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) (pricereport.R
 	}
 	rec.ResultStatus = "1"
 
-	report, err := pricereport.Decode(result.Data)
+	report, err := feedupdate.Decode(result.Data)
 	if err != nil {
 		return fail(OutcomeInternal, errors.Errorf("decoding the action result: %s", err))
 	}
-	rec.Price = report.Price.String()
+	rec.Price = report.Price()
 	rec.Decimals = report.Decimals
 	rec.ObservedAt = report.ObservedAt
 
-	// The signer is the machine that actually produced this report, which on the
-	// on-chain channel is the only thing that says which one did.
-	if teeID, err := report.Signer(); err == nil {
+	// The signer is the machine that actually produced this update — the only
+	// thing that says which of the fleet the sender picked, and so the only
+	// source rec.TeeID ever has.
+	if teeID, err := report.Signer(s.ChainID); err == nil {
 		rec.TeeID = teeID.Hex()
 	}
 
 	return report, rec, nil
 }
 
-// Relay is the second half of a cycle: check the report against every store guard
-// and submit it. Split from Collect so a caller holding several machines' reports
-// can order the submissions — observedAt must strictly increase.
+// Relay is the second half of a cycle: check the update against every store
+// guard and submit it. Split from Collect so a caller holding several machines'
+// updates can order the submissions — observedAt must strictly increase.
 func Relay(
-	ctx context.Context, s *support.Support, cfg Config, rec Record, report pricereport.Report,
+	ctx context.Context, s *support.Support, cfg Config, rec Record, report feedupdate.Update,
 ) (Record, error) {
-	if err := Preflight(s, cfg.Store, report); err != nil {
+	if err := Preflight(s, cfg.Store, s.ChainID, report); err != nil {
 		if rj, ok := AsRejection(err); ok {
 			rec.SubmitOutcome = rj.Guard
 			return finish(ctx, s, cfg, rec, classifyRejection(rj, report), err)
@@ -252,6 +229,8 @@ func finish(
 }
 
 // pollTargets is where the result might be, most likely first and deduplicated.
+// Every reachable machine is a candidate: the registry picks which one serves the
+// instruction, and only that machine's own proxy holds the result.
 func (c Config) pollTargets() []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, 1+len(c.ResultProxies))
@@ -267,18 +246,11 @@ func (c Config) pollTargets() []string {
 	return out
 }
 
-// targetSuffix names the machine a cycle addressed, when it addressed one.
-func targetSuffix(cfg Config) string {
-	if cfg.TeeID == (common.Address{}) {
-		return ""
-	}
-	return " to " + cfg.TeeID.Hex()
-}
-
 // classifyRejection separates the one benign store guard from the rest.
-// NotNewer fires both when a keeper loses a race and when its own report was
-// stale; comparing against the store's stamp tells those apart.
-func classifyRejection(rj *Rejection, r pricereport.Report) Outcome {
+// NotNewer fires both when a keeper loses a race and when its own update was
+// stale; comparing against the store's stamp tells those apart. TooOld and
+// maxFutureSkew are gone — the only time rule left is strict monotonicity.
+func classifyRejection(rj *Rejection, r feedupdate.Update) Outcome {
 	if rj.Guard != "NotNewer" {
 		return OutcomeRejected
 	}
@@ -288,8 +260,8 @@ func classifyRejection(rj *Rejection, r pricereport.Report) Outcome {
 	return OutcomeStaleSubmission
 }
 
-func submit(ctx context.Context, s *support.Support, cfg Config, r pricereport.Report) (*types.Transaction, error) {
-	store, err := usdxstore.NewUsdxPriceStore(cfg.Store, s.ChainClient)
+func submit(ctx context.Context, s *support.Support, cfg Config, r feedupdate.Update) (*types.Transaction, error) {
+	store, err := teeoraclestore.NewIITeeOracleFeedStoreTransactor(cfg.Store, s.ChainClient)
 	if err != nil {
 		return nil, errors.Errorf("binding the store: %s", err)
 	}
@@ -299,9 +271,20 @@ func submit(ctx context.Context, s *support.Support, cfg Config, r pricereport.R
 	}
 	opts.Context = ctx
 
-	tx, err := store.SubmitPrice(opts, r.Body, r.Signature)
+	tx, err := store.SubmitFeedUpdate(opts,
+		teeoraclestore.ITeeOracleFeedStoreFeedUpdate{
+			ExtensionId:   r.ExtensionID,
+			FeedId:        r.FeedID,
+			Value:         r.Value,
+			Decimals:      r.Decimals,
+			ObservedAt:    r.ObservedAt,
+			EndpointsHash: r.EndpointsHash,
+			AdminsHash:    r.AdminsHash,
+		},
+		teeoraclestore.Signature{V: r.V, R: r.R, S: r.S},
+	)
 	if err != nil {
-		return nil, errors.Errorf("submitPrice rejected before broadcast: %s", err)
+		return nil, errors.Errorf("submitFeedUpdate rejected before broadcast: %s", err)
 	}
 	return tx, nil
 }
@@ -317,81 +300,10 @@ func waitMined(ctx context.Context, s *support.Support, tx *types.Transaction, t
 	if receipt.Status != types.ReceiptStatusSuccessful {
 		// Preflight passed, so this is a race that landed between the check and
 		// the send, or a guard that changed underneath us.
-		return errors.Errorf("tx %s reverted despite passing preflight — re-run submit-price "+
-			"with -dry-run to see which guard rejects it", tx.Hash().Hex())
+		return errors.Errorf("tx %s reverted despite passing preflight — re-run "+
+			"oracle-cycle.sh --dry-run to see which guard rejects it", tx.Hash().Hex())
 	}
 	return nil
-}
-
-// RequestDirect raises a GET_PRICE action on the proxy and returns the action id.
-// The op pair and envelope are read off the deployed sender rather than restated
-// here, so the two channels cannot drift apart.
-func RequestDirect(ctx context.Context, s *support.Support, cfg Config) (common.Hash, error) {
-	if cfg.Proxy == "" {
-		return common.Hash{}, errors.New("direct mode needs a proxy URL")
-	}
-	if cfg.DirectAPIKey == "" {
-		// A proxy may allow api_key_optional, but silently sending no key to one that
-		// wants it yields a 401 that reads like an outage. Opt out by not using direct.
-		return common.Hash{}, errors.New("direct mode needs an API key (-directApiKey or DIRECT_API_KEY)")
-	}
-
-	req, err := instrutils.ReadGetPriceRequest(s, cfg.Sender)
-	if err != nil {
-		return common.Hash{}, err
-	}
-
-	return postDirectAction(ctx, cfg.Proxy, cfg.DirectAPIKey,
-		req.OPType, req.OPCommand, req.Message)
-}
-
-// postDirectAction is the HTTP half of RequestDirect, split out so it can be
-// exercised without a chain. Takes the op pair loose because GET_READINESS uses
-// the same envelope and has no on-chain counterpart to read constants from.
-func postDirectAction(
-	ctx context.Context, proxyURL, apiKey string,
-	opType, opCommand common.Hash, message []byte,
-) (common.Hash, error) {
-	body, err := json.Marshal(map[string]string{
-		"opType":    opType.Hex(),
-		"opCommand": opCommand.Hex(),
-		"message":   hexutil.Encode(message),
-	})
-	if err != nil {
-		return common.Hash{}, errors.Errorf("encoding the direct instruction: %s", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(proxyURL, "/")+"/direct", bytes.NewReader(body))
-	if err != nil {
-		return common.Hash{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-API-Key", apiKey)
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return common.Hash{}, errors.Errorf("posting to the proxy: %s", err)
-	}
-	defer resp.Body.Close()
-
-	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// The body is the proxy's own error text; 401 here means the API key,
-		// not the extension.
-		return common.Hash{}, errors.Errorf("proxy returned %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(out)))
-	}
-
-	// The proxy echoes the action it enqueued, which is where the id comes from.
-	var action teetypes.Action
-	if err := json.Unmarshal(out, &action); err != nil {
-		return common.Hash{}, errors.Errorf("decoding the proxy response: %s", err)
-	}
-	if action.Data.ID == (common.Hash{}) {
-		return common.Hash{}, errors.New("the proxy returned no action id")
-	}
-	return action.Data.ID, nil
 }
 
 // PollResult waits for a terminal action result on one proxy.
@@ -521,7 +433,7 @@ func sourceHealth(proxyURL string) map[string]string {
 // storeObservedAt reads the store's current stamp. Best-effort: it is a
 // diagnostic on the record, not a control input.
 func storeObservedAt(ctx context.Context, s *support.Support, storeAddr common.Address) uint64 {
-	store, err := usdxstore.NewUsdxPriceStoreCaller(storeAddr, s.ChainClient)
+	store, err := teeoraclestore.NewIITeeOracleFeedStoreCaller(storeAddr, s.ChainClient)
 	if err != nil {
 		return 0
 	}

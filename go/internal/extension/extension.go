@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"strconv"
 	"sync"
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/oracle"
+	"fce-usdx-oracle/internal/report"
 	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -24,11 +26,15 @@ import (
 	"github.com/flare-foundation/tee-node/pkg/processorutils"
 )
 
-// Observer returns a signed price report built from the most recent background
+// Observer returns a signed feed update built from the most recent background
 // observation. Report, not Observe: observing takes longer than the 2s
 // tee-node allows, so it runs on a timer in internal/observe.
 type Observer interface {
-	Report(ctx context.Context, instructionID common.Hash) (oracle.Observation, error)
+	// requestedAt is the requesting instruction's block timestamp. It is a
+	// reference clock, not a value to publish: the observer measures its cached
+	// observation against it and refuses rather than restamping. See
+	// internal/observe.checkClock.
+	Report(ctx context.Context, requestedAt uint64) (oracle.Observation, error)
 
 	// ReadinessReport answers GET_READINESS. It takes the provisioning half because
 	// the observer does not own it, and returns the finished payload: assembling
@@ -56,7 +62,7 @@ type Extension struct {
 	// nil in stub mode, when no oracle configuration was supplied.
 	observer Observer
 
-	// nil in stub mode. When set, USDX_CONFIG is routed to it.
+	// nil in stub mode. When set, the provisioning commands are routed to it.
 	provisioner Provisioner
 
 	lastPrice      string
@@ -85,7 +91,7 @@ func NewWithProvisioner(
 	return newExtension(extensionPort, signPort, observer, provisioner)
 }
 
-// NewStub answers GET_PRICE with an unsigned $1.00, for
+// NewStub answers GET_FEED with an unsigned $1.00, for
 // scripts/test-conformance.sh, which runs the extension with no tee-node, no
 // chain and no credentials. It must never be called outside that harness.
 func NewStub(extensionPort, signPort int) *Extension {
@@ -165,8 +171,9 @@ func parseActionData(action teetypes.Action) (*instruction.DataFixed, error) {
 		return nil, err
 	}
 
-	// No on-chain instruction behind it, so the proxy's action id is the correlator.
-	// Never zero: the store records it as observedAtInstructionID.
+	// No on-chain instruction behind it, so the proxy's action id is the
+	// correlator. The feed store no longer records one at all — GET_READINESS
+	// still binds it, which is why it is carried here.
 	return &instruction.DataFixed{
 		InstructionID:   action.Data.ID,
 		OPType:          di.OPType,
@@ -181,32 +188,33 @@ func (e *Extension) processAction(action teetypes.Action) (int, []byte) {
 		return http.StatusBadRequest, []byte(fmt.Sprintf("decoding fixed data: %v", err))
 	}
 
-	switch {
-	case dataFixed.OPType == teeutils.ToHash(config.OPTypeUsdxOracle):
-		return e.processUsdxOracle(action, dataFixed)
-
-	case dataFixed.OPType == teeutils.ToHash(config.OPTypeUsdxConfig):
-		return e.processUsdxConfig(action, dataFixed)
-
-	default:
+	if dataFixed.OPType != teeutils.ToHash(config.OPTypeTeeOracle) {
 		return http.StatusNotImplemented, []byte(fmt.Sprintf(
 			"unsupported op type: received %s, expected %s (%s)",
-			dataFixed.OPType.Hex(), teeutils.ToHash(config.OPTypeUsdxOracle).Hex(), config.OPTypeUsdxOracle,
+			dataFixed.OPType.Hex(), teeutils.ToHash(config.OPTypeTeeOracle).Hex(), config.OPTypeTeeOracle,
 		))
 	}
+	return e.processTeeOracle(action, dataFixed)
 }
 
-func (e *Extension) processUsdxOracle(action teetypes.Action, df *instruction.DataFixed) (int, []byte) {
+// processTeeOracle routes every command this extension serves. One op type
+// covers all of them upstream, so the switch below is the whole routing table
+// and each arm's action-type guard is the only fence left between a
+// permissionless read and a governance-published write. There is deliberately
+// no default arm that accepts both channels: an unrecognised command is a 501,
+// and a recognised one arriving over the wrong channel is a refusal.
+func (e *Extension) processTeeOracle(action teetypes.Action, df *instruction.DataFixed) (int, []byte) {
 	switch {
-	case df.OPCommand == teeutils.ToHash(config.OPCommandGetPrice):
-		// Valid over BOTH channels, unlike the USDX_CONFIG commands: GET_PRICE grants
-		// nothing, and the store checks the signature however it was requested. Listed
-		// explicitly so no future action type quietly acquires a signed price.
-		if action.Data.Type != teetypes.Instruction && action.Data.Type != teetypes.Direct {
+	case df.OPCommand == teeutils.ToHash(config.OPCommandGetFeed):
+		// Instruction only. An update is requested through requestFeedUpdate() on
+		// the on-chain sender, which pays the registry fee and has the cosigning
+		// quorum behind it; the direct channel would hand the same signed update
+		// to anyone holding the proxy API key, for free and off the record.
+		if action.Data.Type != teetypes.Instruction {
 			return respond(e, action, df, failure.WrongActionType)
 		}
 
-		ar := e.processGetPrice(action, df)
+		ar := e.processGetFeed(action, df)
 		b, _ := json.Marshal(ar)
 		return http.StatusOK, b
 
@@ -221,30 +229,67 @@ func (e *Extension) processUsdxOracle(action teetypes.Action, df *instruction.Da
 		b, _ := json.Marshal(ar)
 		return http.StatusOK, b
 
+	// The provisioning commands. Their guards live with their handlers in
+	// config_handler.go, one per command.
+	case df.OPCommand == teeutils.ToHash(config.OPCommandSetEndpoints):
+		if e.provisioner == nil {
+			return respond(e, action, df, failure.NotConfigured)
+		}
+		return e.processSetEndpoints(action, df)
+
+	case df.OPCommand == teeutils.ToHash(config.OPCommandSetAdmins):
+		if e.provisioner == nil {
+			return respond(e, action, df, failure.NotConfigured)
+		}
+		return e.processSetAdmins(action, df)
+
+	case df.OPCommand == teeutils.ToHash(config.OPCommandSetSecret):
+		if e.provisioner == nil {
+			return respond(e, action, df, failure.NotConfigured)
+		}
+		return e.processSetSecret(action, df)
+
 	default:
 		return http.StatusNotImplemented, []byte(fmt.Sprintf(
-			"unsupported op command: received %s, expected %s (%s)",
+			"unsupported op command: received %s, expected one of [%s (%s), %s (%s), %s (%s), %s (%s), %s (%s)]",
 			df.OPCommand.Hex(),
-			teeutils.ToHash(config.OPCommandGetPrice).Hex(), config.OPCommandGetPrice,
+			teeutils.ToHash(config.OPCommandGetFeed).Hex(), config.OPCommandGetFeed,
+			teeutils.ToHash(config.OPCommandGetReadiness).Hex(), config.OPCommandGetReadiness,
+			teeutils.ToHash(config.OPCommandSetEndpoints).Hex(), config.OPCommandSetEndpoints,
+			teeutils.ToHash(config.OPCommandSetAdmins).Hex(), config.OPCommandSetAdmins,
+			teeutils.ToHash(config.OPCommandSetSecret).Hex(), config.OPCommandSetSecret,
 		))
 	}
 }
 
-// processGetPrice signs the latest observation and returns the payload. Fails
+// processGetFeed signs the latest observation and returns the payload. Fails
 // closed: never guesses, never falls back to a cached price. A frozen feed with
 // an ageing timestamp is the designed failure mode.
-func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
-	// Exactly the pinned envelope, so an unrecognised version is refused rather than
-	// guessed at. Nothing about it is echoed back: ActionResult.Log is public.
-	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.GetPriceRequestV1 {
+func (e *Extension) processGetFeed(action teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
+	// The request names a feed, because one sender serves every feed of its
+	// extension. Anything that is not exactly one ABI-encoded FeedUpdateRequest
+	// is refused rather than guessed at, and nothing about it is echoed back:
+	// ActionResult.Log is public.
+	feedID, reqErr := report.DecodeFeedRequest(df.OriginalMessage)
+	if reqErr != nil {
+		return e.fail(action, df, asFailure(reqErr))
+	}
+	// Refused here rather than observed and signed. An update naming another feed
+	// would be rejected by that feed's store anyway, but only after this machine
+	// had spent an observation on it and published the answer to a public log.
+	if feedID != config.FeedID {
 		return e.fail(action, df, failure.UnexpectedPayload)
 	}
 
 	if e.observer == nil {
-		return e.stubPrice(action, df)
+		return e.stubFeed(action, df)
 	}
 
-	obs, err := e.observer.Report(context.Background(), df.InstructionID)
+	// df.Timestamp is the block timestamp of the instruction event, cosigned by
+	// the data-provider quorum along with the rest of DataFixed. The observer
+	// treats it as the clock this machine is checked against; it never becomes
+	// the update's observedAt, which must stay the moment the inputs were read.
+	obs, err := e.observer.Report(context.Background(), df.Timestamp)
 
 	// Health is reported either way: on failure it is what tells an operator
 	// WHICH source broke.
@@ -257,7 +302,7 @@ func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.Data
 	}
 
 	e.mu.Lock()
-	e.lastPrice = obs.Price.String()
+	e.lastPrice = strconv.FormatInt(int64(obs.Value), 10)
 	e.lastDecimals = obs.Decimals
 	e.lastObservedAt = obs.ObservedAt
 	e.updateCount++
@@ -273,8 +318,8 @@ func (e *Extension) processGetPrice(action teetypes.Action, df *instruction.Data
 func (e *Extension) processGetReadiness(
 	action teetypes.Action, df *instruction.DataFixed,
 ) teetypes.ActionResult {
-	// Same strictness as GET_PRICE: the pinned envelope or nothing, and neither
-	// the length nor the content is echoed back into the public log.
+	// The pinned envelope or nothing, and neither the length nor the content is
+	// echoed back into the public log.
 	if len(df.OriginalMessage) != 1 || df.OriginalMessage[0] != config.ReadinessRequestV1 {
 		return e.fail(action, df, failure.UnexpectedPayload)
 	}
@@ -294,9 +339,9 @@ func (e *Extension) processGetReadiness(
 	return buildResult(action, df, data, 1, nil)
 }
 
-// stubPrice returns an unsigned $1.00 so the wire contract can be exercised
+// stubFeed returns an unsigned $1.00 so the wire contract can be exercised
 // without credentials. Only reachable when no observer is configured.
-func (e *Extension) stubPrice(action teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
+func (e *Extension) stubFeed(action teetypes.Action, df *instruction.DataFixed) teetypes.ActionResult {
 	price := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(config.PriceDecimals)), nil)
 
 	resp := types.GetPriceResponse{
@@ -309,7 +354,7 @@ func (e *Extension) stubPrice(action teetypes.Action, df *instruction.DataFixed)
 	// vocabulary: the uniform rule is that no raw error ever reaches Log.
 	data, err := json.Marshal(resp)
 	if err != nil {
-		logger.Errorf("encoding GET_PRICE response: %v", err)
+		logger.Errorf("encoding GET_FEED response: %v", err)
 		return e.fail(action, df, failure.Internal)
 	}
 

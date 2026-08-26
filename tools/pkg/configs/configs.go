@@ -92,6 +92,6 @@ func ResolveContract(explicit, addressesFile, name string) (common.Address, erro
 		}
 	}
 	return common.Address{}, errors.Errorf(
-		"no %s entry in %s — pass the address explicitly, or run extension-setup.sh to deploy it",
+		"no %s entry in %s — pass the address explicitly with the -a/-store flag",
 		name, addressesFile)
 }

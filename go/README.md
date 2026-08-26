@@ -2,7 +2,7 @@
 
 The default implementation. Selected with `LANGUAGE=go` in `.env` (also the fallback when `LANGUAGE` is unset).
 
-Go is the only language that can embed tee-node as a **library**, so this image runs a single static binary on a distroless base: ~22 MB, and bit-for-bit reproducible across machines. Every other language runs tee-node as a separate process. See [../docs/languages.md](../docs/languages.md) for the trade-offs.
+This implementation embeds tee-node as a **library**, so the image runs a single static binary on a distroless base: ~22 MB, and bit-for-bit reproducible across machines (see [../REPRODUCIBILITY.md](../REPRODUCIBILITY.md)).
 
 ## Layout
 
@@ -40,8 +40,9 @@ pkg/
 written up in [../docs/usdx-oracle-findings.md](../docs/usdx-oracle-findings.md) §22–23:
 
 - **An instruction's message may not be empty.** The registry rejects it with `MessageEmpty()`.
-  GET_PRICE carries a one-byte envelope, `config.GetPriceRequestV1`, and the handler requires
-  exactly that.
+  `GET_FEED` carries an ABI-encoded `FeedUpdateRequest` naming the feed, and `GET_READINESS`
+  carries the one-byte envelope `config.ReadinessRequestV1`; the handler requires exactly those
+  shapes and rejects anything else.
 - **A handler has 2 seconds to answer.** tee-node's client timeout is a const in its internal
   package. Anything slower must happen off the request path — which is what `internal/observe`
   is: it observes on a timer, and the handler only signs.
@@ -69,17 +70,17 @@ EXTENSION_PORT=8080 go run ./cmd
 1. Add the constants to `internal/config/config.go`
 2. Add request/response structs to `pkg/types/types.go`
 3. Add a `case` to `processAction` and write the handler in `internal/extension/extension.go`
-4. Mirror the `bytes32` constants and a send function in `../contracts/InstructionSender.sol`
-
-Full walkthrough: [../docs/extension-guide.md](../docs/extension-guide.md). Or run the `/create-extension` skill, which does the language dispatch for you.
+4. The on-chain entry point is the upstream `TeeOracleInstructionsSender`; its interface is
+   vendored under `../contracts/interfaces/` — nothing is deployed from this repo
 
 ## Things specific to this implementation
 
-**You must lock.** `Extension` holds mutable state guarded by `e.mu`. Unlike the Python and TypeScript ports, the framework does not serialize handler calls for you — `actionHandler` may run concurrently.
+**You must lock.** `Extension` holds mutable state guarded by `e.mu`; the framework does not serialize handler calls for you — `actionHandler` may run concurrently.
 
 **`buildResult` owns the envelope.** Return through it rather than constructing an `ActionResult` by hand; it sets the `log` values the wire contract requires.
 
-**ABI payloads** use `structs.DecodeTo` with an `abi.Argument` declared in `pkg/types/types.go` — see `SayGoodbyeMessageArg`.
+**ABI payloads** are decoded with the `abi.Arguments` declared in `internal/runtimecfg/abi.go`
+(endpoints/admins) and the feed-update request decoder in `internal/report`.
 
 ## Verify
 
@@ -87,4 +88,4 @@ Full walkthrough: [../docs/extension-guide.md](../docs/extension-guide.md). Or r
 ./scripts/test-conformance.sh go
 ```
 
-Replays the golden wire fixtures against this implementation. Run `--all` before committing a handler change, so Go, Python and TypeScript stay byte-identical.
+Replays the golden wire fixtures against this implementation. Run it before committing a handler change.

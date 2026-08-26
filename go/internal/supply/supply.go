@@ -1,21 +1,18 @@
 // Package supply reads USDX circulating supply across chains via RPC.
 //
-// Providers disagree about what "latest" resolves to, so the read is pinned to an
-// explicit block: ask every provider for its head, take the Quorum-th HIGHEST, then
-// query every provider at that exact number and require Quorum IDENTICAL results for a
-// UNIQUELY most-common answer. Identical, not median, because a read at a fixed block
-// is deterministic; unique, because a tie would otherwise be settled by the order the
-// providers happen to be listed in.
+// To resolve different "latest" heads from providers, we pin to an explicit block:
+//  1. Ask each provider for its head.
+//  2. Take the Quorum-th highest block.
+//  3. Query all providers at that block and require Quorum identical results for a
+//     uniquely most-common answer (not median).
 //
-// The Quorum-th highest rather than the minimum: one provider answering with a head
-// from two weeks ago used to drag the minimum back with it, and every honest provider
-// then corroborated the stale supply at that block. MaxBlockAge covers what head
-// selection cannot — a single-provider chain, or Quorum equal to the provider count.
+// Using the Quorum-th highest avoids stale data from lagging providers. MaxBlockAge
+// covers cases head selection alone cannot, like single-provider chains or Quorum
+// equal to the number of providers.
 //
-// Supply is the plain sum of totalSupply() over the pinned contracts, which is correct
-// only because the set matches the basis Hex reports reserves on.
+// Supply is the sum of totalSupply() over the pinned contracts, matching Hex’s reserves basis.
 //
-// Rationale §6 has the long form; findings §24 has the incident.
+// See rationale §6 for details and findings §24 for the relevant incident.
 package supply
 
 import (

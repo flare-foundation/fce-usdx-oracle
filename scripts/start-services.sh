@@ -23,7 +23,8 @@
 #
 # Prerequisites:
 #   - Infrastructure running (Hardhat, indexer, Redis, normal TEE + proxy)
-#   - config/extension.env exists (created by pre-build.sh), OR EXTENSION_ID is set
+#   - EXTENSION_ID is set (defaults to reserved id 1; config/extension.env
+#     written by full-setup.sh)
 #   - Redis will be started on :6382 automatically (separate from infrastructure Redis)
 set -euo pipefail
 
@@ -61,7 +62,9 @@ if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
 fi
 
-EXTENSION_ID="${EXTENSION_ID:-}"
+# Reserved id 1 (pinned in go/internal/config); the upstream sender/store are
+# not deployed locally. May be overridden for a test extension on another id.
+EXTENSION_ID="${EXTENSION_ID:-1}"
 PROXY_PRIVATE_KEY="${PROXY_PRIVATE_KEY:-983760a4ebf75b2ac3a93531168a0f225d01e5dc6e3568adbd46233ba1fb4fa4}"
 LOCAL_MODE="${LOCAL_MODE:-true}"
 
@@ -78,7 +81,7 @@ case "$CHAIN" in
     *) die "Unknown --chain value: $CHAIN (valid: local, coston, coston2)" ;;
 esac
 
-[[ -n "$EXTENSION_ID" ]] || die "EXTENSION_ID not set. Run pre-build.sh first or set it manually."
+[[ -n "$EXTENSION_ID" ]] || die "EXTENSION_ID is empty"
 
 # --- Resolve LANGUAGE by directory convention ---------------------------------
 # Discovery is driven by <LANGUAGE>/language.env; there is deliberately no

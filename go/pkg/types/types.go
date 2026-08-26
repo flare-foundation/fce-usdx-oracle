@@ -64,7 +64,7 @@ type Readiness struct {
 
 // ReadinessReport is the JSON payload of a signed GET_READINESS answer — see
 // internal/readiness. PUBLIC on the same terms as State, and deliberately not a copy
-// of it: State's counters come from the GET_PRICE handler, these from the poller.
+// of it: State's counters come from the GET_FEED handler, these from the poller.
 type ReadinessReport struct {
 	// --- provisioning, from the runtime configuration store ---
 	Readiness Readiness `json:"readiness"`
@@ -80,7 +80,7 @@ type ReadinessReport struct {
 	// freezing, not erroring.
 	ObservationAge uint64 `json:"observationAge"`
 
-	// WouldSign reports whether a GET_PRICE issued now would succeed — the
+	// WouldSign reports whether a GET_FEED issued now would succeed — the
 	// newest observation exists and is inside MaxObservationAge. A keeper can
 	// skip a cycle it would otherwise pay for.
 	WouldSign bool `json:"wouldSign"`

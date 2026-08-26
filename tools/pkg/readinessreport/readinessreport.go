@@ -17,9 +17,9 @@
 // answered a port — which is the entire reason this exists instead of reading
 // GET /state over the network.
 //
-// It remains a SELF-REPORT. A machine says what it believes; a price it lands
-// says what the chain accepted, because UsdxPriceStore verified the hashes
-// before taking it. Use readiness to find problems early and to decide whether
+// It remains a SELF-REPORT. A machine says what it believes; a feed update it
+// lands says what the chain accepted, because the feed store verified the
+// hashes before taking it. Use readiness to find problems early and to decide whether
 // a cycle is worth paying for, never as the authority on whether a machine's
 // prices will be accepted.
 package readinessreport

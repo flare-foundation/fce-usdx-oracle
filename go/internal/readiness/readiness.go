@@ -3,26 +3,22 @@
 //	body = abi.encode(domain, instructionId, timestamp, payloadHash)
 //	data = abi.encode(body, signature, payload)
 //
-// The payload is JSON — a pkg/types.ReadinessReport — carried alongside the
-// body rather than inside it, because it is variable-length and read by
-// operators rather than by a contract. The body commits to it by hash, so the
-// signature covers the payload exactly as received: a consumer re-hashes the
-// bytes it was given and compares, never re-serialising, since json.Marshal
-// will not reproduce byte-identical input.
+// The payload is JSON (pkg/types.ReadinessReport), included alongside the body
+// for flexibility, not within it—it's variable-length and for operators, not contracts.
+// The body includes a hash of the payload, so the signature covers the exact bytes
+// received; consumers verify by comparing hashes, not re-marshalling.
 //
-// # Why this is signed at all
+// # Why sign this?
 //
-// The machine's own account of itself is already served unsigned on GET /state.
-// Signing is the entire difference between "whatever answered that port says
-// so" and "the enclave says so", which is the same standard a price is held to.
-// Without it there would be no reason to build this instead of publishing the
-// extension's port.
+// Unsigned state is already available via GET /state. Signing is what distinguishes
+// "what this machine says" from "what the enclave says," the same standard as price
+// data. Otherwise, exposing the extension's port would suffice.
 //
-// # Why the domain differs from the price report
+// # Why a separate domain?
 //
-// A distinct domain means a readiness answer can never be reinterpreted as a
-// price, or the reverse, however the bytes are routed. The identity key signs
-// both, so separation has to come from the payload.
+// Different domains prevent readiness answers from being misinterpreted as prices,
+// or vice versa, even if routed incorrectly. The same key signs both, so domain
+// separation must be at the payload level.
 package readiness
 
 import (

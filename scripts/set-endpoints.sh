@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# set-endpoints.sh — send a USDX_CONFIG/SET_ENDPOINTS instruction to a running
+# set-endpoints.sh — send a TEE_ORACLE/SET_ENDPOINTS instruction to a running
 # extension, without the chain.
 #
 # This is the same payload setEndpoints() will carry on-chain, delivered
@@ -25,9 +25,19 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 [[ -f "$CONFIG" ]] || { echo -e "${RED}no such config: $CONFIG${NC}" >&2; exit 1; }
 jq empty "$CONFIG" 2>/dev/null || { echo -e "${RED}$CONFIG is not valid JSON${NC}" >&2; exit 1; }
 
-# Wrap the config in the DataFixed envelope tee-node would deliver. The action
+# Wrap the message in the DataFixed envelope tee-node would deliver. The action
 # type MUST be "instruction": SET_ENDPOINTS is refused over the direct channel,
-# because on-chain its authorisation is the owner-only check in the sender.
+# because on-chain its authorisation is the onlyGovernance check in the sender.
+#
+# NOTE: this is a DEV HARNESS. On-chain, setEndpoints() ABI-encodes an
+# Endpoints{version, feedId, groups} wrapper itself and dispatches that as the
+# message. A hand-built ABI payload here would drift from the contract's — for
+# the real path use tools/cmd/send-endpoints, which encodes through
+# tools/pkg/oraclepayload. This script exists to exercise the extension's
+# PROVISIONING VALIDATION against arbitrary bytes; it hands the raw JSON
+# through as `originalMessage`, which the extension will (correctly) reject
+# until it ABI-decodes, so it is useful only against a build that still accepts
+# JSON. Prefer send-endpoints for anything real.
 BODY="$(CONFIG="$CONFIG" python3 - <<'PY'
 import json, os
 
@@ -41,7 +51,7 @@ data_fixed = {
     "teeId": "0x" + "22" * 20,
     "timestamp": 1700000000,
     "rewardEpochId": 0,
-    "opType": b32("USDX_CONFIG"),
+    "opType": b32("TEE_ORACLE"),
     "opCommand": b32("SET_ENDPOINTS"),
     "cosigners": [],
     "cosignersThreshold": 0,

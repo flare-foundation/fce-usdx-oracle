@@ -54,10 +54,17 @@ func stubPoller(t *testing.T, signer oracle.Signer) *Poller {
 	}
 }
 
+// testRequestedAt is the requesting block's timestamp for a well-timed request:
+// the same instant stubPoller's clock is frozen at, which is what an honest
+// machine answering promptly would see.
+const testRequestedAt uint64 = 1_800_000_000
+
 func observationAt(unix uint64) oracle.Observation {
 	return oracle.Observation{
-		Price:         big.NewInt(100_000_000),
+		Value:         100_000_000,
 		Decimals:      8,
+		ExtensionID:   big.NewInt(66281),
+		FeedID:        [21]byte{0x20, 'U', 'S', 'D', 'X'},
 		ObservedAt:    unix,
 		EndpointsHash: common.HexToHash("0x9f3c"),
 		AdminsHash:    common.HexToHash("0x5e21"),
@@ -117,8 +124,8 @@ func TestLatest_FailsClosedWhenStale(t *testing.T) {
 				if err != nil {
 					t.Fatalf("expected the observation to be served, got %v", err)
 				}
-				if got.Price == nil {
-					t.Fatal("served an observation with no price")
+				if got.Value == 0 {
+					t.Fatal("served an observation with no value")
 				}
 				return
 			}
@@ -142,8 +149,8 @@ func TestRecord_FailureKeepsTheLastGoodObservation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a single failure must not withdraw a fresh observation: %v", err)
 	}
-	if got.Price.Cmp(good.Price) != 0 {
-		t.Errorf("price = %s, want %s", got.Price, good.Price)
+	if got.Value != good.Value {
+		t.Errorf("value = %d, want %d", got.Value, good.Value)
 	}
 
 	// Health, though, must reflect the failed attempt — it is what tells an
@@ -158,16 +165,17 @@ func TestRecord_FailureKeepsTheLastGoodObservation(t *testing.T) {
 	}
 }
 
-// Report binds the cached observation to the requesting instruction. The
-// signature must cover that id, or a report could be replayed against a
-// different request.
-func TestReport_SignsTheCachedObservationForThisInstruction(t *testing.T) {
+// Report signs the cached observation. It is no longer bound to the requesting
+// instruction: the feed store dropped the instructionId field, so two reports
+// off one observation are byte-identical by design. What stops a captured
+// update being replayed is the store's strictly increasing observedAt plus the
+// extension and feed ids inside the signed payload.
+func TestReport_SignsTheCachedObservation(t *testing.T) {
 	signer := &fakeSigner{}
 	p := stubPoller(t, signer)
 	p.record(observationAt(1_800_000_000), nil)
 
-	id := common.HexToHash("0xdeadbeef")
-	got, err := p.Report(context.Background(), id)
+	got, err := p.Report(context.Background(), testRequestedAt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -178,9 +186,10 @@ func TestReport_SignsTheCachedObservationForThisInstruction(t *testing.T) {
 		t.Fatalf("expected exactly one signing call, got %d", signer.count())
 	}
 
-	// Two reports off one observation must differ only by instruction id, and
-	// must NOT re-observe: the figures and the timestamp are the cached ones.
-	second, err := p.Report(context.Background(), common.HexToHash("0xfeedface"))
+	// A second report must NOT re-observe: the figures and the timestamp are the
+	// cached ones, so the payload is identical. Signing that resampled would put
+	// a fresh timestamp on stale inputs.
+	second, err := p.Report(context.Background(), testRequestedAt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -188,8 +197,8 @@ func TestReport_SignsTheCachedObservationForThisInstruction(t *testing.T) {
 		t.Errorf("observedAt moved between reports (%d then %d); signing must not resample",
 			got.ObservedAt, second.ObservedAt)
 	}
-	if string(second.Data) == string(got.Data) {
-		t.Error("two instructions produced an identical payload; the id is not bound in")
+	if string(second.Data) != string(got.Data) {
+		t.Error("two reports off one observation differ; nothing request-specific may enter the payload")
 	}
 }
 
@@ -199,7 +208,7 @@ func TestReport_DoesNotSignAStaleObservation(t *testing.T) {
 	p := stubPoller(t, signer)
 	p.record(observationAt(uint64(time.Unix(1_800_000_000, 0).Add(-time.Hour).Unix())), nil)
 
-	if _, err := p.Report(context.Background(), common.HexToHash("0x1")); !errors.Is(err, failure.ObservationStale) {
+	if _, err := p.Report(context.Background(), testRequestedAt); !errors.Is(err, failure.ObservationStale) {
 		t.Fatalf("expected failure.ObservationStale, got %v", err)
 	}
 	if signer.count() != 0 {
@@ -213,7 +222,7 @@ func TestReport_SigningFailurePublishesNothing(t *testing.T) {
 	p := stubPoller(t, &fakeSigner{err: failure.SignUnavailable})
 	p.record(observationAt(1_800_000_000), nil)
 
-	got, err := p.Report(context.Background(), common.HexToHash("0x1"))
+	got, err := p.Report(context.Background(), testRequestedAt)
 	if !errors.Is(err, failure.SignUnavailable) {
 		t.Fatalf("expected failure.SignUnavailable, got %v", err)
 	}
@@ -305,5 +314,103 @@ func TestLatest_ErrorsAreVocabulary(t *testing.T) {
 	}
 	if !errors.Is(err, failure.Internal) {
 		t.Errorf("expected a foreign error to become failure.Internal, got %v", err)
+	}
+}
+
+// --- the requesting block as reference clock ---
+
+// The local staleness bound is measured against the same clock that stamped the
+// observation, so a machine running slow passes it no matter how far off it is.
+// The requesting block's timestamp is cosigned, so this one it cannot pass.
+func TestReport_RefusesWhenTheClockIsBehindChain(t *testing.T) {
+	signer := &fakeSigner{}
+	p := stubPoller(t, signer)
+
+	// Freshly observed by the local clock — Latest is satisfied and would sign.
+	p.record(observationAt(testRequestedAt), nil)
+
+	// Chain says the request came a second past maxAge after that observation,
+	// which on an honest clock is impossible: the request block is in the past.
+	late := testRequestedAt + uint64((10 * time.Minute).Seconds()) + 1
+
+	got, err := p.Report(context.Background(), late)
+	if !errors.Is(err, failure.ClockBehindChain) {
+		t.Fatalf("expected failure.ClockBehindChain, got %v", err)
+	}
+	if signer.count() != 0 {
+		t.Errorf("a clock-skewed observation reached the signer %d times", signer.count())
+	}
+	if len(got.Data) != 0 {
+		t.Error("a refused report must carry no payload")
+	}
+	// A clock fault says nothing about the upstreams, and an operator reading the
+	// refusal needs to see they are fine.
+	if got.Health["hex_bonds"] != "ok" {
+		t.Errorf("health did not survive the refusal: %v", got.Health)
+	}
+}
+
+// The bound is exactly maxAge, inclusive. Pinned because an off-by-one here
+// refuses a request that the store would have accepted.
+func TestReport_ClockBoundIsInclusive(t *testing.T) {
+	maxAge := 10 * time.Minute
+
+	atLimit := checkClock(testRequestedAt, testRequestedAt+uint64(maxAge.Seconds()), maxAge)
+	if atLimit != nil {
+		t.Errorf("an observation exactly maxAge before the request was refused: %v", atLimit)
+	}
+
+	past := checkClock(testRequestedAt, testRequestedAt+uint64(maxAge.Seconds())+1, maxAge)
+	if !errors.Is(past, failure.ClockBehindChain) {
+		t.Errorf("one second past maxAge: expected ClockBehindChain, got %v", past)
+	}
+}
+
+// The load-bearing asymmetry. Delivery is fire-and-forget, so an instruction may
+// sit in a queue while the poller keeps observing; the observation is then NEWER
+// than the block that asked for it, by however long the relay took. That is
+// ordinary and must sign. Bounding this direction too would have turned every
+// slow relay into a refused request.
+func TestReport_LateDeliveryStillSigns(t *testing.T) {
+	signer := &fakeSigner{}
+	p := stubPoller(t, signer)
+	p.record(observationAt(testRequestedAt), nil)
+
+	// Requested an hour ago, delivered only now.
+	stale := testRequestedAt - uint64(time.Hour.Seconds())
+
+	if _, err := p.Report(context.Background(), stale); err != nil {
+		t.Fatalf("a late-delivered instruction was refused: %v", err)
+	}
+	if signer.count() != 1 {
+		t.Errorf("expected one signing call, got %d", signer.count())
+	}
+}
+
+// A zero timestamp would disable the bound silently, so it is refused rather
+// than treated as "no opinion". GET_FEED is instruction-only, so a request that
+// carries no block timestamp is malformed, not merely unusual.
+func TestReport_RefusesAnInstructionWithNoTimestamp(t *testing.T) {
+	signer := &fakeSigner{}
+	p := stubPoller(t, signer)
+	p.record(observationAt(testRequestedAt), nil)
+
+	if _, err := p.Report(context.Background(), 0); !errors.Is(err, failure.MissingRequestTime) {
+		t.Fatalf("expected failure.MissingRequestTime, got %v", err)
+	}
+	if signer.count() != 0 {
+		t.Errorf("a request with no timestamp reached the signer %d times", signer.count())
+	}
+}
+
+// The local bound still runs first: when the upstreams have stopped, the answer
+// must be ObservationStale, not a clock fault. The two are routed differently —
+// one is an upstream outage, the other is this machine's host.
+func TestReport_LocalStalenessIsReportedAsItself(t *testing.T) {
+	p := stubPoller(t, &fakeSigner{})
+	p.record(observationAt(testRequestedAt-uint64(time.Hour.Seconds())), nil)
+
+	if _, err := p.Report(context.Background(), testRequestedAt); !errors.Is(err, failure.ObservationStale) {
+		t.Fatalf("expected failure.ObservationStale, got %v", err)
 	}
 }

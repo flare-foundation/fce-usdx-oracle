@@ -1,6 +1,7 @@
 package oracle
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math/big"
@@ -30,6 +31,11 @@ type fakeChain struct {
 	calls    int      // totalSupply calls served
 	decimals uint8
 	err      error
+
+	// blockTime overrides the pinned block's header timestamp. Zero means "now",
+	// which keeps MaxBlockAge satisfied for the tests that do not care; the ones
+	// that assert observedAt set it to something distinguishable from wall clock.
+	blockTime time.Time
 }
 
 // supplyCalls reports how many totalSupply calls this chain has served.
@@ -49,7 +55,11 @@ func (f *fakeChain) HeaderByNumber(ctx context.Context, n *big.Int) (*types.Head
 	if n != nil {
 		number = new(big.Int).Set(n)
 	}
-	return &types.Header{Number: number, Time: uint64(time.Now().Unix())}, nil
+	stamp := f.blockTime
+	if stamp.IsZero() {
+		stamp = time.Now()
+	}
+	return &types.Header{Number: number, Time: uint64(stamp.Unix())}, nil
 }
 
 func (f *fakeChain) CallContract(ctx context.Context, call ethereum.CallMsg, block *big.Int) ([]byte, error) {
@@ -127,6 +137,14 @@ var testEndpointsHash = common.HexToHash("0x9f3c")
 // testEndpointsHash so a test cannot pass by carrying the wrong one through.
 var testAdminsHash = common.HexToHash("0x5e21")
 
+// The feed this test machine speaks for. Non-zero because the store's sentinels
+// are zero: internal/report refuses to sign an update naming neither.
+var testExtensionID = big.NewInt(66281)
+
+var testFeedID = [21]byte{
+	0x20, 'U', 'S', 'D', 'X', '/', 'U', 'S', 'D',
+}
+
 func testConfig(t *testing.T, chain *fakeChain, bonds, cash *fakeSource) Config {
 	t.Helper()
 	return Config{
@@ -140,6 +158,8 @@ func testConfig(t *testing.T, chain *fakeChain, bonds, cash *fakeSource) Config 
 		}},
 		Bonds:         bonds,
 		Cash:          cashSource(cash),
+		ExtensionID:   testExtensionID,
+		FeedID:        testFeedID,
 		EndpointsHash: testEndpointsHash,
 		AdminsHash:    testAdminsHash,
 	}
@@ -160,16 +180,16 @@ func cashSource(f *fakeSource) backing.Source {
 // request; the arithmetic and the fail-closed rules are identical either way.
 func observe(t *testing.T, cfg Config) (Observation, error) {
 	t.Helper()
-	return observeWith(t, cfg, &fakeSigner{}, common.HexToHash("0xabc"))
+	return observeWith(t, cfg, &fakeSigner{})
 }
 
-func observeWith(t *testing.T, cfg Config, signer Signer, id common.Hash) (Observation, error) {
+func observeWith(t *testing.T, cfg Config, signer Signer) (Observation, error) {
 	t.Helper()
 	obs, err := Observe(context.Background(), cfg)
 	if err != nil {
 		return obs, err
 	}
-	return Sign(context.Background(), signer, obs, id)
+	return Sign(context.Background(), signer, obs)
 }
 
 // --- the single supply pass ---
@@ -199,8 +219,8 @@ func TestObserve_ReadsSupplyOncePerChain(t *testing.T) {
 	// 20620459.685024 / 21620459.685024 = 0.9537475144114222...
 	// truncated at 8 decimals -> 95374751. Verified independently with exact
 	// rational arithmetic, not derived from this implementation.
-	if want := big.NewInt(95_374_751); got.Price.Cmp(want) != 0 {
-		t.Errorf("price = %s, want %s", got.Price, want)
+	if want := int32(95_374_751); got.Value != want {
+		t.Errorf("value = %d, want %d", got.Value, want)
 	}
 }
 
@@ -214,8 +234,8 @@ func TestObserve_StableSupplyGivesPar(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// The production figures from spec §3.0: backing ≥ supply, so par.
-	if want := big.NewInt(100_000_000); got.Price.Cmp(want) != 0 {
-		t.Errorf("price = %s, want %s", got.Price, want)
+	if want := int32(100_000_000); got.Value != want {
+		t.Errorf("value = %d, want %d", got.Value, want)
 	}
 }
 
@@ -282,7 +302,7 @@ func TestObserve_SigningFailurePublishesNothing(t *testing.T) {
 		&fakeSource{name: "hex_cash", amount: "0"},
 	)
 
-	got, err := observeWith(t, cfg, &fakeSigner{err: failure.SignUnavailable}, common.HexToHash("0xabc"))
+	got, err := observeWith(t, cfg, &fakeSigner{err: failure.SignUnavailable})
 	if !errors.Is(err, failure.SignUnavailable) {
 		t.Fatalf("expected SignUnavailable, got %v", err)
 	}
@@ -325,7 +345,7 @@ func TestObserve_SignsTheEncodedBody(t *testing.T) {
 	)
 
 	signer := &fakeSigner{}
-	got, err := observeWith(t, cfg, signer, common.HexToHash("0xdeadbeef"))
+	got, err := observeWith(t, cfg, signer)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -333,28 +353,41 @@ func TestObserve_SignsTheEncodedBody(t *testing.T) {
 	if len(signer.signed) != 1 {
 		t.Fatalf("expected exactly one signing call, got %d", len(signer.signed))
 	}
-	if len(signer.signed[0]) != report.BodyLength {
-		t.Errorf("signed %d bytes, want the %d-byte report body",
-			len(signer.signed[0]), report.BodyLength)
+	// The signer is handed the SignedPayload PREIMAGE, not the feed update and
+	// not the hash: tee-node keccaks what it is given before applying EIP-191.
+	if len(signer.signed[0]) != report.PayloadLength {
+		t.Errorf("signed %d bytes, want the %d-byte SignedPayload preimage",
+			len(signer.signed[0]), report.PayloadLength)
+	}
+	if want, err := report.SigningMessage(report.FeedUpdate{
+		ExtensionID:   testExtensionID,
+		FeedID:        testFeedID,
+		Value:         got.Value,
+		Decimals:      got.Decimals,
+		ObservedAt:    got.ObservedAt,
+		EndpointsHash: testEndpointsHash,
+		AdminsHash:    testAdminsHash,
+	}, config.ChainID); err != nil {
+		t.Fatalf("SigningMessage: %v", err)
+	} else if !bytes.Equal(signer.signed[0], want) {
+		t.Error("the signed message is not the SignedPayload preimage for this observation")
 	}
 
-	body, sig, err := report.DecodeData(got.Data)
+	r, sig, err := report.DecodeData(got.Data)
 	if err != nil {
 		t.Fatalf("DecodeData: %v", err)
 	}
-	if len(sig) != 65 {
-		t.Errorf("signature length %d, want 65", len(sig))
+	if sig.V != 27 && sig.V != 28 {
+		t.Errorf("signature v = %d, want 27 or 28", sig.V)
 	}
 
-	r, err := report.DecodeBody(body)
-	if err != nil {
-		t.Fatalf("DecodeBody: %v", err)
+	// The update names the exact feed, so it cannot be replayed onto another
+	// feed the same extension serves.
+	if r.ExtensionID.Cmp(testExtensionID) != 0 || r.FeedID != testFeedID {
+		t.Errorf("feed binding = %v/%x", r.ExtensionID, r.FeedID)
 	}
-	if r.InstructionID != common.HexToHash("0xdeadbeef") {
-		t.Errorf("instructionId = %s", r.InstructionID.Hex())
-	}
-	// The signed body commits to the configuration this price was computed
-	// under, so UsdxPriceStore can refuse a machine running something else.
+	// The signed update commits to the configuration this price was computed
+	// under, so the store can refuse a machine running something else.
 	if r.EndpointsHash != testEndpointsHash {
 		t.Errorf("endpointsHash = %s, want %s", r.EndpointsHash.Hex(), testEndpointsHash.Hex())
 	}
@@ -469,15 +502,15 @@ func TestObserve_WithoutCash(t *testing.T) {
 			got, err := observe(t, cfg)
 			if c.want == nil {
 				if !errors.Is(err, failure.BackingUnavailable) {
-					t.Fatalf("expected failure.BackingUnavailable, got price=%v err=%v", got.Price, err)
+					t.Fatalf("expected failure.BackingUnavailable, got value=%d err=%v", got.Value, err)
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if got.Price.Cmp(c.want) != 0 {
-				t.Errorf("price = %s, want %s", got.Price, c.want)
+			if want := int32(c.want.Int64()); got.Value != want {
+				t.Errorf("value = %d, want %d", got.Value, want)
 			}
 		})
 	}
@@ -501,9 +534,9 @@ func TestObserve_WithoutCash_MatchesTheFullObservation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cash=%s: %v", cash, err)
 		}
-		if full.Price.Cmp(cashless.Price) != 0 {
-			t.Errorf("cash=%s: full observation gives %s, cash-less path published %s",
-				cash, full.Price, cashless.Price)
+		if full.Value != cashless.Value {
+			t.Errorf("cash=%s: full observation gives %d, cash-less path published %d",
+				cash, full.Value, cashless.Value)
 		}
 	}
 }
@@ -574,5 +607,50 @@ func TestConfigValidate(t *testing.T) {
 				t.Error("expected a config error")
 			}
 		})
+	}
+}
+
+// --- the observation timestamp ---
+
+// observedAt is the HOME CHAIN'S BLOCK TIME, not the enclave's wall clock. The
+// store requires observedAt < block.timestamp strictly and has no skew
+// tolerance since the acceptance window was removed, so a wall-clock stamp
+// would revert TooFarAhead the moment the enclave clock ran fast. An
+// already-mined block's header satisfies the rule by construction.
+func TestObserve_StampsWithTheHomeChainBlockTime(t *testing.T) {
+	// Far enough back that it cannot be confused with time.Now().
+	blockTime := time.Now().Add(-37 * time.Second).Truncate(time.Second)
+
+	chain := &fakeChain{supplies: []string{"1000000"}, decimals: 6, blockTime: blockTime}
+	bonds := &fakeSource{name: "hex_bonds", amount: "1.0"}
+
+	got, err := observe(t, testConfig(t, chain, bonds, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if want := uint64(blockTime.Unix()); got.ObservedAt != want {
+		t.Errorf("observedAt = %d, want the block time %d", got.ObservedAt, want)
+	}
+	// The property the store actually enforces.
+	if got.ObservedAt >= uint64(time.Now().Unix()) {
+		t.Error("observedAt is not strictly in the past")
+	}
+}
+
+// A home chain whose reading carries no usable block time fails the observation
+// rather than stamping the epoch, which the store would reject as NotNewer —
+// after the fee had been paid.
+func TestObserve_FailsClosedWithoutAHomeChainStamp(t *testing.T) {
+	chain := &fakeChain{supplies: []string{"1000000"}, decimals: 6}
+	bonds := &fakeSource{name: "hex_bonds", amount: "1.0"}
+
+	cfg := testConfig(t, chain, bonds, nil)
+	// testConfig builds the single chain as the home chain; renaming it leaves the
+	// observation with no home reading to stamp from.
+	cfg.Chains[0].Name = "not-the-home-chain"
+
+	if _, err := observe(t, cfg); err == nil {
+		t.Fatal("an observation with no home-chain stamp must fail")
 	}
 }

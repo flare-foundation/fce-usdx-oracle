@@ -8,7 +8,7 @@
 # runtime, long after the build. Same for tee-proxy between tools/go.mod and
 # proxy/Dockerfile.
 #
-# Run standalone, or let pre-build.sh invoke it as a pre-flight.
+# Run standalone (full-setup.sh / post-build.sh do not invoke it today).
 #
 # Usage: ./scripts/check-versions.sh
 set -euo pipefail

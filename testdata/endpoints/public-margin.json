@@ -1,25 +1,50 @@
 {
   "flare": {
     "threshold": 2,
-    "providers": [
-      { "url": "https://flare-api.flare.network/ext/C/rpc" },
-      { "url": "https://flare.public-rpc.com" },
-      { "url": "https://flare.rpc.thirdweb.com" }
+    "endpoints": [
+      {
+        "url": "https://flare-api.flare.network/ext/C/rpc"
+      },
+      {
+        "url": "https://flare.public-rpc.com"
+      },
+      {
+        "url": "https://flare.rpc.thirdweb.com"
+      }
     ]
   },
   "ethereum": {
     "threshold": 2,
-    "providers": [
-      { "url": "https://ethereum-rpc.publicnode.com" },
-      { "url": "https://eth.drpc.org" },
-      { "url": "https://eth-mainnet.public.blastapi.io" },
-      { "url": "https://eth.merkle.io" }
+    "endpoints": [
+      {
+        "url": "https://ethereum-rpc.publicnode.com"
+      },
+      {
+        "url": "https://eth.drpc.org"
+      },
+      {
+        "url": "https://eth-mainnet.public.blastapi.io"
+      },
+      {
+        "url": "https://eth.merkle.io"
+      }
     ]
   },
   "songbird": {
     "threshold": 1,
-    "providers": [
-      { "url": "https://songbird-api.flare.network/ext/C/rpc" }
+    "endpoints": [
+      {
+        "url": "https://songbird-api.flare.network/ext/C/rpc"
+      }
+    ]
+  },
+  "hex_cash": {
+    "threshold": 1,
+    "endpoints": [
+      {
+        "urlHash": "0xabababababababababababababababababababababababababababababababab",
+        "secret": "hex_cash_url"
+      }
     ]
   }
 }

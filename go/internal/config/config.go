@@ -2,41 +2,48 @@
 package config
 
 import (
+	"encoding/hex"
+	"math/big"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const (
 	Version = "0.1.0"
 
-	// Must match the bytes32 constants in contracts/InstructionSender.sol exactly.
-	OPTypeUsdxOracle  = "USDX_ORACLE"
-	OPCommandGetPrice = "GET_PRICE"
+	// Must match the upstream sender's bytes32 constants exactly. One op type
+	// covers every command, so the per-command action-type guards in extension.go
+	// are the only fence between permissionless and governance-only commands.
+	OPTypeTeeOracle = "TEE_ORACLE"
 
-	// Direct-only, and with no counterpart in the sender: a status answer is
-	// stale within minutes and not worth a fee. Enforced in extension.go.
+	// Instruction-only: the on-chain path is the permissionless one, and a
+	// fallback path is one nobody notices has broken. Enforced in extension.go.
+	OPCommandGetFeed = "GET_FEED"
+
+	// Direct-only, no counterpart in the sender: a status answer is stale within
+	// minutes and not worth a fee. Enforced in extension.go.
 	OPCommandGetReadiness = "GET_READINESS"
 
-	// SET_ENDPOINTS is instruction-only (its authorisation is the owner-only
-	// check in the on-chain sender); SET_SECRET is direct-only (a ciphertext
-	// on-chain would be permanent and public). Enforced in extension.go.
-	OPTypeUsdxConfig      = "USDX_CONFIG"
+	// SET_ENDPOINTS/SET_ADMINS are instruction-only: the direct channel would skip
+	// the sender's onlyGovernance check. SET_SECRET is direct-only: a ciphertext
+	// on-chain would be permanent and public. Enforced in config_handler.go.
 	OPCommandSetEndpoints = "SET_ENDPOINTS"
 	OPCommandSetAdmins    = "SET_ADMINS"
 	OPCommandSetSecret    = "SET_SECRET"
 
 	TimeoutShutdown = 5 * time.Second
 
-	// The observation needs no input, but the registry rejects an empty message
-	// with MessageEmpty(), so GET_PRICE carries one version byte.
-	GetPriceRequestV1 = byte(0x01)
+	// GET_FEED carries an ABI-encoded FeedUpdateRequest naming the feed (see
+	// report.DecodeFeedRequest); this extension refuses any feed but its own.
 
-	// Same shape for GET_READINESS, and checked just as strictly: a request
-	// that carries anything else is rejected rather than ignored, so no caller
-	// can come to depend on a field the extension silently drops.
+	// Direct-only, so nothing upstream defines its shape. Anything else is
+	// rejected rather than ignored, so no caller depends on a dropped field.
 	ReadinessRequestV1 = byte(0x01)
 
+	// Pinned though the store accepts any scale: every consumer assumes 8. int32
+	// on the wire caps at ~21.47, and internal/report fails closed out of range.
 	PriceDecimals int8 = 8
 )
 
@@ -48,17 +55,16 @@ const (
 	HealthDegraded = "degraded"
 	HealthDown     = "down"
 
-	// An RPC provider that answered but lost the agreement vote. Distinct from
-	// "down" on purpose: a provider returning a WRONG value is a different
-	// problem from one returning nothing, and quorum hides both.
+	// Answered but lost the agreement vote: a WRONG value is a different problem
+	// from no value.
 	HealthDisagree = "disagree"
 
-	// An RPC provider whose head sits below the pinned block, so it could not
-	// serve the query. Tolerated, but recorded: it is also how a rewind looks.
+	// Head below the pinned block. Tolerated, but recorded: it is also how a
+	// rewind looks.
 	HealthLagging = "lagging"
 
-	// Never provisioned, as opposed to broken. "down" pages someone to fix an
-	// outage; "not_configured" tells them to send a SET_SECRET.
+	// Never provisioned, as opposed to broken: "down" pages someone,
+	// "not_configured" tells them to send a SET_SECRET.
 	HealthNotConfigured = "not_configured"
 )
 
@@ -83,9 +89,8 @@ func init() {
 	}
 }
 
-// Pinned deployment facts. Everything below is compiled in and therefore
-// covered by the registered code hash. Only RPC provider URLs and credentials
-// are configurable at runtime.
+// Pinned deployment facts, covered by the registered code hash. Only RPC provider
+// URLs, the cash endpoint's URL, and credentials are configurable at runtime.
 
 const (
 	ObservationDeadline = 20 * time.Second
@@ -94,26 +99,28 @@ const (
 	// failures still fit inside MaxObservationAge.
 	ObservationInterval = 2 * time.Minute
 
-	// Oldest observation that may still be signed. Past it GET_PRICE publishes
-	// nothing and the on-chain price ages visibly. Must stay well inside
-	// UsdxPriceStore.maxAge, which bounds the same staleness from the other end.
+	// Oldest observation that may still be signed; past it GET_FEED publishes
+	// nothing. The only staleness bound anywhere — replay is separately covered
+	// by the strictly increasing observedAt ratchet.
 	MaxObservationAge = 10 * time.Minute
 
-	// Maximum spread between earliest and latest input read: read skew only, not
-	// data age. Sits ABOVE ObservationDeadline, so the deadline binds first and
-	// this never fires — tighten it below the deadline to make it a live bound.
+	// Read skew between earliest and latest input, not data age. Sits above
+	// ObservationDeadline, so the deadline binds first and this never fires.
 	ObservationWindow = 30 * time.Second
 
 	HTTPTimeout = 5 * time.Second
 
-	HexAPIKeyRef = "hex_api_key"
+	// Names, never values: the credential substituted into X-API-Key, and the
+	// provisioned entry carrying the cash endpoint's URL (see HexCashGroup).
+	HexAPIKeyRef  = "hex_api_key"
+	HexCashURLRef = "hex_cash_url"
 )
 
-// Hex reserve endpoints, pinned: redirecting the reserve read would hand an
-// operator the numerator of the price.
+// The bonds endpoint is pinned: redirecting it would hand whoever publishes
+// configuration the numerator of the price. The cash URL is itself sensitive, so
+// it travels as a PRIVATE endpoint whose salted commitment is all the chain sees.
 const (
 	HexBondsURL = "https://api.htdigitalassets.com/alm-stablecoin-db/metrics/current_reserves_amount"
-	HexCashURL  = "https://api.htdigitalassets.com/alm-stablecoin-db/restricted/metrics/current_cash_reserves_amount"
 
 	// OPEN: the endpoint returns 404 rather than 401 without credentials, so
 	// bearer vs X-API-Key cannot be distinguished until a key is issued.
@@ -121,31 +128,56 @@ const (
 
 	HexBondsName = "hex_bonds"
 	HexCashName  = "hex_cash"
+
+	// SET_ENDPOINTS group tag for the cash endpoint: exactly one entry, and it
+	// must be PRIVATE or the restricted URL lands on-chain in the clear.
+	// Enforced in internal/runtimecfg.
+	HexCashGroup = HexCashName
 )
+
+// BackingRefs names the credentials the backing admin role governs. Pinned, never
+// read from a payload: a payload naming its own refs would let the weaker signer
+// set claim the stronger one's. Every other ref falls to the providers set.
+func BackingRefs() []string {
+	return []string{HexAPIKeyRef, HexCashURLRef}
+}
+
+// IsBackingRef reports whether ref is governed by the backing role.
+func IsBackingRef(ref string) bool {
+	for _, r := range BackingRefs() {
+		if r == ref {
+			return true
+		}
+	}
+	return false
+}
 
 // Chain is a pinned per-chain fact. Provider lists and agreement thresholds are
 // configured at runtime — see internal/runtimecfg.
 type Chain struct {
 	Name string
 
-	// Pinned: pointing this at another ERC-20 would let whoever set it publish
-	// an arbitrary price.
+	// Pinned: another ERC-20 here would let whoever set it publish any price.
 	Token string
 
-	// MaxBlockAge refuses a supply read whose pinned block is older than this,
-	// measured against the block's own header timestamp. Pinned, not configurable:
+	// Refuses a supply read whose pinned block header is older than this. Pinned:
 	// the key that chooses the providers must not also choose this. Rationale §6.
 	MaxBlockAge time.Duration
 }
 
-// Chains is the pinned chain set. USDX is a native burn-and-mint LayerZero OFT on
-// each, so supply is a plain sum. The pre-migration Ethereum contract is absent on
-// purpose: Hex excludes it from reserves. Rationale §6.
+// Pinned chain set. USDX is a native burn-and-mint OFT on each, so supply is a
+// plain sum; the pre-migration Ethereum contract is absent because Hex excludes it
+// from reserves. Each name doubles as the SET_ENDPOINTS group tag. Rationale §6.
 var Chains = []Chain{
 	{Name: "flare", Token: "0x4A771Cc1a39FDd8AA08B8EA51F7Fd412e73B3d2B", MaxBlockAge: 2 * time.Minute},
 	{Name: "ethereum", Token: "0xf8750b54d86BE7aE9e32b4A0C826811198D63313", MaxBlockAge: 3 * time.Minute},
 	{Name: "songbird", Token: "0x4A771Cc1a39FDd8AA08B8EA51F7Fd412e73B3d2B", MaxBlockAge: 2 * time.Minute},
 }
+
+// HomeChain's block header timestamp stamps observedAt — any mined block would do,
+// what matters is that it is in the past. The store requires observedAt <
+// block.timestamp strictly, so a fast enclave clock would revert TooFarAhead.
+const HomeChain = "flare"
 
 // LookupChain returns the pinned policy for a chain name.
 func LookupChain(name string) (Chain, bool) {
@@ -157,8 +189,8 @@ func LookupChain(name string) (Chain, bool) {
 	return Chain{}, false
 }
 
-// ChainID binds provisioning envelopes to one network. Set at build time with
-// -ldflags "-X fce-usdx-oracle/internal/config.chainIDStr=14".
+// ChainID binds provisioning envelopes to one network and is signed into every
+// feed update. Set with -ldflags "-X fce-usdx-oracle/internal/config.chainIDStr=14".
 var ChainID = mustChainID()
 
 var chainIDStr = "114"
@@ -171,33 +203,61 @@ func mustChainID() uint64 {
 	return v
 }
 
-// Neither reserve source carries a freshness bound, and that is the deliberate
-// answer to a question this code got wrong twice.
-//
-// Hex confirmed that both endpoints — public and restricted alike — are
-// event-driven: they republish within about ten minutes of an on-chain event, a
-// mint or a redemption, and not otherwise. So `last_update` is a CHANGE
-// timestamp, not a heartbeat, and there is no periodic refresh to bound. A
-// quiet day leaves the stamp hours old with the figure perfectly correct,
-// because nothing happened to change it.
-//
-// A wall-clock bound therefore rejects good data at a rate set by USDX
-// activity, not by anything wrong upstream. That is not hypothetical: a shared
-// 30-minute bound had hex_cash reporting `down` for most of every hour on every
-// machine, and widening it to 90 minutes only moved the flapping — observed
-// stamps were ~7 hours apart with the value unchanged throughout. Each time the
-// machine fetched a good figure and then threw it away.
-//
-// Dropping the bound costs less than it looks, because it never covered the
-// dangerous direction. If the upstream freezes, R stops tracking a growing S
-// and price = min(1, R/S) prints BELOW par — the direction that reveals a
-// shortfall rather than hides one. And reserves lost WITHOUT an on-chain event
-// do not move `last_update` either, so no bound would have caught that. What
-// replaces it is monitoring the on-chain feed's own age, which the store's
-// maxAge and MaxObservationAge already bound from the other end.
-//
-// BondsSource is Hex's public reserves endpoint. RequireCurrency must stay
-// false: the public endpoint omits the field entirely.
+// Named inside every signed update and checked by the store, GET_FEED,
+// SET_ENDPOINTS and SET_ADMINS. Pinned like the token addresses, and
+// ldflags-overridable via extensionIDStr/feedIDHex for a test deployment.
+var (
+	ExtensionID = mustExtensionID()
+	FeedID      = mustFeedID()
+)
+
+var (
+	// Reserved id 1, per upstream's chain-config.
+	extensionIDStr = "1"
+
+	// Custom-feed category 0x20, then "USDX/USD" zero-padded to twenty bytes.
+	feedIDHex = "0x20555344582f555344000000000000000000000000"
+)
+
+func mustExtensionID() *big.Int {
+	v, ok := new(big.Int).SetString(strings.TrimPrefix(extensionIDStr, "0x"), baseFor(extensionIDStr))
+	if !ok || v.Sign() < 0 {
+		panic("config: extensionIDStr must be a non-negative integer, got " + extensionIDStr)
+	}
+	return v
+}
+
+func baseFor(s string) int {
+	if strings.HasPrefix(s, "0x") {
+		return 16
+	}
+	return 10
+}
+
+// mustFeedID parses the 21-byte FTSO feed id: a category byte plus a 20-byte name.
+// The category must sit in [0x20, 0x40) or the store's initializer reverts
+// InvalidFeedCategory — catching it here fails at startup rather than at deploy.
+func mustFeedID() [21]byte {
+	var id [21]byte
+
+	raw, err := hex.DecodeString(strings.TrimPrefix(feedIDHex, "0x"))
+	if err != nil || len(raw) != 21 {
+		panic("config: feedIDHex must be 21 hex-encoded bytes, got " + feedIDHex)
+	}
+	if raw[0] < 0x20 || raw[0] >= 0x40 {
+		panic("config: feedIDHex category byte must be in [0x20, 0x40), got " + feedIDHex)
+	}
+
+	copy(id[:], raw)
+	return id
+}
+
+// Neither reserve source carries a freshness bound: Hex republishes on a mint or a
+// redemption, not on a schedule, so last_update is a change timestamp and a bound
+// flapped good data to `down`. Feed age is bounded by MaxObservationAge instead.
+
+// BondsSource is Hex's public reserves endpoint. RequireCurrency must stay false:
+// the public endpoint omits the field entirely.
 func BondsSource() BackingSpec {
 	return BackingSpec{
 		Name: HexBondsName, URL: HexBondsURL,
@@ -206,10 +266,11 @@ func BondsSource() BackingSpec {
 	}
 }
 
-// CashSource is Hex's restricted endpoint, plus the injected credential.
-func CashSource(apiKey string) BackingSpec {
+// CashSource is Hex's restricted endpoint plus the injected credential. The URL
+// arrives as a PRIVATE endpoint whose commitment the hex_cash group pins.
+func CashSource(url, apiKey string) BackingSpec {
 	return BackingSpec{
-		Name: HexCashName, URL: HexCashURL,
+		Name: HexCashName, URL: url,
 		RequireCurrency: true,
 		Timeout:         HTTPTimeout,
 		AuthHeader:      HexCashAuthHeader, AuthValue: apiKey,

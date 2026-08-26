@@ -23,10 +23,11 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 	node := teenode.New(signPort, 10*time.Second)
 
 	// The machine's own address is resolved lazily on first provisioning.
-	// config.HexAPIKeyRef is pinned as the backing credential here, in the build,
-	// so no published admin payload can move it under the providers set.
+	// config.BackingRefs() is pinned as the backing credential set here, in the
+	// build, so no published admin payload can move one of them under the
+	// providers set — role TAGS come off the wire, the ref-to-role mapping does not.
 	verifier := provision.NewVerifier(
-		new(big.Int).SetUint64(config.ChainID), common.Address{}, config.HexAPIKeyRef)
+		new(big.Int).SetUint64(config.ChainID), common.Address{}, config.BackingRefs())
 	store := runtimecfg.New(verifier, node)
 
 	poller := observe.New(store, node)

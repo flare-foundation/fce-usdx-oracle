@@ -17,6 +17,7 @@ config/proxy/extension_proxy.coston2.docker.toml
 config/extension.env
 out/
 cache/
+results/
 lib/
 .DS_Store
 
@@ -36,6 +37,11 @@ tools/query-*
 tools/set-*
 tools/audit-*
 tools/test-*
+tools/fleet-status
+tools/keeper
+tools/send-endpoints
+tools/send-admins
+tools/wire-extension
 
 # Generated contract bindings (produced by scripts/generate-bindings.sh)
 tools/pkg/contracts/*/autogen.go

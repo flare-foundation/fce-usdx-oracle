@@ -2,19 +2,13 @@
 //
 //	body = abi.encode(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
 //
-// signed by at least the configured threshold of DISTINCT admins under EIP-191.
-// version blocks rollback while the process lives; issuedAt survives restarts,
-// where the version counter resets to zero. Every rejection returns
-// failure.ProvisionRejected and nothing else, so the endpoint cannot be used to
-// probe the admin sets or the freshness window.
+// signed by a threshold of DISTINCT admins under EIP-191. version blocks rollback
+// while the process lives, issuedAt survives restarts, and every rejection returns
+// failure.ProvisionRejected alike, so the endpoint cannot be probed.
 //
-// The envelope's ref selects one of two signer sets: backing governs the pinned
-// backing credential, providers governs every other one. Neither is baked in — a
-// Verifier starts with none and rejects everything until SET_ADMINS installs
-// both, and they live only in memory, so SET_ADMINS must precede SET_SECRET
-// after every restart.
-//
-// See docs/usdx-oracle-rationale.md §9 for the reasoning behind all of this.
+// ref picks a role-tagged signer set installed by SET_ADMINS — a mapping pinned by
+// the caller, never read from the payload. Sets are memory-only, so SET_ADMINS must
+// precede SET_SECRET after every restart. See docs/usdx-oracle-rationale.md §9.
 package provision
 
 import (
@@ -35,9 +29,8 @@ import (
 // Distinct from the price report's domain so the two signatures cannot cross.
 const DomainName = "USDX_ORACLE_PROVISION_V1"
 
-// Freshness is long enough to collect M signatures across timezones, short enough
-// that a captured envelope expires quickly. The only replay bar that survives a
-// restart, since lastVersion is in memory.
+// Long enough to collect M signatures across timezones, short enough that a
+// captured envelope expires quickly. The only replay bar surviving a restart.
 const Freshness = time.Hour
 
 const ClockSkew = 2 * time.Minute
@@ -45,27 +38,64 @@ const ClockSkew = 2 * time.Minute
 // SignatureLength is r ‖ s ‖ v.
 const SignatureLength = 65
 
-// maxSignatures bounds recovery work before any cryptography runs; this
-// endpoint is reachable by anyone who can deliver a direct action.
-const maxSignatures = 16
+// Bounds recovery work before any cryptography runs; anyone who can deliver a
+// direct action reaches this. Exported so the CLI can refuse a doomed envelope.
+const MaxSignatures = 16
 
-// Floors per signer set. Backing is 1 by decision: it authenticates a pinned
-// endpoint, so a wrong value degrades the feed rather than moving the price.
+// Role tags, matching the bytes32 tags SET_ADMINS carries. The contract enforces
+// only non-zero and unique, so what each tag governs is pinned here.
+const (
+	RoleBacking   = "backing"
+	RoleProviders = "providers"
+)
+
+// Floors per signer set. Backing is 1 by decision: it authenticates pinned
+// reserve sources, so a wrong value degrades the feed rather than moves the
+// price. The contract validates neither floor, so these are the only guard.
 const (
 	MinBackingThreshold  = 1
 	MinProviderThreshold = 2
 )
 
+var roleFloors = map[string]int{
+	RoleBacking:   MinBackingThreshold,
+	RoleProviders: MinProviderThreshold,
+}
+
+// Roles lists every role tag a SET_ADMINS payload must carry. A missing role is an
+// error, not a partial install: the sets go in together or not at all.
+func Roles() []string { return []string{RoleBacking, RoleProviders} }
+
+// FloorForRole returns the minimum threshold for a role tag, and whether the
+// tag is one this build recognises.
+func FloorForRole(role string) (int, bool) {
+	floor, ok := roleFloors[role]
+	return floor, ok
+}
+
 // MaxAdmins keeps isAdmin's linear scan from being sized by the payload.
 const MaxAdmins = 32
 
-// MinThresholdFor returns the floor for whichever set governs ref. Exported so
-// the provisioning CLI applies the same rule the enclave does.
-func MinThresholdFor(ref, backingRef string) int {
-	if ref == backingRef {
-		return MinBackingThreshold
+// MaxThreshold is MaxSignatures: a higher threshold installs cleanly and is then
+// unsatisfiable forever. Bounding the threshold rather than the set leaves M-of-N
+// free up to the cap — a 3-of-20 only ever submits 3.
+const MaxThreshold = MaxSignatures
+
+// MinThresholdFor returns the floor for whichever set governs ref. Exported so the
+// CLI applies the same rule the enclave does, from the same pinned list.
+func MinThresholdFor(ref string, backingRefs []string) int {
+	return roleFloors[RoleFor(ref, backingRefs)]
+}
+
+// RoleFor maps a ref to the role that governs it. Anything not named in
+// backingRefs falls under the STRONGER providers set, including unknown refs.
+func RoleFor(ref string, backingRefs []string) string {
+	for _, r := range backingRefs {
+		if r == ref {
+			return RoleBacking
+		}
 	}
-	return MinProviderThreshold
+	return RoleProviders
 }
 
 // AdminSet is one signer set and the number of DISTINCT members that must sign.
@@ -138,14 +168,12 @@ type Verifier struct {
 	// is also required.
 	lastVersion map[string]uint64
 
-	// Installed by SET_ADMINS, empty until then.
-	backing   AdminSet
-	providers AdminSet
+	// Installed by SET_ADMINS, keyed by role tag, empty until then.
+	sets map[string]AdminSet
 
-	// Pinned by the caller at construction, NEVER read from the payload: a
-	// payload that named its own refs would let the weaker set claim the
-	// stronger set's credentials.
-	backingRef string
+	// Pinned at construction, NEVER read from the payload: a payload naming its
+	// own refs would let the weaker set claim the stronger set's credentials.
+	backingRefs []string
 
 	now func() time.Time
 }
@@ -155,33 +183,49 @@ func (v *Verifier) HasTeeID() bool { return v.teeID != (common.Address{}) }
 // SetTeeID is called once, lazily: tee-node may not be reachable at startup.
 func (v *Verifier) SetTeeID(id common.Address) { v.teeID = id }
 
-// HasAdmins reports whether both signer sets have been installed. All or
+// HasAdmins reports whether every role's signer set has been installed. All or
 // nothing, so a machine cannot provision one class of credential and not the other.
-func (v *Verifier) HasAdmins() bool { return v.backing.installed() && v.providers.installed() }
-
-// setFor selects the signer set that governs a ref. Anything but the pinned
-// backing ref falls under the STRONGER set, including refs this build has never
-// heard of.
-func (v *Verifier) setFor(ref string) AdminSet {
-	if ref == v.backingRef {
-		return v.backing
+func (v *Verifier) HasAdmins() bool {
+	for _, role := range Roles() {
+		if !v.sets[role].installed() {
+			return false
+		}
 	}
-	return v.providers
+	return true
 }
 
-// SetAdmins installs both signer sets together or not at all. lastVersion is
-// deliberately NOT reset: clearing it on rotation would let an envelope the
-// outgoing admins signed be replayed against the incoming set.
-func (v *Verifier) SetAdmins(backing, providers AdminSet) error {
-	if err := checkSet(backing, MinBackingThreshold); err != nil {
-		return fmt.Errorf("provision: backing set: %w", err)
+// setFor selects the signer set governing a ref. See RoleFor: anything not named
+// as a backing ref falls under the STRONGER set.
+func (v *Verifier) setFor(ref string) AdminSet {
+	return v.sets[RoleFor(ref, v.backingRefs)]
+}
+
+// SetAdmins installs every role's signer set together or not at all.
+// lastVersion is deliberately NOT reset: clearing it on rotation would let an
+// envelope the outgoing admins signed be replayed against the incoming set.
+func (v *Verifier) SetAdmins(sets map[string]AdminSet) error {
+	// Validated into a fresh map before anything is installed, so a payload that
+	// is good for one role and bad for another leaves the live sets untouched.
+	installed := make(map[string]AdminSet, len(sets))
+	for _, role := range Roles() {
+		set, ok := sets[role]
+		if !ok {
+			return fmt.Errorf("provision: %s set: missing", role)
+		}
+		if err := checkSet(set, roleFloors[role]); err != nil {
+			return fmt.Errorf("provision: %s set: %w", role, err)
+		}
+		installed[role] = set
 	}
-	if err := checkSet(providers, MinProviderThreshold); err != nil {
-		return fmt.Errorf("provision: providers set: %w", err)
+	// A role this build does not know cannot be installed anywhere, so accepting
+	// the payload would silently drop a set the publisher believes is in force.
+	for role := range sets {
+		if _, ok := roleFloors[role]; !ok {
+			return fmt.Errorf("provision: unknown admin role %q", role)
+		}
 	}
 
-	v.backing = backing
-	v.providers = providers
+	v.sets = installed
 	return nil
 }
 
@@ -189,7 +233,7 @@ func checkSet(s AdminSet, floor int) error {
 	if len(s.Admins) == 0 || len(s.Admins) > MaxAdmins {
 		return errors.New("admin set size out of range")
 	}
-	if s.Threshold < floor || s.Threshold > len(s.Admins) {
+	if s.Threshold < floor || s.Threshold > len(s.Admins) || s.Threshold > MaxThreshold {
 		return errors.New("admin threshold out of range")
 	}
 
@@ -208,14 +252,15 @@ func checkSet(s AdminSet, floor int) error {
 	return nil
 }
 
-// NewVerifier builds a verifier with no admin sets installed. backingRef names
-// the one credential the backing set governs; it is pinned policy, not payload.
-func NewVerifier(chainID *big.Int, teeID common.Address, backingRef string) *Verifier {
+// NewVerifier builds a verifier with no admin sets installed. backingRefs names
+// the credentials the backing set governs; it is pinned policy, not payload.
+func NewVerifier(chainID *big.Int, teeID common.Address, backingRefs []string) *Verifier {
 	return &Verifier{
 		chainID:     chainID,
 		teeID:       teeID,
-		backingRef:  backingRef,
+		backingRefs: append([]string(nil), backingRefs...),
 		lastVersion: map[string]uint64{},
+		sets:        map[string]AdminSet{},
 		now:         func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -234,7 +279,7 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 		return Envelope{}, failure.ProvisionRejected
 	}
 
-	if len(sigs) > maxSignatures {
+	if len(sigs) > MaxSignatures {
 		return Envelope{}, failure.ProvisionRejected
 	}
 
@@ -292,9 +337,8 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 	return e, nil
 }
 
-// hasThreshold reports whether at least set.Threshold DISTINCT members of set
-// signed. Without deduplication one compromised key could supply the same
-// signature M times. Signers from the other set do not count.
+// hasThreshold reports whether set.Threshold DISTINCT members signed; without
+// deduplication one compromised key could supply the same signature M times.
 func hasThreshold(body []byte, sigs [][]byte, set AdminSet) bool {
 	digest := accounts.TextHash(crypto.Keccak256(body))
 

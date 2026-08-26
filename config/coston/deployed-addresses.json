@@ -463,5 +463,10 @@
     "name": "VrfVerifier",
     "contractName": "VrfVerifier.sol",
     "address": "0xFf7B15d253b3C62C2eC689aF5696c9Ee91aB6Fff"
+  },
+  {
+    "name": "TeeOracleFeedStore",
+    "contractName": "TeeOracleFeedStore.sol",
+    "address": "0x0000000000000000000000000000000000000000"
   }
 ]

@@ -220,7 +220,7 @@ func TestDecodeRevertReason_EmptyHexData(t *testing.T) {
 }
 
 // --- Verify actual contract revert messages decode correctly ---
-// These are the specific revert strings from InstructionSender.sol
+// Representative contract revert strings to exercise the decoder.
 
 func TestDecodeRevertReason_AllContractReverts(t *testing.T) {
 	reverts := []string{

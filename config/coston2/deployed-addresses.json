@@ -515,13 +515,8 @@
     "address": "0x7214D4c13aaFE0e26F5EC5Fc625a6b60AfF99533"
   },
   {
-    "name": "UsdxPriceStore",
-    "contractName": "UsdxPriceStore.sol",
-    "address": "0x4E2f462cfB6CC8567D6A918666B15c04E03B73aE"
-  },
-  {
-    "name": "UsdxCustomFeed",
-    "contractName": "UsdxCustomFeed.sol",
-    "address": "0x56c5F1b72DCA580F7b2B0c07c63973C58627a12D"
+    "name": "TeeOracleFeedStore",
+    "contractName": "TeeOracleFeedStore.sol",
+    "address": "0x0000000000000000000000000000000000000000"
   }
 ]

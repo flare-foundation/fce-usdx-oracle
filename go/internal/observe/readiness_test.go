@@ -110,7 +110,7 @@ func TestReadinessReport_ReflectsTheObservation(t *testing.T) {
 
 // The counters are the poller's, not the request handler's. This is the
 // distinction the whole surface exists for: a machine that has never served a
-// GET_PRICE still reports what its loop has been doing.
+// GET_FEED still reports what its loop has been doing.
 func TestReadinessReport_CountsFailuresWithoutAnyRequest(t *testing.T) {
 	p := stubPoller(t, &fakeSigner{})
 	p.record(oracle.Observation{}, failure.NotConfigured)

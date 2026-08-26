@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
+
+	"fce-usdx-oracle/tools/pkg/oraclepayload"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pkg/errors"
@@ -11,30 +14,35 @@ import (
 
 // The SET_ADMINS payload schema, restated for the same reason send-endpoints
 // restates its own. Worse to get wrong: a rejected rotation leaves the machine on
-// the previous set, so prices revert StaleAdmins and no new SET_SECRET lands.
-type admins struct {
-	Version uint64 `json:"version"`
-
-	// Governs the pinned backing credential (hex_api_key) only.
-	Backing adminSet `json:"backing"`
-
-	// Governs every other credential — the RPC provider keys named by
-	// SET_ENDPOINTS, and any ref the extension does not recognise.
-	Providers adminSet `json:"providers"`
-}
-
-type adminSet struct {
+// the previous set, so updates revert StaleAdmins and no new SET_SECRET lands.
+//
+// The on-chain payload is ABI-encoded by the sender into Admins{version, feedId,
+// roles}; the contract assigns the version. This tool takes JSON for convenience
+// and builds the typed AdminRole list — the operator does NOT pick the version,
+// because it is no longer part of the payload the operator supplies.
+//
+// Each role is a tagged signer set:
+//
+//	{
+//	  "backing":   { "threshold": 1, "admins": ["0x…"] },
+//	  "providers": { "threshold": 2, "admins": ["0x…", "0x…"] }
+//	}
+type adminSetConfig struct {
 	Threshold int      `json:"threshold"`
 	Admins    []string `json:"admins"`
 }
 
-// Mirrors provision.MinBackingThreshold, MinProviderThreshold and MaxAdmins. The
-// floors differ by decision: a wrong backing credential degrades the feed to
-// cash-less, a rogue provider credential denies service on every chain using it.
+// Mirrors the floors/ceilings provision pins (MinBackingThreshold,
+// MinProviderThreshold, MaxAdmins, MaxThreshold). The floors differ by decision:
+// a wrong backing credential degrades the feed to cash-less, a rogue provider
+// credential denies service on every chain using it. maxThreshold is the
+// extension's signature cap: a set asking for more signatures than it will look
+// at can never be satisfied.
 const (
 	minBackingThreshold  = 1
 	minProviderThreshold = 2
 	maxAdmins            = 32
+	maxThreshold         = 16
 )
 
 // hexAPIKeyRef is the one credential the backing set governs, stated here only so
@@ -42,63 +50,110 @@ const (
 // build and is NOT carried in this payload.
 const hexAPIKeyRef = "hex_api_key"
 
-// parseAdmins decodes the payload the way the extension does, rejecting unknown
-// fields: an unrecognised field means the publisher and the running build
-// disagree about the schema.
-func parseAdmins(raw []byte) (admins, error) {
-	var a admins
+// knownRoles must both be present. Which credentials each governs is pinned in
+// the extension build, not here; this tool only checks the shape.
+var knownRoles = []string{"backing", "providers"}
 
-	dec := json.NewDecoder(strings.NewReader(string(raw)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&a); err != nil {
-		return admins{}, errors.Errorf("payload is not a known admin set: %s", err)
+// parseAdmins decodes the operator's JSON into the typed role list.
+func parseAdmins(raw []byte) ([]oraclepayload.Role, error) {
+	var a map[string]adminSetConfig
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return nil, errors.Errorf("payload is not a known admin set: %s", err)
 	}
-	return a, nil
+
+	roles := make([]oraclepayload.Role, 0, len(a))
+	for _, name := range sortedRoleKeys(a) {
+		role, err := buildRole(name, a[name])
+		if err != nil {
+			return nil, err
+		}
+		roles = append(roles, role)
+	}
+	return roles, nil
 }
 
-// validateAdmins mirrors runtimecfg.validateAdmins. Kept in the same order so
-// the two can be diffed by eye.
-func validateAdmins(a admins) error {
-	// Zero is the extension's "never applied" sentinel, so it could never be
-	// accepted; the version must also exceed whatever that machine last applied,
-	// which only the machine knows.
-	if a.Version == 0 {
-		return errors.New("version must be non-zero")
+// buildRole turns one config entry into a typed AdminRole, validating it.
+func buildRole(name string, sc adminSetConfig) (oraclepayload.Role, error) {
+	tag, err := oraclepayload.Tag(name)
+	if err != nil {
+		return oraclepayload.Role{}, errors.Errorf("role %q: %s", name, err)
 	}
-	if err := validateSet("backing", a.Backing, minBackingThreshold); err != nil {
-		return err
-	}
-	return validateSet("providers", a.Providers, minProviderThreshold)
-}
-
-func validateSet(name string, in adminSet, floor int) error {
-	if len(in.Admins) == 0 || len(in.Admins) > maxAdmins {
-		return errors.Errorf("%s admin count %d is not between 1 and %d",
-			name, len(in.Admins), maxAdmins)
-	}
-	if in.Threshold < floor || in.Threshold > len(in.Admins) {
-		return errors.Errorf("%s threshold %d is not between %d and %d",
-			name, in.Threshold, floor, len(in.Admins))
+	threshold, err := oraclepayload.Threshold(sc.Threshold)
+	if err != nil {
+		return oraclepayload.Role{}, errors.Errorf("role %q: %s", name, err)
 	}
 
-	seen := make(map[common.Address]bool, len(in.Admins))
-	for _, raw := range in.Admins {
+	admins := make([]common.Address, 0, len(sc.Admins))
+	for _, raw := range sc.Admins {
 		text := strings.TrimSpace(raw)
 		// common.HexToAddress silently yields the zero address for anything it
-		// cannot parse, so a typo would install a signer nobody holds and
-		// quietly shrink the effective set.
+		// cannot parse, so a typo would install a signer nobody holds and quietly
+		// shrink the effective set.
 		if !common.IsHexAddress(text) {
-			return errors.Errorf("%s: %q is not a hex address", name, raw)
+			return oraclepayload.Role{}, errors.Errorf("role %q: %q is not a hex address", name, raw)
 		}
-		addr := common.HexToAddress(text)
+		admins = append(admins, common.HexToAddress(text))
+	}
+
+	return oraclepayload.Role{Role: tag, Threshold: threshold, Admins: admins}, nil
+}
+
+// validateAdmins checks the role set against the rules the extension build pins.
+func validateAdmins(roles []oraclepayload.Role) error {
+	if len(roles) == 0 {
+		return errors.New("no roles configured")
+	}
+
+	seen := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		name := oraclepayload.TagName(r.Role)
+		if seen[name] {
+			return errors.Errorf("role %q appears more than once", name)
+		}
+		seen[name] = true
+
+		floor, ok := floorFor(name)
+		if !ok {
+			return errors.Errorf("unknown role %q (expected one of %s)",
+				name, strings.Join(knownRoles, ", "))
+		}
+		if err := validateSet(name, r, floor); err != nil {
+			return err
+		}
+	}
+
+	for _, name := range knownRoles {
+		if !seen[name] {
+			return errors.Errorf("role %q is missing", name)
+		}
+	}
+	return nil
+}
+
+func validateSet(name string, r oraclepayload.Role, floor int) error {
+	if len(r.Admins) == 0 || len(r.Admins) > maxAdmins {
+		return errors.Errorf("role %q admin count %d is not between 1 and %d",
+			name, len(r.Admins), maxAdmins)
+	}
+	// The set size is not the only ceiling: past maxThreshold the extension drops
+	// the envelope before counting signers, so the rotation would land and every
+	// SET_SECRET after it would bounce with no reason given.
+	ceiling := min(len(r.Admins), maxThreshold)
+	if int(r.Threshold) < floor || int(r.Threshold) > ceiling {
+		return errors.Errorf("role %q threshold %d is not between %d and %d",
+			name, r.Threshold, floor, ceiling)
+	}
+
+	seen := make(map[common.Address]bool, len(r.Admins))
+	for _, addr := range r.Admins {
 		if addr == (common.Address{}) {
-			return errors.Errorf("%s: admin address is zero", name)
+			return errors.Errorf("role %q: admin address is zero", name)
 		}
 		// A repeated address inflates the apparent set size while the
-		// distinct-signer check still counts it once, so a 2-of-3 naming the
-		// same key twice is really 2-of-2 with one key unusable.
+		// distinct-signer check still counts it once, so a 2-of-3 naming the same
+		// key twice is really 2-of-2 with one key unusable.
 		if seen[addr] {
-			return errors.Errorf("%s: %s appears more than once", name, addr.Hex())
+			return errors.Errorf("role %q: %s appears more than once", name, addr.Hex())
 		}
 		seen[addr] = true
 	}
@@ -108,22 +163,41 @@ func validateSet(name string, in adminSet, floor int) error {
 // summarise renders what was actually parsed, so the operator sees the sets the
 // extension will see rather than the bytes they thought they wrote — including
 // which credentials each set governs, which is the part most easily got wrong.
-func summarise(a admins) string {
+func summarise(roles []oraclepayload.Role) string {
 	var b strings.Builder
-	b.WriteString("version " + strconv.FormatUint(a.Version, 10) + "\n\n")
-	b.WriteString(setBlock("backing", a.Backing, "governs "+hexAPIKeyRef+" only"))
-	b.WriteString(setBlock("providers", a.Providers, "governs every other credential"))
+	for _, r := range roles {
+		name := oraclepayload.TagName(r.Role)
+		governs := "governs every other credential"
+		if name == "backing" {
+			governs = "governs " + hexAPIKeyRef + " only"
+		}
+		b.WriteString(name + ": " + strconv.FormatUint(r.Threshold, 10) + "-of-" +
+			strconv.Itoa(len(r.Admins)) + " — " + governs + "\n")
+		for _, addr := range r.Admins {
+			// Checksummed, so an operator comparing against a hardware wallet is
+			// comparing the same rendering.
+			b.WriteString("  " + addr.Hex() + "\n")
+		}
+	}
 	return b.String()
 }
 
-func setBlock(name string, s adminSet, governs string) string {
-	var b strings.Builder
-	b.WriteString(name + ": " + strconv.Itoa(s.Threshold) + "-of-" +
-		strconv.Itoa(len(s.Admins)) + " — " + governs + "\n")
-	for _, raw := range s.Admins {
-		// Checksummed, so an operator comparing against a hardware wallet is
-		// comparing the same rendering.
-		b.WriteString("  " + common.HexToAddress(strings.TrimSpace(raw)).Hex() + "\n")
+func floorFor(name string) (int, bool) {
+	switch name {
+	case "backing":
+		return minBackingThreshold, true
+	case "providers":
+		return minProviderThreshold, true
+	default:
+		return 0, false
 	}
-	return b.String()
+}
+
+func sortedRoleKeys(a map[string]adminSetConfig) []string {
+	names := make([]string, 0, len(a))
+	for name := range a {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

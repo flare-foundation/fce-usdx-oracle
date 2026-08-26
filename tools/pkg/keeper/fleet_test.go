@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"fce-usdx-oracle/tools/pkg/pricereport"
-
 	"github.com/ethereum/go-ethereum/common"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
@@ -60,90 +58,30 @@ func TestMachineListOverrideReplacesEveryURL(t *testing.T) {
 	}
 }
 
-// Rotation has to reach every machine, or the machines it skips fall out of
-// commission the moment their config is re-pushed and nobody notices.
-func TestFleetRotationCoversEveryMachineAndWraps(t *testing.T) {
+// Every cycle has to poll every machine's proxy: the registry picks which one
+// serves the instruction, and only that machine's own proxy holds the result.
+func TestCycleConfigPollsTheWholeFleet(t *testing.T) {
+	cfg := LoopConfig{Config: Config{Proxy: "https://configured", DirectAPIKey: "k"}}
 	f := fleet{machines: []Machine{
 		{TeeID: machineA, Proxy: "https://a"},
 		{TeeID: machineB, Proxy: "https://b"},
-		{TeeID: machineC, Proxy: "https://c"},
 	}}
 
-	var got []common.Address
-	for range 7 {
-		m, ok := f.take()
-		if !ok {
-			t.Fatal("take() reported no machine from a non-empty fleet")
-		}
-		got = append(got, m.TeeID)
-	}
-
-	want := []common.Address{machineA, machineB, machineC, machineA, machineB, machineC, machineA}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("turn %d went to %s, want %s", i, got[i].Hex(), want[i].Hex())
-		}
+	c := cfg.cycleConfig(&f)
+	if got := c.pollTargets(); len(got) != 3 {
+		t.Errorf("poll targets = %v, want the configured proxy plus both machines", got)
 	}
 }
 
-func TestEmptyFleetTakesNothing(t *testing.T) {
+// An unreadable registry must not stop the feed: the cycle falls back to the one
+// proxy it was told about by hand.
+func TestCycleConfigFallsBackToTheConfiguredProxy(t *testing.T) {
+	cfg := LoopConfig{Config: Config{Proxy: "https://configured"}}
+
 	var f fleet
-	if _, ok := f.take(); ok {
-		t.Fatal("an empty fleet must report no machine, so the caller falls back to the configured proxy")
-	}
-}
-
-// A direct cycle addresses one named machine; an on-chain cycle addresses none
-// and has to look for its result on every proxy, because the registry chose the
-// machine.
-func TestCycleConfigPicksChannelAndTarget(t *testing.T) {
-	cfg := LoopConfig{
-		Config: Config{Proxy: "https://configured", Direct: true, DirectAPIKey: "k"},
-	}
-	f := fleet{machines: []Machine{
-		{TeeID: machineA, Proxy: "https://a"},
-		{TeeID: machineB, Proxy: "https://b"},
-	}}
-
-	direct := cfg.cycleConfig(&f, false)
-	if !direct.Direct {
-		t.Error("a direct cycle must use the direct channel")
-	}
-	if direct.Proxy != "https://a" || direct.TeeID != machineA {
-		t.Errorf("direct cycle went to %s/%s, want the machine whose turn it is",
-			direct.TeeID.Hex(), direct.Proxy)
-	}
-	if len(direct.ResultProxies) != 0 {
-		t.Errorf("direct cycle fans out to %v — a direct result exists only on the machine it was sent to",
-			direct.ResultProxies)
-	}
-
-	onChain := cfg.cycleConfig(&f, true)
-	if onChain.Direct {
-		t.Error("an on-chain cycle must use the instruction channel")
-	}
-	if onChain.TeeID != (common.Address{}) {
-		t.Errorf("on-chain cycle claims to address %s — the registry picks the machine",
-			onChain.TeeID.Hex())
-	}
-	if got := onChain.pollTargets(); len(got) != 3 {
-		t.Errorf("on-chain poll targets = %v, want the configured proxy plus both machines", got)
-	}
-}
-
-// The rotation must not be consumed by an on-chain cycle: the next direct cycle
-// should continue where the last one left off rather than skip a machine.
-func TestOnChainCycleDoesNotAdvanceTheRotation(t *testing.T) {
-	cfg := LoopConfig{Config: Config{Proxy: "https://configured", Direct: true}}
-	f := fleet{machines: []Machine{
-		{TeeID: machineA, Proxy: "https://a"},
-		{TeeID: machineB, Proxy: "https://b"},
-	}}
-
-	cfg.cycleConfig(&f, true)
-	if got := cfg.cycleConfig(&f, false); got.TeeID != machineA {
-		t.Errorf("next direct cycle went to %s, want %s — the on-chain cycle took a turn",
-			got.TeeID.Hex(), machineA.Hex())
+	got := cfg.cycleConfig(&f).pollTargets()
+	if len(got) != 1 || got[0] != "https://configured" {
+		t.Errorf("poll targets = %v, want just the configured proxy", got)
 	}
 }
 
@@ -206,38 +144,5 @@ func TestPollResultAnyWithoutProxiesFailsImmediately(t *testing.T) {
 		common.HexToHash("0x1"), teetypes.Submit, time.Minute)
 	if err == nil {
 		t.Fatal("expected an error rather than a poll that cannot succeed")
-	}
-}
-
-// The property the whole sweep rests on: observedAt must strictly increase, so
-// the oldest report has to go first. Submitting in registry order lands one and
-// rejects the rest as NotNewer, commissioning one machine per pass forever.
-func TestSubmissionOrderIsOldestObservationFirst(t *testing.T) {
-	held := []swept{
-		{machine: Machine{TeeID: machineA}, report: pricereport.Report{ObservedAt: 300}, ok: true},
-		{machine: Machine{TeeID: machineB}, report: pricereport.Report{ObservedAt: 100}, ok: true},
-		{machine: Machine{TeeID: machineC}, report: pricereport.Report{ObservedAt: 200}, ok: true},
-	}
-
-	got := submissionOrder(held)
-	want := []int{1, 2, 0}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("order = %v, want %v (ascending observedAt)", got, want)
-		}
-	}
-}
-
-// A machine that produced no report has nothing to submit. Including it would
-// relay a zero-value report, which is the one thing the keeper must never do.
-func TestSubmissionOrderSkipsMachinesThatCollectedNothing(t *testing.T) {
-	held := []swept{
-		{machine: Machine{TeeID: machineA}, report: pricereport.Report{ObservedAt: 300}, ok: true},
-		{machine: Machine{TeeID: machineB}, ok: false},
-	}
-
-	got := submissionOrder(held)
-	if len(got) != 1 || got[0] != 0 {
-		t.Fatalf("order = %v, want only the machine that produced a report", got)
 	}
 }

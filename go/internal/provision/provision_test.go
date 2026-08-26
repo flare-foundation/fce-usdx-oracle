@@ -37,10 +37,17 @@ func newAdmins(t *testing.T, n int) []admin {
 	return out
 }
 
-// testBackingRef is the ref the backing set governs in these tests. Mirrors
-// config.HexAPIKeyRef without importing it — provision is deliberately
-// independent of the pinned policy.
-const testBackingRef = "hex_api_key"
+// testBackingRefs are the refs the backing role governs in these tests. Mirrors
+// config.BackingRefs() without importing it — provision is deliberately
+// independent of the pinned policy: it takes the mapping, it does not own it.
+var testBackingRefs = []string{"hex_api_key"}
+
+// roleSets is the two-role map SetAdmins now takes. The tests still think in
+// terms of "the backing set" and "the providers set"; the role TAGS are what
+// changed, not the policy.
+func roleSets(backing, providers AdminSet) map[string]AdminSet {
+	return map[string]AdminSet{RoleBacking: backing, RoleProviders: providers}
+}
 
 // newTestVerifier installs a generated set as the PROVIDERS set through the real
 // SetAdmins path, so tests exercise the same validation SET_ADMINS does. The backing
@@ -54,10 +61,10 @@ func newTestVerifierWith(
 	t *testing.T, backing []admin, backingThreshold int, providers []admin, providerThreshold int,
 ) *Verifier {
 	t.Helper()
-	v := NewVerifier(testChainID, testTeeID, testBackingRef)
-	if err := v.SetAdmins(
+	v := NewVerifier(testChainID, testTeeID, testBackingRefs)
+	if err := v.SetAdmins(roleSets(
 		adminSet(backing, backingThreshold), adminSet(providers, providerThreshold),
-	); err != nil {
+	)); err != nil {
 		t.Fatalf("SetAdmins: %v", err)
 	}
 	return v
@@ -412,7 +419,7 @@ func TestVerify_BoundsSignatureCount(t *testing.T) {
 
 	e := testEnvelope([]byte("c"))
 	var sigs [][]byte
-	for i := 0; i < maxSignatures+10; i++ {
+	for i := 0; i < MaxSignatures+10; i++ {
 		sigs = append(sigs, sign(t, e, admins[0]))
 	}
 
@@ -460,7 +467,7 @@ func FuzzVerify(f *testing.F) {
 // at, and no first-come window to race for.
 func TestVerify_RejectsBeforeAnyAdminSetIsInstalled(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := NewVerifier(testChainID, testTeeID, testBackingRef)
+	v := NewVerifier(testChainID, testTeeID, testBackingRefs)
 
 	if v.HasAdmins() {
 		t.Fatal("a fresh verifier must not report an admin set")
@@ -490,6 +497,11 @@ func TestSetAdmins_RejectsUnusableSets(t *testing.T) {
 		{"backing threshold of zero", adminSet(admins[:1], 0), ok},
 		// Unsatisfiable: no set of distinct signers could ever reach it.
 		{"providers threshold above set size", adminSet(admins[:1], 1), adminSet(admins, 4)},
+		// Also unsatisfiable, and far less obvious: the set is big enough to
+		// hold the threshold, but Verify drops an envelope carrying more than
+		// MaxSignatures before it counts signers, so nothing could ever reach it.
+		{"providers threshold above the signature cap", adminSet(admins[:1], 1),
+			adminSet(newAdmins(t, MaxThreshold+4), MaxThreshold+1)},
 		{"duplicate provider admin", adminSet(admins[:1], 1),
 			AdminSet{Admins: []common.Address{admins[0].addr, admins[0].addr}, Threshold: 2}},
 		{"zero address", adminSet(admins[:1], 1),
@@ -498,8 +510,8 @@ func TestSetAdmins_RejectsUnusableSets(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			v := NewVerifier(testChainID, testTeeID, testBackingRef)
-			if err := v.SetAdmins(c.backing, c.providers); err == nil {
+			v := NewVerifier(testChainID, testTeeID, testBackingRefs)
+			if err := v.SetAdmins(roleSets(c.backing, c.providers)); err == nil {
 				t.Fatal("want an error")
 			}
 			if v.HasAdmins() {
@@ -515,14 +527,40 @@ func TestSetAdmins_BackingAllowsSingleSigner(t *testing.T) {
 	backing := newAdmins(t, 1)
 	providers := newAdmins(t, 3)
 
-	v := NewVerifier(testChainID, testTeeID, testBackingRef)
-	if err := v.SetAdmins(adminSet(backing, 1), adminSet(providers, 2)); err != nil {
+	v := NewVerifier(testChainID, testTeeID, testBackingRefs)
+	if err := v.SetAdmins(roleSets(adminSet(backing, 1), adminSet(providers, 2))); err != nil {
 		t.Fatalf("1-of-1 backing must be accepted: %v", err)
 	}
 
-	v2 := NewVerifier(testChainID, testTeeID, testBackingRef)
-	if err := v2.SetAdmins(adminSet(backing, 1), adminSet(providers, 1)); err == nil {
+	v2 := NewVerifier(testChainID, testTeeID, testBackingRefs)
+	if err := v2.SetAdmins(roleSets(adminSet(backing, 1), adminSet(providers, 1))); err == nil {
 		t.Fatal("1-of-N providers must be rejected")
+	}
+}
+
+// The boundary between the two ceilings, asserted from both sides: a threshold
+// exactly at the signature cap is satisfiable and must be installable, one above
+// it never is. Without this the cap and MaxAdmins could drift apart again and
+// only an operator collecting signatures would find out.
+func TestSetAdmins_ThresholdStopsAtTheSignatureCap(t *testing.T) {
+	backing := newAdmins(t, 1)
+	providers := newAdmins(t, MaxAdmins)
+
+	v := NewVerifier(testChainID, testTeeID, testBackingRefs)
+	if err := v.SetAdmins(roleSets(adminSet(backing, 1), adminSet(providers, MaxThreshold))); err != nil {
+		t.Fatalf("%d-of-%d must be installable: %v", MaxThreshold, MaxAdmins, err)
+	}
+
+	v2 := NewVerifier(testChainID, testTeeID, testBackingRefs)
+	if err := v2.SetAdmins(roleSets(adminSet(backing, 1), adminSet(providers, MaxThreshold+1))); err == nil {
+		t.Fatalf("%d-of-%d is unsatisfiable and must be rejected", MaxThreshold+1, MaxAdmins)
+	}
+
+	// The bound belongs on the threshold, not on the set: a large set with a
+	// small threshold is ordinary M-of-N and must keep working.
+	v3 := NewVerifier(testChainID, testTeeID, testBackingRefs)
+	if err := v3.SetAdmins(roleSets(adminSet(backing, 1), adminSet(providers, 3))); err != nil {
+		t.Fatalf("3-of-%d must stay installable: %v", MaxAdmins, err)
 	}
 }
 
@@ -538,7 +576,7 @@ func TestVerify_RefSelectsTheSigningSet(t *testing.T) {
 
 	// One backing signature authorises the backing ref.
 	env := testEnvelope(payload)
-	env.Ref = testBackingRef
+	env.Ref = testBackingRefs[0]
 	if _, err := v.Verify(signedMessage(t, env, backing)); err != nil {
 		t.Fatalf("the backing set must authorise its own ref: %v", err)
 	}
@@ -553,7 +591,7 @@ func TestVerify_RefSelectsTheSigningSet(t *testing.T) {
 	// Nor do two provider signatures authorise the backing ref, since they are
 	// not members of the backing set.
 	backEnv := testEnvelope(payload)
-	backEnv.Ref = testBackingRef
+	backEnv.Ref = testBackingRefs[0]
 	backEnv.Version = 2
 	if _, err := v.Verify(signedMessage(t, backEnv, providers[:2])); err != failure.ProvisionRejected {
 		t.Fatalf("provider keys must not authorise the backing ref, got %v", err)
@@ -591,7 +629,7 @@ func TestSetAdmins_RejectedRotationKeepsTheWorkingSet(t *testing.T) {
 	admins := newAdmins(t, 3)
 	v := newTestVerifier(t, admins, 2)
 
-	if err := v.SetAdmins(AdminSet{}, AdminSet{}); err == nil {
+	if err := v.SetAdmins(roleSets(AdminSet{}, AdminSet{})); err == nil {
 		t.Fatal("want an error installing an empty pair")
 	}
 
@@ -618,7 +656,7 @@ func TestSetAdmins_RotationDoesNotResetEnvelopeVersions(t *testing.T) {
 	}
 
 	second := newAdmins(t, 3)
-	if err := v.SetAdmins(adminSet(newAdmins(t, 1), 1), adminSet(second, 2)); err != nil {
+	if err := v.SetAdmins(roleSets(adminSet(newAdmins(t, 1), 1), adminSet(second, 2))); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 
@@ -643,7 +681,7 @@ func TestSetAdmins_RotationRevokesThePreviousSet(t *testing.T) {
 	v := newTestVerifier(t, first, 2)
 
 	second := newAdmins(t, 3)
-	if err := v.SetAdmins(adminSet(newAdmins(t, 1), 1), adminSet(second, 2)); err != nil {
+	if err := v.SetAdmins(roleSets(adminSet(newAdmins(t, 1), 1), adminSet(second, 2))); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 

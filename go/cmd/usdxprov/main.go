@@ -83,11 +83,12 @@ this for you.
 The freshness window is `+provision.Freshness.String()+`: sign and submit within it, or
 the envelope is rejected as stale.
 
-Two signer sets are published per machine, and the ref decides which one applies:
-`+config.HexAPIKeyRef+` is authorised by the backing set (at least
-`+fmt.Sprint(provision.MinBackingThreshold)+` signature), every other ref by the providers set (at least
-`+fmt.Sprint(provision.MinProviderThreshold)+` DISTINCT signatures). The exact thresholds are whatever SET_ADMINS
-published, and only the target machine can tell you whether an envelope satisfies them.
+Two role-tagged signer sets are published per machine, and the ref decides which
+one applies: `+strings.Join(config.BackingRefs(), ", ")+`
+are authorised by the backing set (at least `+fmt.Sprint(provision.MinBackingThreshold)+` signature), every other ref by
+the providers set (at least `+fmt.Sprint(provision.MinProviderThreshold)+` DISTINCT signatures). The exact thresholds
+are whatever SET_ADMINS published, and only the target machine can tell you
+whether an envelope satisfies them.
 `)
 	os.Exit(2)
 }
@@ -182,7 +183,7 @@ func build(args []string) error {
 		time.Unix(int64(env.IssuedAt), 0).Add(provision.Freshness).UTC().Format(time.RFC3339),
 		provision.Freshness)
 	fmt.Printf("\nRef %q is authorised by the %s set: at least %d distinct signature(s) —\n",
-		env.Ref, setNameFor(env.Ref), provision.MinThresholdFor(env.Ref, config.HexAPIKeyRef))
+		env.Ref, setNameFor(env.Ref), provision.MinThresholdFor(env.Ref, config.BackingRefs()))
 	fmt.Printf("the published threshold for this machine may be higher. The credential is\n")
 	fmt.Printf("already encrypted, so this file is safe to send to the signers.\n")
 	return nil
@@ -271,10 +272,17 @@ func submit(args []string) error {
 	}
 	// The floor for the set this ref falls under, not the machine's actual threshold:
 	// fewer than this can never be accepted anywhere, so catch it before the trip.
-	floor := provision.MinThresholdFor(f.Ref, config.HexAPIKeyRef)
+	floor := provision.MinThresholdFor(f.Ref, config.BackingRefs())
 	if len(f.Signatures) < floor {
 		return fmt.Errorf("have %d signatures, need at least %d for the %s set",
 			len(f.Signatures), floor, setNameFor(f.Ref))
+	}
+	// More is not safer: the extension drops an over-signed envelope before it
+	// looks at the threshold, and says only that it was rejected. Catching it
+	// here is the difference between a fixable message and a silent bounce.
+	if len(f.Signatures) > provision.MaxSignatures {
+		return fmt.Errorf("have %d signatures and the extension accepts at most %d; drop the extras",
+			len(f.Signatures), provision.MaxSignatures)
 	}
 
 	age := time.Since(time.Unix(int64(f.IssuedAt), 0))
@@ -332,8 +340,8 @@ func submit(args []string) error {
 // postDirect submits through the proxy, which is the production path.
 func postDirect(proxyURL, apiKey string, message []byte) error {
 	payload := map[string]string{
-		"opType":    b32("USDX_CONFIG"),
-		"opCommand": b32("SET_SECRET"),
+		"opType":    b32(config.OPTypeTeeOracle),
+		"opCommand": b32(config.OPCommandSetSecret),
 		"message":   "0x" + hex.EncodeToString(message),
 	}
 	raw, _ := json.Marshal(payload)
@@ -367,8 +375,8 @@ func postDirect(proxyURL, apiKey string, message []byte) error {
 // DirectInstruction — what the proxy really sends — never a DataFixed.
 func postAction(actionURL string, message []byte) error {
 	di := map[string]any{
-		"opType":    b32("USDX_CONFIG"),
-		"opCommand": b32("SET_SECRET"),
+		"opType":    b32(config.OPTypeTeeOracle),
+		"opCommand": b32(config.OPCommandSetSecret),
 		"message":   "0x" + hex.EncodeToString(message),
 	}
 	diRaw, _ := json.Marshal(di)
@@ -467,15 +475,16 @@ func recoverSigner(body, sig []byte) (common.Address, bool) {
 }
 
 // setNameFor names the signer set governing a ref, for messages only. The
-// authoritative mapping is provision.MinThresholdFor and the enclave's own
-// pinned backingRef.
+// authoritative mapping is provision.RoleFor and the enclave's own pinned
+// backing ref set.
 func setNameFor(ref string) string {
-	if ref == config.HexAPIKeyRef {
-		return "backing"
-	}
-	return "providers"
+	return provision.RoleFor(ref, config.BackingRefs())
 }
 
+// b32 renders Solidity's bytes32(s). The op identifiers passed to it come from
+// internal/config rather than string literals: the extension routes on exactly
+// those constants, and a literal here would keep compiling after a retag while
+// every envelope bounced as an unsupported op type.
 func b32(s string) string {
 	b := make([]byte, 32)
 	copy(b, s)

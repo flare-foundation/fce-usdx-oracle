@@ -38,8 +38,8 @@ const (
 	// Status-0: the extension declined to publish and named a class in Log.
 	OutcomeExtensionFailed Outcome = "extension_failed"
 
-	// The report is real but the store will not take it — StaleConfig,
-	// OutOfBounds, TooOld, UnknownSigner and friends.
+	// The report is real but the store will not take it — StaleEndpoints,
+	// StaleAdmins, NotNewer, TooFarAhead and friends.
 	OutcomeRejected Outcome = "rejected"
 
 	// Submitted, but no receipt inside the deadline. Not chased.
@@ -65,31 +65,21 @@ type Record struct {
 
 	Outcome Outcome `json:"outcome"`
 
-	// Channel is "instruction" or "direct". The two have different failure modes at
-	// the same outcome: a direct no_result names one machine, an instruction one
-	// could be any machine the registry picked.
-	Channel string `json:"channel,omitempty"`
-
-	// Phase is "bootstrap" for the startup sweep, empty for a timed cycle. Different
-	// success criteria: a sweep reporting race_lost commissioned nothing, while a
-	// cycle reporting it worked as designed.
-	Phase string `json:"phase,omitempty"`
-
-	// Proxy is the proxy this cycle used: the direct target, or whichever of the
-	// fleet's held the result. With a rotating keeper, what says whose failure it is.
+	// Proxy is whichever of the fleet's proxies held the result, which is the
+	// only thing that says whose failure a bad cycle was.
 	Proxy string `json:"proxy,omitempty"`
 
-	// TeeID is the machine that signed the report, recovered from the signature — on
-	// the instruction channel, the only thing naming the machine the registry chose.
-	// Falls back to the addressed machine when no report was produced.
+	// TeeID is the machine that signed the report, recovered from the signature —
+	// the only thing naming the machine the registry chose. Empty when no report
+	// was produced: nothing else in the cycle knows which machine was picked.
 	TeeID string `json:"teeId,omitempty"`
 
-	// InstructionID is the on-chain instruction id, or the proxy's action id on
-	// the direct channel. Empty when the trigger never landed.
+	// InstructionID is the on-chain instruction id. Empty when the trigger
+	// transaction never landed.
 	InstructionID string `json:"instructionId,omitempty"`
 
-	// RequestTxStatus is "mined", "failed", or "not_applicable" on the direct
-	// channel, which sends no trigger transaction at all.
+	// RequestTxStatus is "mined" or "failed" for the requestFeedUpdate()
+	// transaction.
 	RequestTxStatus string `json:"requestTxStatus,omitempty"`
 
 	// ResultStatus is the ActionResult status as a string — "1", "0", or

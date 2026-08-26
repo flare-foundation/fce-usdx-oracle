@@ -3,7 +3,7 @@
 # use-chain.sh — Activate a chain-specific .env file.
 #
 # Reads .env.<chain> from the project root and copies it to .env. All
-# deployment scripts (pre-build, post-build, test, full-setup) auto-load .env.
+# deployment scripts (full-setup, post-build, test) auto-load .env.
 #
 # Usage:
 #   ./scripts/use-chain.sh <chain>       Copy .env.<chain> → .env (e.g. coston).

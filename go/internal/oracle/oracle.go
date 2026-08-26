@@ -36,8 +36,10 @@ type Signer interface {
 	Sign(ctx context.Context, message []byte) ([]byte, error)
 }
 
-// Config carries no target binding: where a signed report lands is settled by
-// the store's registered-machine check, not by the payload.
+// Config carries the feed binding the store checks. Where a signed update lands
+// is still settled by the store's registered-machine check, but WHICH feed it
+// may land on is now named in the payload: the store rejects an update that
+// does not carry its own extension and feed ids.
 type Config struct {
 	Chains []supply.ChainConfig
 	Bonds  backing.Source
@@ -46,8 +48,14 @@ type Config struct {
 	// the observation then runs through price.ComputeWithoutCash.
 	Cash backing.Source
 
-	// Commits the signed report to the configuration it was computed under, so
-	// the store can refuse a price from a machine running something else.
+	// The extension this machine serves and the feed it speaks for, both pinned
+	// in the build. Zero values are rejected at signing time rather than here,
+	// so a build without them still serves GET /state and the conformance stub.
+	ExtensionID *big.Int
+	FeedID      [21]byte
+
+	// Commits the signed update to the configuration it was computed under, so
+	// the store can refuse a value from a machine running something else.
 	EndpointsHash common.Hash
 
 	// Commits the signed report to the admin set in force when it was computed,
@@ -74,11 +82,22 @@ func (c Config) Validate() error {
 }
 
 // Observation is the result of one successful price observation. It carries no
-// signature: the signed body binds an instruction id that is not known yet.
+// signature: signing is a separate call, so the poller can observe on a timer
+// and the handler only sign.
 type Observation struct {
-	Price      *big.Int
-	Decimals   int8
+	// Scaled by 10^Decimals, in the store's int32 representation. The narrowing
+	// happens in Observe, where an out-of-range price fails the observation
+	// rather than being truncated into a plausible-looking one.
+	Value    int32
+	Decimals int8
+
 	ObservedAt uint64
+
+	// The feed this observation is for, copied from the Config. Carried on the
+	// Observation for the same reason the hashes below are: everything the
+	// signature commits to is fixed at observation time, not at request time.
+	ExtensionID *big.Int
+	FeedID      [21]byte
 
 	// The configuration this price was computed under, so a later Sign commits
 	// to the config in force at observation time, not at request time.
@@ -90,8 +109,8 @@ type Observation struct {
 	// Health maps each source identifier to a config.Health* value.
 	Health map[string]string
 
-	// Data is the ActionResult payload, abi.encode(body, signature). Empty
-	// until Sign fills it in for a specific instruction.
+	// Data is the ActionResult payload, abi.encode(FeedUpdate, Signature).
+	// Empty until Sign fills it in.
 	Data []byte
 }
 
@@ -146,30 +165,44 @@ func Observe(ctx context.Context, cfg Config) (Observation, error) {
 		return Observation{Health: health}, err
 	}
 
-	// Wall-clock completion, not the oldest input: the store requires strict
-	// monotonicity, and the reserve figures change only on an on-chain event, so
-	// keying off them would leave consecutive observations sharing a stamp for
-	// hours at a time. This stamps when the inputs were READ, which is what
-	// MaxObservationAge and the store's maxAge both bound.
-	observedAt := uint64(time.Now().UTC().Unix())
+	// Narrowed here rather than at signing time, so an out-of-range price fails
+	// the observation it came from. Fails closed: a wrapped int32 would be
+	// published as fact.
+	scaled, err := report.ValueFromBig(value)
+	if err != nil {
+		return Observation{Health: health}, err
+	}
+
+	// observedAt uses the home chain's block header timestamp, not wall clock or reserves.
+	// Ensures observedAt is always strictly before current block.timestamp and strictly increasing.
+	// MaxObservationAge bounds freshness.
+	observedAt, err := homeBlockTime(supplies)
+	if err != nil {
+		return Observation{Health: health}, err
+	}
 
 	return Observation{
-		Price:         value,
+		Value:         scaled,
 		Decimals:      config.PriceDecimals,
 		ObservedAt:    observedAt,
+		ExtensionID:   cfg.ExtensionID,
+		FeedID:        cfg.FeedID,
 		EndpointsHash: cfg.EndpointsHash,
 		AdminsHash:    cfg.AdminsHash,
 		Health:        health,
 	}, nil
 }
 
-// Sign binds an observation to one instruction and returns the ActionResult
-// payload, abi.encode(body, signature). Nothing is resampled at signing time,
-// which would put a fresh timestamp on stale inputs.
-func Sign(
-	ctx context.Context, signer Signer, obs Observation, instructionID common.Hash,
-) (Observation, error) {
-	data, err := signPayload(ctx, signer, obs, instructionID)
+// Sign returns the ActionResult payload, abi.encode(FeedUpdate, Signature).
+// Nothing is resampled at signing time, which would put a fresh timestamp on
+// stale inputs.
+//
+// The update is no longer bound to an instruction id — the store dropped the
+// field, and correlation is the tee-node action id. What replaces it as replay
+// protection is strictly increasing observedAt plus the feed binding, both of
+// which the store enforces.
+func Sign(ctx context.Context, signer Signer, obs Observation) (Observation, error) {
+	data, err := signPayload(ctx, signer, obs)
 	if err != nil {
 		return Observation{Health: obs.Health}, err
 	}
@@ -177,28 +210,50 @@ func Sign(
 	return obs, nil
 }
 
-func signPayload(
-	ctx context.Context, signer Signer, obs Observation, instructionID common.Hash,
-) ([]byte, error) {
-	body, err := report.EncodeBody(report.PriceReport{
-		Price:         obs.Price,
+func signPayload(ctx context.Context, signer Signer, obs Observation) ([]byte, error) {
+	update := report.FeedUpdate{
+		ExtensionID:   obs.ExtensionID,
+		FeedID:        obs.FeedID,
+		Value:         obs.Value,
 		Decimals:      obs.Decimals,
 		ObservedAt:    obs.ObservedAt,
-		InstructionID: instructionID,
 		EndpointsHash: obs.EndpointsHash,
 		AdminsHash:    obs.AdminsHash,
-	})
+	}
+
+	// The signer is handed the SignedPayload PREIMAGE: tee-node hashes what it
+	// is given and applies EIP-191 itself. See package report.
+	message, err := report.SigningMessage(update, config.ChainID)
 	if err != nil {
 		return nil, err
 	}
 
-	signature, err := signer.Sign(ctx, body)
+	signature, err := signer.Sign(ctx, message)
 	if err != nil {
 		return nil, err
 	}
 
-	// body is carried verbatim; see package report on why it is never re-encoded.
-	return report.EncodeData(body, signature)
+	return report.EncodeData(update, signature)
+}
+
+// homeBlockTime picks the stamp out of the home chain's reading. Fails closed:
+// a missing or zero block time would otherwise stamp the epoch, which the store
+// reads as older than everything and rejects as NotNewer — after the fee.
+func homeBlockTime(supplies []supply.Reading) (uint64, error) {
+	for _, r := range supplies {
+		if r.Chain != config.HomeChain {
+			continue
+		}
+		if r.BlockTime.IsZero() {
+			return 0, failure.Internal
+		}
+		unix := r.BlockTime.Unix()
+		if unix <= 0 {
+			return 0, failure.Internal
+		}
+		return uint64(unix), nil
+	}
+	return 0, failure.Internal
 }
 
 // readAllChains reads every chain concurrently. Any chain failing fails the
@@ -290,14 +345,10 @@ func healthOf(err error) string {
 	return config.HealthOK
 }
 
-// checkWindow rejects an observation whose inputs are spread too far apart in
-// time. Read skew only — the spread between RetrievedAt stamps, not data age.
-//
-// How far the reserve figure lags chain state is NOT bounded here, and no
-// longer bounded anywhere: Hex republishes on an on-chain event rather than on
-// a schedule, so an old figure is normally the correct one (config.BondsSource
-// has the reasoning). The lag that remains fails safe — a reserve figure that
-// trails a mint understates R/S, and the price is capped at par.
+// checkWindow rejects observations whose inputs are too far apart in time.
+// Only checks read skew—spread between RetrievedAt stamps, not data age.
+// Reserve lag is unbounded: Hex republishes by event, so old figures are expected.
+// A reserve lag understates R/S, and price is capped at par for safety.
 func checkWindow(window time.Duration, supplies []supply.Reading, readings ...backing.Reading) error {
 	var earliest, latest time.Time
 
@@ -386,10 +437,10 @@ func NewRunner(cfg Config, signer Signer) (*Runner, error) {
 
 // Observe performs one observation and signs it, back to back. Does not fit
 // inside tee-node's 2s action timeout; kept for tests and tooling.
-func (r *Runner) Observe(ctx context.Context, instructionID common.Hash) (Observation, error) {
+func (r *Runner) Observe(ctx context.Context) (Observation, error) {
 	obs, err := Observe(ctx, r.cfg)
 	if err != nil {
 		return obs, err
 	}
-	return Sign(ctx, r.signer, obs, instructionID)
+	return Sign(ctx, r.signer, obs)
 }
