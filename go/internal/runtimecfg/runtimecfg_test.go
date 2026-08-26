@@ -54,7 +54,7 @@ func testCashSalt() common.Hash { return crypto.Keccak256Hash([]byte("test-salt"
 
 func testCashCommitment(t *testing.T) common.Hash {
 	t.Helper()
-	c, err := CommitPrivateURL(testCashSalt(), testCashURL)
+	c, err := CommitPrivateURL(PrivateURL{Salt: testCashSalt(), Url: testCashURL})
 	if err != nil {
 		t.Fatalf("CommitPrivateURL: %v", err)
 	}
@@ -63,7 +63,7 @@ func testCashCommitment(t *testing.T) common.Hash {
 
 func testCashBlob(t *testing.T) []byte {
 	t.Helper()
-	blob, err := EncodePrivateURL(testCashSalt(), testCashURL)
+	blob, err := EncodePrivateURL(PrivateURL{Salt: testCashSalt(), Url: testCashURL})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestPrivateURL_MismatchIsRejectedOnSecret(t *testing.T) {
 	}
 	setAdmins(t, s, 1)
 
-	wrong, err := EncodePrivateURL(testCashSalt(), "https://evil.example/cash")
+	wrong, err := EncodePrivateURL(PrivateURL{Salt: testCashSalt(), Url: "https://evil.example/cash"})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestPrivateURL_MismatchIsRejectedOnEndpoints(t *testing.T) {
 	setAdmins(t, s, 1)
 
 	// The URL arrives first, before any configuration names it.
-	wrong, err := EncodePrivateURL(testCashSalt(), "https://evil.example/cash")
+	wrong, err := EncodePrivateURL(PrivateURL{Salt: testCashSalt(), Url: "https://evil.example/cash"})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
@@ -555,7 +555,7 @@ func TestPrivateURL_UnsaltedCommitmentIsRejected(t *testing.T) {
 	s := newStore(t)
 	setAdmins(t, s, 1)
 
-	blob, err := EncodePrivateURL(common.Hash{}, testCashURL)
+	blob, err := EncodePrivateURL(PrivateURL{Salt: common.Hash{}, Url: testCashURL})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestPrivateURL_ShapeIsChecked(t *testing.T) {
 		s := newStore(t)
 		setAdmins(t, s, 1)
 
-		blob, err := EncodePrivateURL(testCashSalt(), bad)
+		blob, err := EncodePrivateURL(PrivateURL{Salt: testCashSalt(), Url: bad})
 		if err != nil {
 			t.Fatalf("EncodePrivateURL: %v", err)
 		}

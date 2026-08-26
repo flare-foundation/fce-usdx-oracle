@@ -492,15 +492,15 @@ func checkCredential(ref string, value []byte) error {
 // to publish: a bare hash of a low-entropy URL is brute-forceable from chain
 // data.
 func resolvePrivateURL(ep Endpoint, value []byte) (string, error) {
-	salt, url, ok := decodePrivateURL(value)
+	blob, ok := decodePrivateURL(value)
 	if !ok {
 		return "", errors.New("private endpoint value is not an encoded (salt, url)")
 	}
-	if salt == (common.Hash{}) {
+	if blob.Salt == (common.Hash{}) {
 		return "", errors.New("private endpoint commitment is unsalted")
 	}
 
-	commitment, err := CommitPrivateURL(salt, url)
+	commitment, err := CommitPrivateURL(blob)
 	if err != nil {
 		return "", errors.New("private endpoint value could not be committed to")
 	}
@@ -512,13 +512,13 @@ func resolvePrivateURL(ep Endpoint, value []byte) (string, error) {
 
 	// A private URL carries no placeholder — there is no second ref to fill it —
 	// so it is validated as a complete URL.
-	if strings.Contains(url, secretPlaceholder) {
+	if strings.Contains(blob.Url, secretPlaceholder) {
 		return "", errors.New("private endpoint url may not contain a placeholder")
 	}
-	if _, err := resolveURL(url, "", ""); err != nil {
+	if _, err := resolveURL(blob.Url, "", ""); err != nil {
 		return "", err
 	}
-	return url, nil
+	return blob.Url, nil
 }
 
 // Readiness reports what provisioning is still outstanding, in the shape

@@ -67,20 +67,41 @@ func structMethodInputs(method string) abi.Arguments {
 	return m.Inputs
 }
 
+// PrivateURL is a PRIVATE endpoint's commitment preimage, in both directions:
+// EncodePrivateURL packs one, decodePrivateURL returns one.
+//
+// Declared here rather than aliased from the generated bindings above: the
+// chain holds only keccak256 of these bytes, as Endpoint.urlHash, so there is
+// no on-chain struct to derive the layout from. The format is a convention
+// between the publisher and this build, pinned by
+// TestCommitPrivateURLMatchesSolidity.
+type PrivateURL struct {
+	Salt common.Hash
+	Url  string
+}
+
+// argSpec is one ABI argument's name and type. The name is load-bearing:
+// Arguments.Copy maps argument names onto struct fields, and an unnamed
+// argument cannot be copied into a struct at all.
+type argSpec struct{ name, typ string }
+
 // privateURLArgs is the commitment preimage for a PRIVATE endpoint:
 // abi.encode(salt, url). Salted by construction — a bare hash of a low-entropy
 // URL is brute-forceable from chain data, and the URL is on-chain only as this
 // commitment.
-var privateURLArgs = mustArgs("bytes32", "string")
+var privateURLArgs = mustArgs(
+	argSpec{"salt", "bytes32"},
+	argSpec{"url", "string"},
+)
 
-func mustArgs(types ...string) abi.Arguments {
-	args := make(abi.Arguments, len(types))
-	for i, t := range types {
-		ty, err := abi.NewType(t, "", nil)
+func mustArgs(specs ...argSpec) abi.Arguments {
+	args := make(abi.Arguments, len(specs))
+	for i, spec := range specs {
+		ty, err := abi.NewType(spec.typ, "", nil)
 		if err != nil {
-			panic("runtimecfg: invalid ABI type " + t + ": " + err.Error())
+			panic("runtimecfg: invalid ABI type " + spec.typ + ": " + err.Error())
 		}
-		args[i] = abi.Argument{Type: ty}
+		args[i] = abi.Argument{Name: spec.name, Type: ty}
 	}
 	return args
 }
@@ -88,13 +109,13 @@ func mustArgs(types ...string) abi.Arguments {
 // EncodePrivateURL returns the commitment preimage a PRIVATE endpoint's URL is
 // provisioned as. Exported so the provisioning CLI produces byte-identical
 // input to what verification recomputes.
-func EncodePrivateURL(salt common.Hash, url string) ([]byte, error) {
-	return privateURLArgs.Pack(salt, url)
+func EncodePrivateURL(u PrivateURL) ([]byte, error) {
+	return privateURLArgs.Pack(u.Salt, u.Url)
 }
 
 // CommitPrivateURL returns the urlHash a published PRIVATE endpoint must carry.
-func CommitPrivateURL(salt common.Hash, url string) (common.Hash, error) {
-	preimage, err := EncodePrivateURL(salt, url)
+func CommitPrivateURL(u PrivateURL) (common.Hash, error) {
+	preimage, err := EncodePrivateURL(u)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -102,20 +123,16 @@ func CommitPrivateURL(salt common.Hash, url string) (common.Hash, error) {
 }
 
 // decodePrivateURL reverses EncodePrivateURL.
-func decodePrivateURL(preimage []byte) (common.Hash, string, bool) {
+func decodePrivateURL(preimage []byte) (PrivateURL, bool) {
 	values, err := privateURLArgs.Unpack(preimage)
 	if err != nil || len(values) != 2 {
-		return common.Hash{}, "", false
+		return PrivateURL{}, false
 	}
-	salt, ok := values[0].([32]byte)
-	if !ok {
-		return common.Hash{}, "", false
+	var out PrivateURL
+	if err := privateURLArgs.Copy(&out, values); err != nil {
+		return PrivateURL{}, false
 	}
-	url, ok := values[1].(string)
-	if !ok {
-		return common.Hash{}, "", false
-	}
-	return common.Hash(salt), url, true
+	return out, true
 }
 
 // Unpack returns the tuple as an anonymous struct that go-ethereum builds from

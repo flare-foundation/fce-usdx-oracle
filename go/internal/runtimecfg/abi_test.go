@@ -70,7 +70,7 @@ func TestSaltMatchesSolidity(t *testing.T) {
 func TestCommitPrivateURLMatchesSolidity(t *testing.T) {
 	salt := common.HexToHash(vectorSalt)
 
-	got, err := CommitPrivateURL(salt, vectorCashURL)
+	got, err := CommitPrivateURL(PrivateURL{Salt: salt, Url: vectorCashURL})
 	if err != nil {
 		t.Fatalf("CommitPrivateURL: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestCommitPrivateURLMatchesSolidity(t *testing.T) {
 
 	// The salt is what makes publishing the commitment safe: without it the
 	// hash of a low-entropy URL is brute-forceable from chain data.
-	unsalted, err := CommitPrivateURL(common.Hash{}, vectorCashURL)
+	unsalted, err := CommitPrivateURL(PrivateURL{Salt: common.Hash{}, Url: vectorCashURL})
 	if err != nil {
 		t.Fatalf("CommitPrivateURL: %v", err)
 	}
@@ -92,19 +92,19 @@ func TestCommitPrivateURLMatchesSolidity(t *testing.T) {
 func TestDecodePrivateURLRoundTrip(t *testing.T) {
 	salt := common.HexToHash(vectorSalt)
 
-	preimage, err := EncodePrivateURL(salt, vectorCashURL)
+	preimage, err := EncodePrivateURL(PrivateURL{Salt: salt, Url: vectorCashURL})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
-	gotSalt, gotURL, ok := decodePrivateURL(preimage)
+	got, ok := decodePrivateURL(preimage)
 	if !ok {
 		t.Fatal("decodePrivateURL rejected its own encoding")
 	}
-	if gotSalt != salt || gotURL != vectorCashURL {
-		t.Fatalf("round trip changed (salt, url): %s %q", gotSalt.Hex(), gotURL)
+	if got.Salt != salt || got.Url != vectorCashURL {
+		t.Fatalf("round trip changed (salt, url): %s %q", got.Salt.Hex(), got.Url)
 	}
 
-	if _, _, ok := decodePrivateURL([]byte("not abi")); ok {
+	if _, ok := decodePrivateURL([]byte("not abi")); ok {
 		t.Error("garbage must not decode")
 	}
 }
