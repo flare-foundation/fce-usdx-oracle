@@ -615,9 +615,8 @@ func (s *Store) Open() (oracle.Sources, oracle.Binding, error) {
 			if err != nil {
 				return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
 			}
-			// Positional names, so nothing an operator supplies reaches /state.
 			providers = append(providers, supply.Provider{
-				Name:   fmt.Sprintf("rpc_%s_%d", pinned.Name, i+1),
+				Name:   config.ProviderHealthKey(pinned.Name, i+1),
 				Client: client,
 			})
 		}

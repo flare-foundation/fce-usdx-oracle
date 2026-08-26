@@ -3,6 +3,7 @@ package config
 
 import (
 	"encoding/hex"
+	"fmt"
 	"math/big"
 	"os"
 	"strconv"
@@ -150,6 +151,21 @@ func IsBackingRef(ref string) bool {
 		}
 	}
 	return false
+}
+
+// ChainHealthKey and ProviderHealthKey name a chain and one of its RPC
+// providers in the sourceHealth map GET /state publishes.
+//
+// Both live here because both are public surface and they have to agree: the
+// keys were formerly built in two packages that did not know of each other, so
+// changing the prefix in one would have left the map with two naming schemes.
+//
+// Positional, never operator-supplied: a provider is "rpc_flare_1", so nothing
+// written into a SET_ENDPOINTS payload can reach a world-readable surface.
+func ChainHealthKey(chain string) string { return "rpc_" + chain }
+
+func ProviderHealthKey(chain string, index int) string {
+	return fmt.Sprintf("rpc_%s_%d", chain, index)
 }
 
 // Chain is a pinned per-chain fact. Provider lists and agreement thresholds are

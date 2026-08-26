@@ -268,7 +268,7 @@ func readAllChains(ctx context.Context, src Sources, health map[string]string) (
 
 	var firstErr error
 	for i, err := range errs {
-		name := chainHealthKey(src.Chains[i].Name)
+		name := config.ChainHealthKey(src.Chains[i].Name)
 
 		// Reported whether or not the chain read succeeded. Quorum lets a chain
 		// stay "ok" while one of its providers is dead, dissenting or lagging,
@@ -379,7 +379,7 @@ func checkWindow(window time.Duration, supplies []supply.Reading, readings ...ba
 func newHealth(src Sources) map[string]string {
 	h := make(map[string]string, len(src.Chains)*3+2)
 	for _, ch := range src.Chains {
-		h[chainHealthKey(ch.Name)] = config.HealthUnknown
+		h[config.ChainHealthKey(ch.Name)] = config.HealthUnknown
 		// Seeded so a provider that was never reached still appears. An absent
 		// key reads as "fine" to anything consuming /state, which is the one
 		// thing this map must never do.
@@ -397,8 +397,6 @@ func newHealth(src Sources) map[string]string {
 	}
 	return h
 }
-
-func chainHealthKey(chain string) string { return "rpc_" + chain }
 
 // Runner binds sources, a binding and a Signer together. A convenience for
 // tests and one-shot use; production goes through internal/observe.
