@@ -45,7 +45,7 @@ func newTestSource(t *testing.T, cfg Config, handler http.HandlerFunc) (Source, 
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	return &httpSource{cfg: cfg, client: client}, srv
+	return &hexSource{cfg: cfg, client: client}, srv
 }
 
 func serve(body string) http.HandlerFunc {
@@ -261,7 +261,7 @@ func TestFetch_DoesNotFollowRedirects(t *testing.T) {
 	}
 	// Swap in the plain-HTTP client so the redirect is actually exercised; the
 	// CheckRedirect policy under test is set by New().
-	hs := s.(*httpSource)
+	hs := s.(*hexSource)
 	hs.cfg.URL = src.URL
 	hs.client = &http.Client{Timeout: time.Second, CheckRedirect: hs.client.CheckRedirect}
 

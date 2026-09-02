@@ -72,7 +72,12 @@ type Config struct {
 	Timeout time.Duration
 }
 
-type httpSource struct {
+// hexSource reads one of Hex Trust's two reserve endpoints. It is the only
+// Source implementation, and it is Hex's schema, not a generic HTTP reader:
+// parse decodes Hex's field names and rejects any others, applies the USD rule
+// that differs between the public and restricted endpoints, and tolerates the
+// comma grouping only one of them uses. A different custodian is a new type.
+type hexSource struct {
 	cfg    Config
 	client *http.Client
 }
@@ -103,7 +108,7 @@ func New(cfg Config) (Source, error) {
 		return nil, errors.New("backing: timeout must be positive")
 	}
 
-	return &httpSource{
+	return &hexSource{
 		cfg: cfg,
 		client: &http.Client{
 			Timeout: cfg.Timeout,
@@ -116,7 +121,7 @@ func New(cfg Config) (Source, error) {
 	}, nil
 }
 
-func (s *httpSource) Name() string { return s.cfg.Name }
+func (s *hexSource) Name() string { return s.cfg.Name }
 
 // response is the union of both endpoints' shapes. Currency is a pointer so
 // "absent" and "present but empty" stay distinguishable.
@@ -127,7 +132,7 @@ type response struct {
 	LastUpdate string  `json:"last_update"`
 }
 
-func (s *httpSource) Fetch(ctx context.Context) (Reading, error) {
+func (s *hexSource) Fetch(ctx context.Context) (Reading, error) {
 	var lastErr error
 	for attempt := range attempts {
 		if attempt > 0 {
@@ -157,7 +162,7 @@ func isRetryable(err error) bool {
 	return errors.Is(err, failure.BackingUnavailable) || errors.Is(err, failure.BackingTimeout)
 }
 
-func (s *httpSource) fetchOnce(ctx context.Context) (Reading, error) {
+func (s *hexSource) fetchOnce(ctx context.Context) (Reading, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.URL, nil)
 	if err != nil {
 		return Reading{}, failure.Internal
@@ -201,7 +206,7 @@ func isTimeout(err error) bool {
 // parse turns a response body into a Reading, rejecting an unrecognised shape,
 // a non-USD figure, an unparseable amount or a timestamp from the future. An
 // OLD timestamp is not a rejection reason — see Config.
-func (s *httpSource) parse(body []byte) (Reading, error) {
+func (s *hexSource) parse(body []byte) (Reading, error) {
 	var r response
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	dec.DisallowUnknownFields()
