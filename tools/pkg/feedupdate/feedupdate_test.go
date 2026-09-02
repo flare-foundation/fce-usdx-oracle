@@ -12,7 +12,7 @@ import (
 )
 
 // From test/FeedUpdateVector.t.sol, shared with the enclave's encoder in
-// go/internal/report. See testdata/wire/README.md for why both are pinned to
+// go/internal/wire/feedupdate. See testdata/wire/README.md for why both are pinned to
 // Solidity's output rather than to each other.
 const (
 	vectorChainID = 114

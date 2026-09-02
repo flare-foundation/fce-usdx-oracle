@@ -7,7 +7,7 @@ Solidity's own encoding of the two configuration payloads, produced by
 
 Two independent encoders are asserted against these bytes:
 
-- `go/internal/runtimecfg` — the enclave's decoder, which must read what the
+- `go/internal/provisioning/store` — the enclave's decoder, which must read what the
   contract dispatched.
 - `tools/pkg/oraclepayload` — the publisher's encoder, which must predict the
   hash the contract will record.

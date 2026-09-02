@@ -11,7 +11,7 @@
 // Report measures the same age again against the requesting instruction's block
 // timestamp, which the data-provider quorum cosigned and the host cannot move.
 // See checkClock.
-package observe
+package poller
 
 import (
 	"context"
@@ -22,8 +22,8 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/oracle"
-	"fce-usdx-oracle/internal/readiness"
+	"fce-usdx-oracle/internal/observation"
+	"fce-usdx-oracle/internal/wire/readiness"
 	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -35,13 +35,13 @@ import (
 // they were opened under. Called per observation, so a rotated credential takes
 // effect without a restart.
 type Opener interface {
-	Open() (oracle.Sources, oracle.Binding, error)
+	Open() (observation.Sources, observation.Binding, error)
 }
 
 // Poller observes on a timer and keeps the most recent result.
 type Poller struct {
 	opener Opener
-	signer oracle.Signer
+	signer observation.Signer
 
 	// Fields rather than reads of the config constants, so a test can drive the
 	// loop without sleeping. New sets the production values.
@@ -51,7 +51,7 @@ type Poller struct {
 
 	mu sync.RWMutex
 
-	last     oracle.Observation
+	last     observation.Observation
 	haveLast bool
 
 	// Always a failure.Failure, so it is safe to publish.
@@ -61,7 +61,7 @@ type Poller struct {
 	failures     int
 }
 
-func New(opener Opener, signer oracle.Signer) *Poller {
+func New(opener Opener, signer observation.Signer) *Poller {
 	return &Poller{
 		opener:   opener,
 		signer:   signer,
@@ -94,11 +94,11 @@ func (p *Poller) observeOnce(ctx context.Context) {
 	src, binding, err := p.opener.Open()
 	if err != nil {
 		// Unprovisioned is the normal state at boot; not worth a log line each tick.
-		p.record(oracle.Observation{}, err)
+		p.record(observation.Observation{}, err)
 		return
 	}
 
-	obs, err := oracle.Observe(ctx, src, binding)
+	obs, err := observation.Observe(ctx, src, binding)
 	if err != nil {
 		// Safe to log: failure vocabulary is constant text.
 		logger.Warnf("observation failed: %s", err)
@@ -108,7 +108,7 @@ func (p *Poller) observeOnce(ctx context.Context) {
 	p.record(obs, nil)
 }
 
-func (p *Poller) record(obs oracle.Observation, err error) {
+func (p *Poller) record(obs observation.Observation, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -131,19 +131,19 @@ func (p *Poller) record(obs oracle.Observation, err error) {
 
 // Latest returns the newest observation, or a publishable failure. The
 // staleness check lives here so no path to the cached figures skips the bound.
-func (p *Poller) Latest() (oracle.Observation, error) {
+func (p *Poller) Latest() (observation.Observation, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if !p.haveLast {
 		if p.lastErr != nil {
-			return oracle.Observation{Health: p.last.Health}, p.lastErr
+			return observation.Observation{Health: p.last.Health}, p.lastErr
 		}
-		return oracle.Observation{Health: p.last.Health}, failure.NoObservation
+		return observation.Observation{Health: p.last.Health}, failure.NoObservation
 	}
 
 	if age := p.last.Age(p.now()); age > p.maxAge {
-		return oracle.Observation{Health: p.last.Health}, failure.ObservationStale
+		return observation.Observation{Health: p.last.Health}, failure.ObservationStale
 	}
 	return p.last, nil
 }
@@ -156,7 +156,7 @@ func (p *Poller) Latest() (oracle.Observation, error) {
 // the update, taken from the cosigned DataFixed. It is never published — the
 // signed observedAt remains the moment the inputs were read — and serves only
 // as the clock checkClock measures staleness against.
-func (p *Poller) Report(ctx context.Context, requestedAt uint64) (oracle.Observation, error) {
+func (p *Poller) Report(ctx context.Context, requestedAt uint64) (observation.Observation, error) {
 	obs, err := p.Latest()
 	if err != nil {
 		return obs, err
@@ -164,9 +164,9 @@ func (p *Poller) Report(ctx context.Context, requestedAt uint64) (oracle.Observa
 	if err := checkClock(obs.ObservedAt, requestedAt, p.maxAge); err != nil {
 		// Health still travels: a clock fault says nothing about the sources, and
 		// an operator reading a refusal needs to see they are fine.
-		return oracle.Observation{Health: obs.Health}, err
+		return observation.Observation{Health: obs.Health}, err
 	}
-	return oracle.Sign(ctx, p.signer, obs)
+	return observation.Sign(ctx, p.signer, obs)
 }
 
 // checkClock bounds how far the observation may trail the requesting block.

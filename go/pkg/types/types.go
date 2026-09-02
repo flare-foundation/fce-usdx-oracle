@@ -50,7 +50,7 @@ type Readiness struct {
 }
 
 // ReadinessReport is the JSON payload of a signed GET_READINESS answer — see
-// internal/readiness. PUBLIC on the same terms as State, and deliberately not a copy
+// internal/wire/readiness. Public on the same terms as State, and deliberately not a copy
 // of it: State's counters come from the GET_FEED handler, these from the poller.
 type ReadinessReport struct {
 	// --- provisioning, from the runtime configuration store ---

@@ -1,4 +1,4 @@
-package observe
+package poller
 
 import (
 	"context"
@@ -8,8 +8,8 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/oracle"
-	"fce-usdx-oracle/internal/readiness"
+	"fce-usdx-oracle/internal/observation"
+	"fce-usdx-oracle/internal/wire/readiness"
 	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -113,8 +113,8 @@ func TestReadinessReport_ReflectsTheObservation(t *testing.T) {
 // GET_FEED still reports what its loop has been doing.
 func TestReadinessReport_CountsFailuresWithoutAnyRequest(t *testing.T) {
 	p := stubPoller(t, &fakeSigner{})
-	p.record(oracle.Observation{}, failure.NotConfigured)
-	p.record(oracle.Observation{}, failure.NotConfigured)
+	p.record(observation.Observation{}, failure.NotConfigured)
+	p.record(observation.Observation{}, failure.NotConfigured)
 
 	rep := decodeReadiness(t, mustReadiness(t, p))
 

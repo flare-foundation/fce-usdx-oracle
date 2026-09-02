@@ -9,7 +9,7 @@
 // ref picks a role-tagged signer set installed by SET_ADMINS — a mapping pinned by
 // the caller, never read from the payload. Sets are memory-only, so SET_ADMINS must
 // precede SET_SECRET after every restart. See docs/usdx-oracle-rationale.md §9.
-package provision
+package envelope
 
 import (
 	"errors"
@@ -195,7 +195,7 @@ func Encode(e Envelope, signatures [][]byte) ([]byte, error) {
 
 // Verifier checks envelopes against the installed admin set and tracks versions.
 // NOT SAFE FOR CONCURRENT USE: Verify and SetAdmins both write
-// unsynchronised state. runtimecfg.Store holds applyMu across every call.
+// unsynchronised state. store.Store holds applyMu across every call.
 type Verifier struct {
 	chainID *big.Int
 	teeID   common.Address

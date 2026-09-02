@@ -1,4 +1,4 @@
-package runtimecfg
+package store
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/provision"
+	"fce-usdx-oracle/internal/provisioning/envelope"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -21,7 +21,7 @@ import (
 
 // fakeNode stands in for tee-node: it echoes the ciphertext back as plaintext,
 // which exercises everything except the crypto itself. Envelope verification is
-// covered exhaustively in internal/provision.
+// covered exhaustively in internal/provisioning/envelope.
 type fakeNode struct{ teeID common.Address }
 
 func (f *fakeNode) Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error) {
@@ -39,7 +39,7 @@ var testChainID = big.NewInt(114)
 func newStore(t *testing.T) *Store {
 	t.Helper()
 	return New(
-		provision.NewVerifier(testChainID, testTeeID, config.BackingRefs()),
+		envelope.NewVerifier(testChainID, testTeeID, config.BackingRefs()),
 		&fakeNode{teeID: testTeeID},
 	)
 }
@@ -132,8 +132,8 @@ var devAdmins = []common.Address{
 // envelope helpers sign with keys 1 and 2 regardless of ref.
 func testRoles() []RoleSpec {
 	return []RoleSpec{
-		{Role: provision.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
-		{Role: provision.RoleProviders, Threshold: 2, Admins: devAdmins},
+		{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+		{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
 	}
 }
 
@@ -166,7 +166,7 @@ func setEndpoints(s *Store, version uint64, groups []GroupSpec) error {
 }
 
 // setSecret installs a credential directly, bypassing envelope verification —
-// that is covered exhaustively in internal/provision.
+// that is covered exhaustively in internal/provisioning/envelope.
 func setSecret(t *testing.T, s *Store, ref string, value []byte) {
 	t.Helper()
 	s.mu.Lock()
@@ -799,40 +799,40 @@ func TestApplyAdmins_RejectsBadPayloads(t *testing.T) {
 		roles []RoleSpec
 	}{
 		{"missing backing", []RoleSpec{
-			{Role: provision.RoleProviders, Threshold: 2, Admins: devAdmins},
+			{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
 		}},
 		{"missing providers", []RoleSpec{
-			{Role: provision.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+			{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
 		}},
 		{"unknown role", append(testRoles(), RoleSpec{
 			Role: "auditors", Threshold: 1, Admins: devAdmins[:1],
 		})},
 		{"duplicate role", append(testRoles(), RoleSpec{
-			Role: provision.RoleBacking, Threshold: 1, Admins: devAdmins[:1],
+			Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1],
 		})},
 		{"providers below the floor", []RoleSpec{
-			{Role: provision.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
-			{Role: provision.RoleProviders, Threshold: 1, Admins: devAdmins},
+			{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+			{Role: envelope.RoleProviders, Threshold: 1, Admins: devAdmins},
 		}},
 		{"threshold above the set", []RoleSpec{
-			{Role: provision.RoleBacking, Threshold: 2, Admins: devAdmins[:1]},
-			{Role: provision.RoleProviders, Threshold: 2, Admins: devAdmins},
+			{Role: envelope.RoleBacking, Threshold: 2, Admins: devAdmins[:1]},
+			{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
 		}},
 		{"zero threshold", []RoleSpec{
-			{Role: provision.RoleBacking, Threshold: 0, Admins: devAdmins[:1]},
-			{Role: provision.RoleProviders, Threshold: 2, Admins: devAdmins},
+			{Role: envelope.RoleBacking, Threshold: 0, Admins: devAdmins[:1]},
+			{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
 		}},
 		{"empty admin list", []RoleSpec{
-			{Role: provision.RoleBacking, Threshold: 1},
-			{Role: provision.RoleProviders, Threshold: 2, Admins: devAdmins},
+			{Role: envelope.RoleBacking, Threshold: 1},
+			{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
 		}},
 		{"zero admin address", []RoleSpec{
-			{Role: provision.RoleBacking, Threshold: 1, Admins: []common.Address{{}}},
-			{Role: provision.RoleProviders, Threshold: 2, Admins: devAdmins},
+			{Role: envelope.RoleBacking, Threshold: 1, Admins: []common.Address{{}}},
+			{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
 		}},
 		{"duplicate admin", []RoleSpec{
-			{Role: provision.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
-			{Role: provision.RoleProviders, Threshold: 2, Admins: []common.Address{
+			{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+			{Role: envelope.RoleProviders, Threshold: 2, Admins: []common.Address{
 				devAdmins[0], devAdmins[0], devAdmins[1],
 			}},
 		}},
@@ -847,17 +847,17 @@ func TestApplyAdmins_RejectsBadPayloads(t *testing.T) {
 // A threshold above the signature cap installs cleanly and is then
 // unsatisfiable forever, so it is refused at publication.
 func TestApplyAdmins_ThresholdStopsAtTheSignatureCap(t *testing.T) {
-	admins := make([]common.Address, provision.MaxThreshold+1)
+	admins := make([]common.Address, envelope.MaxThreshold+1)
 	for i := range admins {
 		admins[i] = common.BigToAddress(big.NewInt(int64(i + 1)))
 	}
 
 	s := newStore(t)
 	if err := applyAdmins(s, 1, []RoleSpec{
-		{Role: provision.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
-		{Role: provision.RoleProviders, Threshold: uint64(provision.MaxThreshold + 1), Admins: admins},
+		{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+		{Role: envelope.RoleProviders, Threshold: uint64(envelope.MaxThreshold + 1), Admins: admins},
 	}); err == nil {
-		t.Fatalf("a threshold above %d must be rejected", provision.MaxThreshold)
+		t.Fatalf("a threshold above %d must be rejected", envelope.MaxThreshold)
 	}
 }
 
@@ -881,8 +881,8 @@ func TestApplyAdmins_RejectedRotationKeepsTheWorkingSet(t *testing.T) {
 	before := s.Readiness().AdminsHash
 
 	if err := applyAdmins(s, 2, []RoleSpec{
-		{Role: provision.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
-		{Role: provision.RoleProviders, Threshold: 9, Admins: devAdmins},
+		{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+		{Role: envelope.RoleProviders, Threshold: 9, Admins: devAdmins},
 	}); err == nil {
 		t.Fatal("expected rejection")
 	}
@@ -972,7 +972,7 @@ func TestApplySecret_IsSafeUnderConcurrency(t *testing.T) {
 func envelopeFor(t *testing.T, ref string, payload []byte, version uint64) []byte {
 	t.Helper()
 
-	env := provision.Envelope{
+	env := envelope.Envelope{
 		ChainID:     testChainID,
 		TeeID:       testTeeID,
 		Version:     version,
@@ -982,7 +982,7 @@ func envelopeFor(t *testing.T, ref string, payload []byte, version uint64) []byt
 		Payload:     payload,
 	}
 
-	body, err := provision.EncodeBody(env)
+	body, err := envelope.EncodeBody(env)
 	if err != nil {
 		t.Fatalf("EncodeBody: %v", err)
 	}
@@ -1005,7 +1005,7 @@ func envelopeFor(t *testing.T, ref string, payload []byte, version uint64) []byt
 		signatures = append(signatures, sig)
 	}
 
-	message, err := provision.Encode(env, signatures)
+	message, err := envelope.Encode(env, signatures)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}

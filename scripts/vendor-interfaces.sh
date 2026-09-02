@@ -53,7 +53,7 @@ banner = (
     "// Vendored from flare-smart-contracts-v2 @ %s by scripts/vendor-interfaces.sh.\n"
     "// Only the import paths are rewritten, to point at the siblings in this\n"
     "// directory. Do NOT edit the declarations: abigen derives the Go structs from\n"
-    "// them, and the enclave's codec in go/internal/runtimecfg plus the publisher's\n"
+    "// them, and the enclave's codec in go/internal/provisioning/store plus the publisher's\n"
     "// in tools/pkg/oraclepayload are both pinned to the same layout.\n" % rev
 )
 text = re.sub(r'^// Vendored from .*?\n(?://.*\n)*', '', text, count=1, flags=re.M)

@@ -13,8 +13,8 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/oracle"
-	"fce-usdx-oracle/internal/report"
+	"fce-usdx-oracle/internal/observation"
+	"fce-usdx-oracle/internal/wire/feedupdate"
 	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -45,9 +45,9 @@ func encodeFeedRequest(t *testing.T, feedID [21]byte) []byte {
 	// The zero id has no valid encoding through report, and is wanted verbatim
 	// by one of the rejection cases.
 	if feedID == ([21]byte{}) {
-		return make([]byte, report.RequestLength)
+		return make([]byte, feedupdate.RequestLength)
 	}
-	message, err := report.EncodeFeedRequest(feedID)
+	message, err := feedupdate.EncodeFeedRequest(feedID)
 	if err != nil {
 		t.Fatalf("EncodeFeedRequest: %v", err)
 	}
@@ -58,7 +58,7 @@ func encodeFeedRequest(t *testing.T, feedID [21]byte) []byte {
 // a test that is not about the observer does not have to set one up.
 func newTestExtension() *Extension {
 	return &Extension{
-		observer: &fakeObserver{obs: oracle.Observation{
+		observer: &fakeObserver{obs: observation.Observation{
 			Value:      100_000_000,
 			Decimals:   config.PriceDecimals,
 			ObservedAt: testTimestamp,
@@ -494,12 +494,12 @@ func contains(s, substr string) bool {
 // fakeObserver stands in for the oracle so the handler can be tested without
 // RPC endpoints, credentials or a signing service.
 type fakeObserver struct {
-	obs oracle.Observation
+	obs observation.Observation
 	err error
 
 	// readiness is returned verbatim as the signed payload would be; the
 	// handler's job is routing and envelope checking, not encoding, which
-	// internal/readiness covers on its own.
+	// internal/wire/readiness covers on its own.
 	readiness    []byte
 	readinessErr error
 
@@ -535,7 +535,7 @@ func (f *fakeObserver) ReadinessReport(
 	return f.readiness, nil
 }
 
-func (f *fakeObserver) Report(ctx context.Context, requestedAt uint64) (oracle.Observation, error) {
+func (f *fakeObserver) Report(ctx context.Context, requestedAt uint64) (observation.Observation, error) {
 	f.mu.Lock()
 	f.calls++
 	f.lastRequestedAt = requestedAt
@@ -544,7 +544,7 @@ func (f *fakeObserver) Report(ctx context.Context, requestedAt uint64) (oracle.O
 }
 
 func TestProcessGetFeed_UsesObserverResult(t *testing.T) {
-	obs := oracle.Observation{
+	obs := observation.Observation{
 		Value:      95_374_751,
 		Decimals:   8,
 		ObservedAt: 1_700_000_123,
@@ -580,7 +580,7 @@ func TestProcessGetFeed_UsesObserverResult(t *testing.T) {
 func TestProcessGetFeed_ObserverFailureFailsClosed(t *testing.T) {
 	o := &fakeObserver{
 		err: failure.BackingUnavailable,
-		obs: oracle.Observation{Health: map[string]string{"hex_bonds": config.HealthDown}},
+		obs: observation.Observation{Health: map[string]string{"hex_bonds": config.HealthDown}},
 	}
 	e := newTestExtension()
 	e.observer = o
@@ -626,7 +626,7 @@ func TestProcessGetFeed_ForeignErrorIsNotPublished(t *testing.T) {
 // A failed observation must not overwrite the last good price: the feed freezes
 // at its last value with an ageing timestamp rather than going blank.
 func TestProcessGetFeed_FailureKeepsLastGoodPrice(t *testing.T) {
-	o := &fakeObserver{obs: oracle.Observation{
+	o := &fakeObserver{obs: observation.Observation{
 		Value: 100_000_000, Decimals: 8, ObservedAt: 1_700_000_000,
 		Data: []byte{0x01}, Health: map[string]string{},
 	}}
@@ -692,7 +692,7 @@ func (r *recorder) WriteHeader(s int)           { r.status = s }
 // against, and the only trustworthy one available is the requesting block's.
 // Dropping it on the floor here would leave the machine checking itself.
 func TestProcessGetFeed_ForwardsTheRequestingBlockTimestamp(t *testing.T) {
-	o := &fakeObserver{obs: oracle.Observation{
+	o := &fakeObserver{obs: observation.Observation{
 		Value: 100_000_000, Decimals: 8, ObservedAt: testTimestamp, Data: []byte{0x01},
 	}}
 	e := newTestExtension()

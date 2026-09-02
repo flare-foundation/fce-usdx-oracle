@@ -44,7 +44,7 @@ written up in [../docs/usdx-oracle-findings.md](../docs/usdx-oracle-findings.md)
   carries the one-byte envelope `config.ReadinessRequestV1`; the handler requires exactly those
   shapes and rejects anything else.
 - **A handler has 2 seconds to answer.** tee-node's client timeout is a const in its internal
-  package. Anything slower must happen off the request path — which is what `internal/observe`
+  package. Anything slower must happen off the request path — which is what `internal/observation/poller`
   is: it observes on a timer, and the handler only signs.
 
 ## Develop
@@ -79,8 +79,8 @@ EXTENSION_PORT=8080 go run ./cmd
 
 **`buildResult` owns the envelope.** Return through it rather than constructing an `ActionResult` by hand; it sets the `log` values the wire contract requires.
 
-**ABI payloads** are decoded with the `abi.Arguments` declared in `internal/runtimecfg/abi.go`
-(endpoints/admins) and the feed-update request decoder in `internal/report`.
+**ABI payloads** are decoded with the `abi.Arguments` declared in `internal/provisioning/store/abi.go`
+(endpoints/admins) and the feed-update request decoder in `internal/wire/feedupdate`.
 
 ## Verify
 

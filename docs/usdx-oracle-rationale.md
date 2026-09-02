@@ -72,7 +72,7 @@ set and the freshness window.
 
 ---
 
-## 2. One supply read, one reserve read (`internal/oracle`)
+## 2. One supply read, one reserve read (`internal/observation`)
 
 Supply reads and reserve reads are not atomic, and a redemption landing between
 them changes both sides of the ratio. Read reserves first (high) and supply after
@@ -155,7 +155,7 @@ on-chain feed.
 
 ---
 
-## 3. Observing on a timer, signing on demand (`internal/observe`)
+## 3. Observing on a timer, signing on demand (`internal/observation/poller`)
 
 `Observe` is slow — five upstream sources, two of them multi-provider — and
 tee-node gives an extension **2 seconds** to answer an action
@@ -164,7 +164,7 @@ from here). Measured against live sources on 5 Aug 2026 an observation takes
 2.0–2.9s, so running one inside the request handler timed out every time, and the
 extension's answer never reached the chain at all.
 
-So the two halves are separate calls. `internal/observe` runs `Observe` on a
+So the two halves are separate calls. `internal/observation/poller` runs `Observe` on a
 timer and keeps the latest result; the handler calls `Sign`, which binds that
 result to the requesting instruction id and returns in one signing round trip.
 The instruction id is why signing cannot happen in advance, and the upstream
@@ -212,7 +212,7 @@ the same reason: *ready* means "fully provisioned", not "able to answer".
 
 ---
 
-## 5. Exact arithmetic (`internal/price`, `internal/decimal`)
+## 5. Exact arithmetic (`internal/observation/price`, `internal/observation/decimal`)
 
 ### Why not float64
 
@@ -255,7 +255,7 @@ silently turns `1,50` into `150`. A hundredfold overstatement of reserves would
 publish $1.00 straight through a genuine depeg, which is precisely the event this
 oracle exists to detect.
 
-`internal/decimal` therefore validates grouping structure rather than stripping:
+`internal/observation/decimal` therefore validates grouping structure rather than stripping:
 a comma is accepted only where a thousands separator can legally appear, and
 anything else is rejected. Fail closed; never guess what the operator meant.
 
@@ -267,7 +267,7 @@ code hash regardless.
 
 ---
 
-## 6. The supply quorum procedure (`internal/supply`)
+## 6. The supply quorum procedure (`internal/observation/supply`)
 
 Reading `totalSupply()` from a single provider makes that provider able to
 dictate the published price. Reading it from three at `"latest"` does not fix it:
@@ -351,7 +351,7 @@ this sum double-counts and the price is overstated.**
 
 ---
 
-## 7. The signed payload (`internal/report`)
+## 7. The signed payload (`internal/wire/feedupdate`)
 
 ```solidity
 struct PriceReport {
@@ -482,7 +482,7 @@ provisioning envelope.
 
 ---
 
-## 9. Provisioning (`internal/provision`, `internal/runtimecfg`)
+## 9. Provisioning (`internal/provisioning/envelope`, `internal/provisioning/store`)
 
 Three things the extension needs are deliberately not compiled into the image:
 
@@ -849,7 +849,7 @@ advance.
 
 ### Why `pricereport` lives in `tools/`
 
-The wire layout is declared there rather than imported from `go/internal/report`
+The wire layout is declared there rather than imported from `go/internal/wire/feedupdate`
 so that `tools/` stays independent of any one implementation: it asserts on the
 *wire contract*, and must run unchanged against the Go, Python and TypeScript
 extensions alike (`docs/extension-contract.md`). It is a second, deliberate

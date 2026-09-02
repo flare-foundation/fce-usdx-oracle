@@ -74,7 +74,7 @@ func TestZeroFailureIsNotAFailure(t *testing.T) {
 // have surfaced DO contain secrets, so the danger stays documented.
 func TestRawErrorsWouldLeak(t *testing.T) {
 	c := &http.Client{Timeout: 200 * time.Millisecond}
-	_, err := c.Get("https://usdx-oracle.invalid/restricted/metrics?apikey=SECRET_VALUE")
+	_, err := c.Get("https://usdx-observation.invalid/restricted/metrics?apikey=SECRET_VALUE")
 	if err == nil {
 		t.Skip("expected the request to fail")
 	}

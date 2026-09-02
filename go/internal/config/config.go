@@ -20,14 +20,14 @@ const (
 	TimeoutShutdown = 5 * time.Second
 
 	// GET_FEED carries an ABI-encoded FeedUpdateRequest naming the feed (see
-	// report.DecodeFeedRequest); this extension refuses any feed but its own.
+	// feedupdate.DecodeFeedRequest); this extension refuses any feed but its own.
 
 	// Direct-only, so nothing upstream defines its shape. Anything else is
 	// rejected rather than ignored, so no caller depends on a dropped field.
 	ReadinessRequestV1 = byte(0x01)
 
 	// Pinned though the store accepts any scale: every consumer assumes 8. int32
-	// on the wire caps at ~21.47, and internal/report fails closed out of range.
+	// on the wire caps at ~21.47, and internal/wire/feedupdate fails closed out of range.
 	PriceDecimals int8 = 8
 )
 
@@ -149,7 +149,7 @@ const (
 
 	// SET_ENDPOINTS group tag for the cash endpoint: exactly one entry, and it
 	// must be PRIVATE or the restricted URL lands on-chain in the clear.
-	// Enforced in internal/runtimecfg.
+	// Enforced in internal/provisioning/store.
 	HexCashGroup = HexCashName
 )
 
@@ -186,7 +186,7 @@ func ProviderHealthKey(chain string, index int) string {
 }
 
 // Chain is a pinned per-chain fact. Provider lists and agreement thresholds are
-// configured at runtime — see internal/runtimecfg.
+// configured at runtime — see internal/provisioning/store.
 type Chain struct {
 	Name string
 
@@ -310,7 +310,7 @@ func CashSource(url, apiKey string) BackingSpec {
 	}
 }
 
-// BackingSpec mirrors backing.Config; declared here because internal/backing
+// BackingSpec mirrors backing.Config; declared here because internal/observation/backing
 // cannot be imported from this package without a cycle.
 type BackingSpec struct {
 	Name            string

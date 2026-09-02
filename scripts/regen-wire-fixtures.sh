@@ -3,7 +3,7 @@
 #
 # The fixtures are Solidity's own encoding of the payloads that cross the
 # extension boundary. Two independent Go codecs assert against them: the
-# enclave's in go/internal/runtimecfg and the publisher's in
+# enclave's in go/internal/provisioning/store and the publisher's in
 # tools/pkg/oraclepayload. Keeping them independent is deliberate — tools/ is a
 # cross-check on the extension, not a mirror — and these files are what stops
 # that independence turning into divergence.

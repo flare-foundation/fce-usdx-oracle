@@ -7,7 +7,7 @@
 //	digest      = keccak256("\x19Ethereum Signed Message:\n32" ‖ messageHash)
 //
 // This restates the layout rather than importing the enclave's copy in
-// go/internal/report, so the relayer is an independent check on the machine
+// go/internal/wire/feedupdate, so the relayer is an independent check on the machine
 // instead of a mirror of it. Both are pinned to the same Solidity-generated
 // fixtures in testdata/wire — see that directory's README.
 //

@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/oracle"
+	"fce-usdx-oracle/internal/observation"
 	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -16,13 +16,13 @@ import (
 // Observer returns a signed feed update built from the most recent background
 // observation. It reports a cached observation rather than taking one: an
 // observation exceeds the 2s tee-node allows per action, so it runs on a timer
-// in internal/observe.
+// in internal/observation/poller.
 type Observer interface {
 	// requestedAt is the requesting instruction's block timestamp. It is a
 	// reference clock, not a value to publish: the observer measures its cached
 	// observation against it and refuses rather than restamping. See
-	// internal/observe.checkClock.
-	Report(ctx context.Context, requestedAt uint64) (oracle.Observation, error)
+	// internal/poller.checkClock.
+	Report(ctx context.Context, requestedAt uint64) (observation.Observation, error)
 
 	// ReadinessReport answers GET_READINESS. It takes the provisioning half because
 	// the observer does not own it, and returns the finished payload: assembling

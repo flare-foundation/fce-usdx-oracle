@@ -63,7 +63,7 @@ redis              the proxy's action queue
 
 The split that matters: `go/` is one possible implementation, `tools/` and `contracts/`
 are the spine. `tools/pkg/feedupdate` deliberately re-declares the wire layout instead
-of importing `go/internal/report`, so the tooling stays honest about the contract, and
+of importing `go/internal/wire/feedupdate`, so the tooling stays honest about the contract, and
 both are pinned to the same Solidity-generated fixtures in `testdata/wire`.
 
 ---
@@ -76,18 +76,18 @@ Roughly bottom-up. "Flow" refers to §6.
 | --- | --- | --- | --- |
 | `internal/config` | **pinned facts**: op-type names, chain set + token addresses, Hex URLs, all deadlines, price decimals | `Chains`, `LookupChain`, `ObservationInterval`, `MaxObservationAge`, `BondsSource`/`CashSource` | everywhere |
 | `internal/failure` | the *closed* public error vocabulary | `Failure` (unexported fields, no constructor), `Class*`, `All` | everywhere |
-| `internal/decimal` | exact money parsing (`"25,452,544.52"` → `*big.Rat`), validates comma grouping instead of stripping it | `ParseAmount` | C |
-| `internal/price` | pure arithmetic, no I/O | `Compute`, `ComputeWithoutCash`, `Scale` | C |
-| `internal/supply` | per-chain `totalSupply()` over N RPC providers with a quorum procedure | `Read` `:130`, `agreedBlock` `:183`, `agreedBlockTime` `:253`, `vote` `:374`, `Total` `:437` | C |
-| `internal/backing` | Hex Trust HTTP reserve reads | `Source` iface, `New` `:82`, `Fetch` `:130` | C |
-| `internal/report` | the signed **feed update** payload's ABI layout, and the `GET_FEED` request envelope | `EncodeFeedRequest`, `DecodeFeedRequest`, `EncodeUpdate`, `SigningMessage`, `EncodeData`, `DecodeData`, `Prefix` | D |
-| `internal/readiness` | the signed **readiness** payload's ABI layout — a separate domain, so an answer can never be reinterpreted as a feed update | `EncodeBody`, `EncodeData`, `DecodeData`, `Domain` | D2 |
+| `internal/observation/decimal` | exact money parsing (`"25,452,544.52"` → `*big.Rat`), validates comma grouping instead of stripping it | `ParseAmount` | C |
+| `internal/observation/price` | pure arithmetic, no I/O | `Compute`, `ComputeWithoutCash`, `Scale` | C |
+| `internal/observation/supply` | per-chain `totalSupply()` over N RPC providers with a quorum procedure | `Read` `:130`, `agreedBlock` `:183`, `agreedBlockTime` `:253`, `vote` `:374`, `Total` `:437` | C |
+| `internal/observation/backing` | Hex Trust HTTP reserve reads | `Source` iface, `New` `:82`, `Fetch` `:130` | C |
+| `internal/wire/feedupdate` | the signed **feed update** payload's ABI layout, and the `GET_FEED` request envelope | `EncodeFeedRequest`, `DecodeFeedRequest`, `EncodeUpdate`, `SigningMessage`, `EncodeData`, `DecodeData`, `Prefix` | D |
+| `internal/wire/readiness` | the signed **readiness** payload's ABI layout — a separate domain, so an answer can never be reinterpreted as a feed update | `EncodeBody`, `EncodeData`, `DecodeData`, `Domain` | D2 |
 | `internal/teenode` | HTTP client for tee-node's local `/sign` + `/decrypt` | `Sign` `:82`, `Decrypt` `:106`, `TeeID` `:184`, `NormalizeV` `:158` | B, D, D2 |
-| `internal/provision` | verifies M-of-N admin-signed provisioning envelopes | `Verifier.Verify` `:291`, `EncodeBody`, `AdminSet` | B |
-| `internal/runtimecfg` | the only mutable state: provider URLs, admin sets + credentials → `oracle.Config`; also the wire codec for the ABI-encoded configuration payloads | `ApplyEndpoints` `:166`, `ApplyAdmins` `:223`, `ApplySecret` `:406`, `Readiness` `:541`, `Resolve` `:588`, `validate` `:706` | A, A2, B, C |
-| `internal/oracle` | orchestrates **one** observation: ordering, deadlines, health map | `Observe` `:124`, `Sign` `:219`, `readAllChains` `:276`, `readBacking` `:319`, `checkWindow` `:371` | C, D |
-| `internal/observe` | runs `Observe` on a timer, caches the latest, enforces staleness, and answers readiness | `Poller.Run` `:76`, `Latest` `:133`, `Report` `:159`, `ReadinessReport` `:207` | C, D, D2 |
-| `internal/extension` | HTTP surface + action routing | `processAction` `:185`, `processTeeOracle` `:206`, `processGetFeed` `:268`, `processGetReadiness` `:318`, `processSetEndpoints`/`processSetAdmins`/`processSetSecret` (config_handler.go), `stateHandler` `:125` | A, B, D, D2 |
+| `internal/provisioning/envelope` | verifies M-of-N admin-signed provisioning envelopes | `Verifier.Verify` `:291`, `EncodeBody`, `AdminSet` | B |
+| `internal/provisioning/store` | the only mutable state: provider URLs, admin sets + credentials → `oracle.Config`; also the wire codec for the ABI-encoded configuration payloads | `ApplyEndpoints` `:166`, `ApplyAdmins` `:223`, `ApplySecret` `:406`, `Readiness` `:541`, `Resolve` `:588`, `validate` `:706` | A, A2, B, C |
+| `internal/observation` | orchestrates **one** observation: ordering, deadlines, health map | `Observe` `:124`, `Sign` `:219`, `readAllChains` `:276`, `readBacking` `:319`, `checkWindow` `:371` | C, D |
+| `internal/observation/poller` | runs `Observe` on a timer, caches the latest, enforces staleness, and answers readiness | `Poller.Run` `:76`, `Latest` `:133`, `Report` `:159`, `ReadinessReport` `:207` | C, D, D2 |
+| `internal/extension` | HTTP surface + action routing | `processAction` `:185`, `processTeeOracle` `:206`, `processGetFeed` `:268`, `processGetReadiness` `:318`, `processSetEndpoints`/`processSetAdmins`/`processSetSecret` (provisioning.go), `stateHandler` `:125` | A, B, D, D2 |
 | `pkg/types` | the **public** `/state` and readiness-payload shapes | `State`, `Readiness`, `ReadinessReport`, `StateResponse` | D, D2 |
 | `pkg/server` | wires everything together | `StartExtension` `:25` | boot |
 
@@ -110,9 +110,9 @@ Roughly bottom-up. "Flow" refers to §6.
 
 ```
 teenode.New(signPort)                     ── talks to tee-node on localhost
-   └─► provision.NewVerifier(chainID)     ── admin signature check
-         └─► runtimecfg.New(verifier, node)   ── the config Store
-               ├─► observe.New(store, node)   ── Poller: Resolver = store, Signer = node
+   └─► envelope.NewVerifier(chainID)     ── admin signature check
+         └─► store.New(verifier, node)   ── the config Store
+               ├─► poller.New(store, node)   ── Poller: Resolver = store, Signer = node
                └─► extension.NewWithProvisioner(ports, poller, store)
 go poller.Run(ctx)                        ── the engine starts immediately
 e.Server.ListenAndServe()
@@ -174,10 +174,10 @@ governance → TeeOracleInstructionsSender.setEndpoints(feedId, teeIds, groups, 
           expectedEndpointsHash[feedId][teeId] = keccak256(payload)   ← recorded BEFORE dispatch
           registry.sendInstructions(...), one instruction per target machine
             ↓ cosigned → proxy → tee-node → POST /action
-        extension.processSetEndpoints                       config_handler.go:27
-        runtimecfg.ApplyEndpoints                           runtimecfg.go:166
+        extension.processSetEndpoints                       provisioning.go:27
+        store.ApplyEndpoints                           store.go:166
           ABI-decode Endpoints{version, feedId, groups}; feedId must be ours
-          validate()  runtimecfg.go:706
+          validate()  store.go:706
             · chain name must be one of config.Chains, and ALL of them must be present
             · 1 ≤ threshold ≤ provider count
             · "hex_api_key" may NOT be used as a provider secret
@@ -196,8 +196,8 @@ governance → TeeOracleInstructionsSender.setAdmins(feedId, teeIds, roles, clai
           expectedAdminsHash[feedId][teeId] = keccak256(payload)      ← recorded BEFORE dispatch
           registry.sendInstructions(...), one instruction per target machine
             ↓ cosigned → proxy → tee-node → POST /action
-        extension.processSetAdmins                          config_handler.go:44
-        runtimecfg.ApplyAdmins                              runtimecfg.go:223
+        extension.processSetAdmins                          provisioning.go:44
+        store.ApplyAdmins                              store.go:223
           ABI-decode Admins{version, feedId, roles}; feedId must be ours
           validateAdmins()
             · version must be non-zero AND strictly greater than the last applied
@@ -207,7 +207,7 @@ governance → TeeOracleInstructionsSender.setAdmins(feedId, teeIds, roles, clai
               the same bound Verify puts on the signatures an envelope may carry —
               a higher threshold would install and then be unsatisfiable forever
             · every entry a parsable, non-zero hex address, distinct within its set
-          provision.Verifier.SetAdmins(backing, providers)   ← both, or neither
+          envelope.Verifier.SetAdmins(backing, providers)   ← both, or neither
           adminsHash = keccak256(payload AS RECEIVED)        ← never recomputed from the struct
 ```
 
@@ -244,14 +244,14 @@ admin laptop (go/cmd/usdxprov)
   usdxprov build    GET proxy/info → TEE public key; ciphertext = ECIES(pubkey, secret)
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
   usdxprov sign     admin #1, then admin #2   (refuses a duplicate signer)
-  usdxprov submit   POST proxy/direct         (must be within provision.Freshness —
+  usdxprov submit   POST proxy/direct         (must be within envelope.Freshness —
                                                1 hour — of issuedAt)
     ↓ tee-node polls the direct queue → POST /action (type = direct)
 enclave
-  runtimecfg.ApplySecret                       runtimecfg.go:322
+  store.ApplySecret                       store.go:322
     applyMu held for the whole call            ← the replay defence needs this
     teenode.TeeID()   signs a fixed probe, recovers its own address
-    provision.Verify()                         provision.go:232
+    envelope.Verify()                         envelope.go:232
       chainId · teeId · payloadHash · freshness · version strictly > last
       · DISTINCT signatures up to the threshold of the set the ref selects
         (backing ≥1, providers ≥2), low-s only
@@ -267,15 +267,15 @@ Runs on a timer whether or not anyone asks for a price. **This is the only code 
 touches the network for data.**
 
 ```
-observe.Poller.Run — every 2 min                observe.go:69
-  ├─ runtimecfg.Resolve()                       runtimecfg.go:415
+poller.Poller.Run — every 2 min                poller.go:69
+  ├─ store.Resolve()                       store.go:415
   │     re-run every tick (never cached), so a rotated credential needs no restart
   │     builds RPC clients, bonds source, cash source (nil if no secret yet)
   │     provider names are POSITIONAL — "rpc_flare_1" — so nothing an operator
   │     writes can reach the public /state
   │
-  └─ oracle.Observe — 20s deadline              oracle.go:104
-        S  readAllChains, all chains concurrently      oracle.go:204
+  └─ observation.Observe — 20s deadline              observation.go:104
+        S  readAllChains, all chains concurrently      observation.go:204
              supply.Read per chain                     supply.go:163
                agreedBlock: ask every provider for its head, sort DESCENDING and
                  pin the Quorum-th highest — the highest block at least Quorum of
@@ -296,14 +296,14 @@ observe.Poller.Run — every 2 min                observe.go:69
                amount = raw / 10^decimals, exact in big.Rat
              any chain failing fails the whole observation (a partial sum is a
              wrong supply, not a smaller one)
-        B  readBacking, both endpoints concurrently    oracle.go:247
+        B  readBacking, both endpoints concurrently    observation.go:247
              backing.Fetch → 2 attempts, no redirects ever, unknown JSON fields
              rejected, comma grouping validated not stripped, last_update parsed
              and refused only if it is in the FUTURE — there is no bound on how
              old it is, because both endpoints republish on an on-chain event
              rather than on a schedule (rationale §2)
              bonds failing is FATAL; cash failing is not
-        checkWindow(30s) across every read timestamp   oracle.go:295
+        checkWindow(30s) across every read timestamp   observation.go:295
              read skew only; in practice the 20s deadline is the tighter bound
         price.Compute → min(1, B/S) × 10⁸, rounded half-up
              no cash? price.ComputeWithoutCash — publishes only if the answer
@@ -327,16 +327,16 @@ anyone → TeeOracleInstructionsSender.requestFeedUpdate(feedId, teeIds)   (upst
     ↓ proxy → tee-node → POST /action
   extension.processGetFeed                                extension.go:268
     decode the FeedUpdateRequest; the feed must be ours, else UnexpectedPayload
-    observe.Poller.Report(requestedAt)                    observe.go:159
+    poller.Poller.Report(requestedAt)                    poller.go:159
       Latest()  ─ fails closed if the observation is older than 10 min
-      oracle.Sign()                                       oracle.go:219
+      observation.Sign()                                       observation.go:219
         update = FeedUpdate(extensionId, feedId, value, decimals, observedAt,
                             endpointsHash, adminsHash)
         messageHash = keccak256(abi(TEE_ORACLE_FEED, chainId, keccak256(abi(update))))
         teenode.Sign(messageHash preimage) → POST localhost:9090/sign
                                    (tee-node applies EIP-191; wire is base64, not hex)
         NormalizeV: 0/1 → 27/28, so the store can use stock OpenZeppelin
-        report.EncodeData → abi(update, signature)
+        feedupdate.EncodeData → abi(update, signature)
     ActionResult{status: 1, data}
     ↓ tee-node → proxy → served at GET /action/result/<id>
 ```
@@ -353,7 +353,7 @@ operator/keeper → POST proxy/direct { GET_READINESS, 0x01 }
   extension.processGetReadiness                           extension.go:306
     require message == exactly 0x01, else UnexpectedPayload
     both halves must exist (observer AND provisioner), else NotConfigured
-    observe.Poller.ReadinessReport(id, store.Readiness())  observe.go:163
+    poller.Poller.ReadinessReport(id, store.Readiness())  poller.go:163
       assembled behind the poller's lock, where the observation state and the
         signer both live; the caller supplies the provisioning half it owns
       payload = JSON types.ReadinessReport — readiness, lastObservedAt,
@@ -508,9 +508,9 @@ construction if they look like one), and readiness names secret *refs* never val
 ```
 go/pkg/server/server.go            the whole dependency graph, 10 lines
 go/internal/extension/extension.go the HTTP surface and the router
-go/internal/oracle/oracle.go       one observation, start to finish
-go/internal/observe/observe.go     why observing and signing are separate
-go/internal/report/report.go       the FeedUpdate encoder + SignedPayload digest
+go/internal/observation/observation.go       one observation, start to finish
+go/internal/observation/poller/poller.go     why observing and signing are separate
+go/internal/wire/feedupdate/feedupdate.go       the FeedUpdate encoder + SignedPayload digest
 tools/pkg/keeper/cycle.go          the relay, end to end
 ```
 

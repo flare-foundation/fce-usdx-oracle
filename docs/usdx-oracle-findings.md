@@ -135,7 +135,7 @@ Comma-as-decimal-separator is a real convention: much of Europe writes `1,50`
 for one and a half. Stripping turns that into `150`. A hundredfold
 overstatement of reserves publishes $1.00 straight through a genuine depeg.
 
-**Resolution.** `internal/decimal` validates grouping structure rather than
+**Resolution.** `internal/observation/decimal` validates grouping structure rather than
 deleting characters: a comma is accepted only where a thousands separator can
 legally appear (leading group of 1–3 digits, every subsequent group exactly 3).
 `1,50` is rejected. Fail closed; never guess what the operator meant.
@@ -252,7 +252,7 @@ does not make it worth more, and publishing 1.02 would be wrong in a way that
 costs someone money. Both properties are fuzzed as invariants over arbitrary
 inputs (5.2M executions): the result is never negative and never exceeds par.
 
-`internal/price` is kept **pure** — no I/O, no clock, no configuration, no
+`internal/observation/price` is kept **pure** — no I/O, no clock, no configuration, no
 policy — which is what makes that fuzzing meaningful and lets an auditor verify
 the formula by reading alone. Plausibility bounds and the deviation guard live
 in the caller and on-chain respectively; encoding either here would hide a
@@ -733,9 +733,9 @@ it leaks.
 **Scope and verdict, surface by surface.**
 
 - *Internal logging.* The runtime extension imports `logger` in exactly three
-  files: `extension.go`, `config_handler.go`, `utils.go`. The packages that
+  files: `extension.go`, `provisioning.go`, `utils.go`. The packages that
   actually touch secrets and reserve figures — `backing`, `supply`, `price`,
-  `decimal`, `report`, `provision`, `runtimecfg`, `teenode` — import no logger
+  `observation/decimal`, `wire/feedupdate`, `provisioning/envelope`, `provisioning/store`, `teenode` — import no logger
   at all, so the sensitive values have no log path to reach. What the three
   files log is: action IDs, statuses, the vocabulary `Log`, port numbers, the
   stub-mode banner, `SET_ENDPOINTS` validation detail (chain names, thresholds
@@ -782,8 +782,8 @@ it leaks.
    stdin/env mode would close it.
 
 One inaccuracy was found and corrected during the audit: the `SET_ENDPOINTS`
-rejection comment in `config_handler.go` claimed the error detail names hosts;
-the `runtimecfg` errors actually carry chain names, thresholds and secret ref
+rejection comment in `provisioning.go` claimed the error detail names hosts;
+the `provisioning/store` errors actually carry chain names, thresholds and secret ref
 names. No host ever appears, which is the safer direction.
 
 ---
@@ -1098,7 +1098,7 @@ supply rounds across three chains, two Hex fetches, and a signing round trip,
 with `HTTPTimeout` alone at 5s per upstream attempt. Inside the container it was
 worse. There is no configuration of the synchronous design that fits.
 
-**Resolution: observe on a timer, sign on demand.** `internal/observe` runs
+**Resolution: observe on a timer, sign on demand.** `internal/observation/poller` runs
 `oracle.Observe` every `ObservationInterval` (2 min) and keeps the latest
 result; `GET_PRICE` calls `oracle.Sign`, which binds that observation to the
 requesting instruction id — one signing round trip, milliseconds. `oracle.Observe`
@@ -1233,7 +1233,7 @@ every consumer. A pause freezes the value; it does not blind the feed.
 - **~~The §3.0 blocker stands~~ — resolved 3 Aug 2026.** `current_reserves_amount`
   is the bank-provider balance of the reserve account; the observed supply-tracking
   is 1:1 treasury operation, not derivation from chain data, and the figure can fall
-  below supply on any outflow with no matching burn. `internal/backing` stays an
+  below supply on any outflow with no matching burn. `internal/observation/backing` stays an
   interface for source-swap containment. `TestCompute` still encodes the observed
   figures as a par case — correct under 1:1 operations. Written confirmation from
   Hex remains as ordinary diligence.

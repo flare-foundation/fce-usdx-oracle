@@ -10,9 +10,9 @@
 // skew between the two.
 //
 // Observing and signing are separate calls: an observation takes 2-3s and
-// tee-node allows 2s per action, so internal/observe runs Observe on a timer
+// tee-node allows 2s per action, so internal/observation/poller runs Observe on a timer
 // and the handler only calls Sign. See docs/usdx-oracle-rationale.md.
-package oracle
+package observation
 
 import (
 	"context"
@@ -21,12 +21,12 @@ import (
 	"sync"
 	"time"
 
-	"fce-usdx-oracle/internal/backing"
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/price"
-	"fce-usdx-oracle/internal/report"
-	"fce-usdx-oracle/internal/supply"
+	"fce-usdx-oracle/internal/observation/backing"
+	"fce-usdx-oracle/internal/observation/price"
+	"fce-usdx-oracle/internal/observation/supply"
+	"fce-usdx-oracle/internal/wire/feedupdate"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -165,7 +165,7 @@ func Observe(ctx context.Context, src Sources, binding Binding) (Observation, er
 	// Narrowed here rather than at signing time, so an out-of-range price fails
 	// the observation it came from. Fails closed: a wrapped int32 would be
 	// published as fact.
-	scaled, err := report.ValueFromBig(value)
+	scaled, err := feedupdate.ValueFromBig(value)
 	if err != nil {
 		return Observation{Health: health}, err
 	}
@@ -206,7 +206,7 @@ func Sign(ctx context.Context, signer Signer, obs Observation) (Observation, err
 }
 
 func signPayload(ctx context.Context, signer Signer, obs Observation) ([]byte, error) {
-	update := report.FeedUpdate{
+	update := feedupdate.FeedUpdate{
 		ExtensionID:   obs.Binding.ExtensionID,
 		FeedID:        obs.Binding.FeedID,
 		Value:         obs.Value,
@@ -217,8 +217,8 @@ func signPayload(ctx context.Context, signer Signer, obs Observation) ([]byte, e
 	}
 
 	// The signer receives the SignedPayload preimage, not its hash: tee-node
-	// hashes what it is given and applies EIP-191 itself. See package report.
-	message, err := report.SigningMessage(update, config.ChainID)
+	// hashes what it is given and applies EIP-191 itself. See package feedupdate.
+	message, err := feedupdate.SigningMessage(update, config.ChainID)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func signPayload(ctx context.Context, signer Signer, obs Observation) ([]byte, e
 		return nil, err
 	}
 
-	return report.EncodeData(update, signature)
+	return feedupdate.EncodeData(update, signature)
 }
 
 // homeBlockTime picks the stamp out of the home chain's reading. Fails closed:

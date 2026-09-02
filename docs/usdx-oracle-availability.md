@@ -216,7 +216,7 @@ this publishes nothing, where degradation would have printed 0.990 against a tru
 | Bonds = 1.00 · S | 1.000 | 1.000 | 1.000 |
 | Bonds = 0.99 · S | 0.998 | 0.990 ← the harm | **nothing published** |
 
-Two things make this more than a technicality. `internal/price` now rounds
+Two things make this more than a technicality. `internal/observation/price` now rounds
 half-up rather than truncating (findings §21), which is what lets the measured
 figures — bonds $0.004 below supply, purely because Hex quotes to the cent —
 reach par at all. And `GET /state` reports the cash source as `not_configured`

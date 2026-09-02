@@ -1,4 +1,4 @@
-package runtimecfg
+package store
 
 import (
 	"math"

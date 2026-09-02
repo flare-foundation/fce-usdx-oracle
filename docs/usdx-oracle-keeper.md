@@ -362,7 +362,7 @@ data   = abi.encode(update, signature)      # ActionResult.data — 10 words, 32
 so the keeper ABI-decodes `result.data` into the update and its signature and hands both to
 `submitFeedUpdate(update, signature)`. `feedupdate.Decode` in `tools/pkg/feedupdate` is exactly
 this — it restates the wire layout rather than importing the enclave's copy in
-`go/internal/report`, so the relayer is an independent check on the machine instead of a mirror
+`go/internal/wire/feedupdate`, so the relayer is an independent check on the machine instead of a mirror
 of it; both are pinned to the same Solidity-generated fixtures in `testdata/wire`.
 
 **The old verbatim rule is retired for this payload.** Every `FeedUpdate` field is static, so

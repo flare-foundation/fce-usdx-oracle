@@ -26,7 +26,7 @@
 // Solidity produced, which is the only check that can catch it.
 //
 // This restates the schema rather than importing the enclave's copy in
-// go/internal/runtimecfg, keeping tools/ an independent cross-check of the
+// go/internal/provisioning/store, keeping tools/ an independent cross-check of the
 // extension rather than a mirror of it. The two are kept honest by asserting
 // both against the same Solidity fixture, not by sharing code.
 package oraclepayload

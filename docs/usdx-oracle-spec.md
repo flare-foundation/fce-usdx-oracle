@@ -27,7 +27,7 @@
 | 2026-08-05 | **Round half-up instead of truncating** (§3.5) | Hex quotes reserves to the cent; truncation turned a $0.004 quantisation artifact into a permanent sub-par print. Half a ULP is $0.127 at current supply — 12× the worst-case quantisation, 5e-9 of the float — so the concealable shortfall stays bounded and no material depeg is affected. Findings §21. |
 | 2026-08-05 | **A missing cash figure no longer fails the observation outright** | Published only where the missing figure provably cannot change the answer: cash is non-negative and the price caps at par, so a bonds-only price already at par *is* the full result. Everything below par still fails closed, so the availability doc's objection to degradation is untouched. Findings §21. |
 | 2026-08-05 | **GET_FEED carries an ABI-encoded `FeedUpdateRequest`** naming the feed (supersedes the original one-byte `0x01` envelope once one sender began serving several feeds), never an empty message | `sendInstructions` reverts `MessageEmpty()`, so `requestFeedUpdate()` could never dispatch an empty message. The extension requires exactly that encoding and rejects any other shape, preserving the property the empty message was chosen for. Findings §22. |
-| 2026-08-05 | **Observation moved onto a timer; GET_FEED only signs** | tee-node allows an extension 2 s per action (`settings.ProxyTimeout`, a const in its internal package); a complete observation measures 2.0–2.9 s, so every request timed out. `internal/observe` observes every 2 min and `MaxObservationAge` (10 min) bounds the resulting staleness. Findings §23. |
+| 2026-08-05 | **Observation moved onto a timer; GET_FEED only signs** | tee-node allows an extension 2 s per action (`settings.ProxyTimeout`, a const in its internal package); a complete observation measures 2.0–2.9 s, so every request timed out. `internal/observation/poller` observes every 2 min and `MaxObservationAge` (10 min) bounds the resulting staleness. Findings §23. |
 
 ---
 
@@ -440,7 +440,7 @@ two different serializers? Handle both formats on both endpoints regardless.
 >   back with it, and every honest provider then corroborated the stale supply at that
 >   block perfectly — quorum passed and the enclave signed a stale figure. Rewinding to
 >   when supply was lower *overstates* the price. See findings §24 and the package
->   comment in `go/internal/supply/supply.go`.
+>   comment in `go/internal/observation/supply/supply.go`.
 > - **There is no finality margin.** `FinalityMargin` — a depth below the head — was
 >   dropped in Aug 2026 after measurement showed it bought no availability. The
 >   freshness of the *chosen* block is bounded instead, by the per-chain

@@ -8,7 +8,7 @@
 // envelope is safe to pass around: the credential inside is already ciphertext
 // only the target enclave can open.
 //
-// It lives in the extension's module so it imports internal/provision directly
+// It lives in the extension's module so it imports internal/provisioning/envelope directly
 // — this and the verifier share one EncodeBody and cannot drift.
 package main
 
@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"fce-usdx-oracle/internal/config"
-	"fce-usdx-oracle/internal/provision"
+	"fce-usdx-oracle/internal/provisioning/envelope"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -81,13 +81,13 @@ proxy's /info serves, and -tee is what makes it refuse a substituted one; take t
 value from the attestation, with "verify-tee -print-tee-id". The upload scripts do
 this for you.
 
-The freshness window is `+provision.Freshness.String()+`: sign and submit within it, or
+The freshness window is `+envelope.Freshness.String()+`: sign and submit within it, or
 the envelope is rejected as stale.
 
 Two role-tagged signer sets are published per machine, and the ref decides which
 one applies: `+strings.Join(config.BackingRefs(), ", ")+`
-are authorised by the backing set (at least `+fmt.Sprint(provision.MinBackingThreshold)+` signature), every other ref by
-the providers set (at least `+fmt.Sprint(provision.MinProviderThreshold)+` DISTINCT signatures). The exact thresholds
+are authorised by the backing set (at least `+fmt.Sprint(envelope.MinBackingThreshold)+` signature), every other ref by
+the providers set (at least `+fmt.Sprint(envelope.MinProviderThreshold)+` DISTINCT signatures). The exact thresholds
 are whatever SET_ADMINS published, and only the target machine can tell you
 whether an envelope satisfies them.
 `)
@@ -147,7 +147,7 @@ func build(args []string) error {
 		return fmt.Errorf("encrypting to the TEE key: %w", err)
 	}
 
-	env := provision.Envelope{
+	env := envelope.Envelope{
 		ChainID:     big.NewInt(*chainID),
 		TeeID:       teeID,
 		Version:     *version,
@@ -157,7 +157,7 @@ func build(args []string) error {
 		Payload:     ciphertext,
 	}
 
-	body, err := provision.EncodeBody(env)
+	body, err := envelope.EncodeBody(env)
 	if err != nil {
 		return err
 	}
@@ -181,10 +181,10 @@ func build(args []string) error {
 	fmt.Printf("  ref      %s\n", env.Ref)
 	fmt.Printf("  version  %d\n", env.Version)
 	fmt.Printf("  expires  %s (%s from now)\n",
-		time.Unix(int64(env.IssuedAt), 0).Add(provision.Freshness).UTC().Format(time.RFC3339),
-		provision.Freshness)
+		time.Unix(int64(env.IssuedAt), 0).Add(envelope.Freshness).UTC().Format(time.RFC3339),
+		envelope.Freshness)
 	fmt.Printf("\nRef %q is authorised by the %s set: at least %d distinct signature(s) —\n",
-		env.Ref, setNameFor(env.Ref), provision.MinThresholdFor(env.Ref, config.BackingRefs()))
+		env.Ref, setNameFor(env.Ref), envelope.MinThresholdFor(env.Ref, config.BackingRefs()))
 	fmt.Printf("the published threshold for this machine may be higher. The credential is\n")
 	fmt.Printf("already encrypted, so this file is safe to send to the signers.\n")
 	return nil
@@ -273,7 +273,7 @@ func submit(args []string) error {
 	}
 	// The floor for the set this ref falls under, not the machine's actual threshold:
 	// fewer than this can never be accepted anywhere, so catch it before the trip.
-	floor := provision.MinThresholdFor(f.Ref, config.BackingRefs())
+	floor := envelope.MinThresholdFor(f.Ref, config.BackingRefs())
 	if len(f.Signatures) < floor {
 		return fmt.Errorf("have %d signatures, need at least %d for the %s set",
 			len(f.Signatures), floor, setNameFor(f.Ref))
@@ -281,15 +281,15 @@ func submit(args []string) error {
 	// More is not safer: the extension drops an over-signed envelope before it
 	// looks at the threshold, and says only that it was rejected. Catching it
 	// here is the difference between a fixable message and a silent bounce.
-	if len(f.Signatures) > provision.MaxSignatures {
+	if len(f.Signatures) > envelope.MaxSignatures {
 		return fmt.Errorf("have %d signatures and the extension accepts at most %d; drop the extras",
-			len(f.Signatures), provision.MaxSignatures)
+			len(f.Signatures), envelope.MaxSignatures)
 	}
 
 	age := time.Since(time.Unix(int64(f.IssuedAt), 0))
-	if age > provision.Freshness {
+	if age > envelope.Freshness {
 		return fmt.Errorf("envelope is %s old and the window is %s; rebuild and re-sign",
-			age.Truncate(time.Second), provision.Freshness)
+			age.Truncate(time.Second), envelope.Freshness)
 	}
 
 	body, err := hexBytes(f.Body)
@@ -315,7 +315,7 @@ func submit(args []string) error {
 		return fmt.Errorf("bad chainId in envelope")
 	}
 
-	message, err := provision.Encode(provision.Envelope{
+	message, err := envelope.Encode(envelope.Envelope{
 		ChainID:     chainID,
 		TeeID:       common.HexToAddress(f.TeeID),
 		Version:     f.Version,
@@ -468,10 +468,10 @@ func recoverSigner(body, sig []byte) (common.Address, bool) {
 }
 
 // setNameFor names the signer set governing a ref, for messages only. The
-// authoritative mapping is provision.RoleFor and the enclave's own pinned
+// authoritative mapping is envelope.RoleFor and the enclave's own pinned
 // backing ref set.
 func setNameFor(ref string) string {
-	return provision.RoleFor(ref, config.BackingRefs())
+	return envelope.RoleFor(ref, config.BackingRefs())
 }
 
 // b32 renders Solidity's bytes32(s). The op identifiers passed to it come from

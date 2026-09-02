@@ -1,4 +1,4 @@
-package provision
+package envelope
 
 import (
 	"crypto/ecdsa"

@@ -1,4 +1,4 @@
-package runtimecfg
+package store
 
 import (
 	"bytes"
@@ -39,8 +39,8 @@ const (
 // cross-check on the extension, not a mirror of it — and a shared fixture is
 // what keeps that independence from becoming divergence.
 const (
-	vectorEndpointsFile = "../../../testdata/wire/endpoints-v7.abi.hex"
-	vectorAdminsFile    = "../../../testdata/wire/admins-v3.abi.hex"
+	vectorEndpointsFile = "../../../../testdata/wire/endpoints-v7.abi.hex"
+	vectorAdminsFile    = "../../../../testdata/wire/admins-v3.abi.hex"
 )
 
 func mustFixture(t *testing.T, path string) []byte {

@@ -26,7 +26,7 @@
 //
 // Every FeedUpdate field is static, so ABI encoding is always canonical and can be re-encoded freely.
 // Only dynamic SET_ENDPOINTS and SET_ADMINS payloads must avoid re-serializing before hashing.
-package report
+package feedupdate
 
 import (
 	"math"

@@ -1,4 +1,4 @@
-package observe
+package poller
 
 import (
 	"context"
@@ -9,14 +9,14 @@ import (
 	"time"
 
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/oracle"
+	"fce-usdx-oracle/internal/observation"
 
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // The poller is tested against a fake resolver: what is under test is the caching, the
 // staleness bound and the fail-closed rules, none of which involve an upstream. The
-// observation itself is covered in internal/oracle.
+// observation itself is covered in internal/observation.
 
 type fakeSigner struct {
 	err    error
@@ -44,7 +44,7 @@ func (s *fakeSigner) count() int {
 
 // stubPoller builds a Poller with no resolver, so tests can seed the cache
 // directly and exercise Latest/Report in isolation.
-func stubPoller(t *testing.T, signer oracle.Signer) *Poller {
+func stubPoller(t *testing.T, signer observation.Signer) *Poller {
 	t.Helper()
 	return &Poller{
 		signer:   signer,
@@ -59,12 +59,12 @@ func stubPoller(t *testing.T, signer oracle.Signer) *Poller {
 // machine answering promptly would see.
 const testRequestedAt uint64 = 1_800_000_000
 
-func observationAt(unix uint64) oracle.Observation {
-	return oracle.Observation{
+func observationAt(unix uint64) observation.Observation {
+	return observation.Observation{
 		Value:      100_000_000,
 		Decimals:   8,
 		ObservedAt: unix,
-		Binding: oracle.Binding{
+		Binding: observation.Binding{
 			ExtensionID:   big.NewInt(66281),
 			FeedID:        [21]byte{0x20, 'U', 'S', 'D', 'X'},
 			EndpointsHash: common.HexToHash("0x9f3c"),
@@ -89,7 +89,7 @@ func TestLatest_BeforeFirstObservation(t *testing.T) {
 // credential must not present as a mysterious absence.
 func TestLatest_ReportsWhyTheAttemptsFailed(t *testing.T) {
 	p := stubPoller(t, &fakeSigner{})
-	p.record(oracle.Observation{}, failure.NotConfigured)
+	p.record(observation.Observation{}, failure.NotConfigured)
 
 	_, err := p.Latest()
 	if !errors.Is(err, failure.NotConfigured) {
@@ -145,7 +145,7 @@ func TestRecord_FailureKeepsTheLastGoodObservation(t *testing.T) {
 	good := observationAt(1_800_000_000)
 	p.record(good, nil)
 
-	p.record(oracle.Observation{Health: map[string]string{"hex_bonds": "down"}}, failure.BackingUnavailable)
+	p.record(observation.Observation{Health: map[string]string{"hex_bonds": "down"}}, failure.BackingUnavailable)
 
 	got, err := p.Latest()
 	if err != nil {
@@ -237,13 +237,13 @@ func TestReport_SigningFailurePublishesNothing(t *testing.T) {
 
 type fakeOpener struct {
 	mu      sync.Mutex
-	src     oracle.Sources
-	binding oracle.Binding
+	src     observation.Sources
+	binding observation.Binding
 	err     error
 	calls   int
 }
 
-func (r *fakeOpener) Open() (oracle.Sources, oracle.Binding, error) {
+func (r *fakeOpener) Open() (observation.Sources, observation.Binding, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
@@ -308,7 +308,7 @@ func TestRun_SurvivesAnUnresolvableConfig(t *testing.T) {
 // which is world-readable.
 func TestLatest_ErrorsAreVocabulary(t *testing.T) {
 	p := stubPoller(t, &fakeSigner{})
-	p.record(oracle.Observation{}, errors.New("dial tcp 10.0.0.1:8545?apikey=SECRET: refused"))
+	p.record(observation.Observation{}, errors.New("dial tcp 10.0.0.1:8545?apikey=SECRET: refused"))
 
 	_, err := p.Latest()
 	var f failure.Failure

@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"fce-usdx-oracle/internal/config"
-	"fce-usdx-oracle/internal/oracle"
-	"fce-usdx-oracle/internal/report"
+	"fce-usdx-oracle/internal/observation"
+	"fce-usdx-oracle/internal/wire/feedupdate"
 	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -61,12 +61,12 @@ type fixture struct {
 // production actually emits.
 type conformanceObserver struct{ data []byte }
 
-func (o *conformanceObserver) Report(context.Context, uint64) (oracle.Observation, error) {
-	return oracle.Observation{
+func (o *conformanceObserver) Report(context.Context, uint64) (observation.Observation, error) {
+	return observation.Observation{
 		Value:      conformanceValue,
 		Decimals:   conformanceDecimals,
 		ObservedAt: conformanceObservedAt,
-		Binding: oracle.Binding{
+		Binding: observation.Binding{
 			ExtensionID:   config.ExtensionID,
 			FeedID:        config.FeedID,
 			EndpointsHash: common.HexToHash("0x9f3c"),
@@ -89,13 +89,13 @@ func (o *conformanceObserver) ReadinessReport(
 func conformancePayload(t *testing.T) []byte {
 	t.Helper()
 
-	sig := make([]byte, report.SignatureLength)
+	sig := make([]byte, feedupdate.SignatureLength)
 	for i := range sig {
 		sig[i] = byte(i + 1)
 	}
 	sig[64] = 27
 
-	data, err := report.EncodeData(report.FeedUpdate{
+	data, err := feedupdate.EncodeData(feedupdate.FeedUpdate{
 		ExtensionID:   config.ExtensionID,
 		FeedID:        config.FeedID,
 		Value:         conformanceValue,

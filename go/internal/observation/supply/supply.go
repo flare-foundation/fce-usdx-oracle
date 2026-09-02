@@ -86,7 +86,7 @@ type Reading struct {
 	Block uint64
 
 	// BlockTime is that block's own header timestamp — when the state existed, not
-	// when it was fetched. Not folded into oracle.checkWindow: Ethereum's head runs
+	// when it was fetched. Not folded into observation.checkWindow: Ethereum's head runs
 	// 12s+ behind, which would eat that window. MaxBlockAge bounds it instead.
 	BlockTime time.Time
 

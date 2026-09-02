@@ -516,7 +516,7 @@ Everything here was hit for real while bringing this up.
 | --- | --- | --- |
 | `requestFeedUpdate` reverts `TeeIdNotConfigured` | A target machine does not have both endpoints and admins published for the feed. | Run `send-endpoints` and `send-admins` for it; `fleet-status` shows which commitment is missing. |
 | Revert `0x3b06a1be` (`MessageEmpty()`) | The instruction carried an empty message. | The sender must send the ABI-encoded `FeedUpdateRequest`; findings §22. |
-| Result `status 3`, log `context deadline exceeded` | The handler took longer than tee-node's **2 s** action budget. | Observation must stay off the request path — that is what `internal/observe` is; findings §23. |
+| Result `status 3`, log `context deadline exceeded` | The handler took longer than tee-node's **2 s** action budget. | Observation must stay off the request path — that is what `internal/observation/poller` is; findings §23. |
 | Result `status 0`, log `no recent observation` | The background loop has not produced anything inside `MaxObservationAge` (10 min). | Check `/state` `sourceHealth`; an upstream is failing. Working as designed — it fails closed. |
 | Result `status 0`, log `instruction carries an unexpected payload` | `originalMessage` was not an ABI-encoded `FeedUpdateRequest` naming this feed. | This extension serves exactly one feed and refuses requests for any other — check the sender's feed id matches the build's (`go/internal/config`). |
 | `submitFeedUpdate` reverts `StaleEndpoints` | The machine is running a different config than the sender's `expectedEndpointsHash`. | Compare `/state` `endpointsHash` against the hash `send-endpoints` printed; re-send if they differ. |

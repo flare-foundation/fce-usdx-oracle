@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"fce-usdx-oracle/internal/decimal"
 	"fce-usdx-oracle/internal/failure"
+	"fce-usdx-oracle/internal/observation/decimal"
 )
 
 // maxBodyBytes bounds an upstream that starts streaming; real payloads are ~150 bytes.

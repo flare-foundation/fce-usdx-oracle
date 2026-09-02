@@ -1,4 +1,4 @@
-package oracle
+package observation
 
 import (
 	"bytes"
@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"fce-usdx-oracle/internal/backing"
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/report"
-	"fce-usdx-oracle/internal/supply"
+	"fce-usdx-oracle/internal/observation/backing"
+	"fce-usdx-oracle/internal/observation/supply"
+	"fce-usdx-oracle/internal/wire/feedupdate"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -138,7 +138,7 @@ var testEndpointsHash = common.HexToHash("0x9f3c")
 var testAdminsHash = common.HexToHash("0x5e21")
 
 // The feed this test machine speaks for. Non-zero because the store's sentinels
-// are zero: internal/report refuses to sign an update naming neither.
+// are zero: internal/wire/feedupdate refuses to sign an update naming neither.
 var testExtensionID = big.NewInt(66281)
 
 var testFeedID = [21]byte{
@@ -365,11 +365,11 @@ func TestObserve_SignsTheEncodedBody(t *testing.T) {
 	}
 	// The signer is handed the SignedPayload PREIMAGE, not the feed update and
 	// not the hash: tee-node keccaks what it is given before applying EIP-191.
-	if len(signer.signed[0]) != report.PayloadLength {
+	if len(signer.signed[0]) != feedupdate.PayloadLength {
 		t.Errorf("signed %d bytes, want the %d-byte SignedPayload preimage",
-			len(signer.signed[0]), report.PayloadLength)
+			len(signer.signed[0]), feedupdate.PayloadLength)
 	}
-	if want, err := report.SigningMessage(report.FeedUpdate{
+	if want, err := feedupdate.SigningMessage(feedupdate.FeedUpdate{
 		ExtensionID:   testExtensionID,
 		FeedID:        testFeedID,
 		Value:         got.Value,
@@ -383,7 +383,7 @@ func TestObserve_SignsTheEncodedBody(t *testing.T) {
 		t.Error("the signed message is not the SignedPayload preimage for this observation")
 	}
 
-	r, sig, err := report.DecodeData(got.Data)
+	r, sig, err := feedupdate.DecodeData(got.Data)
 	if err != nil {
 		t.Fatalf("DecodeData: %v", err)
 	}

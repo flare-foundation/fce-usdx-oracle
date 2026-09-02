@@ -9,9 +9,9 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	extension "fce-usdx-oracle/internal/extension"
-	"fce-usdx-oracle/internal/observe"
-	"fce-usdx-oracle/internal/provision"
-	"fce-usdx-oracle/internal/runtimecfg"
+	"fce-usdx-oracle/internal/observation/poller"
+	"fce-usdx-oracle/internal/provisioning/envelope"
+	"fce-usdx-oracle/internal/provisioning/store"
 	"fce-usdx-oracle/internal/teenode"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -48,17 +48,17 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 	// config.BackingRefs() is pinned as the backing credential set here, in the
 	// build, so no published admin payload can move one of them under the
 	// providers set — role TAGS come off the wire, the ref-to-role mapping does not.
-	verifier := provision.NewVerifier(
+	verifier := envelope.NewVerifier(
 		new(big.Int).SetUint64(config.ChainID), teeID, config.BackingRefs())
-	store := runtimecfg.New(verifier, node)
+	configStore := store.New(verifier, node)
 
-	poller := observe.New(store, node)
+	loop := poller.New(configStore, node)
 
-	e := extension.NewExtension(extensionPort, signPort, poller, store)
+	e := extension.NewExtension(extensionPort, signPort, loop, configStore)
 
 	// The loop lives as long as the process. Shutdown is by process exit, which
 	// is also how the memory-only credentials are discarded.
-	go poller.Run(context.Background())
+	go loop.Run(context.Background())
 
 	logger.Infof("extension started unprovisioned; awaiting SET_ENDPOINTS and SET_SECRET")
 	logger.Infof("observing every %s, refusing to sign anything older than %s",

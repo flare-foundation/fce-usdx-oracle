@@ -2,7 +2,7 @@
 // admin signer sets, and credentials. All other config is fixed in internal/config.
 //
 //	ApplyEndpoints ─┐
-//	ApplyAdmins    ─┼─► Store ──► Open() ──► oracle.Sources + Binding
+//	ApplyAdmins    ─┼─► Store ──► Open() ──► observation.Sources + Binding
 //	ApplySecret    ─┘
 //
 // On-chain payloads are ABI-encoded structs from TeeOracleInstructionsSender.
@@ -18,7 +18,7 @@
 //
 // All runtimecfg state is in-memory only; a restart reverts to not_configured.
 // SET_ADMINS must always be republished after restart before other settings can be applied.
-package runtimecfg
+package store
 
 import (
 	"context"
@@ -27,12 +27,12 @@ import (
 	"strings"
 	"sync"
 
-	"fce-usdx-oracle/internal/backing"
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/oracle"
-	"fce-usdx-oracle/internal/provision"
-	"fce-usdx-oracle/internal/supply"
+	"fce-usdx-oracle/internal/observation"
+	"fce-usdx-oracle/internal/observation/backing"
+	"fce-usdx-oracle/internal/observation/supply"
+	"fce-usdx-oracle/internal/provisioning/envelope"
 	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -139,11 +139,11 @@ type Store struct {
 	// not as a credential — see verifySecret.
 	secrets map[string][]byte
 
-	verifier *provision.Verifier
+	verifier *envelope.Verifier
 	node     Decryptor
 }
 
-func New(verifier *provision.Verifier, node Decryptor) *Store {
+func New(verifier *envelope.Verifier, node Decryptor) *Store {
 	return &Store{secrets: map[string][]byte{}, verifier: verifier, node: node}
 }
 
@@ -304,7 +304,7 @@ func convertEndpoints(w wireEndpoints) (Endpoints, error) {
 // convertAdmins turns the wire form into the role-keyed sets the verifier
 // takes. Role semantics are pinned here; the contract enforces only that role
 // tags are non-zero and unique.
-func convertAdmins(w wireAdmins) (uint64, map[string]provision.AdminSet, error) {
+func convertAdmins(w wireAdmins) (uint64, map[string]envelope.AdminSet, error) {
 	// Zero is the "never applied" sentinel for adminsVersion, so it could never
 	// be accepted; saying so here beats a confusing version comparison.
 	if w.Version == 0 {
@@ -314,7 +314,7 @@ func convertAdmins(w wireAdmins) (uint64, map[string]provision.AdminSet, error) 
 		return 0, nil, err
 	}
 
-	sets := make(map[string]provision.AdminSet, len(w.Roles))
+	sets := make(map[string]envelope.AdminSet, len(w.Roles))
 	for _, r := range w.Roles {
 		tag, ok := tagString(r.Role)
 		if !ok {
@@ -324,7 +324,7 @@ func convertAdmins(w wireAdmins) (uint64, map[string]provision.AdminSet, error) 
 			return 0, nil, fmt.Errorf("runtimecfg: duplicate admin role %q", tag)
 		}
 
-		floor, known := provision.FloorForRole(tag)
+		floor, known := envelope.FloorForRole(tag)
 		if !known {
 			// Same posture as an unknown endpoint group: a role this build does
 			// not understand means publisher and build disagree about the schema.
@@ -340,7 +340,7 @@ func convertAdmins(w wireAdmins) (uint64, map[string]provision.AdminSet, error) 
 
 	// The sets may overlap — one person can hold both roles — so no disjointness
 	// check. What matters is that each envelope is verified against exactly one.
-	for _, role := range provision.Roles() {
+	for _, role := range envelope.Roles() {
 		if _, ok := sets[role]; !ok {
 			return 0, nil, fmt.Errorf("runtimecfg: admin role %q is missing", role)
 		}
@@ -348,24 +348,24 @@ func convertAdmins(w wireAdmins) (uint64, map[string]provision.AdminSet, error) 
 	return w.Version, sets, nil
 }
 
-func parseAdminSet(role string, in wireAdminRole, floor int) (provision.AdminSet, error) {
-	if len(in.Admins) == 0 || len(in.Admins) > provision.MaxAdmins {
-		return provision.AdminSet{}, fmt.Errorf(
+func parseAdminSet(role string, in wireAdminRole, floor int) (envelope.AdminSet, error) {
+	if len(in.Admins) == 0 || len(in.Admins) > envelope.MaxAdmins {
+		return envelope.AdminSet{}, fmt.Errorf(
 			"runtimecfg: %s admin count %d is not between 1 and %d",
-			role, len(in.Admins), provision.MaxAdmins)
+			role, len(in.Admins), envelope.MaxAdmins)
 	}
 
 	threshold, ok := narrow(in.Threshold)
 	if !ok {
-		return provision.AdminSet{}, fmt.Errorf("runtimecfg: %s admin threshold is out of range", role)
+		return envelope.AdminSet{}, fmt.Errorf("runtimecfg: %s admin threshold is out of range", role)
 	}
-	// The ceiling is the smaller of the set size and provision.MaxThreshold:
+	// The ceiling is the smaller of the set size and envelope.MaxThreshold:
 	// beyond the latter the verifier drops the envelope before it counts
 	// signers, so a higher threshold would install here and then reject every
 	// SET_SECRET that follows, with only an opaque rejection to go on.
-	ceiling := min(len(in.Admins), provision.MaxThreshold)
+	ceiling := min(len(in.Admins), envelope.MaxThreshold)
 	if threshold < floor || threshold > ceiling {
-		return provision.AdminSet{}, fmt.Errorf(
+		return envelope.AdminSet{}, fmt.Errorf(
 			"runtimecfg: %s admin threshold %d is not between %d and %d",
 			role, threshold, floor, ceiling)
 	}
@@ -377,15 +377,15 @@ func parseAdminSet(role string, in wireAdminRole, floor int) (provision.AdminSet
 		// Re-checked because the floor and ceiling above are ours alone, and a
 		// set that passed on-chain can still be unsatisfiable here.
 		if addr == (common.Address{}) {
-			return provision.AdminSet{}, fmt.Errorf("runtimecfg: %s admin address is zero", role)
+			return envelope.AdminSet{}, fmt.Errorf("runtimecfg: %s admin address is zero", role)
 		}
 		if seen[addr] {
-			return provision.AdminSet{}, fmt.Errorf("runtimecfg: duplicate %s admin address", role)
+			return envelope.AdminSet{}, fmt.Errorf("runtimecfg: duplicate %s admin address", role)
 		}
 		seen[addr] = true
 		out = append(out, addr)
 	}
-	return provision.AdminSet{Admins: out, Threshold: threshold}, nil
+	return envelope.AdminSet{Admins: out, Threshold: threshold}, nil
 }
 
 // ApplySecret verifies a signed envelope and installs the credential it
@@ -565,22 +565,22 @@ func (s *Store) required() []string {
 // Open turns the stored configuration into live sources and the binding they
 // were opened under, once per observation. Cheap: an HTTP RPC client opens no
 // connection until used.
-func (s *Store) Open() (oracle.Sources, oracle.Binding, error) {
+func (s *Store) Open() (observation.Sources, observation.Binding, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.endpoints == nil {
-		return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
+		return observation.Sources{}, observation.Binding{}, failure.NotConfigured
 	}
 	// An update that cannot commit to published admin sets would be rejected by
 	// the store anyway; refusing to observe says so at the honest point.
 	if !s.adminsSet {
-		return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
+		return observation.Sources{}, observation.Binding{}, failure.NotConfigured
 	}
 
 	bonds, err := newBacking(config.BondsSource())
 	if err != nil {
-		return oracle.Sources{}, oracle.Binding{}, failure.Internal
+		return observation.Sources{}, observation.Binding{}, failure.Internal
 	}
 
 	// A nil cash source is how "running cash-less" is carried; the oracle then
@@ -592,7 +592,7 @@ func (s *Store) Open() (oracle.Sources, oracle.Binding, error) {
 		if cashKey := string(s.secrets[config.HexAPIKeyRef]); cashKey != "" {
 			cash, err = newBacking(config.CashSource(url, cashKey))
 			if err != nil {
-				return oracle.Sources{}, oracle.Binding{}, failure.Internal
+				return observation.Sources{}, observation.Binding{}, failure.Internal
 			}
 		}
 	}
@@ -602,18 +602,18 @@ func (s *Store) Open() (oracle.Sources, oracle.Binding, error) {
 		g, ok := s.endpoints.Groups[pinned.Name]
 		if !ok {
 			// A missing chain undercounts supply, which OVERSTATES the price.
-			return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
+			return observation.Sources{}, observation.Binding{}, failure.NotConfigured
 		}
 
 		providers := make([]supply.Provider, 0, len(g.Endpoints))
 		for i, ep := range g.Endpoints {
 			url, err := s.endpointURL(ep)
 			if err != nil {
-				return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
+				return observation.Sources{}, observation.Binding{}, failure.NotConfigured
 			}
 			client, err := ethclient.Dial(url)
 			if err != nil {
-				return oracle.Sources{}, oracle.Binding{}, failure.NotConfigured
+				return observation.Sources{}, observation.Binding{}, failure.NotConfigured
 			}
 			providers = append(providers, supply.Provider{
 				Name:   config.ProviderHealthKey(pinned.Name, i+1),
@@ -633,12 +633,12 @@ func (s *Store) Open() (oracle.Sources, oracle.Binding, error) {
 		})
 	}
 
-	sources := oracle.Sources{Chains: chains, Bonds: bonds, Cash: cash}
+	sources := observation.Sources{Chains: chains, Bonds: bonds, Cash: cash}
 	if err := sources.Validate(); err != nil {
-		return oracle.Sources{}, oracle.Binding{}, failure.Internal
+		return observation.Sources{}, observation.Binding{}, failure.Internal
 	}
 
-	binding := oracle.Binding{
+	binding := observation.Binding{
 		ExtensionID:   config.ExtensionID,
 		FeedID:        config.FeedID,
 		EndpointsHash: s.endpointsHash,
@@ -749,7 +749,7 @@ func validateCashGroup(g Group) error {
 		return fmt.Errorf("runtimecfg: group %q must be PRIVATE", config.HexCashGroup)
 	}
 	// Pinned so the role that governs the cash URL is not the publisher's
-	// choice — see provision.FloorForRole and the backing ref set.
+	// choice — see envelope.FloorForRole and the backing ref set.
 	if ep.SecretRef != config.HexCashURLRef {
 		return fmt.Errorf(
 			"runtimecfg: group %q must name secret %q", config.HexCashGroup, config.HexCashURLRef)

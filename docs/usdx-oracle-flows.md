@@ -134,7 +134,7 @@ governance → TeeOracleInstructionsSender.setEndpoints(feedId, teeIds, groups, 
           expectedEndpointsVersion[feedId][teeId] = version             recorded before dispatch
           flareTeeManager.sendInstructions(...)
              ↓  cosigned → proxy → tee-node → POST /action
-        runtimecfg.ApplyEndpoints
+        store.ApplyEndpoints
           ABI decode into Endpoints{version, feedId, groups}
           the feedId must name THIS machine's feed, else rejected
           validate():
@@ -169,7 +169,7 @@ governance → TeeOracleInstructionsSender.setAdmins(feedId, teeIds, roles, cb)
           expectedAdminsVersion[feedId][teeId] = version                recorded before dispatch
           flareTeeManager.sendInstructions(...)
              ↓  cosigned → proxy → tee-node → POST /action
-        runtimecfg.ApplyAdmins
+        store.ApplyAdmins
           ABI decode into Admins{version, feedId, roles}
           the feedId must name THIS machine's feed, else rejected
           convertAdmins():
@@ -232,14 +232,14 @@ admin laptop
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, hash)
   usdxprov sign     admin #1   (refuses a duplicate signer)
   usdxprov sign     admin #2   (providers set only; backing can be 1-of-N)
-  usdxprov submit   POST proxy/direct     ← must be within provision.Freshness
+  usdxprov submit   POST proxy/direct     ← must be within envelope.Freshness
                                             (1 hour) of issuedAt
      ↓  tee-node polls the direct queue → POST /action (type = direct)
 enclave
-  runtimecfg.ApplySecret                          runtimecfg.go:211
+  store.ApplySecret                          store.go:211
     applyMu held for the whole call               ← the replay defence needs this
     teenode.TeeID()  signs a fixed probe, recovers its own address
-    provision.Verify()                            provision.go:209
+    envelope.Verify()                            envelope.go:209
        admin sets must be installed at all — else rejected outright
        set = backing if ref == hex_api_key else providers
        chainId · teeId · payload hash · freshness · version > last
@@ -257,15 +257,15 @@ enclave
 Runs whether or not anyone asks for a price. Nothing else touches the network.
 
 ```
-observe.Poller.Run — every 2 minutes                observe.go:114
+poller.Poller.Run — every 2 minutes                poller.go:114
   │
-  ├─ runtimecfg.Resolve()                           runtimecfg.go:415
+  ├─ store.Resolve()                           store.go:415
   │     re-run every tick, never cached
   │     builds RPC clients, bonds source, cash source (nil if no secret)
   │     provider names are positional ("rpc_flare_1") so nothing an operator
   │     writes reaches the public /state
   │
-  └─ oracle.Observe — 20s deadline                  oracle.go:104
+  └─ observation.Observe — 20s deadline                  observation.go:104
         S   supply, all chains concurrently
               ask every provider for its head → take the Quorum-th HIGHEST
               refuse it if older than MaxBlockAge → query all at that EXACT block
@@ -310,9 +310,9 @@ anyone → TeeOracleInstructionsSender.requestFeedUpdate(feedId, teeIds)
   processGetFeed                                    extension.go
     DecodeFeedRequest(message) — must be exactly the ABI envelope, and the
     feedId must be the one this machine serves; else rejected
-    poller.Report()                                 observe.go
+    poller.Report()                                 poller.go
       Latest()  — fails closed if the observation is older than 10 min
-      oracle.Sign()
+      observation.Sign()
         update = FeedUpdate{extensionId, feedId, value, decimals, observedAt,
                             endpointsHash, adminsHash}
         dataHash    = keccak256(abi.encode(update))

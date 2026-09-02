@@ -1,13 +1,13 @@
-// This file is an EXTERNAL test package: internal/provision declares its own
+// This file is an EXTERNAL test package: internal/provisioning/envelope declares its own
 // recover(digest, sig), which shadows the builtin, so a panic cannot be
 // asserted from inside the package.
-package provision_test
+package envelope_test
 
 import (
 	"math/big"
 	"testing"
 
-	"fce-usdx-oracle/internal/provision"
+	"fce-usdx-oracle/internal/provisioning/envelope"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -21,5 +21,5 @@ func TestNewVerifierRejectsZeroTeeID(t *testing.T) {
 			t.Fatal("NewVerifier accepted a zero teeID")
 		}
 	}()
-	provision.NewVerifier(big.NewInt(114), common.Address{}, []string{"hex_api_key"})
+	envelope.NewVerifier(big.NewInt(114), common.Address{}, []string{"hex_api_key"})
 }

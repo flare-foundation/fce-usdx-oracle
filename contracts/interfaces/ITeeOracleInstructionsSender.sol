@@ -2,7 +2,7 @@
 // Vendored from flare-smart-contracts-v2 @ 796784e6 by scripts/vendor-interfaces.sh.
 // Only the import paths are rewritten, to point at the siblings in this
 // directory. Do NOT edit the declarations: abigen derives the Go structs from
-// them, and the enclave's codec in go/internal/runtimecfg plus the publisher's
+// them, and the enclave's codec in go/internal/provisioning/store plus the publisher's
 // in tools/pkg/oraclepayload are both pinned to the same layout.
 
 pragma solidity >=0.8.4 <0.9;

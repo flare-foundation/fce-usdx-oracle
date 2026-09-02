@@ -6,7 +6,7 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/report"
+	"fce-usdx-oracle/internal/wire/feedupdate"
 
 	"github.com/flare-foundation/go-flare-common/pkg/tee/instruction"
 )
@@ -19,7 +19,7 @@ func (e *Extension) processGetFeed(df *instruction.DataFixed) outcome {
 	// extension. Anything that is not exactly one ABI-encoded FeedUpdateRequest
 	// is refused rather than guessed at, and nothing about it is echoed back:
 	// ActionResult.Log is public.
-	feedID, reqErr := report.DecodeFeedRequest(df.OriginalMessage)
+	feedID, reqErr := feedupdate.DecodeFeedRequest(df.OriginalMessage)
 	if reqErr != nil {
 		return refuse(failure.Coerce(reqErr, failure.Internal))
 	}

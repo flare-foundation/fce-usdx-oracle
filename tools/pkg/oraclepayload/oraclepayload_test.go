@@ -13,7 +13,7 @@ import (
 
 // The fixtures are Solidity's own encoding, produced by
 // test/ConfigPayloadVector.t.sol and shared with the enclave's decoder in
-// go/internal/runtimecfg. See testdata/wire/README.md for why a shared fixture
+// go/internal/provisioning/store. See testdata/wire/README.md for why a shared fixture
 // rather than shared code.
 const (
 	endpointsFile   = "../../../testdata/wire/endpoints-v7.abi.hex"

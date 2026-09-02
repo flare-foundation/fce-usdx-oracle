@@ -5,7 +5,7 @@
 //	data    = abi.encode(bytes body, bytes signature, bytes payload)
 //	payload = JSON, the machine's account of itself
 //
-// The layout is declared here rather than imported from go/internal/readiness
+// The layout is declared here rather than imported from go/internal/wire/readiness
 // so tools/ stays independent of any one implementation — this asserts on the
 // wire contract and must run unchanged against every extension language, the
 // same rule pricereport follows.
@@ -34,7 +34,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-// DomainName must match go/internal/readiness. A mismatch here would accept a
+// DomainName must match go/internal/wire/readiness. A mismatch here would accept a
 // signature made for something else, so it is compared, never assumed.
 const DomainName = "USDX_ORACLE_READINESS_V1"
 
