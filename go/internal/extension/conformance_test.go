@@ -119,7 +119,7 @@ func TestConformance(t *testing.T) {
 		t.Fatal("index.json lists no fixtures")
 	}
 
-	e := NewWithObserver(0, 0, &conformanceObserver{data: conformancePayload(t)})
+	e := NewExtension(0, 0, &conformanceObserver{data: conformancePayload(t)}, nil)
 
 	for _, name := range index.Fixtures {
 		var f fixture

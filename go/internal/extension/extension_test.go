@@ -662,8 +662,10 @@ func TestNilObserverPanics(t *testing.T) {
 		}()
 		f()
 	}
-	mustPanic("NewWithObserver", func() { NewWithObserver(0, 0, nil) })
-	mustPanic("NewWithProvisioner", func() { NewWithProvisioner(0, 0, nil, nil) })
+	mustPanic("nil observer", func() { NewExtension(0, 0, nil, nil) })
+	mustPanic("nil observer, live provisioner", func() {
+		NewExtension(0, 0, nil, &fakeProvisioner{})
+	})
 }
 
 // doStateRequest performs GET /state against the handler and returns the body.

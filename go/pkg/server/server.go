@@ -35,9 +35,7 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 
 	node := teenode.New(signPort, 10*time.Second)
 
-	// Resolved before the verifier exists, because the verifier is built around
-	// it: a provisioning envelope names the machine it is for, and that binding
-	// is what stops a captured envelope being redirected to another enclave.
+	// Resolved before the verifier exists
 	teeID, err := resolveTeeID(context.Background(), node)
 	if err != nil {
 		errCh <- err
@@ -56,7 +54,7 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 
 	poller := observe.New(store, node)
 
-	e := extension.NewWithProvisioner(extensionPort, signPort, poller, store)
+	e := extension.NewExtension(extensionPort, signPort, poller, store)
 
 	// The loop lives as long as the process. Shutdown is by process exit, which
 	// is also how the memory-only credentials are discarded.

@@ -10,15 +10,16 @@ import (
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
-// The three provisioning commands. Each is valid over exactly ONE action type:
+// The three provisioning commands. Each is valid over exactly one action type:
 // over direct, SET_ENDPOINTS and SET_ADMINS would skip the sender's
-// onlyGovernance check; on-chain, SET_SECRET would make a ciphertext permanent
-// and public.
+// onlyGovernance check; on-chain, SET_SECRET would place a ciphertext in
+// permanent public storage.
 //
-// That is enforced by which router reaches them — processInstruction for the
-// first two, processDirect for the third — so it is not restated here. The op
-// type used to be a second fence, and is gone now that every command shares
-// TEE_ORACLE, which is why the routers may never grow a shared default arm.
+// The router that reaches a command is what enforces this, so the handlers do
+// not check it again: processInstruction serves the first two, processDirect
+// the third. Every command shares one op type, so the routers are the only
+// fence and may not grow a shared default arm.
+//
 // Every path returns nil data and a fixed log.
 
 // processSetEndpoints applies a governance-published endpoint configuration.
