@@ -343,7 +343,7 @@ func readDecimals(
 
 // callAll performs the same eth_call against every provider concurrently. The
 // result is index-aligned with ch.Providers — nil means no usable answer — so
-// the caller can still say WHICH provider failed.
+// the caller can still name the provider that failed.
 func callAll(ctx context.Context, ch ChainSource, selector []byte, at *big.Int) [][]byte {
 	answers := make([][]byte, len(ch.Providers))
 
@@ -414,7 +414,7 @@ func vote(ch ChainSource, answers [][]byte, health map[string]string) (best []by
 		name := ch.Providers[i].Name
 		switch {
 		case a == nil:
-			// A lagging provider is EXPECTED to fail here — it does not hold the
+			// A lagging provider is expected to fail here — it does not hold the
 			// pinned block. Keeping "lagging" names the actual cause; "down"
 			// would send someone looking for an outage that is not there.
 			if health[name] != config.HealthLagging {

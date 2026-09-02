@@ -13,11 +13,12 @@
 //  1. prefix is bytes32("TEE_ORACLE_FEED"): plain ASCII, right-padded, not keccak256.
 //  2. The signer receives the messageHash preimage (abi.encode(...)), not its hash;
 //     tee-node hashes and signs using EIP-191. Passing the hash would sign the wrong data.
-//  3. chainId is now signed, replacing the old version field—it prevents cross-chain replay.
+//  3. chainId is covered by the signature, which prevents cross-chain replay.
 //
-// FCC is fire-and-forget, so replay protection is internal: extensionId/feedId identify the feed,
-// observedAt is monotonic, endpointsHash and adminsHash commit to config and signer set.
-// instructionId is removed; correlation uses tee-node action id.
+// FCC is fire-and-forget, so replay protection is internal to the payload:
+// extensionId and feedId identify the feed, observedAt is monotonic, and
+// endpointsHash and adminsHash commit to the configuration and signer set. The
+// payload carries no instruction id; correlation is the tee-node action id.
 //
 // Requests now use an ABI-encoded FeedUpdateRequest (was a fixed byte) to support multiple feeds.
 // This extension only serves one: DecodeFeedRequest only accepts that id, mirroring the store’s

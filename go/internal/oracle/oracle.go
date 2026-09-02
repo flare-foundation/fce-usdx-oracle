@@ -56,7 +56,7 @@ type Sources struct {
 type Binding struct {
 	// The extension this machine serves and the feed it speaks for, both pinned
 	// in the build. Zero values are rejected at signing time rather than here,
-	// so a build without them still serves GET /state and the conformance stub.
+	// so a build lacking them still answers GET /state.
 	ExtensionID *big.Int
 	FeedID      [21]byte
 
@@ -170,9 +170,10 @@ func Observe(ctx context.Context, src Sources, binding Binding) (Observation, er
 		return Observation{Health: health}, err
 	}
 
-	// observedAt uses the home chain's block header timestamp, not wall clock or reserves.
-	// Ensures observedAt is always strictly before current block.timestamp and strictly increasing.
-	// MaxObservationAge bounds freshness.
+	// observedAt is the home chain's block header timestamp, not wall clock and
+	// not a reserve figure's own stamp. An already-mined block guarantees the
+	// store's requirement that observedAt be strictly below block.timestamp;
+	// MaxObservationAge bounds how old it may be.
 	observedAt, err := homeBlockTime(supplies)
 	if err != nil {
 		return Observation{Health: health}, err
@@ -188,13 +189,13 @@ func Observe(ctx context.Context, src Sources, binding Binding) (Observation, er
 }
 
 // Sign returns the ActionResult payload, abi.encode(FeedUpdate, Signature).
-// Nothing is resampled at signing time, which would put a fresh timestamp on
-// stale inputs.
+// Nothing is resampled here: doing so would put a fresh timestamp on inputs
+// that were read earlier.
 //
-// The update is no longer bound to an instruction id — the store dropped the
-// field, and correlation is the tee-node action id. What replaces it as replay
-// protection is strictly increasing observedAt plus the feed binding, both of
-// which the store enforces.
+// The payload binds no request identifier, so a signature is not tied to the
+// request that asked for it. Replay protection is the strictly increasing
+// observedAt and the feed binding, both enforced by the store; correlation is
+// the tee-node action id, outside the signature.
 func Sign(ctx context.Context, signer Signer, obs Observation) (Observation, error) {
 	data, err := signPayload(ctx, signer, obs)
 	if err != nil {
@@ -215,8 +216,8 @@ func signPayload(ctx context.Context, signer Signer, obs Observation) ([]byte, e
 		AdminsHash:    obs.Binding.AdminsHash,
 	}
 
-	// The signer is handed the SignedPayload PREIMAGE: tee-node hashes what it
-	// is given and applies EIP-191 itself. See package report.
+	// The signer receives the SignedPayload preimage, not its hash: tee-node
+	// hashes what it is given and applies EIP-191 itself. See package report.
 	message, err := report.SigningMessage(update, config.ChainID)
 	if err != nil {
 		return nil, err

@@ -235,7 +235,7 @@ func (s *httpSource) parse(body []byte) (Reading, error) {
 		return Reading{}, failure.BackingMalformed
 	}
 
-	// How OLD asOf is says nothing: it moves only when the figure changes, so a
+	// The age of asOf says nothing on its own: it moves only when the figure changes, so a
 	// week-old stamp on a week without a mint is the correct answer. A stamp in
 	// the FUTURE is different — it means clock skew or a broken upstream, and
 	// nothing else the response says can be trusted either.

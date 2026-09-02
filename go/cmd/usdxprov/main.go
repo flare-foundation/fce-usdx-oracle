@@ -120,9 +120,9 @@ func build(args []string) error {
 		return err
 	}
 
-	// -tee ASSERTS which machine answered; it never overrides what /info served, which
+	// -tee asserts which machine answered; it never overrides what /info served, which
 	// would send the plaintext to whoever answered the port. verify-tee runs a separate
-	// request, so it cannot speak for the key THIS call fetched — hence the flag.
+	// request, so it cannot speak for the key this call fetched — hence the flag.
 	if *teeIDFlag != "" {
 		want := common.HexToAddress(*teeIDFlag)
 		if want == (common.Address{}) {

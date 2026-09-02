@@ -44,9 +44,9 @@ import (
 // scheme or host.
 const secretPlaceholder = "{secret}"
 
-// maxPayloadBytes bounds decoding work. The contract no longer caps payload
-// size — MAX_ENDPOINTS_BYTES is gone and transaction size is the only on-chain
-// limit — so this is the enclave's own bound, not a mirror of one.
+// maxPayloadBytes bounds decoding work. The sender imposes no size limit of its
+// own beyond the transaction itself, so this bound is the enclave's alone and
+// does not mirror an on-chain constant.
 const maxPayloadBytes = 256 << 10
 
 // urlUnsafe lists characters a credential may not contain, because each can
@@ -57,8 +57,8 @@ var errBadPayload = errors.New("runtimecfg: payload is not a known configuration
 
 // Endpoints is a decoded SET_ENDPOINTS payload, keyed by tag.
 type Endpoints struct {
-	// Contract-assigned, one increment per publication of THIS feed across the
-	// whole fleet. New: the old JSON payload carried no version at all.
+	// Contract-assigned, one increment per publication of this feed across the
+	// whole fleet.
 	Version uint64
 
 	// The feed this configuration serves. One sender publishes for every feed of
@@ -184,7 +184,7 @@ func (s *Store) ApplyEndpoints(payload []byte) error {
 	}
 
 	// Any credential already provisioned must fit the configuration that is
-	// arriving, so the mismatch fails THIS step rather than the next
+	// arriving, so the mismatch fails at this step rather than the next
 	// observation. The other direction is covered in ApplySecret.
 	s.mu.RLock()
 	for ref, value := range s.secrets {
@@ -338,7 +338,7 @@ func convertAdmins(w wireAdmins) (uint64, map[string]provision.AdminSet, error) 
 		sets[tag] = set
 	}
 
-	// The sets MAY overlap — one person can hold both roles — so no disjointness
+	// The sets may overlap — one person can hold both roles — so no disjointness
 	// check. What matters is that each envelope is verified against exactly one.
 	for _, role := range provision.Roles() {
 		if _, ok := sets[role]; !ok {
@@ -544,9 +544,9 @@ func (s *Store) Readiness() types.Readiness {
 // required lists every credential the current configuration needs. Callers hold
 // at least the read lock.
 func (s *Store) required() []string {
-	// The Hex key stays listed even though Resolve no longer refuses without it:
-	// Ready means "fully provisioned", not "able to answer", and an operator
-	// needs to see that a machine is running cash-less.
+	// Listed even though Open will resolve without it: Ready means fully
+	// provisioned rather than able to answer, so an operator can see that a
+	// machine is running cash-less.
 	refs := []string{config.HexAPIKeyRef}
 	if s.endpoints == nil {
 		return refs
@@ -793,7 +793,7 @@ func validateEndpoint(tag string, isChain bool, ep Endpoint) error {
 }
 
 // resolveURL validates a URL's shape and substitutes a credential. It says
-// nothing about WHICH host is named, only that a credential cannot change it.
+// nothing about which host is named, only that a credential cannot change it.
 func resolveURL(raw, secretRef, value string) (string, error) {
 	hasPlaceholder := strings.Contains(raw, secretPlaceholder)
 	if hasPlaceholder != (secretRef != "") {

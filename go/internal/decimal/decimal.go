@@ -27,7 +27,7 @@ var (
 )
 
 // ParseAmount parses a non-negative decimal amount, accepting ',' only as a thousands
-// separator in a well-formed grouping. Errors never include the input: it IS the
+// separator in a well-formed grouping. Errors never include the input, which is the
 // reserve figure.
 //
 //	Accepted:   "0"  "25452544.52"  "25,452,544.52"  "1,000"  ".5"  "123."

@@ -2,7 +2,7 @@
 //
 //	body = abi.encode(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
 //
-// signed by a threshold of DISTINCT admins under EIP-191. version blocks rollback
+// signed by a threshold of distinct admins under EIP-191. version blocks rollback
 // while the process lives, issuedAt survives restarts, and every rejection returns
 // failure.ProvisionRejected alike, so the endpoint cannot be probed.
 //
@@ -98,7 +98,7 @@ func RoleFor(ref string, backingRefs []string) string {
 	return RoleProviders
 }
 
-// AdminSet is one signer set and the number of DISTINCT members that must sign.
+// AdminSet is one signer set and the number of distinct members that must sign.
 type AdminSet struct {
 	Admins    []common.Address
 	Threshold int
@@ -232,7 +232,7 @@ func (v *Verifier) setFor(ref string) AdminSet {
 }
 
 // SetAdmins installs every role's signer set together or not at all.
-// lastVersion is deliberately NOT reset: clearing it on rotation would let an
+// lastVersion is not reset: clearing it on rotation would let an
 // envelope the outgoing admins signed be replayed against the incoming set.
 func (v *Verifier) SetAdmins(sets map[string]AdminSet) error {
 	// Validated into a fresh map before anything is installed, so a payload that
@@ -374,7 +374,7 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 	return e, nil
 }
 
-// hasThreshold reports whether set.Threshold DISTINCT members signed; without
+// hasThreshold reports whether set.Threshold distinct members signed; without
 // deduplication one compromised key could supply the same signature M times.
 func hasThreshold(body []byte, sigs [][]byte, set AdminSet) bool {
 	digest := accounts.TextHash(crypto.Keccak256(body))

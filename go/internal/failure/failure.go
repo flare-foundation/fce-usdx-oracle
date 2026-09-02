@@ -101,7 +101,7 @@ var (
 	SupplyImplausible = Failure{ClassImplausible, "supply read produced an implausible value"}
 
 	// Distinct from the quorum failures because the reads all SUCCEED and AGREE:
-	// this catches a provider lying about WHICH block to read, not what is in it.
+	// this catches a provider lying about which block to read, not about what is in it.
 	SupplyBlockStale = Failure{ClassSourceInvalid, "supply block is too far behind"}
 
 	// --- observation consistency ---

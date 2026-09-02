@@ -43,8 +43,8 @@ type Poller struct {
 	opener Opener
 	signer oracle.Signer
 
-	// Fields rather than direct constant reads so tests can drive the loop
-	// without sleeping. New always sets the real ones.
+	// Fields rather than reads of the config constants, so a test can drive the
+	// loop without sleeping. New sets the production values.
 	interval time.Duration
 	maxAge   time.Duration
 	now      func() time.Time
@@ -148,15 +148,14 @@ func (p *Poller) Latest() (oracle.Observation, error) {
 	return p.last, nil
 }
 
-// Report returns the latest observation, signed — the whole of what a GET_FEED
-// request costs. The update carries no instruction id: the store dropped the
-// field, so nothing binds a signature to the request that asked for it.
+// Report returns the latest observation, signed. This is the whole cost of a
+// GET_FEED request. The payload binds no request identifier, so a signature is
+// not tied to the request that produced it.
 //
 // requestedAt is the block timestamp of the instruction event that asked for
-// this update, taken from the cosigned DataFixed. It is not published — what
-// gets signed is still the moment the inputs were READ — but it is the clock
-// checkClock measures against. Nothing about the request may enter the payload;
-// see the note on Sign.
+// the update, taken from the cosigned DataFixed. It is never published — the
+// signed observedAt remains the moment the inputs were read — and serves only
+// as the clock checkClock measures staleness against.
 func (p *Poller) Report(ctx context.Context, requestedAt uint64) (oracle.Observation, error) {
 	obs, err := p.Latest()
 	if err != nil {
@@ -170,10 +169,9 @@ func (p *Poller) Report(ctx context.Context, requestedAt uint64) (oracle.Observa
 	return oracle.Sign(ctx, p.signer, obs)
 }
 
-// checkClock enforces observation staleness against the block's timestamp,
-// ensuring only fresh data is reported for a given feed update request.
-// Only older (stale) observations can be flagged; newer observations are allowed.
-// Returns an error if the bound is not met.
+// checkClock bounds how far the observation may trail the requesting block.
+// Only a stale observation is rejected; one stamped ahead of the request is
+// accepted, since the store applies its own future bound.
 func checkClock(observedAt, requestedAt uint64, maxAge time.Duration) error {
 	// Zero requestedAt means a malformed instruction.
 	if requestedAt == 0 {
@@ -186,9 +184,10 @@ func checkClock(observedAt, requestedAt uint64, maxAge time.Duration) error {
 	return nil
 }
 
-// ReadinessReport assembles what the poller knows about itself, binds it to one
-// instruction and signs it. Assembled here because everything but the provisioning
-// half lives behind this mutex, and so does the signer. No I/O beyond the signing call.
+// ReadinessReport assembles the poller's account of itself, binds it to one
+// instruction and signs it. It is assembled here because every field but the
+// provisioning half is behind this mutex, as is the signer. The signing call is
+// the only I/O.
 func (p *Poller) ReadinessReport(
 	ctx context.Context, instructionID common.Hash, provisioning types.Readiness,
 ) ([]byte, error) {
@@ -251,8 +250,9 @@ func (p *Poller) ReadinessReport(
 		return nil, failure.Coerce(err, failure.Internal)
 	}
 
-	// asFailure, not the raw error: a signer's own words can name the endpoint it
-	// failed to reach, and this must not depend on the signer keeping to vocabulary.
+	// Coerced rather than passed through: a signer's own error text can name the
+	// endpoint it failed to reach, and this must not rely on the signer keeping
+	// to the vocabulary.
 	signature, err := p.signer.Sign(ctx, body)
 	if err != nil {
 		return nil, failure.Coerce(err, failure.Internal)
