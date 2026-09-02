@@ -298,6 +298,14 @@ func agreedBlockTime(
 	return time.Unix(seconds.Int64(), 0).UTC(), nil
 }
 
+// readTotalSupply returns the token's raw totalSupply() at block at, in the
+// token's own smallest unit, as agreed by Quorum providers; Read scales it by
+// the decimals read at the same height. A negative value is SupplyImplausible:
+// the selector returns uint256, so a sign bit can only mean a malformed answer.
+//
+// Fewer than Quorum responses is SupplyUnavailable when no provider answered
+// at all and SupplyNoQuorum otherwise, so an outage and a split fleet are
+// reported as the different faults they are.
 func readTotalSupply(
 	ctx context.Context, ch ChainSource, at *big.Int, health map[string]string,
 ) (*big.Int, error) {
@@ -320,9 +328,14 @@ func readTotalSupply(
 	return value, nil
 }
 
-// readDecimals reads decimals() at the same block. Read every time rather than
-// hard-coded: USDX is 6 on Flare and Songbird but 18 on Ethereum, and assuming
-// a value would misprice a chain by 10^12.
+// readDecimals returns the token's ERC-20 decimals() at block at, as agreed by
+// Quorum providers. Read divides the raw totalSupply by 10^decimals to get whole
+// tokens, so this is the scale that makes supply comparable across chains. A
+// value above maxDecimals is SupplyMalformed: a provider returning garbage here
+// would otherwise shift the supply by 10^N rather than fail.
+//
+// Read per observation rather than hard-coded: USDX is 6 on Flare and Songbird
+// but 18 on Ethereum, and assuming a value would misprice a chain by 10^12.
 func readDecimals(
 	ctx context.Context, ch ChainSource, at *big.Int, health map[string]string,
 ) (uint8, error) {
