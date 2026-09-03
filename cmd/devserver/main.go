@@ -4,7 +4,8 @@
 //
 //	go run ./cmd/mocknode &
 //	go run ./cmd/devserver &
-//	./scripts/set-endpoints.sh deploy/config/endpoints/coston2.json
+//	./deploy/scripts/set-endpoints.sh deploy/config/endpoints/coston2.json
+//	./deploy/scripts/set-admins.sh deploy/config/admins/dev-wellknown-keys.json
 //
 // NOT a production entrypoint. Production is ./cmd/docker.
 package main

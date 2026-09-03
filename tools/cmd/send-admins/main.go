@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -33,6 +34,7 @@ import (
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
 	"fce-usdx-oracle/tools/pkg/keeper"
+	"fce-usdx-oracle/tools/pkg/oraclepayload"
 	"fce-usdx-oracle/tools/pkg/support"
 	instrutils "fce-usdx-oracle/tools/pkg/utils"
 
@@ -62,40 +64,25 @@ func main() {
 	waitF := flag.Duration("wait", 90*time.Second,
 		"how long to wait for the machine to report the new admins hash; 0 skips the check")
 	dryRunF := flag.Bool("dry-run", false, "validate the payload and print the predicted hash, but send nothing")
+	encodeF := flag.Bool("encode", false,
+		"print the ABI-encoded Admins payload for -version and exit, touching no chain: the exact "+
+			"bytes setAdmins would dispatch, for delivering to a dev server's /action directly")
+	versionF := flag.Uint64("version", 0,
+		"publication version to encode with -encode; on-chain the sender assigns it, so this is only "+
+			"for a dev server, whose store requires each publication to be newer than the last")
 	outF := flag.String("out", "",
 		"write the governance hand-off (calldata, fee, predicted hash) to this JSON file "+
 			"instead of sending — the path for production-mode senders, where setAdmins "+
 			"is governance-only and Flare executes it through the timelock")
 	flag.Parse()
 
-	if *configF == "" || *teeF == "" {
-		fccutils.FatalWithCause(errors.New("-config and -tee are both required"))
-	}
-	instructionSenderAddress, err := configs.ResolveContract(*instructionSenderF, *af, "TeeOracleInstructionsSender")
-	if err != nil {
-		fccutils.FatalWithCause(errors.Errorf("resolving the instructions sender: %s — pass -instructionSender "+
-			"or run scripts/import-upstream-addresses.sh after the upstream deploy", err))
+	if *configF == "" {
+		fccutils.FatalWithCause(errors.New("-config is required"))
 	}
 
 	feedID, err := parseFeedID(*feedIDF)
 	if err != nil {
 		fccutils.FatalWithCause(err)
-	}
-
-	teeIDs, err := parseAddresses(*teeF)
-	if err != nil {
-		fccutils.FatalWithCause(errors.Errorf("-tee: %s", err))
-	}
-	if len(teeIDs) == 0 {
-		fccutils.FatalWithCause(errors.New("-tee must name at least one machine"))
-	}
-
-	var claimBack common.Address
-	if *claimBackF != "" {
-		if !common.IsHexAddress(*claimBackF) {
-			fccutils.FatalWithCause(errors.Errorf("-claimBack %q is not an address", *claimBackF))
-		}
-		claimBack = common.HexToAddress(*claimBackF)
 	}
 
 	configBytes, err := os.ReadFile(*configF)
@@ -114,6 +101,45 @@ func main() {
 	}
 	if err := validateAdmins(roles); err != nil {
 		fccutils.FatalWithCause(errors.Errorf("%s: %s", *configF, err))
+	}
+
+	// Chain-less: the same encoder the on-chain path uses, so a dev server is
+	// handed the bytes governance would dispatch rather than an approximation.
+	if *encodeF {
+		if *versionF == 0 {
+			fccutils.FatalWithCause(errors.New("-encode needs -version (a dev server's store rejects version 0)"))
+		}
+		payload, err := oraclepayload.EncodeAdmins(*versionF, feedID, roles)
+		if err != nil {
+			fccutils.FatalWithCause(errors.Errorf("encoding Admins: %s", err))
+		}
+		fmt.Println(hexutil.Encode(payload))
+		return
+	}
+
+	if *teeF == "" {
+		fccutils.FatalWithCause(errors.New("-tee is required (or -encode for a chain-less payload)"))
+	}
+	instructionSenderAddress, err := configs.ResolveContract(*instructionSenderF, *af, "TeeOracleInstructionsSender")
+	if err != nil {
+		fccutils.FatalWithCause(errors.Errorf("resolving the instructions sender: %s — pass -instructionSender "+
+			"or run scripts/import-upstream-addresses.sh after the upstream deploy", err))
+	}
+
+	teeIDs, err := parseAddresses(*teeF)
+	if err != nil {
+		fccutils.FatalWithCause(errors.Errorf("-tee: %s", err))
+	}
+	if len(teeIDs) == 0 {
+		fccutils.FatalWithCause(errors.New("-tee must name at least one machine"))
+	}
+
+	var claimBack common.Address
+	if *claimBackF != "" {
+		if !common.IsHexAddress(*claimBackF) {
+			fccutils.FatalWithCause(errors.Errorf("-claimBack %q is not an address", *claimBackF))
+		}
+		claimBack = common.HexToAddress(*claimBackF)
 	}
 
 	logger.Infof("Admin set from %s:", *configF)

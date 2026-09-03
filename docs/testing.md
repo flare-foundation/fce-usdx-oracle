@@ -143,7 +143,7 @@ tunnel is down, registration stalls at status 1 and nothing downstream works.
 Run these first. They catch most breakage in seconds.
 
 ```bash
-cd go && go test ./... && cd ..
+go test ./... && (cd tools && go test ./...)
 ```
 
 ```bash
@@ -164,27 +164,36 @@ Ethereum, Songbird and Hex — no chain, no TEE, no credentials. One script runs
 ```
 
 It starts a mock signing node and the dev server on high ports, provisions them with an endpoint
-configuration, requests a feed update, waits out the first observation, and tears both down.
+configuration and the dev-only admin set, requests a feed update, waits out the first
+observation, and tears both down.
 
 To run it by hand instead — three terminals, or background the first two:
 
 ```bash
-cd go && SIGN_PORT=9099 go run ./cmd/mocknode
+SIGN_PORT=9099 go run ./cmd/mocknode
 ```
 
 ```bash
-cd go && EXTENSION_PORT=8099 SIGN_PORT=9099 go run ./cmd/devserver
+EXTENSION_PORT=8099 SIGN_PORT=9099 go run ./cmd/devserver
 ```
 
 ```bash
 ./deploy/scripts/set-endpoints.sh deploy/config/endpoints/public-only.json 8099
 ```
 
+Observation needs only the endpoints, but a signed feed update also needs an admin set: the
+update commits to one, and the store rejects an update that names none. The dev-only set is
+built from well-known keys and must never be published to a live feed:
+
+```bash
+./deploy/scripts/set-admins.sh deploy/config/admins/dev-wellknown-keys.json 8099
+```
+
 Then ask for a feed update. `originalMessage` is the ABI-encoded `FeedUpdateRequest` — the
 21-byte feed id in a single 32-byte word; a wrong envelope is rejected (findings §22):
 
 ```bash
-python3 -c "import json;b32=lambda s:'0x'+s.encode().ljust(32,b'\x00').hex();df={'instructionId':'0x'+'c1'*32,'teeId':'0x'+'22'*20,'timestamp':1785945000,'rewardEpochId':0,'opType':b32('TEE_ORACLE'),'opCommand':b32('GET_FEED'),'cosigners':[],'cosignersThreshold':0,'originalMessage':'0x20555344582f55534400000000000000000000000000000000000000000000','additionalFixedMessage':'0x'};print(json.dumps({'data':{'id':'0x'+'c1'*32,'type':'instruction','submissionTag':'submit','message':'0x'+json.dumps(df).encode().hex()},'additionalVariableMessages':[],'timestamps':[],'additionalActionData':'0x','signatures':[]}))" > /tmp/getfeed.json
+python3 -c "import json;b32=lambda s:'0x'+s.encode().ljust(32,b'\x00').hex();df={'instructionId':'0x'+'c1'*32,'teeId':'0x'+'22'*20,'timestamp':1785945000,'rewardEpochId':0,'opType':b32('TEE_ORACLE'),'opCommand':b32('GET_FEED'),'cosigners':[],'cosignersThreshold':0,'originalMessage':'0x20555344582f5553440000000000000000000000000000000000000000000000','additionalFixedMessage':'0x'};print(json.dumps({'data':{'id':'0x'+'c1'*32,'type':'instruction','submissionTag':'submit','message':'0x'+json.dumps(df).encode().hex()},'additionalVariableMessages':[],'timestamps':[],'additionalActionData':'0x','signatures':[]}))" > /tmp/getfeed.json
 ```
 
 ```bash
@@ -204,11 +213,13 @@ action budget.
 
 ```json
 { "lastPrice": "100000000", "sourceHealth": { "hex_bonds": "ok", "hex_cash": "not_configured",
-  "rpc_flare": "ok", "rpc_ethereum": "ok", "rpc_songbird": "ok" },
-  "readiness": { "ready": false, "missingSecretRefs": ["hex_api_key"] } }
+  "rpc_flare": "ok", "rpc_flare_1": "ok", "rpc_flare_2": "ok", "rpc_ethereum": "ok", "…": "…" },
+  "readiness": { "endpointsSet": true, "adminsSet": true, "ready": false,
+                 "missingSecretRefs": ["hex_api_key", "hex_cash_url"] } }
 ```
 
-`ready: false` with only `hex_api_key` missing is **expected** until Hex issues the key. The
+`ready: false` with `hex_api_key` and `hex_cash_url` missing is **expected** until Hex issues the
+key and the cash URL is provisioned through `SET_SECRET`. The
 feed still publishes at par, because a bonds-only price that already reaches par is provably
 what the full computation would give (findings §21). It will *not* publish anything below par.
 
