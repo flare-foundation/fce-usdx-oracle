@@ -2,31 +2,29 @@
 *.env
 !*.example
 
-# Language manifests must be committed — they are what makes a directory a
-# discoverable extension implementation (scripts glob */language.env). The
-# broad *.env rule above would otherwise swallow them and a fresh clone would
-# find no languages at all.
-!language.env
-!*/language.env
-
 # Coston/Coston2 proxy configs (contain DB credentials)
-config/proxy/extension_proxy.coston.toml
-config/proxy/extension_proxy.coston.docker.toml
-config/proxy/extension_proxy.coston2.toml
-config/proxy/extension_proxy.coston2.docker.toml
-config/extension.env
-out/
-cache/
+deploy/config/proxy/extension_proxy.coston.toml
+deploy/config/proxy/extension_proxy.coston.docker.toml
+deploy/config/proxy/extension_proxy.coston2.toml
+deploy/config/proxy/extension_proxy.coston2.docker.toml
+deploy/config/extension.env
+deploy/config/**/*.log
+deploy/config/register-tee.state
 results/
-lib/
 .DS_Store
 
-# go.work is generated on demand by start-services.sh for USE_LOCAL_SIBLINGS=1
-# (points host builds at sibling tee-node / tee-proxy). Never committed.
+# Foundry build artifacts and dependencies — run `forge install` in contracts/ after cloning.
+# Anchored: a bare lib/ would also swallow deploy/scripts/lib/.
+contracts/out/
+contracts/cache/
+contracts/lib/
+
+# go.work is generated on demand by deploy/scripts/start-services.sh for
+# USE_LOCAL_SIBLINGS=1 (points host builds at sibling tee-node / tee-proxy).
 go.work
 go.work.sum
 
-# Compiled Go binaries
+# Compiled tooling binaries
 tools/start-*
 tools/allow-*
 tools/deploy-*
@@ -43,36 +41,12 @@ tools/send-endpoints
 tools/send-admins
 tools/wire-extension
 
-# Generated contract bindings (produced by scripts/generate-bindings.sh)
+# Generated contract bindings (produced by deploy/scripts/generate-bindings.sh)
 tools/pkg/contracts/*/autogen.go
 tools/pkg/contracts/*/*.abi
 tools/pkg/contracts/*/*.bin
 
-# Language implementation build artifacts.
-# package-lock.json is deliberately NOT ignored — it is the reproducibility
-# anchor for `npm ci` in typescript/Dockerfile.
-typescript/node_modules/
-typescript/dist/
-python/__pycache__/
-python/**/__pycache__/
-python/.venv/
-python/.pytest_cache/
-**/*.pyc
-
 docs/superpowers
-
 notes/
-
-# Local scratch notes
 NOTES.md
-
-# Private deployment guide (SSH, redeploy instructions)
 DEPLOYMENT.md
-
-config/**/*.log
-config/register-tee.state
-# Foundry dependencies — run `forge install` after cloning
-lib/
-
-# Personal working notes — not for review
-NOTES.md

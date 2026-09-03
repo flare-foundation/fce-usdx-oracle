@@ -199,7 +199,7 @@ func TestValidateAdmins(t *testing.T) {
 // The checked-in fixture must pass the same preflight a published payload does.
 // A stale fixture is one -config argument away from a rotation that half-lands.
 func TestFixtureIsValid(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "testdata", "admins", "dev-wellknown-keys.json")
+	path := filepath.Join("..", "..", "..", "deploy", "config", "admins", "dev-wellknown-keys.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading %s: %v", path, err)

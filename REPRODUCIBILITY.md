@@ -16,7 +16,7 @@ reproduce the code hash that gets registered on-chain.
 
 The tee-node server binary is compiled once from a pinned ref on the same
 digest-pinned golang image (`docker/node-base.Dockerfile`), and
-`scripts/check-versions.sh` fails the build if that pin drifts from `go/go.mod`.
+`deploy/scripts/check-versions.sh` fails the build if that pin drifts from `go.mod`.
 
 ## How it works
 
@@ -39,24 +39,24 @@ digest-pinned golang image (`docker/node-base.Dockerfile`), and
 ## Build context
 
 The default build is self-contained: the build context is the repo root
-(`docker-compose.yaml` sets `context: .`, `dockerfile: ${EXTENSION_DOCKERFILE}`,
-resolved from `LANGUAGE`). `go/go.mod` pins
+(`deploy/docker-compose.yaml` sets `context: ..`, `dockerfile: Dockerfile` — the root is the
+Go module). `go.mod` pins
 `github.com/flare-foundation/tee-node` to a released version and fetches it from
 the network (verified against `go.sum`), so the build needs only this repo's own
 sources — no sibling `tee-node/` checkout.
 
-`go/Dockerfile.dockerignore` is preferred by BuildKit over the root
-`.dockerignore`, and it excludes build-perturbing trees (`node_modules/`,
-`__pycache__/`, `.venv/` and the like). This is not only a build-speed concern:
+`Dockerfile.dockerignore` is preferred by BuildKit over the root
+`.dockerignore`, and it excludes everything that is not the module's own sources
+(`deploy/`, `contracts/`, `docs/`, `tools/`). This is not only a build-speed concern:
 anything reachable in the context can perturb layer hashes, so a stray local
 `node_modules` would otherwise undermine determinism.
 
 > **Developing `tee-node`/`tee-proxy` locally?** Run
-> `USE_LOCAL_SIBLINGS=1 ./scripts/start-services.sh`, which builds from on-disk
-> sibling checkouts via `go/Dockerfile.siblings` (build context `tee/`). That
+> `USE_LOCAL_SIBLINGS=1 ./deploy/scripts/start-services.sh`, which builds from on-disk
+> sibling checkouts via `Dockerfile.siblings` (build context `tee/`). That
 > path is for local iteration — it uses whatever is checked out and is **not**
 > reproducible; the reproducible build uses the tee-node ref pinned in
-> `go/go.mod` instead.
+> `go.mod` instead.
 
 ## Verifying a remote image
 
@@ -84,7 +84,7 @@ against the registry image. Run from `extension-examples/fce-usdx-oracle/`:
 TAG=$(git describe --tags --abbrev=0)
 git checkout "$TAG"
 
-docker buildx build --builder moby-buildkit --platform linux/amd64 --no-cache --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) --output "type=docker,rewrite-timestamp=true" -t local/fce-usdx-oracle:verify --load -f go/Dockerfile .
+docker buildx build --builder moby-buildkit --platform linux/amd64 --no-cache --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) --output "type=docker,rewrite-timestamp=true" -t local/fce-usdx-oracle:verify --load -f Dockerfile .
 
 # The image this extension is published at — substitute the real registry path.
 docker pull --platform linux/amd64 "$REGISTRY_IMAGE:$TAG"

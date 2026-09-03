@@ -7,9 +7,9 @@
 //	digest      = keccak256("\x19Ethereum Signed Message:\n32" ‖ messageHash)
 //
 // This restates the layout rather than importing the enclave's copy in
-// go/internal/wire/feedupdate, so the relayer is an independent check on the machine
+// internal/wire/feedupdate, so the relayer is an independent check on the machine
 // instead of a mirror of it. Both are pinned to the same Solidity-generated
-// fixtures in testdata/wire — see that directory's README.
+// fixtures in deploy/testdata/wire — see that directory's README.
 //
 // Recovering the signer here matters for one reason: when the store rejects an
 // update, the revert says WHAT was wrong (StaleEndpoints, NotNewer) but never

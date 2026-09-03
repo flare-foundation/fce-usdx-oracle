@@ -181,7 +181,7 @@ func CheckExtensionEnvFormat(path string) []CheckResult {
 	}
 
 	var results []CheckResult
-	fix := "Delete config/extension.env and re-run scripts/full-setup.sh"
+	fix := "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh"
 
 	// Check EXTENSION_ID.
 	if val, ok := vars["EXTENSION_ID"]; !ok {
@@ -280,7 +280,7 @@ func RegisterRegistrationChecks(
 			ID:      "R1-R7",
 			Name:    "registration checks",
 			Status:  SKIP,
-			Message: "config/extension.env not found — run full-setup.sh first",
+			Message: "deploy/config/extension.env not found — run deploy/scripts/full-setup.sh first",
 		})
 		return
 	}
@@ -326,7 +326,7 @@ func RegisterRegistrationChecks(
 			Name:    "EXTENSION_ID format",
 			Status:  FAIL,
 			Message: fmt.Sprintf("malformed EXTENSION_ID: %q", extIDStr),
-			Fix:     "Delete config/extension.env and re-run scripts/full-setup.sh",
+			Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 		})
 		return
 	}
@@ -462,7 +462,7 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 				Name:    "EXTENSION_ID is set and well-formed",
 				Status:  FAIL,
 				Message: "EXTENSION_ID is empty or not found in extension.env",
-				Fix:     "Delete config/extension.env and re-run scripts/full-setup.sh",
+				Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 			})
 		} else if !extensionIDRegex.MatchString(extID) {
 			r.Add(CheckResult{
@@ -471,7 +471,7 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 				Name:    "EXTENSION_ID is set and well-formed",
 				Status:  FAIL,
 				Message: fmt.Sprintf("EXTENSION_ID has invalid format: %q", extID),
-				Fix:     "Delete config/extension.env and re-run scripts/full-setup.sh",
+				Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 			})
 		} else {
 			r.Add(CheckResult{
@@ -677,7 +677,7 @@ func RegisterTeeVersionChecks(r *Report, extensionEnvPath string) {
 					Name:    "EXTENSION_ID valid",
 					Status:  FAIL,
 					Message: "EXTENSION_ID not set",
-					Fix:     "Delete config/extension.env and re-run scripts/full-setup.sh",
+					Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 				})
 			}
 		} else if !extensionIDRegex.MatchString(extID) {
@@ -687,7 +687,7 @@ func RegisterTeeVersionChecks(r *Report, extensionEnvPath string) {
 				Name:    "EXTENSION_ID valid",
 				Status:  FAIL,
 				Message: "EXTENSION_ID malformed",
-				Fix:     "Delete config/extension.env and re-run scripts/full-setup.sh",
+				Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 			})
 		} else {
 			r.Add(CheckResult{
@@ -880,7 +880,7 @@ func RegisterTestChecks(r *Report, extensionEnvPath string) {
 				Name:    "EXTENSION_ID valid",
 				Status:  FAIL,
 				Message: "EXTENSION_ID malformed",
-				Fix:     "Delete config/extension.env and re-run scripts/full-setup.sh",
+				Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 			})
 		} else {
 			r.Add(CheckResult{

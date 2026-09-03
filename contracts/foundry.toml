@@ -1,0 +1,18 @@
+# Foundry project for the on-chain ABI boundary. It contains no contracts of its
+# own: the TEE oracle interfaces are compiled straight out of a sibling checkout
+# of flare-smart-contracts-v2, so the ABI the Go bindings and the wire-vector
+# tests see is whatever that checkout is at.
+#
+#   src/Bindings.sol   the interfaces deploy/scripts/generate-bindings.sh binds
+#   test/              the wire-vector tests behind deploy/testdata/wire
+#                      (deploy/scripts/regen-wire-fixtures.sh)
+#
+# `forge install` here after cloning to fetch forge-std into lib/.
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+via_ir = true
+remappings = ["flare-smart-contracts-v2/=../../../../fsp/flare-smart-contracts-v2/contracts/"]
+allow_paths = ["../../../../fsp/flare-smart-contracts-v2"]

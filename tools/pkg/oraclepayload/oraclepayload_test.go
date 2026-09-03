@@ -13,12 +13,12 @@ import (
 
 // The fixtures are Solidity's own encoding, produced by
 // test/ConfigPayloadVector.t.sol and shared with the enclave's decoder in
-// go/internal/provisioning/store. See testdata/wire/README.md for why a shared fixture
+// internal/provisioning/store. See deploy/testdata/wire/README.md for why a shared fixture
 // rather than shared code.
 const (
-	endpointsFile   = "../../../testdata/wire/endpoints-v7.abi.hex"
-	adminsFile      = "../../../testdata/wire/admins-v3.abi.hex"
-	feedRequestFile = "../../../testdata/wire/feed-update-request.abi.hex"
+	endpointsFile   = "../../../deploy/testdata/wire/endpoints-v7.abi.hex"
+	adminsFile      = "../../../deploy/testdata/wire/admins-v3.abi.hex"
+	feedRequestFile = "../../../deploy/testdata/wire/feed-update-request.abi.hex"
 
 	// The USDX feed the fixtures are published for.
 	vectorFeedID = "0x20555344582f555344000000000000000000000000"

@@ -12,15 +12,15 @@ import (
 )
 
 // From test/FeedUpdateVector.t.sol, shared with the enclave's encoder in
-// go/internal/wire/feedupdate. See testdata/wire/README.md for why both are pinned to
+// internal/wire/feedupdate. See deploy/testdata/wire/README.md for why both are pinned to
 // Solidity's output rather than to each other.
 const (
 	vectorChainID = 114
 	vectorDigest  = "0x66612a9ecc7d37e6331f8728af9b34881d55efdb3d76f8b73e56d4ae0cf195f2"
 	vectorPrefix  = "0x5445455f4f5241434c455f464545440000000000000000000000000000000000"
 
-	updateFile   = "../../../testdata/wire/feed-update.abi.hex"
-	preimageFile = "../../../testdata/wire/feed-update-payload-preimage.abi.hex"
+	updateFile   = "../../../deploy/testdata/wire/feed-update.abi.hex"
+	preimageFile = "../../../deploy/testdata/wire/feed-update-payload-preimage.abi.hex"
 )
 
 func mustFixture(t *testing.T, path string) []byte {

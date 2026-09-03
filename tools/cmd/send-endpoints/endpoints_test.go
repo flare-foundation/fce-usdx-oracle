@@ -12,7 +12,7 @@ import (
 // Every fixture the repo ships must survive the preflight. A failure means either a
 // stale fixture or a preflight that has drifted from internal/provisioning/store.
 func TestShippedFixturesValidate(t *testing.T) {
-	matches, err := filepath.Glob("../../../testdata/endpoints/*.json")
+	matches, err := filepath.Glob("../../../deploy/config/endpoints/*.json")
 	if err != nil {
 		t.Fatalf("globbing fixtures: %v", err)
 	}

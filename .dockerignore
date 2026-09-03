@@ -1,3 +1,6 @@
+# Build context is the repo root, which is the Go module. Everything that is not
+# the module's own sources is excluded: anything in the context can perturb layer
+# hashes and undermine reproducibility.
 .git
 .gitignore
 .env
@@ -7,13 +10,11 @@ docs/
 testing/
 .superpowers/
 .claude/
-cache/
-out/
-config/
+results/
 contracts/
-scripts/
-proxy/
-foundry.toml
-docker-compose*.yaml
+deploy/
+tools/
 Dockerfile*
 .dockerignore
+go.work
+go.work.sum
