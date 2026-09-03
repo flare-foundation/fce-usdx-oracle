@@ -18,7 +18,7 @@ func TestNotNewerIsARaceNotAFailure(t *testing.T) {
 	report := feedupdate.Update{ObservedAt: 100}
 
 	rj := &Rejection{Guard: "NotNewer", StoreObservedAt: 120}
-	if got := classifyRejection(rj, report); got != OutcomeRaceLost {
+	if got := classifyRejection(rj, report.ObservedAt); got != OutcomeRaceLost {
 		t.Fatalf("store ahead of us should be a lost race, got %q", got)
 	}
 	if !OutcomeRaceLost.Advanced() {
@@ -32,7 +32,7 @@ func TestNotNewerWithStaleReportIsDistinct(t *testing.T) {
 	report := feedupdate.Update{ObservedAt: 100}
 
 	rj := &Rejection{Guard: "NotNewer", StoreObservedAt: 80}
-	got := classifyRejection(rj, report)
+	got := classifyRejection(rj, report.ObservedAt)
 	if got != OutcomeStaleSubmission {
 		t.Fatalf("store behind us should be a stale submission, got %q", got)
 	}
@@ -44,9 +44,9 @@ func TestNotNewerWithStaleReportIsDistinct(t *testing.T) {
 func TestOtherGuardsAreRejections(t *testing.T) {
 	report := feedupdate.Update{ObservedAt: 100}
 
-	for _, guard := range []string{"WrongExtensionId", "WrongFeedId", "StaleEndpoints", "NoEndpointsPublished", "StaleAdmins", "NoAdminsPublished", "BadSignature", "TooFarAhead"} {
+	for _, guard := range []string{"WrongExtensionId", "WrongFeedId", "StaleEndpoints", "NoEndpointsPublished", "StaleAdmins", "NoAdminsPublished", "BadSignature", "TooFarAhead", "NotEnoughSignatures", "TooManySignatures", "SpreadTooBig"} {
 		rj := &Rejection{Guard: guard}
-		if got := classifyRejection(rj, report); got != OutcomeRejected {
+		if got := classifyRejection(rj, report.ObservedAt); got != OutcomeRejected {
 			t.Errorf("%s: got %q, want %q", guard, got, OutcomeRejected)
 		}
 	}

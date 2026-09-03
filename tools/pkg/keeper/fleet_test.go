@@ -58,8 +58,8 @@ func TestMachineListOverrideReplacesEveryURL(t *testing.T) {
 	}
 }
 
-// Every cycle has to poll every machine's proxy: the registry picks which one
-// serves the instruction, and only that machine's own proxy holds the result.
+// Every cycle has to poll every machine's proxy: each addressed machine files
+// its result on its own.
 func TestCycleConfigPollsTheWholeFleet(t *testing.T) {
 	cfg := LoopConfig{Config: Config{Proxy: "https://configured", DirectAPIKey: "k"}}
 	f := fleet{machines: []Machine{
@@ -103,10 +103,9 @@ func TestPollTargetsDeduplicatesAndKeepsThePrimaryFirst(t *testing.T) {
 	}
 }
 
-// The on-chain fan-out: the instruction was routed to the second machine, so the
-// result exists only there. Polling only the first would expire and report a
-// timeout indistinguishable from a dropped instruction.
-func TestPollResultAnyFindsTheResultOnAnotherProxy(t *testing.T) {
+// Each addressed machine files its result on its own proxy, so a proxy that has
+// nothing must not end the round: the result exists on the other one.
+func TestPollResultsFindsTheResultOnAnotherProxy(t *testing.T) {
 	var emptyHits atomic.Int32
 
 	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,25 +121,77 @@ func TestPollResultAnyFindsTheResultOnAnotherProxy(t *testing.T) {
 	}))
 	defer holder.Close()
 
-	res, from, err := PollResultAny(context.Background(),
-		[]string{empty.URL, holder.URL}, common.HexToHash("0x1"), teetypes.Threshold, 5*time.Second)
+	got, err := pollResults(context.Background(),
+		[]string{empty.URL, holder.URL}, 1, common.HexToHash("0x1"), teetypes.Threshold, 5*time.Second)
 	if err != nil {
-		t.Fatalf("PollResultAny: %v", err)
+		t.Fatalf("pollResults: %v", err)
 	}
-	if res.Log != "from-the-holder" {
-		t.Errorf("got result %+v, want the one the second proxy holds", res)
+	if len(got) != 1 || got[0].result.Log != "from-the-holder" {
+		t.Errorf("got %+v, want the one result the second proxy holds", got)
 	}
-	if from != holder.URL {
+	if got[0].proxy != holder.URL {
 		t.Errorf("answered by %q, want %q — the record has to name the machine that produced it",
-			from, holder.URL)
+			got[0].proxy, holder.URL)
 	}
 	if emptyHits.Load() == 0 {
 		t.Error("the first proxy was never asked")
 	}
 }
 
-func TestPollResultAnyWithoutProxiesFailsImmediately(t *testing.T) {
-	_, _, err := PollResultAny(context.Background(), nil,
+// A round is complete when every addressed machine has answered, and the results
+// come back in proxy order so the batch is stable across cycles.
+func TestPollResultsReturnsEveryAnswerInProxyOrder(t *testing.T) {
+	serve := func(log string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(teetypes.ActionResponse{
+				Result: teetypes.ActionResult{Status: statusSucceeded, Log: log},
+			})
+		}))
+	}
+	a, b := serve("a"), serve("b")
+	defer a.Close()
+	defer b.Close()
+
+	started := time.Now()
+	got, err := pollResults(context.Background(),
+		[]string{a.URL, b.URL}, 2, common.HexToHash("0x1"), teetypes.Threshold, time.Minute)
+	if err != nil {
+		t.Fatalf("pollResults: %v", err)
+	}
+	if len(got) != 2 || got[0].result.Log != "a" || got[1].result.Log != "b" {
+		t.Errorf("got %+v, want both results in proxy order", got)
+	}
+	if time.Since(started) > 5*time.Second {
+		t.Error("a complete round must not wait for the deadline")
+	}
+}
+
+// A machine that never answers costs the timeout, not the cycle: what did arrive
+// is returned, and whether it is enough is the store's threshold to judge.
+func TestPollResultsReturnsAPartialRoundAtTheDeadline(t *testing.T) {
+	answers := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(teetypes.ActionResponse{
+			Result: teetypes.ActionResult{Status: statusSucceeded, Log: "only-one"},
+		})
+	}))
+	defer answers.Close()
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer silent.Close()
+
+	got, err := pollResults(context.Background(),
+		[]string{answers.URL, silent.URL}, 2, common.HexToHash("0x1"), teetypes.Threshold, 1200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("a partial round is not an error: %v", err)
+	}
+	if len(got) != 1 || got[0].result.Log != "only-one" {
+		t.Errorf("got %+v, want the one answer that arrived", got)
+	}
+}
+
+func TestPollResultsWithoutProxiesFailsImmediately(t *testing.T) {
+	_, err := pollResults(context.Background(), nil, 1,
 		common.HexToHash("0x1"), teetypes.Submit, time.Minute)
 	if err == nil {
 		t.Fatal("expected an error rather than a poll that cannot succeed")

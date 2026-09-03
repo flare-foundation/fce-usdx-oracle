@@ -69,10 +69,9 @@ func machineList(teeIDs []common.Address, urls []string, proxyOverride string) [
 }
 
 // fleet is the keeper's view of the machines that could serve its instruction.
-// It holds no state across cycles: the sender now names the target machines
-// explicitly (no longer getRandomTeeIds), so there is nothing for the keeper to
-// decide — but every target is still polled for the result, because only the
-// machine the sender picked holds it.
+// It holds no state across cycles: the sender names the target machines
+// explicitly, and each of them files its result on its own proxy, so every one
+// is polled.
 type fleet struct {
 	machines []Machine
 }
@@ -99,8 +98,8 @@ func (f *fleet) refresh(ctx context.Context, s *support.Support, storeAddr commo
 	f.machines = machines
 }
 
-// proxies is every machine's URL, which is what a cycle has to poll: the sender
-// picks the target and the result is retrievable only from that machine's proxy.
+// proxies is every machine's URL: a machine's result is retrievable only from
+// its own proxy.
 func (f *fleet) proxies() []string {
 	out := make([]string, 0, len(f.machines))
 	for _, m := range f.machines {

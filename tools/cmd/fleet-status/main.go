@@ -10,14 +10,14 @@
 // Three sources, and the point of the tool is that they can disagree:
 //
 //	registry     which machines exist and their lifecycle status
-//	on-chain     what config was SENT to each (expectedEndpointsHash /
-//	             expectedAdminsHash, plus versions) and whether both are
-//	             published (isTeeIdConfigured — the precondition requestFeedUpdate
+//	on-chain     the feed's latest published configuration (latestEndpointsHash /
+//	             latestAdminsHash, plus versions) and whether each machine is at
+//	             it (isTeeIdConfigured — the precondition requestFeedUpdate
 //	             enforces per target)
 //	live         what each machine says it is running right now (GET /state)
 //
 // A machine can be registered, sent a config it rejected, and still report
-// ready: true — running the PREVIOUS config. It then fails every submitFeedUpdate
+// ready: true — running the PREVIOUS config. It then fails every submitFeedUpdates
 // with StaleEndpoints and the feed quietly stops advancing. The on-chain column
 // is what makes that visible without trusting the machine's own account of
 // itself; the live column is what tells you whether it has recovered.
@@ -115,7 +115,8 @@ type Machine struct {
 	TeeID  common.Address `json:"teeId"`
 	Status string         `json:"status"`
 
-	// On-chain, per feed and machine.
+	// On-chain. Configured is per machine; the hashes and versions are the
+	// feed's latest published generation, which every machine must be at.
 	Configured       bool   `json:"configured"`
 	EndpointsHash    string `json:"endpointsHash,omitempty"`
 	EndpointsVersion uint64 `json:"endpointsVersion,omitempty"`
@@ -184,6 +185,8 @@ func buildReport(
 	opts := &bind.CallOpts{Context: ctx}
 	endpointsVersion, _ := sender.EndpointsVersion(opts, feedID)
 	adminsVersion, _ := sender.AdminsVersion(opts, feedID)
+	latestEndpoints, _ := sender.LatestEndpointsHash(opts, feedID)
+	latestAdmins, _ := sender.LatestAdminsHash(opts, feedID)
 
 	machines := make([]Machine, 0, len(active.TeeIds))
 	for i, id := range active.TeeIds {
@@ -202,12 +205,8 @@ func buildReport(
 			m.Configured = configured
 		}
 
-		if expected, err := sender.ExpectedEndpointsHash(opts, feedID, id); err == nil {
-			m.EndpointsHash = common.Hash(expected).Hex()
-		}
-		if expected, err := sender.ExpectedAdminsHash(opts, feedID, id); err == nil {
-			m.AdminsHash = common.Hash(expected).Hex()
-		}
+		m.EndpointsHash = common.Hash(latestEndpoints).Hex()
+		m.AdminsHash = common.Hash(latestAdmins).Hex()
 
 		// Live state from the machine's own /state. Best-effort: a machine that
 		// cannot be reached is not necessarily broken.

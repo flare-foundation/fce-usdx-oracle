@@ -40,9 +40,8 @@ func Run(ctx context.Context, s *support.Support, cfg LoopConfig) error {
 			cfg.ProxyOverride)
 	}
 
-	// The fleet is read for the result poll: the instruction goes to a machine
-	// the registry picks and only that machine's proxy holds the answer. Two
-	// eth_calls, so it costs nothing to keep current.
+	// The fleet is read for the result poll: every addressed machine answers on
+	// its own proxy. Two eth_calls, so it costs nothing to keep current.
 	var fl fleet
 	fl.refresh(ctx, s, cfg.Store, cfg.ProxyOverride)
 	for _, m := range fl.machines {
@@ -109,9 +108,8 @@ func RunOnce(ctx context.Context, s *support.Support, cfg LoopConfig) (Record, e
 	return RunCycle(ctx, s, cfg.cycleConfig(&fl))
 }
 
-// cycleConfig points one cycle at the whole fleet. It addresses nobody — the
-// registry chooses which machine serves the instruction — so the result has to
-// be looked for on every machine's proxy.
+// cycleConfig points one cycle at the whole fleet: each addressed machine files
+// its result on its own proxy, so every proxy is a place to look.
 func (cfg LoopConfig) cycleConfig(fl *fleet) Config {
 	c := cfg.Config
 	c.ResultProxies = fl.proxies()

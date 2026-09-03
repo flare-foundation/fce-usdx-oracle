@@ -65,14 +65,14 @@ type Record struct {
 
 	Outcome Outcome `json:"outcome"`
 
-	// Proxy is whichever of the fleet's proxies held the result, which is the
-	// only thing that says whose failure a bad cycle was.
+	// Proxy is the first of the fleet's proxies to answer, which on a bad cycle
+	// is what says whose failure it was.
 	Proxy string `json:"proxy,omitempty"`
 
-	// TeeID is the machine that signed the report, recovered from the signature —
-	// the only thing naming the machine the registry chose. Empty when no report
-	// was produced: nothing else in the cycle knows which machine was picked.
-	TeeID string `json:"teeId,omitempty"`
+	// TeeIDs are the machines whose updates went up together, recovered from
+	// their signatures — the only thing that names who contributed. Empty when
+	// no usable report was produced.
+	TeeIDs []string `json:"teeIds,omitempty"`
 
 	// InstructionID is the on-chain instruction id. Empty when the trigger
 	// transaction never landed.
@@ -98,10 +98,10 @@ type Record struct {
 	SubmitOutcome string `json:"submitOutcome,omitempty"`
 	SubmitTx      string `json:"submitTx,omitempty"`
 
-	// Price is the scaled integer as a string: it is a uint256, and a JSON
-	// number is a float64 in most parsers.
-	Price      string `json:"price,omitempty"`
-	Decimals   int8   `json:"decimals,omitempty"`
+	// Prices are each contributor's value at its own scale, in TeeIDs order, as
+	// strings. The keeper never aggregates them: the store takes the median.
+	Prices []string `json:"prices,omitempty"`
+	// ObservedAt is the instant the whole batch observed.
 	ObservedAt uint64 `json:"observedAt,omitempty"`
 
 	// The store's observedAt at the end of the cycle — the one signal that

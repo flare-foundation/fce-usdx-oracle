@@ -1,26 +1,29 @@
-// Preflight checks a decoded feed update against every store guard before
-// spending gas. Each check duplicates one the contract makes, turning a revert
-// into a named, actionable reason.
+// Preflight checks a batch of decoded feed updates against every store guard
+// before spending gas. The cheap checks duplicate one contract rule each and turn
+// a revert into a named, actionable reason; the last one is the contract's own
+// dry run, an eth_call of submitFeedUpdates, which enforces everything else.
 //
-// The store verifies the TEE signature through Fdc2Verification, so the keeper
+// The store verifies each TEE signature through Fdc2Verification, so the keeper
 // holds no authority — the worst a wrong call can do is waste gas. Nothing here
-// may compute or adjust a price, and the update is relayed byte for byte.
+// may compute or adjust a price, and the updates are relayed byte for byte.
 package keeper
 
 import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"math/big"
 	"strings"
 
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclesender"
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
+	"fce-usdx-oracle/tools/pkg/fccutils"
 	"fce-usdx-oracle/tools/pkg/feedupdate"
 	"fce-usdx-oracle/tools/pkg/support"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/pkg/errors"
 )
 
@@ -34,6 +37,9 @@ import (
 // tools/ is a separate module and internal/ is not importable from here.
 var feedID = mustFeedID("0x20555344582f555344000000000000000000000000")
 
+// maxBatch is the store's ceiling on signatures per submission.
+const maxBatch = 32
+
 func mustFeedID(s string) [21]byte {
 	raw, err := hex.DecodeString(strings.TrimPrefix(s, "0x"))
 	if err != nil || len(raw) != 21 {
@@ -44,7 +50,7 @@ func mustFeedID(s string) [21]byte {
 	return id
 }
 
-// Rejection is an update the store will not accept, named by the guard that
+// Rejection is a batch the store will not accept, named by the guard that
 // rejects it. The name matters more than the message: StaleEndpoints needs a
 // setEndpoints call, NotNewer usually needs nothing, and "execution reverted"
 // distinguishes neither.
@@ -53,7 +59,7 @@ type Rejection struct {
 	Msg   string
 
 	// Set for NotNewer, so the caller can tell a lost race from a stale
-	// submission by comparing against the update's observedAt.
+	// submission by comparing against the batch's observedAt.
 	StoreObservedAt uint64
 }
 
@@ -72,44 +78,40 @@ func AsRejection(err error) (*Rejection, bool) {
 	return nil, false
 }
 
-// Preflight checks u against the store at storeAddr. chainID is the chain the
-// store is on — the same chain the update was signed against, since the chain
-// id is inside the signed payload.
-func Preflight(s *support.Support, storeAddr common.Address, chainID *big.Int, u feedupdate.Update) error {
+// Preflight checks the batch against the store at storeAddr. signers are the
+// machines recovered from each update's signature, in batch order; every update
+// in the batch carries the same observedAt (see chooseBatch).
+func Preflight(
+	ctx context.Context, s *support.Support, storeAddr common.Address,
+	batch []feedupdate.Update, signers []common.Address,
+) error {
+	if len(batch) == 0 || len(batch) != len(signers) {
+		return errors.Errorf("preflight: %d update(s) with %d signer(s)", len(batch), len(signers))
+	}
 	store, err := teeoraclestore.NewIITeeOracleFeedStoreCaller(storeAddr, s.ChainClient)
 	if err != nil {
 		return errors.Errorf("binding the store: %s", err)
 	}
-	opts := &bind.CallOpts{Context: context.Background()}
-
-	// Recover the signer once. The store does the same through
-	// Fdc2Verification.verifyTeeSignature, and every check below needs the
-	// machine id; recovering here turns a BadSignature into a named rejection
-	// rather than a revert the keeper cannot distinguish from a registry fault.
-	teeID, err := u.Signer(chainID)
-	if err != nil {
-		return reject("BadSignature", "the update does not recover to a signer: %s", err)
-	}
+	opts := &bind.CallOpts{Context: ctx}
 
 	extensionID, err := store.ExtensionId(opts)
 	if err != nil {
 		return errors.Errorf("reading extensionId from %s: %s", storeAddr.Hex(), err)
 	}
-	if u.ExtensionID == nil || u.ExtensionID.Cmp(extensionID) != 0 {
-		return reject("WrongExtensionId",
-			"the update names extension %s, the store accepts %s",
-			u.ExtensionID, extensionID)
-	}
-
-	// feedId has no getter (it is checked at init and never read again), so a
-	// mismatch reverts WrongFeedId on chain rather than here. The keeper's
-	// pinned feedID matches the store's by construction, and the signed update
-	// names the same id — a divergence means a deployment error, not a stale
-	// configuration, and the revert names it precisely.
-	if u.FeedID != feedID {
-		return reject("WrongFeedId",
-			"the update names feed %#x, this keeper serves %#x",
-			u.FeedID, feedID)
+	for i, u := range batch {
+		if u.ExtensionID == nil || u.ExtensionID.Cmp(extensionID) != 0 {
+			return reject("WrongExtensionId",
+				"%s names extension %s, the store accepts %s",
+				signers[i].Hex(), u.ExtensionID, extensionID)
+		}
+		// feedId has no getter (it is checked at init and never read again), so
+		// a mismatch reverts WrongFeedId on chain rather than here. The keeper's
+		// pinned feedID matches the store's by construction, and a divergence
+		// means a deployment error, not a stale configuration.
+		if u.FeedID != feedID {
+			return reject("WrongFeedId",
+				"%s names feed %#x, this keeper serves %#x", signers[i].Hex(), u.FeedID, feedID)
+		}
 	}
 
 	senderAddr, err := store.InstructionsSender(opts)
@@ -121,62 +123,109 @@ func Preflight(s *support.Support, storeAddr common.Address, chainID *big.Int, u
 		return errors.Errorf("binding the sender: %s", err)
 	}
 
-	// The registry checks that the signer is on this extension and in
-	// PRODUCTION, but the store's verifyTeeSignature already enforces both —
-	// and rejects while the extension is emergency paused. Re-checking here
-	// would duplicate the on-chain call and could drift from it; the rejection
-	// that matters is the one the store actually raises.
-
-	expectedEndpoints, err := sender.ExpectedEndpointsHash(opts, u.FeedID, teeID)
+	// The configuration hashes are feed-level: one latest published generation,
+	// which every machine's update must carry. A machine still running the
+	// previous one names itself here.
+	latestEndpoints, err := sender.LatestEndpointsHash(opts, feedID)
 	if err != nil {
-		return reject("SenderUnavailable", "reading expectedEndpointsHash: %s", err)
+		return reject("SenderUnavailable", "reading latestEndpointsHash: %s", err)
 	}
-	if common.Hash(expectedEndpoints) == (common.Hash{}) {
+	if common.Hash(latestEndpoints) == (common.Hash{}) {
 		return reject("NoEndpointsPublished",
-			"no endpoint configuration has been sent to %s for feed %#x — run send-endpoints first",
-			teeID.Hex(), u.FeedID)
+			"no endpoint configuration has been published for feed %#x — run send-endpoints first", feedID)
 	}
-	if common.Hash(expectedEndpoints) != u.EndpointsHash {
-		return reject("StaleEndpoints",
-			"the machine computed this update under endpoints %s but the sender expects %s; "+
-				"the machine never applied the published configuration, or a newer one was sent",
-			u.EndpointsHash.Hex(), common.Hash(expectedEndpoints).Hex())
+	for i, u := range batch {
+		if u.EndpointsHash != common.Hash(latestEndpoints) {
+			return reject("StaleEndpoints",
+				"%s computed its update under endpoints %s but the feed's latest is %s; "+
+					"the machine never applied the published configuration, or a newer one was sent",
+				signers[i].Hex(), u.EndpointsHash.Hex(), common.Hash(latestEndpoints).Hex())
+		}
 	}
 
-	expectedAdmins, err := sender.ExpectedAdminsHash(opts, u.FeedID, teeID)
+	latestAdmins, err := sender.LatestAdminsHash(opts, feedID)
 	if err != nil {
-		return reject("SenderUnavailable", "reading expectedAdminsHash: %s", err)
+		return reject("SenderUnavailable", "reading latestAdminsHash: %s", err)
 	}
-	if common.Hash(expectedAdmins) == (common.Hash{}) {
+	if common.Hash(latestAdmins) == (common.Hash{}) {
 		return reject("NoAdminsPublished",
-			"no admin set has been sent to %s for feed %#x — run send-admins first",
-			teeID.Hex(), u.FeedID)
+			"no admin set has been published for feed %#x — run send-admins first", feedID)
 	}
-	if common.Hash(expectedAdmins) != u.AdminsHash {
-		return reject("StaleAdmins",
-			"the machine computed this update under admin set %s but the sender expects %s; "+
-				"the machine never applied the published admin set, or a newer one was sent",
-			u.AdminsHash.Hex(), common.Hash(expectedAdmins).Hex())
+	for i, u := range batch {
+		if u.AdminsHash != common.Hash(latestAdmins) {
+			return reject("StaleAdmins",
+				"%s computed its update under admin set %s but the feed's latest is %s; "+
+					"the machine never applied the published admin set, or a newer one was sent",
+				signers[i].Hex(), u.AdminsHash.Hex(), common.Hash(latestAdmins).Hex())
+		}
 	}
 
-	// Strictly increasing observedAt — the only time rule left. The store
-	// rejects TooFarAhead (observedAt < block.timestamp) and NotNewer; there is
-	// no maxAge and no maxFutureSkew, so the keeper's own cycle timing is what
-	// keeps a relayed update inside the window. An update newer than the chain
-	// is now impossible by construction (observedAt is the home chain's block
-	// header timestamp, which is always in the past), so only NotNewer is
-	// checked here.
+	// The submission policy: how many distinct machines must sign one batch.
+	// Fewer means waiting for the rest is the fix, or asking more machines.
+	required, err := store.RequiredSignatures(opts)
+	if err != nil {
+		return errors.Errorf("reading requiredSignatures: %s", err)
+	}
+	if len(batch) < int(required) {
+		return reject("NotEnoughSignatures",
+			"%d machine(s) agree on observedAt=%d but the store requires %d signatures",
+			len(batch), batch[0].ObservedAt, required)
+	}
+	if len(batch) > maxBatch {
+		return reject("TooManySignatures",
+			"%d machines answered, the store takes at most %d per submission", len(batch), maxBatch)
+	}
+
+	// Strictly increasing observedAt — the only time rule left. Checked here
+	// rather than left to the rehearsal because the store's stamp is what tells a
+	// lost race from a stale submission.
 	stored, err := store.ObservedAt(opts)
 	if err != nil {
 		return errors.Errorf("reading observedAt: %s", err)
 	}
-	if u.ObservedAt <= stored {
+	if batch[0].ObservedAt <= stored {
 		rj := reject("NotNewer",
-			"the store already holds observedAt=%d and this update is stamped %d",
-			stored, u.ObservedAt)
+			"the store already holds observedAt=%d and this batch is stamped %d",
+			stored, batch[0].ObservedAt)
 		rj.StoreObservedAt = stored
 		return rj
 	}
 
-	return nil
+	return rehearse(ctx, s, storeAddr, batch)
+}
+
+// rehearse is the contract's own dry run: an eth_call of submitFeedUpdates with
+// the batch, from the keeper's address. It enforces every rule a real submission
+// would — signature and registry status, the extension pause, the median's
+// spread bound — and a revert names the guard, which becomes the Rejection.
+func rehearse(ctx context.Context, s *support.Support, storeAddr common.Address, batch []feedupdate.Update) error {
+	parsed, err := teeoraclestore.IITeeOracleFeedStoreMetaData.GetAbi()
+	if err != nil {
+		return errors.Errorf("parsing the store ABI: %s", err)
+	}
+	input, err := parsed.Pack("submitFeedUpdates", signedBatch(batch))
+	if err != nil {
+		return errors.Errorf("encoding submitFeedUpdates: %s", err)
+	}
+	msg := ethereum.CallMsg{To: &storeAddr, Data: input}
+	if s.Prv != nil {
+		msg.From = crypto.PubkeyToAddress(s.Prv.PublicKey)
+	}
+
+	if _, err = s.ChainClient.CallContract(ctx, msg, nil); err == nil {
+		return nil
+	}
+	if data := fccutils.ExtractRevertData(err); len(data) >= 4 {
+		if named := fccutils.MatchCustomError(parsed, hex.EncodeToString(data)); named != "" {
+			guard := named
+			if i := strings.IndexByte(named, '['); i > 0 {
+				guard = named[:i]
+			}
+			return reject(guard, "the store rejects this batch in rehearsal: %s", named)
+		}
+	}
+	if reason := fccutils.DecodeRevertReason(err); reason != "" {
+		return reject("Reverted", "the store rejects this batch in rehearsal: %s", reason)
+	}
+	return errors.Errorf("rehearsing submitFeedUpdates: %s", err)
 }

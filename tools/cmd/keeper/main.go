@@ -65,7 +65,7 @@ func main() {
 	pollF := flag.Duration("pollTimeout", 5*time.Minute,
 		"how long to wait for a terminal action result")
 	submitF := flag.Duration("submitTimeout", 3*time.Minute,
-		"how long to wait for the submitFeedUpdate receipt")
+		"how long to wait for the submitFeedUpdates receipt")
 	recordsF := flag.String("records", "",
 		"append JSON cycle records to this file (default: stdout)")
 	onceF := flag.Bool("once", false, "run a single cycle and exit — useful for a cron-driven keeper")

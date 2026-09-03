@@ -20,13 +20,13 @@
 // Both encodings are DYNAMIC. Unlike the feed update there is no single valid
 // byte string for a given configuration, so an encoder that differs from the
 // contract's by so much as a padding word produces a different hash — and the
-// failure is silent and total: expectedEndpointsHash is recorded, the machine
-// applies the payload it actually received, and every submitFeedUpdate then
+// failure is silent and total: latestEndpointsHash is recorded, the machine
+// applies the payload it actually received, and every submitFeedUpdates then
 // reverts StaleEndpoints. oraclepayload_test.go pins this against bytes
 // Solidity produced, which is the only check that can catch it.
 //
 // This restates the schema rather than importing the enclave's copy in
-// go/internal/provisioning/store, keeping tools/ an independent cross-check of the
+// internal/provisioning/store, keeping tools/ an independent cross-check of the
 // extension rather than a mirror of it. The two are kept honest by asserting
 // both against the same Solidity fixture, not by sharing code.
 package oraclepayload
@@ -187,7 +187,7 @@ func EncodeAdmins(version uint64, feedID [21]byte, roles []Role) ([]byte, error)
 	return adminsArgs.Pack(admins{Version: version, FeedId: feedID, Roles: roles})
 }
 
-// EndpointsHash predicts expectedEndpointsHash for a publication at version.
+// EndpointsHash predicts latestEndpointsHash for a publication at version.
 // Compare it against the sender's getter after publishing, and against what the
 // machine reports over GET_READINESS.
 func EndpointsHash(version uint64, feedID [21]byte, groups []Group) (common.Hash, error) {
@@ -198,7 +198,7 @@ func EndpointsHash(version uint64, feedID [21]byte, groups []Group) (common.Hash
 	return crypto.Keccak256Hash(message), nil
 }
 
-// AdminsHash predicts expectedAdminsHash on the same terms.
+// AdminsHash predicts latestAdminsHash on the same terms.
 func AdminsHash(version uint64, feedID [21]byte, roles []Role) (common.Hash, error) {
 	message, err := EncodeAdmins(version, feedID, roles)
 	if err != nil {

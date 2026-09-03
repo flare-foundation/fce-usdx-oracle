@@ -14,7 +14,7 @@ import (
 
 // The SET_ENDPOINTS payload schema, restated rather than imported so tools/ stays
 // independent of any one implementation. Worth checking because a bad payload fails
-// SILENTLY: expectedEndpointsHash is written, then every submitFeedUpdate reverts
+// SILENTLY: latestEndpointsHash is written, then every submitFeedUpdates reverts
 // StaleEndpoints.
 //
 // The on-chain payload is ABI-encoded by the sender, but this tool takes a JSON

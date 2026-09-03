@@ -4,7 +4,7 @@
 //
 // Nothing here deploys anything. The sender and the feed stores come from
 // flare-smart-contracts-v2's own deploy script; this repo only ever calls them,
-// through the interfaces vendored into contracts/interfaces/.
+// through the upstream interfaces compiled via contracts/.
 package utils
 
 import (
@@ -31,7 +31,7 @@ import (
 // drift from what was actually dispatched. Upstream made them file-level
 // `bytes32 constant`s in ITeeOracleInstructionsSender — shared by every deployed
 // instance — so there is nothing left to read and this copy is now load-bearing.
-// It must match go/internal/config; a mismatch prices the wrong row and the
+// It must match internal/config; a mismatch prices the wrong row and the
 // instruction is rejected for an underpaid fee.
 const (
 	OpTypeTeeOracle       = "TEE_ORACLE"
@@ -192,8 +192,8 @@ type Publication struct {
 	// it to executeGovernanceCall; recording the call rejects value.
 	Fee *big.Int
 
-	// PayloadHash is what the sender will record as expectedEndpointsHash /
-	// expectedAdminsHash, and what every later feed update must carry. Predicted
+	// PayloadHash is what the sender will record as latestEndpointsHash /
+	// latestAdminsHash, and what every later feed update must carry. Predicted
 	// here so a publisher can verify the machine picked up this exact payload.
 	PayloadHash common.Hash
 
@@ -349,7 +349,7 @@ func (p *Publication) Handoff(target common.Address, command string) (*Handoff, 
 		Note: "Execute through the Flare governance timelock: executeGovernanceCall with " +
 			"this target and calldata, attaching valueWei as msg.value at execution time " +
 			"(recording the call rejects value). After execution, the sender's " +
-			"expectedEndpointsHash/expectedAdminsHash for each machine must equal payloadHash.",
+			"latestEndpointsHash/latestAdminsHash for the feed must equal payloadHash.",
 	}, nil
 }
 

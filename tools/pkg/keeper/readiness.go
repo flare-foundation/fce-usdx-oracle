@@ -22,7 +22,7 @@ import (
 
 // Declared here rather than read off the instruction sender: GET_READINESS is
 // the one command with no on-chain counterpart, so there is nothing to drift
-// from. These must match go/internal/config.
+// from. These must match internal/config.
 const (
 	opTypeTeeOracle       = "TEE_ORACLE"
 	opCommandGetReadiness = "GET_READINESS"
