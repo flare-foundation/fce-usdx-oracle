@@ -217,7 +217,7 @@ func TestDecodeAdminsMatchesSolidity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeAdmins: %v", err)
 	}
-	version, sets, err := convertAdmins(wire)
+	version, sets, err := convertAdmins(wire, config.AdminPolicy())
 	if err != nil {
 		t.Fatalf("convertAdmins: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestPayloadsAreBoundToThisFeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeAdmins: %v", err)
 	}
-	if _, _, err := convertAdmins(adminsWire); err == nil {
+	if _, _, err := convertAdmins(adminsWire, config.AdminPolicy()); err == nil {
 		t.Error("admins for another feed must be rejected")
 	}
 }

@@ -45,11 +45,11 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 	// what the machine registry publishes.
 	logger.Infof("tee identity resolved: %s", teeID.Hex())
 
-	// config.BackingRefs() is pinned as the backing credential set here, in the
-	// build, so no published admin payload can move one of them under the
-	// providers set — role TAGS come off the wire, the ref-to-role mapping does not.
+	// The admin policy — which refs the backing set governs, and each set's
+	// floor — is pinned in config, so no published payload can move a credential
+	// under the weaker set: role TAGS come off the wire, the policy does not.
 	verifier := envelope.NewVerifier(
-		new(big.Int).SetUint64(config.ChainID), teeID, config.BackingRefs())
+		new(big.Int).SetUint64(config.ChainID), teeID, config.AdminPolicy())
 	configStore := store.New(verifier, node)
 
 	loop := poller.New(configStore, node)

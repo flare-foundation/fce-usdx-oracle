@@ -21,5 +21,6 @@ func TestNewVerifierRejectsZeroTeeID(t *testing.T) {
 			t.Fatal("NewVerifier accepted a zero teeID")
 		}
 	}()
-	envelope.NewVerifier(big.NewInt(114), common.Address{}, []string{"hex_api_key"})
+	envelope.NewVerifier(big.NewInt(114), common.Address{},
+		envelope.Policy{BackingRefs: []string{"hex_api_key"}, MinBacking: 1, MinProviders: 2})
 }

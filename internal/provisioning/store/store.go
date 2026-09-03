@@ -222,7 +222,7 @@ func (s *Store) ApplyAdmins(payload []byte) error {
 		return err
 	}
 
-	version, sets, err := convertAdmins(wire)
+	version, sets, err := convertAdmins(wire, s.verifier.Policy())
 	if err != nil {
 		return err
 	}
@@ -304,7 +304,7 @@ func convertEndpoints(w wireEndpoints) (Endpoints, error) {
 // convertAdmins turns the wire form into the role-keyed sets the verifier
 // takes. Role semantics are pinned here; the contract enforces only that role
 // tags are non-zero and unique.
-func convertAdmins(w wireAdmins) (uint64, map[string]envelope.AdminSet, error) {
+func convertAdmins(w wireAdmins, policy envelope.Policy) (uint64, map[string]envelope.AdminSet, error) {
 	// Zero is the "never applied" sentinel for adminsVersion, so it could never
 	// be accepted; saying so here beats a confusing version comparison.
 	if w.Version == 0 {
@@ -324,7 +324,7 @@ func convertAdmins(w wireAdmins) (uint64, map[string]envelope.AdminSet, error) {
 			return 0, nil, fmt.Errorf("runtimecfg: duplicate admin role %q", tag)
 		}
 
-		floor, known := envelope.FloorForRole(tag)
+		floor, known := policy.FloorFor(tag)
 		if !known {
 			// Same posture as an unknown endpoint group: a role this build does
 			// not understand means publisher and build disagree about the schema.
@@ -749,7 +749,7 @@ func validateCashGroup(g Group) error {
 		return fmt.Errorf("runtimecfg: group %q must be PRIVATE", config.HexCashGroup)
 	}
 	// Pinned so the role that governs the cash URL is not the publisher's
-	// choice — see envelope.FloorForRole and the backing ref set.
+	// choice — see config.AdminPolicy.
 	if ep.SecretRef != config.HexCashURLRef {
 		return fmt.Errorf(
 			"runtimecfg: group %q must name secret %q", config.HexCashGroup, config.HexCashURLRef)

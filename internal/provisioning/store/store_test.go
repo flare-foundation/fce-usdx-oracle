@@ -39,7 +39,7 @@ var testChainID = big.NewInt(114)
 func newStore(t *testing.T) *Store {
 	t.Helper()
 	return New(
-		envelope.NewVerifier(testChainID, testTeeID, config.BackingRefs()),
+		envelope.NewVerifier(testChainID, testTeeID, config.AdminPolicy()),
 		&fakeNode{teeID: testTeeID},
 	)
 }

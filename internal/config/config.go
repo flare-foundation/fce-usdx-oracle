@@ -12,6 +12,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
+
+	"fce-usdx-oracle/internal/provisioning/envelope"
 )
 
 const (
@@ -168,6 +170,31 @@ func IsBackingRef(ref string) bool {
 		}
 	}
 	return false
+}
+
+// The admin signer-set policy. SET_ADMINS publishes two role-tagged sets, and a
+// SET_SECRET envelope must carry a threshold of signatures from the one that
+// governs its ref: the backing set for BackingRefs, the providers set for every
+// other ref. The floors are the least threshold a set may be installed with; the
+// contract validates neither, so they are the only guard.
+//
+// Backing is 1-of-N by decision. It authenticates the pinned reserve sources
+// (HexBondsURL above), so a wrong credential degrades the feed rather than
+// moving the price. Unpin the bonds URL and this floor must rise. A provider
+// credential is substituted into a URL the publisher chooses, hence 2.
+const (
+	MinBackingThreshold  = 1
+	MinProviderThreshold = 2
+)
+
+// AdminPolicy is the pinned policy the envelope verifier is built with, and the
+// rule usdxprov applies before an envelope makes the trip.
+func AdminPolicy() envelope.Policy {
+	return envelope.Policy{
+		BackingRefs:  BackingRefs(),
+		MinBacking:   MinBackingThreshold,
+		MinProviders: MinProviderThreshold,
+	}
 }
 
 // ChainHealthKey and ProviderHealthKey name a chain and one of its RPC

@@ -86,8 +86,8 @@ the envelope is rejected as stale.
 
 Two role-tagged signer sets are published per machine, and the ref decides which
 one applies: `+strings.Join(config.BackingRefs(), ", ")+`
-are authorised by the backing set (at least `+fmt.Sprint(envelope.MinBackingThreshold)+` signature), every other ref by
-the providers set (at least `+fmt.Sprint(envelope.MinProviderThreshold)+` DISTINCT signatures). The exact thresholds
+are authorised by the backing set (at least `+fmt.Sprint(config.MinBackingThreshold)+` signature), every other ref by
+the providers set (at least `+fmt.Sprint(config.MinProviderThreshold)+` DISTINCT signatures). The exact thresholds
 are whatever SET_ADMINS published, and only the target machine can tell you
 whether an envelope satisfies them.
 `)
@@ -184,7 +184,7 @@ func build(args []string) error {
 		time.Unix(int64(env.IssuedAt), 0).Add(envelope.Freshness).UTC().Format(time.RFC3339),
 		envelope.Freshness)
 	fmt.Printf("\nRef %q is authorised by the %s set: at least %d distinct signature(s) —\n",
-		env.Ref, setNameFor(env.Ref), envelope.MinThresholdFor(env.Ref, config.BackingRefs()))
+		env.Ref, setNameFor(env.Ref), config.AdminPolicy().MinThresholdFor(env.Ref))
 	fmt.Printf("the published threshold for this machine may be higher. The credential is\n")
 	fmt.Printf("already encrypted, so this file is safe to send to the signers.\n")
 	return nil
@@ -273,7 +273,7 @@ func submit(args []string) error {
 	}
 	// The floor for the set this ref falls under, not the machine's actual threshold:
 	// fewer than this can never be accepted anywhere, so catch it before the trip.
-	floor := envelope.MinThresholdFor(f.Ref, config.BackingRefs())
+	floor := config.AdminPolicy().MinThresholdFor(f.Ref)
 	if len(f.Signatures) < floor {
 		return fmt.Errorf("have %d signatures, need at least %d for the %s set",
 			len(f.Signatures), floor, setNameFor(f.Ref))
@@ -468,10 +468,9 @@ func recoverSigner(body, sig []byte) (common.Address, bool) {
 }
 
 // setNameFor names the signer set governing a ref, for messages only. The
-// authoritative mapping is envelope.RoleFor and the enclave's own pinned
-// backing ref set.
+// mapping is config.AdminPolicy, the same one the enclave is built with.
 func setNameFor(ref string) string {
-	return envelope.RoleFor(ref, config.BackingRefs())
+	return config.AdminPolicy().RoleFor(ref)
 }
 
 // b32 renders Solidity's bytes32(s). The op identifiers passed to it come from

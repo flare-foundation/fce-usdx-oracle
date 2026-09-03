@@ -43,34 +43,68 @@ const SignatureLength = 65
 const MaxSignatures = 16
 
 // Role tags, matching the bytes32 tags SET_ADMINS carries. The contract enforces
-// only non-zero and unique, so what each tag governs is pinned here.
+// only non-zero and unique, so what each tag governs is pinned here: the backing
+// set governs the refs a Policy names, the providers set everything else.
 const (
 	RoleBacking   = "backing"
 	RoleProviders = "providers"
 )
 
-// Floors per signer set. Backing is 1 by decision: it authenticates pinned
-// reserve sources, so a wrong value degrades the feed rather than moves the
-// price. The contract validates neither floor, so these are the only guard.
-const (
-	MinBackingThreshold  = 1
-	MinProviderThreshold = 2
-)
-
-var roleFloors = map[string]int{
-	RoleBacking:   MinBackingThreshold,
-	RoleProviders: MinProviderThreshold,
-}
-
 // Roles lists every role tag a SET_ADMINS payload must carry. A missing role is an
 // error, not a partial install: the sets go in together or not at all.
 func Roles() []string { return []string{RoleBacking, RoleProviders} }
 
-// FloorForRole returns the minimum threshold for a role tag, and whether the
-// tag is one this build recognises.
-func FloorForRole(role string) (int, bool) {
-	floor, ok := roleFloors[role]
-	return floor, ok
+// Policy is the deployment's decision about the two signer sets: which refs the
+// backing set governs, and the least threshold each set may be installed with.
+// The contract validates neither, so the floors are the only guard. It is pinned
+// in the build (internal/config) and never read from a payload: a payload naming
+// its own refs would let the weaker set claim the stronger set's credentials.
+type Policy struct {
+	BackingRefs  []string
+	MinBacking   int
+	MinProviders int
+}
+
+// Validate reports whether every set could be installed under this policy.
+func (p Policy) Validate() error {
+	for _, role := range Roles() {
+		floor, _ := p.FloorFor(role)
+		if floor < 1 || floor > MaxThreshold {
+			return fmt.Errorf("provision: %s floor %d is not between 1 and %d", role, floor, MaxThreshold)
+		}
+	}
+	return nil
+}
+
+// FloorFor returns the least threshold for a role tag, and whether the tag is
+// one this build recognises.
+func (p Policy) FloorFor(role string) (int, bool) {
+	switch role {
+	case RoleBacking:
+		return p.MinBacking, true
+	case RoleProviders:
+		return p.MinProviders, true
+	}
+	return 0, false
+}
+
+// RoleFor maps a ref to the role that governs it. Anything not named as a
+// backing ref falls under the STRONGER providers set, including unknown refs.
+func (p Policy) RoleFor(ref string) string {
+	for _, r := range p.BackingRefs {
+		if r == ref {
+			return RoleBacking
+		}
+	}
+	return RoleProviders
+}
+
+// MinThresholdFor returns the floor for whichever set governs ref. Fewer
+// signatures than this can never be accepted anywhere, whatever SET_ADMINS
+// published, so a CLI can refuse a doomed envelope before the trip.
+func (p Policy) MinThresholdFor(ref string) int {
+	floor, _ := p.FloorFor(p.RoleFor(ref))
+	return floor
 }
 
 // MaxAdmins keeps isAdmin's linear scan from being sized by the payload.
@@ -80,23 +114,6 @@ const MaxAdmins = 32
 // unsatisfiable forever. Bounding the threshold rather than the set leaves M-of-N
 // free up to the cap — a 3-of-20 only ever submits 3.
 const MaxThreshold = MaxSignatures
-
-// MinThresholdFor returns the floor for whichever set governs ref. Exported so the
-// CLI applies the same rule the enclave does, from the same pinned list.
-func MinThresholdFor(ref string, backingRefs []string) int {
-	return roleFloors[RoleFor(ref, backingRefs)]
-}
-
-// RoleFor maps a ref to the role that governs it. Anything not named in
-// backingRefs falls under the STRONGER providers set, including unknown refs.
-func RoleFor(ref string, backingRefs []string) string {
-	for _, r := range backingRefs {
-		if r == ref {
-			return RoleBacking
-		}
-	}
-	return RoleProviders
-}
 
 // AdminSet is one signer set and the number of distinct members that must sign.
 type AdminSet struct {
@@ -207,9 +224,8 @@ type Verifier struct {
 	// Installed by SET_ADMINS, keyed by role tag, empty until then.
 	sets map[string]AdminSet
 
-	// Pinned at construction, NEVER read from the payload: a payload naming its
-	// own refs would let the weaker set claim the stronger set's credentials.
-	backingRefs []string
+	// Pinned at construction, never read from a payload.
+	policy Policy
 
 	now func() time.Time
 }
@@ -225,10 +241,17 @@ func (v *Verifier) HasAdmins() bool {
 	return true
 }
 
-// setFor selects the signer set governing a ref. See RoleFor: anything not named
-// as a backing ref falls under the STRONGER set.
+// setFor selects the signer set governing a ref. See Policy.RoleFor: anything
+// not named as a backing ref falls under the STRONGER set.
 func (v *Verifier) setFor(ref string) AdminSet {
-	return v.sets[RoleFor(ref, v.backingRefs)]
+	return v.sets[v.policy.RoleFor(ref)]
+}
+
+// Policy returns the pinned policy the verifier was built with.
+func (v *Verifier) Policy() Policy {
+	p := v.policy
+	p.BackingRefs = append([]string(nil), p.BackingRefs...)
+	return p
 }
 
 // SetAdmins installs every role's signer set together or not at all.
@@ -243,7 +266,8 @@ func (v *Verifier) SetAdmins(sets map[string]AdminSet) error {
 		if !ok {
 			return fmt.Errorf("provision: %s set: missing", role)
 		}
-		if err := checkSet(set, roleFloors[role]); err != nil {
+		floor, _ := v.policy.FloorFor(role)
+		if err := checkSet(set, floor); err != nil {
 			return fmt.Errorf("provision: %s set: %w", role, err)
 		}
 		installed[role] = set
@@ -251,7 +275,7 @@ func (v *Verifier) SetAdmins(sets map[string]AdminSet) error {
 	// A role this build does not know cannot be installed anywhere, so accepting
 	// the payload would silently drop a set the publisher believes is in force.
 	for role := range sets {
-		if _, ok := roleFloors[role]; !ok {
+		if _, ok := v.policy.FloorFor(role); !ok {
 			return fmt.Errorf("provision: unknown admin role %q", role)
 		}
 	}
@@ -283,19 +307,24 @@ func checkSet(s AdminSet, floor int) error {
 	return nil
 }
 
-// NewVerifier builds a verifier with no admin sets installed. backingRefs names
-// the credentials the backing set governs; it is pinned policy, not payload.
-func NewVerifier(chainID *big.Int, teeID common.Address, backingRefs []string) *Verifier {
+// NewVerifier builds a verifier with no admin sets installed. The policy is
+// pinned in the build, never read from a payload; an unusable one is a build
+// error and is refused here rather than at the first SET_ADMINS.
+func NewVerifier(chainID *big.Int, teeID common.Address, policy Policy) *Verifier {
 	// A zero teeID would match the zero address an envelope carries when its
 	// machine binding was never filled in, so every such envelope would pass the
 	// one check that ties a credential to one enclave.
 	if teeID == (common.Address{}) {
 		panic("provision: teeID is zero — resolve the machine's address before building a verifier")
 	}
+	if err := policy.Validate(); err != nil {
+		panic(err.Error())
+	}
+	policy.BackingRefs = append([]string(nil), policy.BackingRefs...)
 	return &Verifier{
 		chainID:     chainID,
 		teeID:       teeID,
-		backingRefs: append([]string(nil), backingRefs...),
+		policy:      policy,
 		lastVersion: map[string]uint64{},
 		sets:        map[string]AdminSet{},
 		now:         func() time.Time { return time.Now().UTC() },
