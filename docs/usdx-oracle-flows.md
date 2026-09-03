@@ -29,7 +29,7 @@ ext-proxy (tee-proxy)
   :6663 internal → host 6673    TEE machines poll here for work
   :6664 external → host 6674    PUBLIC: /info, /action/result/<id>, /direct
 
-extension-tee ── one process, built from go/cmd/docker
+extension-tee ── one process, built from cmd/docker
   tee-node       :5501 config, :9090 POST /sign + POST /decrypt
                  polls the proxy for actions → POSTs them to :8080
                  polls GET :8080/state → folds it into the attested state
@@ -50,12 +50,12 @@ redis            the proxy's action queue
 
 | Entrypoint | For | Notes |
 | --- | --- | --- |
-| `go/cmd/docker` | **production** | what `Dockerfile` builds |
-| `go/cmd` | conformance only | stub: unsigned $1.00, no sources |
-| `go/cmd/devserver` | local dev | real provisioning + observation, no chain |
-| `go/cmd/mocknode` | local dev | fake tee-node `/sign` `/decrypt` `/info` |
-| `go/cmd/start-tee` | `start-services.sh --local` | no Docker |
-| `go/cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
+| `cmd/docker` | **production** | what `Dockerfile` builds |
+| `cmd/` | `docker` in production; `devserver` + `mocknode` locally | no stub build exists; conformance is `TestConformance` in `internal/extension` |
+| `cmd/devserver` | local dev | real provisioning + observation, no chain |
+| `cmd/mocknode` | local dev | fake tee-node `/sign` `/decrypt` `/info` |
+| `cmd/start-tee` | `start-services.sh --local` | no Docker |
+| `cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
 | `tools/cmd/keeper` | ops | the relay timer (`-tee` names the target machines) |
 | `tools/cmd/send-endpoints` | ops | publish `SET_ENDPOINTS` to the fleet (`-store`/`-tee`/`-feedId`) |
 | `tools/cmd/send-admins` | ops | publish `SET_ADMINS` to the fleet |
@@ -67,9 +67,9 @@ redis            the proxy's action queue
 
 | Script | For |
 | --- | --- |
-| `scripts/upload-hex-key.sh` | install `hex_api_key` — backing set, ≥1 signature |
-| `scripts/upload-rpc-keys.sh` | install the RPC credentials — providers set, ≥2 signatures |
-| `scripts/oracle-*.sh` | observe, cycle, status — the operator commands |
+| `deploy/scripts/upload-hex-key.sh` | install `hex_api_key` — backing set, ≥1 signature |
+| `deploy/scripts/upload-rpc-keys.sh` | install the RPC credentials — providers set, ≥2 signatures |
+| `deploy/scripts/oracle-*.sh` | observe, cycle, status — the operator commands |
 
 ### HTTP — exactly two ways into the extension
 
@@ -88,7 +88,7 @@ nothing.
 TeeOracleInstructionsSender.requestFeedUpdate(feedId, teeIds)        payable, ANYONE
 TeeOracleInstructionsSender.setEndpoints(feedId, teeIds, groups, cb) payable, governance
 TeeOracleInstructionsSender.setAdmins(feedId, teeIds, roles, cb)     payable, governance
-TeeOracleFeedStore.submitFeedUpdate(FeedUpdate, Signature)           ANYONE
+TeeOracleFeedStore.submitFeedUpdates(SignedFeedUpdate[])            ANYONE
 TeeOracleFeedStore.getCurrentFeed()                                  FtsoV2 / consumers (payable)
 ```
 
@@ -130,8 +130,9 @@ permanent public storage.
 governance → TeeOracleInstructionsSender.setEndpoints(feedId, teeIds, groups, cb)
           version = ++endpointsVersion                ← contract-assigned, one per publication
           message = abi.encode(Endpoints{version, feedId, groups})
-          expectedEndpointsHash[feedId][teeId] = keccak256(message)   ← per feed AND machine,
-          expectedEndpointsVersion[feedId][teeId] = version             recorded before dispatch
+          latestEndpointsHash[feedId] = keccak256(message)   ← per feed, recorded before dispatch
+          endpointsVersion[feedId]    = version               (isTeeIdConfigured tracks which
+                                                               machines were sent it)
           flareTeeManager.sendInstructions(...)
              ↓  cosigned → proxy → tee-node → POST /action
         store.ApplyEndpoints
@@ -154,7 +155,7 @@ delivers the URL off-chain). The chain RPC groups are public; the restricted
 `hex_cash` reserve endpoint is private, so its URL never lands in calldata.
 
 That hash goes into every signed update, and the store compares it against
-`expectedEndpointsHash[feedId][teeId]`. Without it, on-chain config would record
+`latestEndpointsHash[feedId]`. Without it, on-chain config would record
 what was *sent*, never what a machine is *running*.
 
 ---
@@ -165,8 +166,9 @@ what was *sent*, never what a machine is *running*.
 governance → TeeOracleInstructionsSender.setAdmins(feedId, teeIds, roles, cb)
           version = ++adminsVersion                   ← contract-assigned, one per publication
           message = abi.encode(Admins{version, feedId, roles})
-          expectedAdminsHash[feedId][teeId] = keccak256(message)      ← per feed AND machine,
-          expectedAdminsVersion[feedId][teeId] = version                recorded before dispatch
+          latestAdminsHash[feedId] = keccak256(message)      ← per feed, recorded before dispatch
+          adminsVersion[feedId]    = version                  (isTeeIdConfigured tracks which
+                                                               machines were sent it)
           flareTeeManager.sendInstructions(...)
              ↓  cosigned → proxy → tee-node → POST /action
         store.ApplyAdmins
@@ -199,7 +201,7 @@ the other set do not count toward a threshold, and an unrecognised ref falls und
 the *stronger* set.
 
 Same enforcement as Flow A: the hash goes into every signed update and the store
-compares it against `expectedAdminsHash[feedId][teeId]`.
+compares it against `latestAdminsHash[feedId]`.
 
 The verifier starts with **no** admin sets and rejects every envelope until both
 are installed, so Flow A2 must precede Flow B — on first provisioning and again
@@ -215,8 +217,8 @@ Run twice, by different parties, because the ref decides which admin set
 authorises the envelope and the two sets are held by different people:
 
 ```
-scripts/upload-hex-key.sh    hex_api_key      backing set,   ≥1 signature
-scripts/upload-rpc-keys.sh   every other ref  providers set, ≥2 signatures
+deploy/scripts/upload-hex-key.sh    hex_api_key      backing set,   ≥1 signature
+deploy/scripts/upload-rpc-keys.sh   every other ref  providers set, ≥2 signatures
 ```
 
 Both gate on `tools/cmd/verify-tee` before anything is encrypted, and take every
@@ -347,12 +349,16 @@ tools/cmd/keeper → RunCycle, sequential, never overlapping     cycle.go
                  the keeper names the target machines (-tee); the fee is
                  operationFee × len(teeIds)
   2. COLLECT   GET proxy/action/result/<id>, backoff 1s → 16s
-                 asked of every named machine's proxy, one of them has it
+                 asked of every named machine's proxy — each holds its own —
+                 until all have answered or the poll timeout passes
                  404 = pending, not an error
-                 status 0 → STOP, record the error class, invent nothing
-  3. RELAY     decode the FeedUpdate → preflight (simulate, map the revert to a
-                 named guard) → submitFeedUpdate(FeedUpdate, Signature)
-                 ← update relayed as decoded, signature split into {v, r, s}
+                 status 0 → that machine is skipped, its error class recorded,
+                 nothing invented
+  3. RELAY     decode each FeedUpdate → keep one per signer, the largest group
+                 agreeing on observedAt → preflight (feed-level commitments,
+                 requiredSignatures, the ratchet, then an eth_call rehearsal that
+                 names the failing guard) → submitFeedUpdates(SignedFeedUpdate[])
+                 ← every update relayed as decoded, signature split into {v, r, s}
                  → wait for the receipt; a timeout is not chased, the next
                    cycle supersedes it
 ```
@@ -364,23 +370,31 @@ invocation does is waste gas.
 
 ## Flow F — on-chain acceptance
 
-`TeeOracleFeedStore.submitFeedUpdate(FeedUpdate, Signature)`, in execution order:
+`TeeOracleFeedStore.submitFeedUpdates(SignedFeedUpdate[])`, in execution order:
 
 ```
- 1  verifyTeeSignature(extensionId, sig, messageHash)   ← Fdc2Verification
-       recovers the signer over the EIP-191 digest, requires it is on THIS
-       extension AND status = PRODUCTION, and rejects while the extension is
-       emergency paused
- 2  update.extensionId == the store's extensionId         (WrongExtensionId)
- 3  update.feedId == the store's feedId                   (WrongFeedId)
- 4  sender.expectedEndpointsHash(feedId, teeId) is published AND matches
-                                                          ← closes Flow A (StaleEndpoints)
- 5  sender.expectedAdminsHash(feedId, teeId) is published AND matches
-                                                          ← closes Flow A2 (StaleAdmins)
- 6  observedAt strictly greater than stored               ← replay + out-of-order (NotNewer)
- 7  observedAt < block.timestamp                          ← never in the future (TooFarAhead)
+ 1  batch shape: count ≥ requiredSignatures and ≤ 32          (NotEnoughSignatures / TooManySignatures)
+    one common observedAt across the batch                     (ObservedAtMismatch)
+    the contributors' decimals within one spread               (DecimalsSpreadTooBig)
+ 2  the two values bracketing the median lie within the bound  (SpreadTooBig)
+    — maxSpreadBIPS of |median| plus maxSpreadAbsolute, governance-set
+ 3  observedAt strictly greater than stored                    ← replay + out-of-order (NotNewer)
+    observedAt < block.timestamp                               ← never in the future (TooFarAhead)
+    checked once: the whole batch shares one stamp
+ 4  sender.latestEndpointsHash(feedId) and latestAdminsHash(feedId) are published
+                                                               (NoEndpointsPublished / NoAdminsPublished)
+ 5  per contributor, in submission order:
+    verifyTeeSignature(extensionId, sig, messageHash)          ← Fdc2Verification: on THIS extension,
+                                                                 PRODUCTION, extension not paused
+    signer not seen earlier in the batch                       (DuplicateTeeId)
+    update.extensionId == the store's                          (WrongExtensionId)
+    update.feedId == the store's                               (WrongFeedId)
+    update.endpointsHash == latestEndpointsHash                ← closes Flow A (StaleEndpoints)
+    update.adminsHash == latestAdminsHash                      ← closes Flow A2 (StaleAdmins)
     ────────────────────────────────────────
-    store value, decimals, observedAt · emit FeedUpdated(value, decimals, observedAt, teeId)
+    store the median at the finest int32 scale it fits, and observedAt
+    emit FeedUpdated(value, decimals, observedAt, teeIds[])
+    emit FeedOutliers naming the machines whose value lay beyond the bound
 ```
 
 Gone from the old store: `paused`/`invalidated`, the `[minPrice, maxPrice]` band,
@@ -441,11 +455,11 @@ either public surface. That is a compile error, not a review item.
 
 | Question | Command |
 | --- | --- |
-| Do the real sources yield a sane price? | `./scripts/oracle-observe.sh` |
-| Does the wire contract hold? | `./scripts/test-conformance.sh` |
-| Does provisioning work? | `./scripts/set-endpoints.sh` then `usdxprov` |
-| Does the whole chain work? | `./scripts/oracle-cycle.sh` |
-| What is it publishing right now? | `./scripts/oracle-status.sh` |
+| Do the real sources yield a sane price? | `./deploy/scripts/oracle-observe.sh` |
+| Does the wire contract hold? | `./deploy/scripts/test-conformance.sh` |
+| Does provisioning work? | `./deploy/scripts/set-endpoints.sh` then `usdxprov` |
+| Does the whole chain work? | `./deploy/scripts/oracle-cycle.sh` |
+| What is it publishing right now? | `./deploy/scripts/oracle-status.sh` |
 
 ---
 
@@ -454,7 +468,7 @@ either public surface. That is a compile error, not a review item.
 1. **The admin set must be published before a live feed.** Nothing is baked any
    more: a machine starts with no admins and refuses every `SET_SECRET` until
    `SET_ADMINS` installs one. The pre-production requirement is that the set
-   published is a real one — `testdata/admins/dev-wellknown-keys.json` names
+   published is a real one — `deploy/config/admins/dev-wellknown-keys.json` names
    private keys 1, 2 and 3 and is for local and testnet work only.
 2. **`/state` describes requests served, not the engine.** Its counters and
    `sourceHealth` are written only on the GET_FEED path, so a machine nobody

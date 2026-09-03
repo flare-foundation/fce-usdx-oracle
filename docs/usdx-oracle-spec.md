@@ -246,7 +246,7 @@ feedId = 0x20555344582f555344000000000000000000000000
 
 **Resolved:** category `0x20`, name `"USDX/USD"` — the feed id
 `0x20555344582f555344000000000000000000000000` is pinned in the upstream
-deployment's chain-config and as a build fact in `go/internal/config`. The store's
+deployment's chain-config and as a build fact in `internal/config`. The store's
 initializer reverts `InvalidFeedCategory` outside the custom range `[0x20, 0x40)`.
 
 ---
@@ -256,7 +256,7 @@ initializer reverts `InvalidFeedCategory` outside the custom range `[0x20, 0x40)
 ```
                  ┌──────────────────────── keeper / relayer (off-chain) ────────────────────────┐
                  │                                                                              │
-                 │  (1) requestFeedUpdate(feedId, teeIds)       (4) submitFeedUpdate(update, sig)│
+                 │  (1) requestFeedUpdate(feedId, teeIds)       (4) submitFeedUpdates(signed[])  │
                  ▼                                                                              ▼
    ┌─────────────────────────────┐                                       ┌──────────────────────────────┐
    │ TeeOracleInstructionsSender │                                       │ TeeOracleFeedStore           │
@@ -440,7 +440,7 @@ two different serializers? Handle both formats on both endpoints regardless.
 >   back with it, and every honest provider then corroborated the stale supply at that
 >   block perfectly — quorum passed and the enclave signed a stale figure. Rewinding to
 >   when supply was lower *overstates* the price. See findings §24 and the package
->   comment in `go/internal/observation/supply/supply.go`.
+>   comment in `internal/observation/supply/supply.go`.
 > - **There is no finality margin.** `FinalityMargin` — a depth below the head — was
 >   dropped in Aug 2026 after measurement showed it bought no availability. The
 >   freshness of the *chosen* block is bounded instead, by the per-chain
@@ -509,7 +509,7 @@ time of the survey.
 | 3.8 | Structured logging that never logs secrets, full API responses, or reserve figures (§4.1) | | |
 
 Result payload (`ActionResult.data`) — **decided**. Canonical definition in the
-vendored `contracts/interfaces/ITeeOracleFeedStore.sol`:
+upstream `userInterfaces/tee/ITeeOracleFeedStore.sol` (flare-smart-contracts-v2):
 
 ```solidity
 struct FeedUpdate {
@@ -564,18 +564,18 @@ and is explicitly not for external use.
 
 **Superseded in shape, not in substance:** nothing here is deployed by this repo
 any more. The sender and the store are upstream (flare-smart-contracts-v2); this
-repo vendors their interfaces (`contracts/interfaces/`) and generates Go bindings
-from them (`./scripts/generate-bindings.sh`, `./scripts/vendor-interfaces.sh`).
+repo compiles their interfaces out of a sibling checkout (`contracts/`) and generates Go
+bindings from them (`./deploy/scripts/generate-bindings.sh`).
 
 | # | Task | Owner | Status |
 | --- | --- | --- | --- |
-| 4.1 | `TeeOracleInstructionsSender` (upstream) — `requestFeedUpdate(feedId, teeIds)`, `setEndpoints`, `setAdmins`; the expected configuration hashes live here | | |
+| 4.1 | `TeeOracleInstructionsSender` (upstream) — `requestFeedUpdate(feedId, teeIds)`, `setEndpoints`, `setAdmins`; the feed's latest configuration hashes live here | | |
 | 4.2 | Access control: requests are open (the fee bounds spam); configuration is governance-only (`onlyGovernance`) | | |
-| 4.3 | `TeeOracleFeedStore` (upstream) — TEE signature verification via `Fdc2Verification`, replay/ordering guards, configuration commitments; implements `IICustomFeed` itself | | |
+| 4.3 | `TeeOracleFeedStore` (upstream) — threshold batches (`submitFeedUpdates`, `requiredSignatures`, median with a spread bound), TEE signature verification via `Fdc2Verification`, replay/ordering guards, configuration commitments; implements `IICustomFeed` itself | | |
 | 4.4 | Agree category byte + feed name with Flare | | |
 | 4.5 | Feed registration via governance `addCustomFeeds` — **has a lead time, start early** | | |
-| 4.6 | Re-vendor interfaces + `go generate ./...` when upstream changes | | |
-| 4.7 | Foundry wire-vector tests (`test/*.t.sol`) — pin the Solidity ABI encoding the Go codecs assert against | | |
+| 4.6 | Re-run `./deploy/scripts/generate-bindings.sh` when upstream changes | | |
+| 4.7 | Foundry wire-vector tests (`contracts/test/*.t.sol`) — pin the Solidity ABI encoding the Go codecs assert against | | |
 
 `TeeOracleFeedStore` acceptance rules — as shipped upstream:
 
@@ -677,7 +677,7 @@ corrected against the deployed contracts (the request returns and emits its inst
 | --- | --- | --- | --- |
 | 5.1 | Scheduler: trigger `requestFeedUpdate(feedId, teeIds)` every `T` | | |
 | 5.2 | Poll TEE proxy for the result; handle timeouts and missing results | | |
-| 5.3 | Submit result + signature to the `TeeOracleFeedStore` (`submitFeedUpdate`) | | |
+| 5.3 | Submit the machines' signed updates to the `TeeOracleFeedStore` as one batch (`submitFeedUpdates`) | | |
 | 5.4 | Gas management, nonce handling, resubmission on stuck tx | | |
 | 5.5 | Hot-wallet funding + low-balance alerting | | |
 | 5.6 | Run ≥ 2 independent keeper instances (idempotent submissions) | | |
@@ -728,8 +728,8 @@ someone, and there should be an agreed comms path to Hex when it fires.
 | 8.1 | Unit tests for the formula: over/under-collateralised, `S == 0`, rounding, extreme values | | |
 | 8.2 | Mock Hex API server (incl. malformed, stale, slow, 5xx responses) | | |
 | 8.3 | Mock/forked RPC for supply reads, incl. provider disagreement | | |
-| 8.4 | Conformance suite (`./scripts/test-conformance.sh`) with USDX fixtures | | |
-| 8.5 | Foundry wire-vector tests pinning the vendored interfaces' ABI encoding | | |
+| 8.4 | Conformance suite (`./deploy/scripts/test-conformance.sh`) with USDX fixtures | | |
+| 8.5 | Foundry wire-vector tests pinning the upstream interfaces' ABI encoding | | |
 | 8.6 | E2E on Coston2: instruction → TEE → result → store → feed read | | |
 | 8.7 | Shadow run: compute prices for N days without publishing, compare against expectation | | |
 | 8.8 | Failure drills: Hex API down, one RPC down, two RPCs down, TEE down | | |
@@ -904,7 +904,7 @@ Resolved (see decisions log at the top): submission path, on-chain payload shape
 | --- | --- | --- | --- |
 | M0 | Access secured | API key issued, IPs whitelisted, USDX addresses confirmed | Hex |
 | M1 | Local prototype | Extension computes a price locally against mocks + real APIs; unit + conformance tests green | M0 |
-| M2 | Contracts on Coston2 | Upstream sender and store deployed (flare-smart-contracts-v2), addresses slotted into `config/<chain>/deployed-addresses.json`; Foundry tests green | M1 |
+| M2 | Contracts on Coston2 | Upstream sender and store deployed (flare-smart-contracts-v2), addresses slotted into `deploy/config/<chain>/deployed-addresses.json`; Foundry tests green | M1 |
 | M3 | E2E on Coston2 | Instruction → TEE → signed result → store → `getCurrentFeed()` returns a price | M2 |
 | M4 | Hardening | Monitoring live, runbook written, failure drills passed, security review done | M3 |
 | M5 | Mainnet | Feed registered with governance, keepers running, consumers notified | M4 |
@@ -919,9 +919,9 @@ Relevant references:
   `GET /state`, wire format, reproducibility rules)
 - `docs/deployment-steps.md` — Confidential Space deployment
 - `docs/testing.md` — unit / conformance / e2e layers
-- `go/internal/extension/extension.go` — handler dispatch
-- `contracts/interfaces/ITeeOracleInstructionsSender.sol` / `ITeeOracleFeedStore.sol` —
-  vendored upstream on-chain interfaces the extension's payloads must match
+- `internal/extension/extension.go` — handler dispatch
+- `userInterfaces/tee/ITeeOracleInstructionsSender.sol` / `ITeeOracleFeedStore.sol` in
+  flare-smart-contracts-v2 — the upstream on-chain interfaces the extension's payloads must match
 
 The tee-node signing API available to the extension on `$SIGN_PORT`:
 

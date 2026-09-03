@@ -227,7 +227,7 @@ a stale reference does not fail loudly, it just reads a feed nobody updates any 
 | Store bounds / maxAge | `0.5 … 1.0`, 3600 s |
 
 The store and the feed are **verified** on `coston2-explorer.flare.network` via
-`./scripts/verify-contracts.sh`, so their acceptance rules are readable by anyone relying on
+`./deploy/scripts/verify-contracts.sh`, so their acceptance rules are readable by anyone relying on
 them, and `latest()` / `getCurrentFeed()` can be called from the explorer's Read Contract tab.
 **The instruction sender is not verified**, and it is the one holding the price-controlling
 owner key (finding 15) — verifying it is outstanding work, not a cosmetic gap.

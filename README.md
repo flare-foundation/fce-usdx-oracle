@@ -35,30 +35,6 @@ FCC collapses the question from "do I trust the operator" to "do I trust the cod
 
 ---
 
-## Live on Coston2
-
-| | |
-| --- | --- |
-| `TeeOracleFeedStore` | `<address>` — from the flare-smart-contracts-v2 deployment. Implements the FTSO custom-feed interface itself; there is no separate feed adapter |
-| `TeeOracleInstructionsSender` | `<address>` — from the flare-smart-contracts-v2 deployment. Holds the expected endpoints/admins hashes the store enforces |
-| Extension id | `1` — the RESERVED id, registered by Flare governance, pinned as a build fact |
-| Feed id | `0x20555344582f555344000000000000000000000000` — category 0x20 + "USDX/USD" |
-
-```bash
-cast call --rpc-url https://coston2-api.flare.network/ext/C/rpc <TeeOracleFeedStore> 'getCurrentFeed()(uint256,int8,uint64)'
-```
-
-Returns `(value, decimals, observedAt)` — read it as `value / 10^decimals`, and **always check the age**. It currently returns `100000000, 8` — `$1.00000000`.
-
-The contracts are upstream, so their explorer verification is Flare's as part of the
-flare-smart-contracts-v2 deployment — check the addresses above show verified source before
-relying on them. The sender matters more than it looks: it holds the configuration
-commitments that decide which sources the price is read from, so it is the one component a
-consumer most needs to audit.
-
-> Addresses come from the flare-smart-contracts-v2 deployment. `config/coston2/deployed-addresses.json` is what the tooling reads — check this table against it after any upstream deploy, because nothing enforces that the two agree.
-
----
 
 ## Architecture
 
@@ -87,7 +63,7 @@ flowchart LR
   T -- "every 2 min" --> SRC
   T -- "signed feed update" --> P
   P -- "result" --> K
-  K -- "tx: submitFeedUpdate(update, sig)" --> ST
+  K -- "tx: submitFeedUpdates(signed updates)" --> ST
   ST -- "verify sig vs TEE machine registry" --> ST
   ST -- "verify endpoints + admins hash" --> IS
   ST --> F
@@ -99,7 +75,7 @@ Two ways into the TEE, and the choice of channel is a security control rather th
 |---|---|---|
 | In (on-chain) | `TeeOracleInstructionsSender` → data providers → proxy → TEE | `SET_ENDPOINTS`, `SET_ADMINS` — authorised by the sender's `onlyGovernance` check. `GET_FEED` — the permissionless path, and the only one it accepts |
 | In (off-chain) | Client → proxy → TEE (a "direct action") | `SET_SECRET` — a ciphertext on-chain would be permanent and public. `GET_READINESS` — a status answer stale within minutes is not worth a fee |
-| Out | TEE → proxy → keeper → chain | `submitFeedUpdate(update, signature)` — anyone may relay a signed update |
+| Out | TEE → proxy → keeper → chain | `submitFeedUpdates(SignedFeedUpdate[])` — anyone may relay the machines' signed updates; the store takes the median |
 
 All five commands share the one `TEE_ORACLE` op type; accepting a command over the wrong
 channel would bypass its authorisation, so each one states its own guard and is pinned to
@@ -179,10 +155,10 @@ sequenceDiagram
   participant P as TEE Proxy
   participant T as TEE
   G->>IS: setEndpoints(feedId, teeIds, groups, claimBack)
-  IS->>IS: expectedEndpointsHash[feedId][teeId] = keccak256(payload)
+  IS->>IS: latestEndpointsHash[feedId] = keccak256(payload)
   IS-->>T: cosigned instruction → applied, hash recorded as received
   G->>IS: setAdmins(feedId, teeIds, roles, claimBack)
-  IS->>IS: expectedAdminsHash[feedId][teeId] = keccak256(payload)
+  IS->>IS: latestAdminsHash[feedId] = keccak256(payload)
   IS-->>T: cosigned instruction → both signer sets installed, or neither
   A->>A: ct = ECIES(TEE pubkey, secret)
   A->>A: body = abi(domain, chainId, teeId, version, issuedAt, ref, keccak256(ct))
@@ -203,13 +179,13 @@ All three are memory-only. For admins that is load-bearing rather than incidenta
 
 ### 4. Relay and acceptance
 
-The keeper requests, polls, decodes, preflights every store guard, and submits. It holds no authority and it is not allowed to compute or adjust anything — the signed update is relayed as signed.
+The keeper requests, polls every addressed machine, decodes each signed update, preflights the batch against every store guard, and submits the updates that agree on `observedAt` in one `submitFeedUpdates` call. It holds no authority and it is not allowed to compute or adjust anything — each signed update is relayed as signed, and the store takes the median.
 
-`TeeOracleFeedStore.submitFeedUpdate` then checks: the TEE signature verifies through `Fdc2Verification` — the signer is a registered `PRODUCTION` machine on **this** extension, and the extension is not emergency-paused · the update names the store's extension id and feed id · it carries the `endpointsHash` and `adminsHash` the sender currently publishes for that machine (`expectedEndpointsHash` / `expectedAdminsHash`) · `observedAt` strictly increases and is strictly older than the accepting block. There are no price bounds and no maximum-age window: acceptance is anchored by the signature, the commitments and monotonicity alone.
+`TeeOracleFeedStore.submitFeedUpdates` then judges the batch: it carries at least `requiredSignatures` updates and at most 32, all stamped with one `observedAt`, and the two values bracketing their median lie within the governance-set spread bound · that `observedAt` strictly increases and is strictly older than the accepting block · every signature verifies through `Fdc2Verification` — each signer is a distinct, registered `PRODUCTION` machine on **this** extension, and the extension is not emergency-paused · every update names the store's extension id and feed id and carries the `endpointsHash` and `adminsHash` the sender currently publishes for the feed (`latestEndpointsHash` / `latestAdminsHash`). The median is stored, and machines whose value lay beyond the bound are named in a `FeedOutliers` event. There are no price bounds and no maximum-age window: acceptance is anchored by the signatures, the commitments, agreement and monotonicity alone.
 
 Strictly increasing `observedAt` is what makes replay and out-of-order delivery harmless in a fire-and-forget system. With two or more keepers, exactly one submission wins per cycle and the losers report `NotNewer` — **that is success, not an alert**.
 
-The store keeps no per-machine bookkeeping: one global `observedAt` stamp is all it holds, and the `FeedUpdated` event's indexed `teeId` says which machine won. What was *sent* to each machine lives on the sender (`expectedEndpointsHash` / `expectedAdminsHash` plus versions); what a machine is *running* shows up when its updates pass the store's commitment checks — `fleet-status` reconciles the two.
+The store keeps no per-machine bookkeeping: one global `observedAt` stamp is all it holds, and the `FeedUpdated` event's `teeIds` list says which machines contributed. The feed's latest published configuration lives on the sender (`latestEndpointsHash` / `latestAdminsHash` plus versions, per feed), and `isTeeIdConfigured(feedId, teeId)` says whether a machine has been sent it; what a machine is *running* shows up when its updates pass the store's commitment checks — `fleet-status` reconciles the two.
 
 ---
 
@@ -249,15 +225,15 @@ cd go && go run ./cmd/devserver
 ```
 
 ```bash
-./scripts/set-endpoints.sh testdata/endpoints/public-only.json 8099
+./deploy/scripts/set-endpoints.sh deploy/config/endpoints/public-only.json 8099
 ```
 
-`./scripts/oracle-observe.sh` runs this whole sequence — mock signing node, dev server, endpoint provisioning, one `GET_FEED` request — and prints the price and per-source health. Healthy output is `lastPrice: "100000000"` with `hex_cash: not_configured`.
+`./deploy/scripts/oracle-observe.sh` runs this whole sequence — mock signing node, dev server, endpoint provisioning, one `GET_FEED` request — and prints the price and per-source health. Healthy output is `lastPrice: "100000000"` with `hex_cash: not_configured`.
 
 For the full stack — redis, proxy and the extension TEE in containers, against a local chain or Coston2 — see [docs/local-stack.md](docs/local-stack.md):
 
 ```bash
-./scripts/full-setup.sh
+./deploy/scripts/full-setup.sh
 ```
 
 ---
@@ -267,13 +243,13 @@ For the full stack — redis, proxy and the extension TEE in containers, against
 Start with the checks that need no chain. They catch most breakage in seconds:
 
 ```bash
-cd go && go test ./... && cd .. && forge test
+go test ./... && (cd tools && go test ./...) && (cd contracts && forge test)
 ```
 
-- **Unit tests** — `go test ./...` in `go/` and in `tools/`, covering the quorum procedure, price arithmetic, decimal parsing, the provisioning verifier, the wire encodings and the keeper cycle.
-- **Contract tests** — `forge test` prints Solidity's own ABI encoding of the wire payloads (endpoints, admins, the signed feed update) into `testdata/wire/`, which both Go codecs assert against. The structs are imported from the vendored `ITeeOracle*` interfaces, so the fixtures cannot drift from the ABI the bindings are generated off.
-- **Conformance** — `TestConformance` in `go/internal/extension` replays the golden wire fixtures in `testdata/conformance/` against a running extension and diffs the responses. No chain, no proxy, no Docker. This is the acceptance test for any new language implementation.
-- **On-chain end-to-end** — `./scripts/oracle-cycle.sh -tee @<machine> --dry-run` preflights the addressed machines without submitting; dropping `--dry-run` drives one full request → sign → relay cycle. To drive the full feed, follow *"Running the USDX oracle end to end yourself"* in [docs/testing.md](docs/testing.md).
+- **Unit tests** — `go test ./...` at the repo root and in `tools/`, covering the quorum procedure, price arithmetic, decimal parsing, the provisioning verifier, the wire encodings and the keeper cycle.
+- **Contract tests** — `forge test` prints Solidity's own ABI encoding of the wire payloads (endpoints, admins, the signed feed update) into `deploy/testdata/wire/`, which both Go codecs assert against. The structs are imported straight from the upstream `ITeeOracle*` interfaces (see `contracts/`), so the fixtures cannot drift from the ABI the bindings are generated off.
+- **Conformance** — `TestConformance` in `internal/extension` replays the golden wire fixtures in `deploy/testdata/conformance/` against a running extension and diffs the responses. No chain, no proxy, no Docker. This is the acceptance test for any new language implementation.
+- **On-chain end-to-end** — `./deploy/scripts/oracle-cycle.sh -tee @<machine> --dry-run` preflights the addressed machines without submitting; dropping `--dry-run` drives one full request → sign → relay cycle. To drive the full feed, follow *"Running the USDX oracle end to end yourself"* in [docs/testing.md](docs/testing.md).
 
 Three things that are easy to misread as failures:
 
@@ -289,18 +265,18 @@ Three things that are easy to misread as failures:
 
 | Layer | Where | What |
 |---|---|---|
-| On-chain entry | upstream `TeeOracleInstructionsSender` (vendored interface: `contracts/interfaces/ITeeOracleInstructionsSender.sol`) | `requestFeedUpdate` (anyone), `setEndpoints`/`setAdmins` (governance). Also the expected endpoints/admins hashes the store enforces |
-| On-chain acceptance | upstream `TeeOracleFeedStore` (vendored interface: `contracts/interfaces/ITeeOracleFeedStore.sol`) | Every guard that protects the feed — all authority lives here. Implements the FTSO custom-feed interface (`IICustomFeed`) itself and is registered with FtsoV2 directly |
-| Observation | `go/internal/{supply,backing,price,decimal}` | Quorum RPC reads, Hex HTTP reads, the arithmetic, exact money parsing |
-| Orchestration | `go/internal/{oracle,observe}` | One observation start to finish; the timer, the cache and the staleness bound |
-| Provisioning | `go/internal/{provision,runtimecfg}` | M-of-N envelope verification; the only mutable state in the process |
-| Wire formats | `go/internal/{report,readiness,failure}` | The signed payloads, and the closed public error vocabulary |
-| HTTP surface | `go/internal/extension` | `POST /action` routing and `GET /state` |
-| Ops CLI | `go/cmd/usdxprov` | Build / sign / submit a `SET_SECRET` envelope |
+| On-chain entry | upstream `TeeOracleInstructionsSender` (interface `userInterfaces/tee/ITeeOracleInstructionsSender.sol` in flare-smart-contracts-v2) | `requestFeedUpdate` (anyone), `setEndpoints`/`setAdmins` (governance). Also the expected endpoints/admins hashes the store enforces |
+| On-chain acceptance | upstream `TeeOracleFeedStore` (interface `userInterfaces/tee/ITeeOracleFeedStore.sol` in flare-smart-contracts-v2) | Every guard that protects the feed — all authority lives here. Implements the FTSO custom-feed interface (`IICustomFeed`) itself and is registered with FtsoV2 directly |
+| Observation | `internal/observation/{supply,backing,price,decimal}` | Quorum RPC reads, Hex HTTP reads, the arithmetic, exact money parsing |
+| Orchestration | `internal/observation`, `internal/observation/poller` | One observation start to finish; the timer, the cache and the staleness bound |
+| Provisioning | `internal/provisioning/{envelope,store}` | M-of-N envelope verification; the only mutable state in the process |
+| Wire formats | `internal/wire/{feedupdate,readiness}`, `internal/failure` | The signed payloads, and the closed public error vocabulary |
+| HTTP surface | `internal/extension` | `POST /action` routing and `GET /state` |
+| Ops CLI | `cmd/usdxprov` | Build / sign / submit a `SET_SECRET` envelope |
 | Tooling & keeper | `tools/` | Registration, configuration publication, the keeper cycle, preflight, fleet status. **Language-neutral** — it re-declares the wire layout rather than importing it |
-| Conformance | `testdata/conformance/` | Golden wire fixtures, asserted against any implementation |
+| Conformance | `deploy/testdata/conformance/` | Golden wire fixtures, asserted against any implementation |
 
-This repository implements the oracle in **Go only**. The scaffold it derives from supports Python and TypeScript via `LANGUAGE=<dir>`, and the tooling, contracts and conformance harness here are still language-neutral — but no other implementation is checked in, and the fixtures in `testdata/conformance/` are the acceptance test if you add one.
+The repository root is the Go module: the extension is the repository. `tools/` is a separate module with no dependency on it, so operators and outside users can build the keeper and deployment CLIs without the enclave code.
 
 ---
 

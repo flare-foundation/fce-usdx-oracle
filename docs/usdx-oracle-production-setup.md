@@ -86,8 +86,8 @@ again, and its predecessor needs pausing.
 
 The file names each RPC provider and, for the private ones, the **ref** whose credential is
 substituted for `{secret}` at dial time. It contains no secret values. Model it on
-[`testdata/endpoints/coston2.json`](../testdata/endpoints/coston2.json); keep the production
-copy outside the repo or in `config/`.
+[`deploy/config/endpoints/coston2.json`](../deploy/config/endpoints/coston2.json); keep the production
+copy outside the repo or in `deploy/config/`.
 
 Validate before anything is recorded — a rejected payload is silent, and leaves the chain
 expecting a config the machine is not running:
@@ -149,7 +149,7 @@ Same hand-off model as step 1: the file carries the exact calldata and fee for t
 governance executor, and the machine's reported `adminsHash` must afterwards equal the
 hand-off's `payloadHash` (`fleet-status` shows both columns).
 
-> Never publish `testdata/admins/dev-wellknown-keys.json` to a live feed. It names the addresses
+> Never publish `deploy/config/admins/dev-wellknown-keys.json` to a live feed. It names the addresses
 > of private keys 1, 2 and 3 — anyone can sign as those admins.
 
 ## Step 3 — upload the RPC credentials (three admins)
@@ -164,12 +164,12 @@ envelope on rather than submitting one the machine will refuse.
 **Admin A — holds the credentials, builds, signs, hands off:**
 
 ```bash
-ENDPOINTS_FILE=<ENDPOINTS_JSON> ./scripts/upload-rpc-keys.sh --threshold 3 --all
+ENDPOINTS_FILE=<ENDPOINTS_JSON> ./deploy/scripts/upload-rpc-keys.sh --threshold 3 --all
 ```
 
 `--all` takes the ref list from the endpoints file — every `secret` it names — so the machine is
 never asked what it is missing. Use the file the machine is actually **running**: confirm with
-`send-endpoints -dry-run` that its predicted hash matches `expectedEndpointsHash`, or the list
+`send-endpoints -dry-run` that its predicted hash matches `latestEndpointsHash(feedId)`, or the list
 describes a configuration nobody is on. `--refs <a,b>` names them by hand for the same result.
 
 That uploads every configured ref rather than only the absent ones. The difference costs nothing:
@@ -181,7 +181,7 @@ presetting the variables: a `VAR=value ./script` line is not in argv where `ps` 
 it is in the shell history. Preset only for an unattended run, from a file you control:
 
 ```bash
-set -a; . ./provisioning.env; set +a; ENDPOINTS_FILE=<ENDPOINTS_JSON> ./scripts/upload-rpc-keys.sh --threshold 3 --all
+set -a; . ./provisioning.env; set +a; ENDPOINTS_FILE=<ENDPOINTS_JSON> ./deploy/scripts/upload-rpc-keys.sh --threshold 3 --all
 ```
 
 It verifies the machine against the chain, encrypts each credential to the attested key, signs
@@ -226,7 +226,7 @@ Hex API key also holds a backing admin key, the whole thing finishes on their ma
 command — no handoff, no coordination window:
 
 ```bash
-./scripts/upload-hex-key.sh
+./deploy/scripts/upload-hex-key.sh
 ```
 
 It prompts for the proxy URL, the chain id and the expected code hash, then — hidden — the
@@ -266,7 +266,7 @@ so a fleet of three commissions itself within the hour at the default 10-minute 
 To force updates faster, run single cycles rather than waiting on the timer:
 
 ```bash
-./scripts/oracle-cycle.sh -tee <TEE1>,<TEE2>,<TEE3>
+./deploy/scripts/oracle-cycle.sh -tee <TEE1>,<TEE2>,<TEE3>
 ```
 
 `DIRECT_API_KEY` is for the `GET_READINESS` preflight, which skips paying the fee when every
@@ -287,11 +287,11 @@ cd tools && go run ./cmd/fleet-status -store <STORE> -feedId <FEED_ID>
 | --- | --- | --- |
 | `registry` | `PRODUCTION (2)` | the store rejects every update it signs, whatever else is true |
 | `configured` | `yes` | `isTeeIdConfigured(feedId, teeId)` is false — endpoints or admins not published for this (feed, machine) |
-| `endpoints` / `admins` hash vs `live` | the same hash | it rejected or never received the last `setEndpoints`/`setAdmins` — every `submitFeedUpdate` reverts `StaleEndpoints`/`StaleAdmins` |
+| `endpoints` / `admins` hash vs `live` | the same hash | it rejected or never received the last `setEndpoints`/`setAdmins` — every `submitFeedUpdates` batch it contributes to reverts `StaleEndpoints`/`StaleAdmins` |
 | `live` | `ready=yes` | a credential is missing; the `missingSecretRefs` note names which refs |
 
-Then the feed itself: `./scripts/oracle-status.sh` for the on-chain view, and
-`./scripts/oracle-observe.sh` for per-source health inside the machine.
+Then the feed itself: `./deploy/scripts/oracle-status.sh` for the on-chain view, and
+`./deploy/scripts/oracle-observe.sh` for per-source health inside the machine.
 
 ---
 
@@ -309,12 +309,12 @@ loses power loses its secrets.
 | the endpoint config | step 1 with the new file | **re-commission** — a new endpoints hash decommissions the machine |
 | the admin set | step 2 again (the contract assigns the new version) | **re-commission** — installed credentials are untouched |
 
-Publishing a new config or admin set raises the sender's expected hash for those machines, which
+Publishing a new config or admin set moves the sender's latest hash for the feed, which
 is correct and self-announcing: a machine still running the old one now signs updates carrying a
 stale hash, and the store rejects them `StaleEndpoints`/`StaleAdmins` until the machine applies
 the new payload and lands an update. The store keeps no per-machine bookkeeping — there is no
 `isProvenConfigured` flag any more — so commissioning is reconciled with `fleet-status`, which
-compares each machine's live hash against the sender's expected one.
+compares each machine's live hash against the sender's latest one.
 
 Rotating admins does **not** evict the credentials already installed, and does **not** reset the
 per-ref envelope versions — that would let an envelope the outgoing admins signed be replayed

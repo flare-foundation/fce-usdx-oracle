@@ -149,13 +149,13 @@ it is this same sequence, ordered across a fleet and with the version calls arou
 
 Any restart mints a new enclave key. The sequence, and the order matters:
 
-1. **Stop the keeper first.** `scripts/stop-services.sh` does *not* touch the systemd unit, and a
+1. **Stop the keeper first.** `deploy/scripts/stop-services.sh` does *not* touch the systemd unit, and a
    keeper left running spends gas against a generation that no longer exists.
    `sudo systemctl disable --now usdx-keeper`
 2. **Full `down`, never a partial restart.** Restarting only `extension-tee` while redis survives
    leaves the published machine data pointing at an enclave key that no longer exists — `/info`
    reports one identity while the node signs as another. Only `stop-services.sh` clears it.
-3. Rebuild and start: `./scripts/start-services.sh --chain coston2`
+3. Rebuild and start: `./deploy/scripts/start-services.sh --chain coston2`
 4. Register the new identity (`-command rRap`, a **new** `-state` file).
 5. **Pause the old identity.** Otherwise it stays `PRODUCTION` forever and on-chain instructions
    are dispatched to a machine that cannot answer.
@@ -240,9 +240,9 @@ sudo systemctl disable --now usdx-keeper
 1. **Take the machine down completely.** Never a partial restart: leaving redis up while
    `extension-tee` restarts leaves published machine data pointing at a dead key, so `/info`
    reports one identity while the node signs as another.
-   `./scripts/stop-services.sh --chain coston2`
+   `./deploy/scripts/stop-services.sh --chain coston2`
 2. **Deploy the new build and start it.**
-   `./scripts/start-services.sh --chain coston2`
+   `./deploy/scripts/start-services.sh --chain coston2`
 3. **Record the new identity.** `curl -s <PROXY_URL>/info` — the `machineData.codeHash` should be
    the new one, and the public key different from before.
 4. **Pause the old identity**, before registering the new one — they share a URL, and the new one
@@ -260,7 +260,7 @@ Repeat 1–7 for the next machine. **Do not start the next one until the previou
 — that is the whole point of rolling.
 
 **Once, at the end.** Start the keeper and let ordinary cycles commission the migrated fleet —
-each request is dispatched to a machine the registry picks, so every machine gets its turn:
+each request is dispatched to every machine named in `-tee`, so every machine contributes:
 
 ```
 sudo systemctl enable --now usdx-keeper

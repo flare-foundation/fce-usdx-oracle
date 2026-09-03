@@ -22,10 +22,6 @@ what every command does.
 - **Running local infrastructure** — a Hardhat node with the Flare contracts deployed
   (`docker compose up` from the `e2e/` repo). Not needed for the Coston2 path.
 
-> This repository checks in **only the Go implementation**. The scaffold's `LANGUAGE=<dir>`
-> dispatch is still wired up throughout the scripts (a directory is an implementation iff
-> `<dir>/language.env` exists), so `LANGUAGE` resolves to `go` and stays there unless you
-> add one.
 
 ---
 
@@ -34,10 +30,10 @@ what every command does.
 With local infrastructure running, one command runs the whole lifecycle:
 
 ```bash
-./scripts/full-setup.sh
+./deploy/scripts/full-setup.sh
 ```
 
-1. **Identity** — pin `EXTENSION_ID` (the reserved id 1) to `config/extension.env`
+1. **Identity** — pin `EXTENSION_ID` (the reserved id 1) to `deploy/config/extension.env`
 2. **Docker Compose** — start redis, the proxy, and the extension TEE as containers
 3. **Post-build** — register the TEE version, the governance, and the TEE machine on-chain
 
@@ -53,12 +49,12 @@ deployed here — that is upstream's `deploy-tee-oracle.sh` plus governance foll
 ### 1. Start services
 
 ```bash
-./scripts/start-services.sh
+./deploy/scripts/start-services.sh
 ```
 
 Resolves `LANGUAGE` from `.env`, builds the matching extension image (and the `tee-node`
 base / `local/tee-proxy` images when needed), then brings up Docker Compose. Prefer this
-over a bare `docker compose up`, which defaults to `go/Dockerfile` and ignores `LANGUAGE`.
+over a bare `docker compose up`, which defaults to `Dockerfile` and ignores `LANGUAGE`.
 
 > The base compose file joins the external `docker_default` network created by the e2e
 > infrastructure. Start the e2e stack first, or this fails with "network not found".
@@ -67,22 +63,22 @@ over a bare `docker compose up`, which defaults to `go/Dockerfile` and ignores `
 Three containers come up:
 
 - **redis** — queue storage for the proxy
-- **ext-proxy** — TEE proxy, using `config/proxy/extension_proxy.docker.toml`
+- **ext-proxy** — TEE proxy, using `deploy/config/proxy/extension_proxy.docker.toml`
 - **extension-tee** — tee-node + the extension server, built from source
 
-The compose file reads `EXTENSION_ID` from `config/extension.env` (written by full-setup)
+The compose file reads `EXTENSION_ID` from `deploy/config/extension.env` (written by full-setup)
 and joins `docker_default` so the proxy can reach `indexer-db` and `node`.
 
 ```bash
 docker compose ps
 docker compose logs -f extension-tee
-./scripts/stop-services.sh
+./deploy/scripts/stop-services.sh
 ```
 
 ### 2. Post-build
 
 ```bash
-./scripts/post-build.sh
+./deploy/scripts/post-build.sh
 ```
 
 Waits for the proxy to be ready, then allows the TEE version, registers the extension's
@@ -95,12 +91,12 @@ With the machine registered and configuration published, run one keeper cycle ag
 deployed stack:
 
 ```bash
-./scripts/oracle-cycle.sh -tee <TEE1> --dry-run    # preflight only, no submission
-./scripts/oracle-cycle.sh -tee <TEE1>              # request, poll, submit
+./deploy/scripts/oracle-cycle.sh -tee <TEE1> --dry-run    # preflight only, no submission
+./deploy/scripts/oracle-cycle.sh -tee <TEE1>              # request, poll, submit
 ```
 
 The wire contract itself (independent of any chain) is checked by
-`./scripts/test-conformance.sh`. For the full feed walkthrough see [testing.md](testing.md).
+`./deploy/scripts/test-conformance.sh`. For the full feed walkthrough see [testing.md](testing.md).
 
 ### Running single steps
 
@@ -113,7 +109,7 @@ cd tools && go run ./cmd/register-tee -a /path/to/deployed-addresses.json -p htt
 ```
 
 ```bash
-./scripts/vendor-interfaces.sh && ./scripts/generate-bindings.sh
+./deploy/scripts/generate-bindings.sh
 ```
 
 ---
@@ -126,7 +122,7 @@ cd tools && go run ./cmd/register-tee -a /path/to/deployed-addresses.json -p htt
 | `CHAIN_URL` | `http://127.0.0.1:8545` | Chain RPC endpoint |
 | `DEPLOYMENT_PRIVATE_KEY` | Hardhat dev key | Funded private key for transactions |
 | `PROXY_PRIVATE_KEY` | Hardhat dev key | Proxy signing key (used by start-services) |
-| `EXTENSION_ID` | from `config/extension.env` | Extension ID (the reserved id 1, written by full-setup) |
+| `EXTENSION_ID` | from `deploy/config/extension.env` | Extension ID (the reserved id 1, written by full-setup) |
 | `INITIAL_OWNER` | derived from `DEPLOYMENT_PRIVATE_KEY` | Initial contract owner address |
 | `EXT_PROXY_URL` | `http://localhost:6674` | Extension proxy URL (post-build, test) |
 | `NORMAL_PROXY_URL` | `http://localhost:6662` | Normal/FTDC proxy URL (post-build) |
@@ -189,23 +185,23 @@ container via Docker Compose.
 
 ## Docker Compose details
 
-`docker-compose.yaml` uses `build.context: .` and the build is self-contained: `go.mod`
+`deploy/docker-compose.yaml` uses `build.context: .` and the build is self-contained: `go.mod`
 pins `tee-node`, which is fetched from the network and verified against `go.sum`, so no
 sibling `tee-node/` checkout is needed.
 
 To build the node and proxy from on-disk sibling checkouts instead (while developing
-`tee-node`/`tee-proxy`), run `USE_LOCAL_SIBLINGS=1 ./scripts/start-services.sh`, which
-selects `Dockerfile.siblings` (build context `tee/`) via `docker-compose.siblings.yaml`.
+`tee-node`/`tee-proxy`), run `USE_LOCAL_SIBLINGS=1 ./deploy/scripts/start-services.sh`, which
+selects `Dockerfile.siblings` (build context `tee/`) via `deploy/docker-compose.siblings.yaml`.
 Caveats in [usdx-oracle-tooling.md](usdx-oracle-tooling.md#local-development).
 
 Rebuild the extension image after code changes:
 
 ```bash
-./scripts/start-services.sh
+./deploy/scripts/start-services.sh
 ```
 
 ```bash
-./scripts/start-services.sh --chain coston2
+./deploy/scripts/start-services.sh --chain coston2
 ```
 
 Overrides, in the shell or `.env`:
@@ -249,22 +245,22 @@ cp .env.example .env
 | `INITIAL_OWNER` | Address derived from it | Owner of deployed contracts |
 | `PROXY_PRIVATE_KEY` | Same or another funded key | Proxy signing |
 | `CHAIN_URL` | `https://coston2-api.flare.network/ext/C/rpc` | Coston2 RPC |
-| `ADDRESSES_FILE` | `./config/coston2/deployed-addresses.json` | Pre-populated |
+| `ADDRESSES_FILE` | `./deploy/config/coston2/deployed-addresses.json` | Pre-populated |
 | `LOCAL_MODE` | `false` | **Must be `false`** on live networks — this is what enables attestation |
 | `NORMAL_PROXY_URL` | `https://tee-proxy-coston2-1.flare.rocks` | Flare's Coston2 normal/FTDC proxy |
 | `EXT_PROXY_URL` | `https://<your-subdomain>.ngrok-free.dev` | Your tunnel URL, from step 3 |
 
 ### 2. Configure the proxy
 
-Proxy configs live in `config/proxy/`. Coston2 needs two — one for inside Docker
+Proxy configs live in `deploy/config/proxy/`. Coston2 needs two — one for inside Docker
 (references the `redis` service name) and one for running the proxy outside it:
 
 ```bash
-cp config/proxy/extension_proxy.coston2.docker.toml.example config/proxy/extension_proxy.coston2.docker.toml
+cp deploy/config/proxy/extension_proxy.coston2.docker.toml.example deploy/config/proxy/extension_proxy.coston2.docker.toml
 ```
 
 ```bash
-cp config/proxy/extension_proxy.coston2.toml.example config/proxy/extension_proxy.coston2.toml
+cp deploy/config/proxy/extension_proxy.coston2.toml.example deploy/config/proxy/extension_proxy.coston2.toml
 ```
 
 Then fill in `[db]` with your indexer credentials:
@@ -295,31 +291,30 @@ Copy the HTTPS URL into `EXT_PROXY_URL`.
 ### 4–6. Deploy
 
 ```bash
-./scripts/full-setup.sh --chain coston2
+./deploy/scripts/full-setup.sh --chain coston2
 ```
 
 (or the phases individually: `start-services.sh --chain coston2`, then `post-build.sh`).
 The oracle contracts deploy upstream; slot their addresses into
-`config/coston2/deployed-addresses.json`, then prove the round trip with
-`./scripts/oracle-cycle.sh -tee <TEE1>`.
+`deploy/config/coston2/deployed-addresses.json`, then prove the round trip with
+`./deploy/scripts/oracle-cycle.sh -tee <TEE1>`.
 
 Compared to a bare `docker compose up`, `start-services.sh --chain coston2`:
 
-- sets `EXTENSION_DOCKERFILE` from `LANGUAGE`
 - mounts `extension_proxy.coston2.docker.toml` instead of the local proxy config
 - sets `CHAIN_URL` / `CHAIN_ID` for Coston2
 - creates its own network (`extension-scaffold-coston2`) instead of joining `docker_default`
 
 ```bash
-docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml ps
+docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.coston2.yaml ps
 ```
 
 ```bash
-docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml logs -f extension-tee
+docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.coston2.yaml logs -f extension-tee
 ```
 
 ```bash
-./scripts/stop-services.sh --chain coston2
+./deploy/scripts/stop-services.sh --chain coston2
 ```
 
 ---
@@ -335,7 +330,7 @@ docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml logs -f ext
 | Network | Joins `docker_default` (e2e infra) | Own `extension-scaffold-coston2` network |
 | Proxy accessibility | `localhost:6674` | Public URL via ngrok |
 | Normal proxy | `localhost:6662` | `https://tee-proxy-coston2-1.flare.rocks` |
-| Start services | `./scripts/start-services.sh` | `./scripts/start-services.sh --chain coston2` |
+| Start services | `./deploy/scripts/start-services.sh` | `./deploy/scripts/start-services.sh --chain coston2` |
 
 ---
 

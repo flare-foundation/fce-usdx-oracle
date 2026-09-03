@@ -76,8 +76,8 @@ Ordered by where they occur in one keeper cycle.
 | **2** | `requestFeedUpdate()` never landed — wallet empty, fee wrong, gas, RPC down, target not configured | Keeper tx receipt | Revert or no receipt | warn → page if sustained |
 | **3** | No `ActionResult` returned — TEE down, proxy down, instruction dropped, machine offline | Keeper poll timeout | Timeout, no result | warn → page if sustained |
 | **4** | Extension failed the observation — a source is down or answered badly | `ActionResult.status == 0` | `failure.Class` in `Log` | route by class (below) |
-| **5** | `submitFeedUpdate` reverted `NotNewer` — another keeper won the race | Tx revert reason | `NotNewer()` | **never alerts — normal operation** |
-| **6** | `submitFeedUpdate` reverted for any other reason | Tx revert reason | See revert table | varies — several are page |
+| **5** | `submitFeedUpdates` reverted `NotNewer` — another keeper won the race | Tx revert reason | `NotNewer()` | **never alerts — normal operation** |
+| **6** | `submitFeedUpdates` reverted for any other reason | Tx revert reason | See revert table | varies — several are page |
 | **7** | Everything above succeeded and the feed is still stale | On-chain `age` | `age > 2 × T` | **page** — the consumer-facing truth |
 
 Causes 1 and 7 are the two that must exist before the others are worth building. 1 catches the
@@ -87,7 +87,7 @@ keeper dying; 7 catches everything, including causes nobody anticipated.
 
 ## Cause 4 — routing a status-0 result
 
-`ActionResult.Log` carries a constant from the closed vocabulary in `go/internal/failure`, and
+`ActionResult.Log` carries a constant from the closed vocabulary in `internal/failure`, and
 `GET /state` carries the coarser `lastErrorClass`. The class is the alert key.
 
 | Class | Failures | Meaning | Route |
@@ -147,25 +147,29 @@ minutes-old reports".
 
 ---
 
-## Cause 6 — classifying a `submitFeedUpdate` revert
+## Cause 6 — classifying a `submitFeedUpdates` revert
 
-The guard order in `submitFeedUpdate` is diagnostic: each revert tells you everything that
-already passed. By the time `NotNewer` fires, the signature has been verified, the machine
-confirmed on this extension and in `PRODUCTION`, and both config hashes confirmed current.
+The guard order in `submitFeedUpdates` is diagnostic: each revert tells you everything that
+already passed. The batch is judged first — its shape, the spread of its values and the
+`observedAt` ratchet — and only then are the contributors verified one by one, so by the time
+`StaleEndpoints` fires the batch was well formed, in agreement and newer than the store.
 
 | Revert | What it already proves | Meaning | Route |
 | --- | --- | --- | --- |
-| `ExtensionEmergencyPaused` | nothing | Governance froze the extension | expected during an incident; page only if unplanned |
-| `ECDSAInvalidSignature` (and friends) | nothing | Malformed signature | **page** — encoding bug in the relay path |
-| `InvalidTeeMachineExtensionId` | signature recovered | Machine not registered to our extension | **page** — registry drift |
-| `TeeMachineNotProduction` | machine is on the extension | Its status is not `PRODUCTION` | **page** — machine suspended/paused/not yet promoted |
-| `WrongExtensionId`, `WrongFeedId` | signature valid | Update names a different extension/feed than this store | **page** — version/wiring mismatch, wrong deploy |
-| `NoEndpointsPublished` | machine + feed valid | No `setEndpoints` recorded for this (feed, machine) | **page** — provisioning incomplete |
-| `StaleEndpoints` | endpoints published | Machine is running config that is not what `setEndpoints` published | **page** — provisioning drift |
-| `NoAdminsPublished` | endpoints current | No `setAdmins` recorded for this (feed, machine) | **page** — provisioning incomplete |
-| `StaleAdmins` | admins published | Machine is running an admin set that is not what `setAdmins` published | **page** — provisioning drift |
-| `NotNewer` | config is current | Lost a race, or submitting stale updates | see cause 5 |
-| `TooFarAhead` | config current, newer | `observedAt` is not strictly before `block.timestamp` | **page** — TEE clock ahead of chain time; check NTP on the machine's host |
+| `NotEnoughSignatures`, `TooManySignatures` | nothing | Fewer agreeing machines than `requiredSignatures`, or more than 32 | **page** if sustained — machines down, or disagreeing on `observedAt` (the keeper's record shows who was left out) |
+| `ObservedAtMismatch`, `DecimalsSpreadTooBig` | count in range | The keeper sent a mixed batch | **page** — keeper bug; it groups by `observedAt` before submitting |
+| `SpreadTooBig` | batch well formed | The values bracketing the median disagree by more than the policy's bound | **page** — the machines disagree about the price; compare their `prices` and `sourceHealth` |
+| `NotNewer` | batch agrees on a value | Lost a race, or submitting stale updates | see cause 5 |
+| `TooFarAhead` | batch newer than the store | `observedAt` is not strictly before `block.timestamp` | **page** — TEE clock ahead of chain time; check NTP on the machine's host |
+| `NoEndpointsPublished`, `NoAdminsPublished` | shape, spread and ratchet pass | No `setEndpoints` / `setAdmins` ever published for the feed | **page** — provisioning incomplete |
+| `ExtensionEmergencyPaused` | commitments published | Governance froze the extension | expected during an incident; page only if unplanned |
+| `ECDSAInvalidSignature` (and friends) | commitments published | Malformed signature | **page** — encoding bug in the relay path |
+| `InvalidTeeMachineExtensionId` | signature recovered | A contributor is not registered to our extension | **page** — registry drift |
+| `TeeMachineNotProduction` | machine is on the extension | A contributor's status is not `PRODUCTION` | **page** — machine suspended/paused/not yet promoted |
+| `DuplicateTeeId` | signer valid | The same machine appears twice in the batch | **page** — keeper bug; it keeps one update per signer |
+| `WrongExtensionId`, `WrongFeedId` | signer valid and distinct | An update names a different extension/feed than this store | **page** — version/wiring mismatch, wrong deploy |
+| `StaleEndpoints` | machine and feed valid | A contributor is running config that is not the feed's latest `setEndpoints` | **page** — provisioning drift; the keeper's preflight names the machine |
+| `StaleAdmins` | endpoints current | A contributor is running an admin set that is not the feed's latest `setAdmins` | **page** — provisioning drift |
 
 The store no longer enforces an `[minPrice, maxPrice]` band or a `maxAge` window —
 `OutOfBounds` and `TooOld` have no on-chain counterpart any more. The price band is now

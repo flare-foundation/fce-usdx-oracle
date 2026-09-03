@@ -178,13 +178,15 @@ The RPC side is finer-grained, and the distinctions are load-bearing:
 
 ## The store's own guards
 
-Even a correctly signed update can be refused on-chain. `TeeOracleFeedStore.submitFeedUpdate`:
+Even correctly signed updates can be refused on-chain. `TeeOracleFeedStore.submitFeedUpdates` judges the batch as a whole:
 
 | Guard | Behaviour |
 | --- | --- |
-| signature | recovered through `Fdc2Verification`; signer must be on the store's extension and `PRODUCTION`, and the extension not emergency paused |
+| batch shape | at least `requiredSignatures` updates and at most 32, all stamped with one `observedAt`, otherwise `NotEnoughSignatures` / `TooManySignatures` / `ObservedAtMismatch` |
+| spread | the two values bracketing the median must lie within the governance-set bound (`maxSpreadBIPS` of the median plus `maxSpreadAbsolute`), otherwise `SpreadTooBig`; machines beyond the bound are named in `FeedOutliers` rather than rejected |
+| signatures | each recovered through `Fdc2Verification`; every signer must be distinct (`DuplicateTeeId`), on the store's extension and `PRODUCTION`, and the extension not emergency paused |
 | `extensionId` / `feedId` | must match the store's, otherwise `WrongExtensionId` / `WrongFeedId` |
-| endpoints / admins hash | must match what was published for this (feed, machine), otherwise `StaleEndpoints` / `StaleAdmins` (or `NoEndpointsPublished` / `NoAdminsPublished`) |
+| endpoints / admins hash | every update must carry the feed's latest published generation (`latestEndpointsHash` / `latestAdminsHash`), otherwise `StaleEndpoints` / `StaleAdmins` (or `NoEndpointsPublished` / `NoAdminsPublished`) |
 | `observedAt` | strictly increasing (`NotNewer`) and strictly before `block.timestamp` (`TooFarAhead`) |
 
 The store no longer enforces a `[minPrice, maxPrice]` band or a `maxAge` window. The price bound

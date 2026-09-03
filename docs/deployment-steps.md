@@ -36,7 +36,7 @@ checkouts.
 > ```
 >
 > ```bash
-> USE_LOCAL_SIBLINGS=1 ./scripts/start-services.sh --chain coston2
+> USE_LOCAL_SIBLINGS=1 ./deploy/scripts/start-services.sh --chain coston2
 > ```
 
 ## 2. Generate a funded deployer key
@@ -60,7 +60,7 @@ Copy `.env.example` to `.env.coston` or `.env.coston2`. Fill in:
 ```bash
 CHAIN=coston2                                                         # or coston
 CHAIN_URL=https://coston2-api.flare.network/ext/C/rpc                 # chain RPC
-ADDRESSES_FILE=./config/coston2/deployed-addresses.json
+ADDRESSES_FILE=./deploy/config/coston2/deployed-addresses.json
 NORMAL_PROXY_URL=https://tee-proxy-coston2-1.flare.rocks              # FTDC proxy
 EXT_PROXY_URL=                                                        # leave empty — set in Step 6
 
@@ -73,7 +73,7 @@ INITIAL_OWNER=0x<derived address from Step 2>
 Activate it:
 
 ```bash
-bash ./scripts/use-chain.sh <chain>
+bash ./deploy/scripts/use-chain.sh <chain>
 ```
 
 Copies `.env.<chain>` → `.env`, which all scripts auto-load.
@@ -87,8 +87,8 @@ extension with a fixed id:
 
 | Fact | Value | Where it's pinned |
 | ---- | ----- | ----------------- |
-| Extension id | `1` (reserved) | `go/internal/config` + upstream `teeOracleExtensionId` |
-| Feed id (USDX/USD) | `0x20555344582f555344…` (category `0x20` + `USDX/USD`) | `go/internal/config` |
+| Extension id | `1` (reserved) | `internal/config` + upstream `teeOracleExtensionId` |
+| Feed id (USDX/USD) | `0x20555344582f555344…` (category `0x20` + `USDX/USD`) | `internal/config` |
 
 So there is no `pre-build.sh` and no locally-minted `EXTENSION_ID`. The on-chain
 side is run from the contracts repo and finished by governance:
@@ -108,7 +108,7 @@ Once deployed, import the two addresses into this repo's addresses file so the
 tooling can find them by name (`TeeOracleFeedStore`, `TeeOracleInstructionsSender`):
 
 ```bash
-./scripts/import-upstream-addresses.sh coston2     # or coston
+./deploy/scripts/import-upstream-addresses.sh coston2     # or coston
 ```
 
 Then wire the reserved extension — the extension-owner share, idempotent, and a
@@ -119,15 +119,15 @@ cd tools && go run ./cmd/wire-extension -a ../config/coston2/deployed-addresses.
 ```
 
 The scripts here only need the identity, which is fixed — `full-setup.sh` writes
-`EXTENSION_ID=1` to `config/extension.env`:
+`EXTENSION_ID=1` to `deploy/config/extension.env`:
 
 ```bash
-cat config/extension.env
+cat deploy/config/extension.env
 ```
 
 ## 5. Build the Docker image
 
-The image built is selected by `LANGUAGE` in `.env` — `go/Dockerfile`, `python/Dockerfile` or `typescript/Dockerfile`. The steps below are identical for all of them.
+The image is built from the `Dockerfile` at the repo root, which is the Go module.
 
 ### Attestation mode
 
@@ -138,11 +138,11 @@ The image built is selected by `LANGUAGE` in `.env` — `go/Dockerfile`, `python
 | `1` | Simulated attestation (test code hash) | local devnet — **the scaffold's default** |
 | `0` | Production attestation | a real Confidential Space VM |
 
-**Every language's Dockerfile deliberately ships `MODE=1`**, so a bare `docker run` and the compose stack both work against the local devnet without extra configuration. `docker-compose.yaml` reinforces this with `MODE=${MODE:-1}`.
+**The Dockerfile deliberately ships `MODE=1`**, so a bare `docker run` and the compose stack both work against the local devnet without extra configuration. `deploy/docker-compose.yaml` reinforces this with `MODE=${MODE:-1}`.
 
 **FTDC rejects simulated attestation**, so a production deploy must run with `MODE=0`. You have two options, and the second is preferred:
 
-1. Edit `ENV MODE=1` → `ENV MODE=0` in your `<LANGUAGE>/Dockerfile` before building the release image.
+1. Edit `ENV MODE=1` → `ENV MODE=0` in the `Dockerfile` before building the release image.
 2. **Leave the image as-is and override at workload launch.** The `tee.launch_policy.allow_env_override` label lists `MODE`, so the Confidential Space VM accepts an override — and without that label it would reject one. This keeps a single image usable for both local dev and production, and keeps the code hash independent of which environment it is destined for.
 
 Whichever you choose, verify what actually ended up in the image before registering its hash on-chain — see the check at the end of this section.
@@ -151,24 +151,12 @@ Then build:
 
 ```powershell
 $env:SOURCE_DATE_EPOCH = (git log -1 --format=%ct)
-docker compose -f docker-compose.yaml build --no-cache extension-tee
+docker compose -f deploy/docker-compose.yaml build --no-cache extension-tee
 docker tag <your-extension>-extension-tee:latest <your-extension>:v0.1.0
 docker save <your-extension>:v0.1.0 -o <your-extension>-v0.1.0.tar
 ```
 
-Compose resolves the Dockerfile from `EXTENSION_DOCKERFILE`, which `start-services.sh` derives from `LANGUAGE`. Building compose directly (as above) uses the `go/Dockerfile` default, so for another language export it first:
-
-```bash
-export EXTENSION_DOCKERFILE=python/Dockerfile TEE_NODE_REF=$(bash -c 'source scripts/lib/versions.sh; load_versions "$PWD"; echo $TEE_NODE_REF')
-```
-
-Non-Go images also need the shared tee-node base image, which `start-services.sh` builds automatically:
-
-```bash
-./scripts/build-node-base.sh
-```
-
-Setting `SOURCE_DATE_EPOCH` makes the build reproducible (same source → same `codeHash`). Note that only the Go image is reproducible **across machines**; Python and TypeScript are same-machine only — see [REPRODUCIBILITY.md](../REPRODUCIBILITY.md) before promising an auditor they can reproduce your hash.
+Setting `SOURCE_DATE_EPOCH` makes the build reproducible (same source → same `codeHash`). The image is reproducible **across machines** — see [REPRODUCIBILITY.md](../REPRODUCIBILITY.md) for what that guarantees before promising an auditor they can reproduce your hash.
 
 Check which mode is baked into the image:
 
@@ -199,7 +187,7 @@ EXT_PROXY_URL=<public proxy URL>
 ```
 
 ```bash
-bash ./scripts/use-chain.sh <chain>
+bash ./deploy/scripts/use-chain.sh <chain>
 ```
 
 ## 7. Verify the proxy `/info`
@@ -214,7 +202,7 @@ Required values:
 | -------------- | ----------------------------------------------------------------- |
 | `platform`     | starts with `0x4743505f414d445f534556…` (GCP_AMD_SEV)             |
 | `codeHash`     | real measured hash (**not** `0x194844cf…` — that's simulated)     |
-| `extensionId`  | matches your `config/extension.env` `EXTENSION_ID`                |
+| `extensionId`  | matches your `deploy/config/extension.env` `EXTENSION_ID`                |
 | `initialOwner` | matches your `INITIAL_OWNER`                                      |
 
 If `extensionId` is wrong, ask the VM operator to restart the container with the correct `EXTENSION_ID` env override (no image rebuild needed — it's a launch-policy override).
@@ -222,7 +210,7 @@ If `extensionId` is wrong, ask the VM operator to restart the container with the
 ## 8. Register the TEE machine
 
 > [!WARNING]
-> Before running, ensure `scripts/post-build.sh` invokes `register-tee` with `-command rRap` (not the default `rap`):
+> Before running, ensure `deploy/scripts/post-build.sh` invokes `register-tee` with `-command rRap` (not the default `rap`):
 >
 > ```bash
 > go run ./cmd/register-tee \
@@ -241,7 +229,7 @@ If `extensionId` is wrong, ask the VM operator to restart the container with the
 Run:
 
 ```bash
-bash ./scripts/post-build.sh
+bash ./deploy/scripts/post-build.sh
 ```
 
 - `allow-tee-version` whitelists the codeHash for your extension.
@@ -261,11 +249,11 @@ governance calls; the tools' direct-send path works before
 `switchToProductionMode`:
 
 ```bash
-cd tools && go run ./cmd/send-endpoints -store <STORE> -tee <TEE1>,<TEE2> -config ../testdata/endpoints/public-only.json
+cd tools && go run ./cmd/send-endpoints -store <STORE> -tee <TEE1>,<TEE2> -config ../deploy/config/endpoints/public-only.json
 ```
 
 ```bash
-cd tools && go run ./cmd/send-admins -store <STORE> -tee <TEE1>,<TEE2> -config ../testdata/admins/dev-wellknown-keys.json
+cd tools && go run ./cmd/send-admins -store <STORE> -tee <TEE1>,<TEE2> -config ../deploy/config/admins/dev-wellknown-keys.json
 ```
 
 > `<STORE>` is the `TeeOracleFeedStore` address; the instructions sender is
@@ -281,11 +269,11 @@ credential never needs an RPC key and neither of them needs this repo's
 deployment context:
 
 ```bash
-./scripts/upload-hex-key.sh
+./deploy/scripts/upload-hex-key.sh
 ```
 
 ```bash
-./scripts/upload-rpc-keys.sh
+./deploy/scripts/upload-rpc-keys.sh
 ```
 
 Both verify the machine against the chain before encrypting anything to it, read
@@ -307,10 +295,10 @@ threshold.
 > for the whole fleet at once.
 
 Finally run one keeper cycle — it requests a feed update from the named machines,
-polls for the signed result, and submits it to the store:
+polls each of them for its signed result, and submits the agreeing updates to the store:
 
 ```bash
-./scripts/oracle-cycle.sh -tee <TEE1>,<TEE2>
+./deploy/scripts/oracle-cycle.sh -tee <TEE1>,<TEE2>
 ```
 
 Add `--dry-run` to run the preflight without submitting, or `--loop 10m` to keep
@@ -324,9 +312,9 @@ oracle end to end yourself".
 
 1. Rebuild and hand off the new image.
 2. The VM is re-deployed → `codeHash` changes.
-3. `bash ./scripts/post-build.sh` whitelists the new codeHash.
+3. `bash ./deploy/scripts/post-build.sh` whitelists the new codeHash.
 4. Run a keeper cycle to confirm the feed still advances:
-   `./scripts/oracle-cycle.sh -tee <TEE1>,<TEE2>`.
+   `./deploy/scripts/oracle-cycle.sh -tee <TEE1>,<TEE2>`.
 
 ## When the `FlareTeeManager` diamond is re-deployed
 
@@ -340,6 +328,6 @@ minted afresh:
 2. The `EXTENSION_ID` handed to the VM is unchanged (`1`), so no container
    restart is needed unless the sender/store addresses moved.
 3. Re-curl `/info` and confirm `extensionId` is still `1`.
-4. `bash ./scripts/post-build.sh`.
-5. Re-publish endpoints and admins (Step 9) — the wipe clears the per-machine
+4. `bash ./deploy/scripts/post-build.sh`.
+5. Re-publish endpoints and admins (Step 9) — the wipe clears the published
    commitments — then run a keeper cycle.

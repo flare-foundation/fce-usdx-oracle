@@ -10,11 +10,11 @@ Three families:
 
 | Family | What it is | Language-neutral? |
 | --- | --- | --- |
-| `scripts/*.sh` | orchestration — sequences the Go tools and Docker | yes |
+| `deploy/scripts/*.sh` | orchestration — sequences the Go tools and Docker | yes |
 | `tools/cmd/*` | Go CLIs that talk to the chain and the proxy | **yes** — wire format only, no extension internals |
-| `go/cmd/*` | the extension binaries, plus `usdxprov` | no — this is the Go implementation |
+| `cmd/*` | the extension binaries, plus `usdxprov` | no — this is the Go implementation |
 
-`tools/` never imports `go/internal`. It re-declares the wire layout instead, so it works
+`tools/` never imports `internal/`. It re-declares the wire layout instead, so it works
 against an extension written in any language — and so a bug in one cannot hide a bug in the
 other.
 
@@ -25,7 +25,7 @@ other.
 Six mechanisms recur across the tools. Knowing them makes most flags self-explanatory.
 
 **Flags common to nearly every `tools/cmd`.** Each falls back to an environment variable, which
-`scripts/use-chain.sh` puts in `.env`:
+`deploy/scripts/use-chain.sh` puts in `.env`:
 
 | Flag | Is | Default |
 | --- | --- | --- |
@@ -95,7 +95,7 @@ registered forever.
 | Tool | What it does |
 | --- | --- |
 | `use-chain.sh <chain>` | Copies `.env.<chain>` → `.env`, which every script auto-loads. Run it first, and again whenever you edit the chain's env. |
-| `import-upstream-addresses.sh <chain>` | Copies the sender + feed store addresses from a flare-smart-contracts-v2 deploy into `config/<chain>/deployed-addresses.json`. Re-run after every upstream deploy. |
+| `import-upstream-addresses.sh <chain>` | Copies the sender + feed store addresses from a flare-smart-contracts-v2 deploy into `deploy/config/<chain>/deployed-addresses.json`. Re-run after every upstream deploy. |
 | `full-setup.sh` | Pins the extension identity (`EXTENSION_ID=1`, reserved), starts the stack, runs post-build — in one command. |
 | `start-services.sh` | Builds the extension image and brings up the compose stack (extension-tee, proxy, redis). `--local` runs the host-process variant instead. |
 | `post-build.sh` | Whitelists the image's code hash (`allow-tee-version`), sets TEE governance (`set-governance`) and registers the machine (`register-tee`). |
@@ -106,7 +106,7 @@ by this repo — that is upstream's `deploy-tee-oracle.sh` plus governance follo
 (`registerReserved`, the `TEE_ORACLE` fee rows, `addCustomFeeds`). See
 [deployment-steps.md](deployment-steps.md). After the upstream deploy,
 `import-upstream-addresses.sh <chain>` slots the deployed addresses into
-`config/<chain>/deployed-addresses.json` so the tools resolve them by name, and
+`deploy/config/<chain>/deployed-addresses.json` so the tools resolve them by name, and
 `wire-extension` performs the extension-owner share (`setExtensionContracts`, machine-owner
 allowlist, EVM key type) once governance has run `registerReserved`.
 
@@ -165,7 +165,7 @@ never appear; only names and commitments.
 What happens: the tool ABI-encodes `Endpoints{version, feedId, groups}`, predicts the version
 (`endpointsVersion(feedId) + 1`) and the hash, and calls
 `setEndpoints(feedId, teeIds, groups, claimBack)`. The sender writes
-`expectedEndpointsHash[feedId][teeId]` before dispatch. The extension validates and applies it,
+`latestEndpointsHash[feedId]` before dispatch and marks each named machine as sent it. The extension validates and applies it,
 and from then on every update it signs carries that hash. With `-wait`, the tool polls until the
 machine reports the matching `endpointsHash` — a new config hash decommissions the machine until
 it lands an update under it.
@@ -186,7 +186,7 @@ The JSON is two role-tagged signer sets: `backing` (governs `hex_api_key`, floor
 nowhere near this tool, and the operator does not pick the version (the contract assigns it).
 
 What happens: identical shape to `send-endpoints` — `Admins{version, feedId, roles}` is encoded,
-`expectedAdminsHash[feedId][teeId]` written, the instruction dispatched, the machine confirmed.
+`latestAdminsHash[feedId]` written, the instruction dispatched, the machine confirmed.
 The extension installs all roles or none, so a rejected half cannot leave it running a mixture of
 old and new authorities.
 
@@ -238,12 +238,13 @@ by any local process through `ps`. The upload scripts prompt hidden for anything
 
 | Tool | What it does |
 | --- | --- |
-| `keeper` | The production process. Requests a feed update, polls for the signed result, relays it to the store, emits one JSON record per cycle. |
+| `keeper` | The production process. Requests a feed update, polls every addressed machine for its signed result, relays the agreeing ones to the store in one batch, emits one JSON record per cycle. |
 | `oracle-cycle.sh` | Wraps one keeper cycle against the deployed stack, loading `.env`. `-tee <a,b,c>`, `--dry-run`, `--loop 10m`. |
 
 Every cycle requests on-chain through `requestFeedUpdate(feedId, teeIds)`, dispatching one
-instruction to each machine named by `-tee`. The keeper picks the targets, so it polls every
-named machine's proxy for the result. Before paying it asks those machines over `GET_READINESS`
+instruction to each machine named by `-tee`. Each machine answers on its own proxy, so the keeper
+polls every named machine and submits the updates that agree on `observedAt` together — the store
+wants `requiredSignatures` of them and takes the median. Before paying it asks those machines over `GET_READINESS`
 whether they would sign at all; if none would, the cycle ends `request_skipped` and no fee is
 spent.
 
@@ -315,9 +316,9 @@ most likely to meet are tabulated in
 
 | Tool | What it does |
 | --- | --- |
-| `go/cmd/devserver` | The extension with real provisioning and observation, no chain. |
-| `go/cmd/mocknode` | Stands in for tee-node: `/sign`, `/decrypt`, `/info`, key from a fixed seed. **Not secure, not for deployment.** |
-| `go/cmd/start-tee` | Host-process runner behind `start-services.sh --local`. |
+| `cmd/devserver` | The extension with real provisioning and observation, no chain. |
+| `cmd/mocknode` | Stands in for tee-node: `/sign`, `/decrypt`, `/info`, key from a fixed seed. **Not secure, not for deployment.** |
+| `cmd/start-tee` | Host-process runner behind `start-services.sh --local`. |
 | `set-endpoints.sh` | Posts a `SET_ENDPOINTS` payload straight to a running extension's `/action`, no chain. |
 | `start-proxy` | Temporary: runs the extension proxy as a Go process. |
 | `e2e.sh` | Temporary: manages background Go processes for local dev. |
@@ -325,22 +326,21 @@ most likely to meet are tabulated in
 The upload scripts take `--no-verify` for a mocknode, which has no attestation and no on-chain
 registration. Never against a machine that will hold a real credential.
 
-**Building against on-disk tee-node / tee-proxy.** `USE_LOCAL_SIBLINGS=1 ./scripts/start-services.sh`
+**Building against on-disk tee-node / tee-proxy.** `USE_LOCAL_SIBLINGS=1 ./deploy/scripts/start-services.sh`
 swaps the pinned node build for one compiled from sibling checkouts. Two things to know: the
 sibling layout is resolved as `$PROJECT_DIR/../..`, so the repo has to sit at
 `tee/extension-examples/<repo>` with `tee/tee-node` and `tee/tee-proxy` beside it — both must exist
 even if only one is being changed. And `start-services.sh` writes a `go.work` at the repo root for
 *host* builds which travels into the Docker context and takes precedence over the image's own
-`replace` directive; `go/Dockerfile.siblings` removes it in-layer for that reason. `.dockerignore`
+`replace` directive; `Dockerfile.siblings` removes it in-layer for that reason. `.dockerignore`
 cannot help, because the siblings build's context root is `tee/`, not the repo.
 
 ## Build and housekeeping
 
 | Tool | What it does |
 | --- | --- |
-| `vendor-interfaces.sh` | Re-vendors the upstream TEE oracle interfaces into `contracts/interfaces/`, rewriting imports and stamping the upstream commit. Run when upstream moves. |
-| `generate-bindings.sh` | Compiles the vendored interfaces and regenerates the Go bindings. **Run after re-vendoring.** |
-| `regen-wire-fixtures.sh` | Regenerates `testdata/wire/` from the Forge vector tests (the ABI ground truth both Go codecs assert against). |
+| `generate-bindings.sh` | Compiles the TEE oracle interfaces out of the sibling flare-smart-contracts-v2 checkout (`contracts/`) and regenerates the Go bindings. **Run when upstream moves.** |
+| `regen-wire-fixtures.sh` | Regenerates `deploy/testdata/wire/` from the Forge vector tests (the ABI ground truth both Go codecs assert against). |
 | `build-node-base.sh` | Builds the shared tee-node base image, needed by non-Go language images. |
 | `check-versions.sh` | Fails when the dependency pins drift apart. |
 | `test-unit.sh` | A language implementation's unit tests. |
@@ -352,10 +352,10 @@ cannot help, because the siblings build's context root is `tee/`, not the repo.
 
 | Binary | For |
 | --- | --- |
-| `go/cmd/docker` | **production** — what the Dockerfile builds (tee-node + extension in one process) |
-| `go/cmd` | conformance harness only — stub mode, unsigned $1.00, no sources |
-| `go/cmd/devserver` · `go/cmd/mocknode` · `go/cmd/start-tee` | local dev |
-| `go/cmd/usdxprov` | ops: build / sign / submit a `SET_SECRET` envelope |
+| `cmd/docker` | **production** — what the Dockerfile builds (tee-node + extension in one process) |
+| `cmd/` | `docker` (production entrypoint), `devserver` + `mocknode` (local dev), `start-tee` (host-process runner), `usdxprov` (provisioning CLI) |
+| `cmd/devserver` · `cmd/mocknode` · `cmd/start-tee` | local dev |
+| `cmd/usdxprov` | ops: build / sign / submit a `SET_SECRET` envelope |
 
 ---
 

@@ -9,7 +9,7 @@
 > in `usdx-oracle-flows.md`.
 
 Why the code is shaped the way it is. This was originally carried as long
-package-doc comments in `go/internal/*` and `tools/pkg/*`; it was moved here so
+package-doc comments in `internal/*` and `tools/pkg/*`; it was moved here so
 the code stays readable and the reasoning stays available. The code keeps a
 one-line pointer wherever the reasoning is load-bearing.
 
@@ -506,7 +506,7 @@ key did not already have, and cost a rebuild and re-attestation for every
 rotation.
 
 What the on-chain route adds is a public record. The payload is calldata,
-`expectedAdminsHash` records it per machine, and `UsdxPriceStore` refuses a price
+`latestAdminsHash` records it per feed, and the feed store refuses an update
 whose `adminsHash` is not the published one — so "who could have installed the
 credentials behind this price" is answerable from the chain alone, for any
 historical report. A baked set answered that question only for whoever compared
@@ -765,7 +765,7 @@ healthy fully-backed one.
 
 So there is no way left to build a stub by accident. Every production constructor
 panics on a nil observer, and the only stub path is `NewStub`, named at its
-single call site (`scripts/test-conformance.sh`, which exercises the extension
+single call site (`deploy/scripts/test-conformance.sh`, which exercises the extension
 alone — no tee-node, no chain, no credentials).
 
 Redirects are never followed when fetching backing figures: Go strips
@@ -849,7 +849,7 @@ advance.
 
 ### Why `pricereport` lives in `tools/`
 
-The wire layout is declared there rather than imported from `go/internal/wire/feedupdate`
+The wire layout is declared there rather than imported from `internal/wire/feedupdate`
 so that `tools/` stays independent of any one implementation: it asserts on the
 *wire contract*, and must run unchanged against the Go, Python and TypeScript
 extensions alike (`docs/extension-contract.md`). It is a second, deliberate

@@ -1,6 +1,6 @@
 # Extension Container Contract
 
-**This document is normative.** Any container that satisfies it is a valid FCC extension, regardless of implementation language, and `scripts/test-conformance.sh` enforces it mechanically against the golden fixtures in `testdata/conformance/`.
+**This document is normative.** Any container that satisfies it is a valid FCC extension, regardless of implementation language, and `deploy/scripts/test-conformance.sh` enforces it mechanically against the golden fixtures in `deploy/testdata/conformance/`.
 
 If you are adding a new language, this is the specification you are implementing. Nothing else in the repo needs to change.
 
@@ -22,7 +22,7 @@ If you are adding a new language, this is the specification you are implementing
 
 Two shapes are equally valid. The contract is what is observable from *outside* the container; how you get there is your choice.
 
-**Single-process** — the extension embeds tee-node as a library and runs both in one binary. Only available to Go. This is what `go/Dockerfile` builds: `go/cmd/docker/main.go` calls `teeServer.StartServerExtension(configPort, signPort, extensionPort)` in a goroutine alongside the extension's own HTTP server. Produces the smallest, most reproducible image (distroless, static, single binary).
+**Single-process** — the extension embeds tee-node as a library and runs both in one binary. Only available to Go. This is what `Dockerfile` builds: `cmd/docker/main.go` calls `teeServer.StartServerExtension(configPort, signPort, extensionPort)` in a goroutine alongside the extension's own HTTP server. Produces the smallest, most reproducible image (distroless, static, single binary).
 
 **Two-process** — a prebuilt tee-node `./cmd/extension` binary runs beside the extension runtime, joined so that the container dies if either child dies. This is what every non-Go language uses:
 
@@ -209,7 +209,7 @@ this naturally; the conformance fixtures compare the resulting hex exactly.
 >
 > The Go declaration is `Version string` (`tee-node/pkg/types/actions.go:57`). Send `"0.1.0"`, not `"0x302e312e30000..."`.
 >
-> This is easy to get wrong because `StateResponse.stateVersion` *is* bytes32 (§4.5) — the two are genuinely asymmetric. The `sign` repo's Python and TypeScript ports both hex-encode `ActionResult.version` and are wrong; do not copy them. `testdata/conformance/` pins the correct encoding.
+> This is easy to get wrong because `StateResponse.stateVersion` *is* bytes32 (§4.5) — the two are genuinely asymmetric. The `sign` repo's Python and TypeScript ports both hex-encode `ActionResult.version` and are wrong; do not copy them. `deploy/testdata/conformance/` pins the correct encoding.
 
 ### 4.5 `StateResponse` — response body of `GET /state`
 
@@ -296,13 +296,13 @@ Every language image must:
 
 Determinism is not equal across languages. Go on distroless is bit-for-bit reproducible across machines. Python wheels and `node_modules` trees embed build-host paths and npm-version-dependent layout, so those images target *same-machine* determinism only. See `REPRODUCIBILITY.md` for the honest per-language caveats.
 
-**tee-node version pinning.** Non-Go images build the tee-node `./cmd/extension` binary from source. The version must match the Go module pin in `go/go.mod`, or the node and the proxy will disagree on signature formats and surface confusing verification failures. That pin is frequently a Go *pseudo-version* (`v0.0.21-0.20260619120252-31fc839ae6d2`), whose last segment is an **abbreviated** commit SHA. Two obvious approaches both fail on it: `git clone --branch <sha>` resolves tags and branches only, and `git fetch --depth 1 origin <sha>` requires a full 40-char SHA plus server-side `uploadpack.allowAnySHA1InWant`, which GitHub rejects with `couldn't find remote ref`. Use a blobless partial clone, which fetches all refs cheaply and lets an abbreviated SHA resolve locally:
+**tee-node version pinning.** Non-Go images build the tee-node `./cmd/extension` binary from source. The version must match the Go module pin in `go.mod`, or the node and the proxy will disagree on signature formats and surface confusing verification failures. That pin is frequently a Go *pseudo-version* (`v0.0.21-0.20260619120252-31fc839ae6d2`), whose last segment is an **abbreviated** commit SHA. Two obvious approaches both fail on it: `git clone --branch <sha>` resolves tags and branches only, and `git fetch --depth 1 origin <sha>` requires a full 40-char SHA plus server-side `uploadpack.allowAnySHA1InWant`, which GitHub rejects with `couldn't find remote ref`. Use a blobless partial clone, which fetches all refs cheaply and lets an abbreviated SHA resolve locally:
 
 ```dockerfile
 RUN git clone --filter=blob:none https://github.com/flare-foundation/tee-node.git tee-node && cd tee-node && git checkout "${TEE_NODE_REF}"
 ```
 
-`scripts/lib/versions.sh` derives `TEE_NODE_REF` from `go/go.mod`, and `scripts/check-versions.sh` fails the build if the pins drift apart.
+`deploy/scripts/lib/versions.sh` derives `TEE_NODE_REF` from `go.mod`, and `deploy/scripts/check-versions.sh` fails the build if the pins drift apart.
 
 ---
 
@@ -314,5 +314,5 @@ so a port is possible but is not something this repo currently ships.
 1. Create `<language>/` with a `Dockerfile` producing an image that satisfies §2, §4, §6.
 2. Implement the framework layer (`base/`): HTTP server, wire types, bytes32 helpers, dispatch registry, serialization.
 3. Implement the oracle: the `TEE_ORACLE` commands (`GET_FEED`, `GET_READINESS`, `SET_ENDPOINTS`, `SET_ADMINS`, `SET_SECRET`) with the `FeedUpdate` wire format, behaviourally identical to the Go implementation.
-4. Run `cd go && go test ./internal/extension/ -run TestConformance`. No chain, no registration, no proxy required — it replays the fixtures in `testdata/conformance/`.
-5. Set `LANGUAGE=<language>` in `.env` and run the normal flow. Nothing in `scripts/`, `tools/` or `docker-compose.yaml` needs to change — language selection resolves by directory convention.
+4. Run `cd go && go test ./internal/extension/ -run TestConformance`. No chain, no registration, no proxy required — it replays the fixtures in `deploy/testdata/conformance/`.
+5. Set `LANGUAGE=<language>` in `.env` and run the normal flow. Nothing in `deploy/scripts/`, `tools/` or `deploy/docker-compose.yaml` needs to change — language selection resolves by directory convention.

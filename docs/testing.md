@@ -6,43 +6,36 @@ Tests split into two groups: those covering **your extension**, and those coveri
 
 | Layer | What it tests | How to run | Chain? |
 |-------|--------------|------------|--------|
-| **Unit** | Your handlers, dispatch, encoding — in your chosen language | `./scripts/test-unit.sh` | no |
-| **Conformance** | The wire contract, against golden fixtures | `./scripts/test-conformance.sh` | no |
-| **End-to-end** | The full feed cycle (request → observe → sign → relay) | `./scripts/oracle-cycle.sh -tee @<machine>` | yes |
+| **Unit** | Your handlers, dispatch, encoding — in your chosen language | `./deploy/scripts/test-unit.sh` | no |
+| **Conformance** | The wire contract, against golden fixtures | `./deploy/scripts/test-conformance.sh` | no |
+| **End-to-end** | The full feed cycle (request → observe → sign → relay) | `./deploy/scripts/oracle-cycle.sh -tee @<machine>` | yes |
 
 Both script-driven layers accept a language or `--all`:
 
 ```bash
-./scripts/test-unit.sh python
+./deploy/scripts/test-unit.sh python
 ```
 
 ```bash
-cd go && go test ./internal/extension/ -run TestConformance
+go test ./internal/extension/ -run TestConformance
 ```
 
-They dispatch through `LANGUAGE_TEST_CMD` in each `<lang>/language.env`, so they work for any language you add without modification.
 
 ### Conformance testing
 
-This is the layer that keeps multiple implementations honest, and the acceptance test for a new language.
+This is the layer that pins the wire contract: the exact envelope, status codes and `GET /state` body the extension serves, independent of any source or chain.
 
-`scripts/test-conformance.sh` starts **only the extension process** — no tee-node, no proxy, no chain, no Docker — replays the 16 fixtures in `testdata/conformance/`, and diffs every response field. The response payload is compared **byte-for-byte**, because tee-node hashes it and signs the result.
+`deploy/scripts/test-conformance.sh` starts **only the extension process** — no tee-node, no proxy, no chain, no Docker — replays the 16 fixtures in `deploy/testdata/conformance/`, and diffs every response field. The response payload is compared **byte-for-byte**, because tee-node hashes it and signs the result.
 
 ```bash
-cd go && go test ./internal/extension/ -run TestConformance
+go test ./internal/extension/ -run TestConformance
 ```
 
 It runs in seconds, which is what makes writing a new language port tractable: a correctness signal without a full deploy cycle.
 
 The fixtures are **order-dependent** and share one process — counters accumulate across cases and the final fixture asserts the resulting state. `index.json` fixes the order.
 
-If you change a request or response shape, regenerate rather than hand-editing:
-
-```bash
-./python/.venv/bin/python testdata/conformance/gen_fixtures.py
-```
-
-Fixtures are generated from `gen_fixtures.py` so the hex encodings are derived rather than hand-assembled. Adding a case is a code edit there.
+If you change a request or response shape, edit the fixture and let `TestConformance` confirm the extension produces it. The two fixtures that carry a signed payload (`01`, `02`) are produced by the test's own fixed observation, so a payload-layout change is regenerated from Go, not hand-assembled.
 
 > When this suite disagrees with your implementation, check [extension-contract.md](extension-contract.md) before changing the fixture. The contract is normative; the fixtures encode it.
 
@@ -86,7 +79,7 @@ After `full-setup.sh` completes (services up, machine registered), drive one ful
 the running stack:
 
 ```bash
-./scripts/oracle-cycle.sh -tee @<machine>
+./deploy/scripts/oracle-cycle.sh -tee @<machine>
 ```
 
 Add `--dry-run` to stop after the preflight (send nothing), or `--loop 10m` to keep cycling on a
@@ -107,10 +100,10 @@ failures actually look like.
 
 | | Check |
 | --- | --- |
-| Docker stack up | `docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml ps` — `extension-tee`, `ext-proxy`, `redis` |
+| Docker stack up | `docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.coston2.yaml ps` — `extension-tee`, `ext-proxy`, `redis` |
 | Proxy reachable **from the internet** | `curl -s $EXT_PROXY_URL/info \| jq .machineData.extensionId` returns your extension id (the reserved id 1), not an ngrok error page |
 | Operator key funded | Coston2 C2FLR on the address in `.env` |
-| `config/extension.env` current | Holds the pinned `EXTENSION_ID` (the reserved id 1). Contract addresses come from `config/coston2/deployed-addresses.json` — the `TeeOracleFeedStore` entry must be filled in from the flare-smart-contracts-v2 deployment; the sender is then derived from the store's `instructionsSender()` |
+| `deploy/config/extension.env` current | Holds the pinned `EXTENSION_ID` (the reserved id 1). Contract addresses come from `deploy/config/coston2/deployed-addresses.json` — the `TeeOracleFeedStore` entry must be filled in from the flare-smart-contracts-v2 deployment; the sender is then derived from the store's `instructionsSender()` |
 
 ### Which proxy port
 
@@ -154,11 +147,11 @@ cd go && go test ./... && cd ..
 ```
 
 ```bash
-cd go && go test ./internal/extension/ -run TestConformance
+go test ./internal/extension/ -run TestConformance
 ```
 
 ```bash
-forge test
+cd contracts && forge test
 ```
 
 ## 2. Prove a real observation locally
@@ -167,7 +160,7 @@ This is the highest-value local test: the real observation path against **live**
 Ethereum, Songbird and Hex — no chain, no TEE, no credentials. One script runs the whole thing:
 
 ```bash
-./scripts/oracle-observe.sh
+./deploy/scripts/oracle-observe.sh
 ```
 
 It starts a mock signing node and the dev server on high ports, provisions them with an endpoint
@@ -184,7 +177,7 @@ cd go && EXTENSION_PORT=8099 SIGN_PORT=9099 go run ./cmd/devserver
 ```
 
 ```bash
-./scripts/set-endpoints.sh testdata/endpoints/public-only.json 8099
+./deploy/scripts/set-endpoints.sh deploy/config/endpoints/public-only.json 8099
 ```
 
 Then ask for a feed update. `originalMessage` is the ABI-encoded `FeedUpdateRequest` — the
@@ -223,22 +216,22 @@ what the full computation would give (findings §21). It will *not* publish anyt
 
 Nothing here is deployed: the sender and the store are upstream (flare-smart-contracts-v2) and
 already on-chain, and the extension id is the reserved 1 — a build fact pinned in
-`go/internal/config`, registered by Flare governance, never minted or discovered at deploy
+`internal/config`, registered by Flare governance, never minted or discovered at deploy
 time. This step is only needed the first time, or after changing extension code.
 
-**a. Full setup** — pins `EXTENSION_ID=1` into `config/extension.env`, starts the TEE + proxy,
+**a. Full setup** — pins `EXTENSION_ID=1` into `deploy/config/extension.env`, starts the TEE + proxy,
 and runs post-build registration (`allow-tee-version` → `set-governance` → `register-tee`),
 waiting for the availability proof:
 
 ```bash
-./scripts/full-setup.sh --chain coston2
+./deploy/scripts/full-setup.sh --chain coston2
 ```
 
 **b. After a code change** — a new image means a restart, and a restart means a **new TEE
 identity**, because the enclave key does not survive one:
 
 ```bash
-./scripts/stop-services.sh --chain coston2 && ./scripts/start-services.sh --chain coston2
+./deploy/scripts/stop-services.sh --chain coston2 && ./deploy/scripts/start-services.sh --chain coston2
 ```
 
 Use `stop` then `start`, not `start` alone. `stop-services.sh` runs `docker compose down`,
@@ -248,7 +241,7 @@ restart silently keeps the **old** identity even though the container env says o
 Then re-run registration for the new identity:
 
 ```bash
-./scripts/post-build.sh
+./deploy/scripts/post-build.sh
 ```
 
 **Verify before going on.** The store requires status **2**; anything less is rejected:
@@ -266,13 +259,13 @@ curl -s $EXT_PROXY_URL/info | jq -r '"\(.teeInfo.publicKey.x)\(.teeInfo.publicKe
 
 ## 4. Publish the endpoint configuration
 
-Costs gas and sets the sender's `expectedEndpointsHash` for each named machine, so validate
+Costs gas and sets the sender's `latestEndpointsHash` for the feed, so validate
 the payload locally first (step 2) — `send-endpoints` only checks that it is valid JSON, and a
-payload the extension rejects will leave every later `submitFeedUpdate` reverting
+payload the extension rejects will leave every later `submitFeedUpdates` reverting
 `StaleEndpoints`:
 
 ```bash
-cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -tee <MACHINE,...> -config ../testdata/endpoints/public-only.json
+cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -tee <MACHINE,...> -config ../deploy/config/endpoints/public-only.json
 ```
 
 The tool reads `endpointsVersion(feedId)`, predicts the version the sender will assign
@@ -288,7 +281,7 @@ store requires both hashes, so a machine with endpoints but no admin set still c
 update — it reverts `NoAdminsPublished`:
 
 ```bash
-cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -tee <MACHINE,...> -config ../testdata/admins/dev-wellknown-keys.json
+cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -tee <MACHINE,...> -config ../deploy/config/admins/dev-wellknown-keys.json
 ```
 
 ### Handing the Hex credential to the machine
@@ -297,7 +290,7 @@ The credential holder does not need this repo's deployment context, only the pro
 and three secrets. One script covers the whole flow:
 
 ```bash
-./scripts/upload-hex-key.sh
+./deploy/scripts/upload-hex-key.sh
 ```
 
 It prompts for the proxy URL, the chain id, the expected code hash, and then — hidden —
@@ -338,7 +331,7 @@ Only one signature is needed here: `hex_api_key` falls under the `backing` set, 
 The RPC keys are a separate upload, by a separate party, under a separate admin set:
 
 ```bash
-./scripts/upload-rpc-keys.sh
+./deploy/scripts/upload-rpc-keys.sh
 ```
 
 Same five steps, three differences that follow from the split:
@@ -359,8 +352,8 @@ Same five steps, three differences that follow from the split:
   the configuration, because `/state` publishes what is *missing* and never the full list.
 
 ```bash
-./scripts/upload-rpc-keys.sh --refs ankr_eth_key      # one ref
-./scripts/upload-rpc-keys.sh --all                    # rotate everything
+./deploy/scripts/upload-rpc-keys.sh --refs ankr_eth_key      # one ref
+./deploy/scripts/upload-rpc-keys.sh --all                    # rotate everything
 ```
 
 For a local mocknode, which has no attestation and no on-chain registration, both scripts
@@ -382,7 +375,7 @@ Confirm the machine actually applied it — this is the difference between what 
 what is *running*:
 
 ```bash
-docker compose -f docker-compose.yaml -f docker-compose.coston2.yaml logs extension-tee | grep SET_ENDPOINTS
+docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.coston2.yaml logs extension-tee | grep SET_ENDPOINTS
 ```
 
 Expect `SET_ENDPOINTS applied`, and `SET_ADMINS applied` for the admin set. The `endpointsHash` that `send-endpoints` printed must equal the
@@ -394,14 +387,14 @@ The cheap check first — preflight every store guard against the addressed mach
 nothing:
 
 ```bash
-./scripts/oracle-cycle.sh -tee @<MACHINE> --dry-run
+./deploy/scripts/oracle-cycle.sh -tee @<MACHINE> --dry-run
 ```
 
 Then the real thing. The keeper requests, polls with a bounded deadline, decodes, preflights
 every store guard, and submits:
 
 ```bash
-./scripts/oracle-cycle.sh -tee @<MACHINE>
+./deploy/scripts/oracle-cycle.sh -tee @<MACHINE>
 ```
 
 (or the binary directly: `cd tools && go run ./cmd/keeper -tee @<MACHINE> -once`)
@@ -426,7 +419,7 @@ governance-set `feeDestination`.
 ## 7. Reading the result
 
 Four places tell you different things. Start at the bottom of the stack and work back only if
-something looks wrong. `./scripts/oracle-status.sh` reads all four without sending anything.
+something looks wrong. `./deploy/scripts/oracle-status.sh` reads all four without sending anything.
 
 **The consumer surface** — what anyone reading the feed sees:
 
@@ -463,19 +456,20 @@ cast call --rpc-url https://coston2-api.flare.network/ext/C/rpc <STORE> 'observe
 **The store's own view**, for operators — `observedAt()`, `extensionId()`,
 `instructionsSender()` and `feeDestination()`. The value and decimals themselves have no free
 getter — reading them is the paid `getCurrentFeed` read above. The thread back to the TEE is
-the `teeId` indexed in the store's `FeedUpdated` events.
+the `teeIds` list in the store's `FeedUpdated` events, one entry per contributing machine.
 
 **The signed update behind it.** A dry run requests, polls and decodes exactly like the real
 thing, then stops at the preflight instead of submitting, and emits its cycle record:
 
 ```bash
-./scripts/oracle-cycle.sh -tee @<MACHINE> --dry-run
+./deploy/scripts/oracle-cycle.sh -tee @<MACHINE> --dry-run
 ```
 
-The record names the decoded value, decimals and `observedAt`, the instruction id, and the
-`teeId` recovered from the update's signature. The preflight checks both configuration
-commitments on the way, so a cycle that reaches `submitOutcome: dry_run` proves the machine
-computed this update under the endpoints and admin sets the sender currently publishes.
+The record names each contributor's price, the batch's `observedAt`, the instruction id, and the
+`teeIds` recovered from the updates' signatures. The preflight checks both configuration
+commitments and rehearses the submission with an `eth_call` on the way, so a cycle that reaches
+`submitOutcome: dry_run` proves the machines computed their updates under the endpoints and admin
+sets the sender currently publishes, and that the store would accept the batch.
 
 Relaying an update the store already holds ends in
 `NotNewer: the store already holds observedAt=…`. **That is the correct answer**, not a
@@ -493,7 +487,7 @@ The sender and the store are upstream (flare-smart-contracts-v2), and verifying 
 in the explorer is Flare's job as part of that deployment — nothing in this repo is deployed
 locally, so there is nothing here to verify. Before relying on a deployment, check that the
 `TeeOracleFeedStore` and `TeeOracleInstructionsSender` addresses in
-`config/<chain>/deployed-addresses.json` show verified source, and read them back: **Read
+`deploy/config/<chain>/deployed-addresses.json` show verified source, and read them back: **Read
 Contract** (or `cast call`) should show `extensionId()` returning the reserved id 1 and
 `instructionsSender()` pointing at the sender. Once the feed is registered with FtsoV2,
 `getCurrentFeed()` can be called from a browser with no tooling at all — the easiest way to
@@ -518,16 +512,18 @@ Everything here was hit for real while bringing this up.
 | Revert `0x3b06a1be` (`MessageEmpty()`) | The instruction carried an empty message. | The sender must send the ABI-encoded `FeedUpdateRequest`; findings §22. |
 | Result `status 3`, log `context deadline exceeded` | The handler took longer than tee-node's **2 s** action budget. | Observation must stay off the request path — that is what `internal/observation/poller` is; findings §23. |
 | Result `status 0`, log `no recent observation` | The background loop has not produced anything inside `MaxObservationAge` (10 min). | Check `/state` `sourceHealth`; an upstream is failing. Working as designed — it fails closed. |
-| Result `status 0`, log `instruction carries an unexpected payload` | `originalMessage` was not an ABI-encoded `FeedUpdateRequest` naming this feed. | This extension serves exactly one feed and refuses requests for any other — check the sender's feed id matches the build's (`go/internal/config`). |
-| `submitFeedUpdate` reverts `StaleEndpoints` | The machine is running a different config than the sender's `expectedEndpointsHash`. | Compare `/state` `endpointsHash` against the hash `send-endpoints` printed; re-send if they differ. |
-| `submitFeedUpdate` reverts `NoAdminsPublished` | No admin set has been sent to this machine yet. | Run `send-admins` for it. |
-| `submitFeedUpdate` reverts `StaleAdmins` | The machine is running a different admin set than `expectedAdminsHash`. | Compare `/state` `adminsHash` against the hash `send-admins` printed; re-send if they differ. |
-| `submitFeedUpdate` reverts `WrongExtensionId` / `WrongFeedId` | The signed update names a different extension or feed than the store's. | Deployment mismatch — check the extension id and feed id pinned in the build (`go/internal/config`) against the store's `extensionId()`. |
+| Result `status 0`, log `instruction carries an unexpected payload` | `originalMessage` was not an ABI-encoded `FeedUpdateRequest` naming this feed. | This extension serves exactly one feed and refuses requests for any other — check the sender's feed id matches the build's (`internal/config`). |
+| `submitFeedUpdates` reverts `StaleEndpoints` | A machine in the batch is running a different config than the sender's `latestEndpointsHash`. | Compare `/state` `endpointsHash` against the hash `send-endpoints` printed; re-send if they differ. |
+| `submitFeedUpdates` reverts `NoAdminsPublished` | No admin set has been published for the feed yet. | Run `send-admins` for it. |
+| `submitFeedUpdates` reverts `StaleAdmins` | A machine in the batch is running a different admin set than the sender's `latestAdminsHash`. | Compare `/state` `adminsHash` against the hash `send-admins` printed; re-send if they differ. |
+| `submitFeedUpdates` reverts `WrongExtensionId` / `WrongFeedId` | A signed update names a different extension or feed than the store's. | Deployment mismatch — check the extension id and feed id pinned in the build (`internal/config`) against the store's `extensionId()`. |
 | `SET_SECRET` rejected right after a restart | The admin set is memory-only and was lost. | Re-run `send-admins`, then re-submit the envelope. |
-| `submitFeedUpdate` rejects the signature | The signer is not a registered PRODUCTION machine on the store's extension, **or the extension is emergency paused** — `Fdc2Verification` rejects both. | Check `getTeeMachineStatus(<TEE_ID>)` is 2 and re-run `post-build.sh` if the machine was re-created; check the extension's pause state. |
+| `submitFeedUpdates` rejects a signature | A signer is not a registered PRODUCTION machine on the store's extension, **or the extension is emergency paused** — `Fdc2Verification` rejects both. | Check `getTeeMachineStatus(<TEE_ID>)` is 2 and re-run `post-build.sh` if the machine was re-created; check the extension's pause state. |
 | `connect: connection refused` on `localhost:6664` | Running under `--local`, where the proxy binds 6664 directly. (Before 6 Aug 2026 this was the default and Docker users hit it instead.) | `-p http://localhost:6664`, or export `EXT_PROXY_URL`. See "Which proxy port" above. |
-| `submitFeedUpdate` reverts `NotNewer` | A newer update already landed. | **Not a fault** — with ≥2 keepers exactly one submission wins per cycle. |
-| `submitFeedUpdate` reverts `NoEndpointsPublished` | No `setEndpoints` has ever been sent to this machine. | Step 4. |
+| `submitFeedUpdates` reverts `NotNewer` | A newer update already landed. | **Not a fault** — with ≥2 keepers exactly one submission wins per cycle. |
+| `submitFeedUpdates` reverts `NoEndpointsPublished` | No `setEndpoints` has ever been published for the feed. | Step 4. |
+| Preflight `NotEnoughSignatures` | Fewer machines agreed on one `observedAt` than the store's `requiredSignatures`. | The record's `teeIds` says who made the batch; a machine that stamped a different instant is left out, and one that never answered cost the poll timeout. |
+| `submitFeedUpdates` reverts `SpreadTooBig` | The values bracketing the median disagree by more than the governance-set bound. | The machines disagree about the price — compare their `prices` in the record and each machine's `/state` `sourceHealth`. |
 | Registration stalls at status 1 | The availability proof needs the proxy reachable from outside. | Bring the public tunnel up and re-run `post-build.sh`. |
 | Tools get `invalid character 'T'` or HTML back | `EXT_PROXY_URL` points at a dead tunnel. | Restart it. Note `post-build.sh` does `source .env`, so an inline `EXT_PROXY_URL=…` override is discarded — edit `.env` or call the tools directly with `-p`. |
 | Restart kept the old identity | redis persisted tee-node's machine data. | `stop-services.sh` (which runs `down`) before starting. |

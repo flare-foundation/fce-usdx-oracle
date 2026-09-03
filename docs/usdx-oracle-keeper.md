@@ -7,12 +7,13 @@ _The cycle lives in `tools/pkg/keeper`: it triggers, polls with a bounded deadli
 exponential backoff, treats pending as pending, decodes `data` into the signed feed update and
 relays it. It preflights every store guard so a rejection arrives named — `StaleEndpoints`,
 `NotNewer` — instead of as a bare revert. `tools/cmd/keeper` wraps it in the timer;
-`scripts/oracle-cycle.sh` runs the same code once by hand, so what an operator proves
+`deploy/scripts/oracle-cycle.sh` runs the same code once by hand, so what an operator proves
 interactively is what runs unattended._
 
 _Every cycle raises its request on-chain through `requestFeedUpdate(feedId, teeIds)`, naming
-the target machines explicitly. The result is polled on the fleet's proxies and the update's
-own signature says which machine answered. Before paying the fee it asks those machines over
+the target machines explicitly. Each machine answers on its own proxy; the updates that agree on
+`observedAt` go up together in one `submitFeedUpdates` call, and each update's own signature says
+which machine produced it. Before paying the fee it asks those machines over
 `GET_READINESS` whether they would sign at all — a fee spent on a machine with a stale
 observation buys a predictable failure._
 
@@ -31,9 +32,9 @@ three things, on a timer:
 
 1. **Trigger** — raise `GET_FEED` through `requestFeedUpdate(feedId, teeIds)` on the
    `TeeOracleInstructionsSender` ("the sender").
-2. **Collect** — poll the target machines' proxies for the resulting `ActionResult`.
-3. **Relay** — decode the signed payload and call `submitFeedUpdate()` on the
-   `TeeOracleFeedStore` ("the store").
+2. **Collect** — poll each target machine's proxy for its `ActionResult`.
+3. **Relay** — decode the signed payloads, keep the ones that agree on `observedAt`, and call
+   `submitFeedUpdates()` on the `TeeOracleFeedStore` ("the store") with all of them.
 
 Plus the keeper-side half of the alerting specified in `usdx-oracle-monitoring.md`.
 
@@ -72,19 +73,21 @@ every T:                                  # single-flight — never overlap cycl
     receipt = waitMined(tx, deadline = T_request)
     id      = receipt.logs.first(FeedUpdateRequested).instructionId
 
-    # 2. collect
+    # 2. collect — every addressed machine files its own result on its own proxy
     proxies = every target machine's url
-    result  = poll(proxies, "/action/result/" + id.hex() + "?submissionTag=threshold",
+    results = poll(proxies, "/action/result/" + id.hex() + "?submissionTag=threshold",
                    deadline = T_poll, backoff = exponential,
-                   until    = result.status in {0, 1})     # anything else is pending
-    if result.status != 1:
-        emit(cycle, errorClass = result.log)               # fail closed — relay nothing
+                   until    = every proxy answered with status in {0, 1})   # else pending
+    updates = [abi.decode(r.data, (FeedUpdate, Signature)) for r in results if r.status == 1]
+    if not updates:
+        emit(cycle, errorClass = first status-0 log)        # fail closed — relay nothing
         continue
 
-    # 3. relay
-    (update, signature) = abi.decode(result.data, (FeedUpdate, Signature))
-    preflight(update)                                       # every store guard, named
-    submit(store.submitFeedUpdate(update, signature), deadline = T_submit)
+    # 3. relay — one submission, one signed update per contributing machine
+    batch = largest group of updates sharing one observedAt, one per signer
+    preflight(batch)                    # feed-level commitments, requiredSignatures, the
+                                        # ratchet, then eth_call submitFeedUpdates(batch)
+    submit(store.submitFeedUpdates(batch), deadline = T_submit)
 ```
 
 ---
@@ -102,7 +105,7 @@ every T:                                  # single-flight — never overlap cycl
 | Listing the fleet | `keeper.ActiveMachines`, `fleet` — `tools/pkg/keeper/fleet.go` |
 | Cycle records and the outcome taxonomy | `keeper.Record`, `keeper.Outcome` — `tools/pkg/keeper/record.go` |
 | Long-running process, signals, flags | `tools/cmd/keeper` |
-| One cycle by hand, with read-back | `scripts/oracle-cycle.sh` (builds `tools/cmd/keeper` with `-once`) |
+| One cycle by hand, with read-back | `deploy/scripts/oracle-cycle.sh` (builds `tools/cmd/keeper` with `-once`) |
 
 `RunCycle` never exits the process and returns a `Record` for every outcome, which is what
 lets the same code serve a one-shot and a timer. It is `Collect` then `Relay`, split so a caller
@@ -127,8 +130,8 @@ somewhere other than stdout.
 | `-feedId` | the USDX/USD id | The feed to observe; must match the store's. |
 | `-store` | `TeeOracleFeedStore` entry of the addresses file | The store to submit to. The sender is derived from its `instructionsSender()` unless `-instructionSender` is given. |
 | `-interval` | `10m` | How often a cycle starts. Match the source refresh; faster costs a fee per cycle and buys nothing. |
-| `-pollTimeout` | `5m` | How long to wait for a terminal `ActionResult`. |
-| `-submitTimeout` | `3m` | How long to wait for the `submitFeedUpdate` receipt. |
+| `-pollTimeout` | `5m` | How long to wait for the machines' terminal `ActionResult`s. The wait ends early once every addressed machine has answered; a machine that never answers costs the whole timeout, and the cycle goes on with the answers it has. |
+| `-submitTimeout` | `3m` | How long to wait for the `submitFeedUpdates` receipt. |
 | `-directApiKey` | `$DIRECT_API_KEY` | Key for the `GET_READINESS` preflight. Without it every cycle pays the fee unasked. |
 | `-p` | `$EXT_PROXY_URL` | Where the result is looked for first, and the machine the readiness preflight asks. Given explicitly, overrides *every* machine's registered url (right only with one machine); otherwise each machine is reached at its own registered url and this is the fallback when the registry lists none. |
 
@@ -171,10 +174,10 @@ fee = operationFees.getOperationFee(TEE_ORACLE, GET_FEED) × len(teeIds)
 
 The fee is governance-settable, and a stale constant fails closed in the worst way: every
 request reverts, no feed update is published, and nothing in the repo changed to explain it.
-The op type and commands are file-level `bytes32 constant`s in the vendored
+The op type and commands are file-level `bytes32 constant`s in the upstream
 `ITeeOracleInstructionsSender` — shared by every deployed instance — so the lookup keys on
 exactly the identifiers the instruction carries; the same constants are pinned in
-`go/internal/config`, and a mismatch prices the wrong row and the instruction is rejected for
+`internal/config`, and a mismatch prices the wrong row and the instruction is rejected for
 an underpaid fee. Upstream's deployment leaves the `TEE_ORACLE` rows unset, so the default fee
 is the normal state on a fresh deployment; the lookup falls back to it rather than erroring.
 
@@ -184,15 +187,16 @@ single-machine fee would underpay a fleet-wide request and revert.
 ### Named machines per request
 
 `requestFeedUpdate(feedId, teeIds)` dispatches the request to **the machines the caller
-names** — there is no random selection any more, and `-tee` is what routes the cycle. The
-result is retrievable only from the proxy of the machine that served it. Consequences the
-keeper must respect:
+names** — there is no random selection any more, and `-tee` is what routes the cycle. Every
+named machine answers, and each result is retrievable only from that machine's own proxy.
+Consequences the keeper must respect:
 
-- **Poll every target's proxy.** Only the machine that served the instruction holds the result.
-  `Config.ResultProxies` is filled from the registry each tick, and the record names whichever
-  proxy answered.
-- **`teeId` comes from the signature, not the request.** The recovered signer is the only thing
-  that says which machine actually produced the update.
+- **Poll every target's proxy, and wait for all of them.** Each machine's result lives on its own
+  proxy. `Config.ResultProxies` is filled from the registry each tick; the round ends when every
+  addressed machine has answered or the poll timeout passes, and the record names the first proxy
+  to answer.
+- **`teeIds` come from the signatures, not the request.** The recovered signers are the only thing
+  that says which machines actually produced the updates.
 - Every target must already have endpoints AND admins published for the feed, or the request
   reverts `TeeIdNotConfigured` before any fee is spent. `isTeeIdConfigured(feedId, teeId)` is
   the check, and `fleet-status` reads it for the whole fleet.
@@ -230,7 +234,7 @@ address a **named** machine. What it cost is the property the on-chain path exis
 | On the record | the request is a transaction | nothing on-chain |
 
 A direct `GET_FEED` could not forge a price — the enclave signs only what it observed on its own
-timer, and `submitFeedUpdate` verifies that signature against the TEE machine registry however
+timer, and `submitFeedUpdates` verifies that signature against the TEE machine registry however
 it was asked for. What it did was hand the same signed update to anyone holding one API key, for
 free and with no on-chain trace of the request. Running the feed that way means the permissionless
 path is the one nobody uses, and a path nobody uses is a path nobody notices has broken.
@@ -261,12 +265,41 @@ one round trip.
 
 ---
 
+## Threshold submissions
+
+The store's submission policy (`getSubmissionPolicy()`, governance-set) says how many distinct
+machines must sign one submission — `requiredSignatures`, 1 to 32 — and how far their values may
+diverge (`maxSpreadBIPS` of the median plus `maxSpreadAbsolute`). One `submitFeedUpdates` call
+carries one `SignedFeedUpdate{feedUpdate, signature}` per contributing machine; the store checks
+the batch's shape, takes the median, stores it, and names the machines whose value lay beyond the
+bound in a `FeedOutliers` event. A one-element batch behaves exactly as a single submission always
+did.
+
+What that means for the keeper:
+
+- **Every update in a batch must carry the same `observedAt`**, or the store reverts
+  `ObservedAtMismatch`. Upstream stamps an observation with the timestamp of the on-chain event
+  that triggered it, so machines answering one request agree by construction. This enclave stamps
+  it from its own pinned Flare block header, so machines can disagree by a block: the keeper groups
+  the decoded updates by `observedAt` and submits the largest group (the newest on a tie), and a
+  machine that stamped a different instant is left out rather than sinking the round.
+- **Fewer agreeing machines than `requiredSignatures`** is a named preflight rejection,
+  `NotEnoughSignatures`, before any gas is spent. The record's `teeIds` says who made the batch.
+- **The preflight ends with the contract's own dry run.** An `eth_call` of `submitFeedUpdates`
+  with the batch enforces every rule a real submission would — signatures and registry status,
+  the pause, the spread bound — and a revert is decoded to its guard name, so `SpreadTooBig`
+  arrives as a named rejection without the keeper reimplementing the aggregation.
+- **A machine that never answers costs the poll timeout, not the cycle.** The round waits for
+  every addressed machine until `-pollTimeout`, then goes on with what arrived.
+
+---
+
 ## Commissioning a machine
 
 A machine is *commissioned* once it has signed one feed update the store accepted — its teeId
 appears in a `FeedUpdated` event. The store keeps no per-machine bookkeeping any more: one
 global `observedAt` stamp is all it holds, so commissioning is an event-log fact, not a storage
-one. This is deliberately lean: `submitFeedUpdate` already proves both facts it needs — it
+one. This is deliberately lean: `submitFeedUpdates` already proves both facts it needs — it
 verified the signature through the machine registry, and it checked the signer's configuration
 commitments against the published ones — so a separate attestation entry point would be more
 machinery for something that falls out of the normal one.
@@ -307,7 +340,7 @@ Two things to expect at step 6:
   store is ahead, `stale_submission` means the machine relayed something old. Both resolve on
   their own within about one observation interval.
 - **Re-pushing a configuration strands the machine on the old one until it applies the new.**
-  The sender's `expectedEndpointsHash` moves the moment `setEndpoints` publishes, so a machine
+  The sender's `latestEndpointsHash` moves the moment `setEndpoints` publishes, so a machine
   still running the previous configuration fails every submission with `StaleEndpoints` until
   it catches up. `send-endpoints` checks delivery and says so on success; `fleet-status`
   reconciles the fleet.
@@ -359,11 +392,11 @@ update = FeedUpdate struct                  # 7 static words, 224 bytes
 data   = abi.encode(update, signature)      # ActionResult.data — 10 words, 320 bytes
 ```
 
-so the keeper ABI-decodes `result.data` into the update and its signature and hands both to
-`submitFeedUpdate(update, signature)`. `feedupdate.Decode` in `tools/pkg/feedupdate` is exactly
+so the keeper ABI-decodes `result.data` into the update and its signature and hands them on as
+one `SignedFeedUpdate{feedUpdate, signature}` element of `submitFeedUpdates`. `feedupdate.Decode` in `tools/pkg/feedupdate` is exactly
 this — it restates the wire layout rather than importing the enclave's copy in
-`go/internal/wire/feedupdate`, so the relayer is an independent check on the machine instead of a mirror
-of it; both are pinned to the same Solidity-generated fixtures in `testdata/wire`.
+`internal/wire/feedupdate`, so the relayer is an independent check on the machine instead of a mirror
+of it; both are pinned to the same Solidity-generated fixtures in `deploy/testdata/wire`.
 
 **The old verbatim rule is retired for this payload.** Every `FeedUpdate` field is static, so
 its ABI encoding is canonical — exactly one valid byte string per set of values — and the store
@@ -452,7 +485,7 @@ It is reported, not retried into: the fix is operational.
 | `T_request`, `T_poll`, `T_submit` | Per-step deadlines. Liveness bounds, not acceptance bounds — see the deadline budget above. |
 | Instruction fee | Read from `OperationFees` (`TEE_ORACLE`, `GET_FEED`), not hard-coded; scales with the target count. See step 1. |
 | Feed id | `0x20555344582f555344000000000000000000000000` — category 0x20 + "USDX/USD", 21 bytes. Named in the request and inside the signed update; a mismatch with the store reverts. |
-| `TeeOracleInstructionsSender`, `TeeOracleFeedStore` addresses | From `config/<chain>/deployed-addresses.json`; the keeper resolves the store entry and derives the sender from the store's `instructionsSender()`. |
+| `TeeOracleInstructionsSender`, `TeeOracleFeedStore` addresses | From `deploy/config/<chain>/deployed-addresses.json`; the keeper resolves the store entry and derives the sender from the store's `instructionsSender()`. |
 | Target machines | The `-tee` list — named explicitly in every request. |
 | Proxy URLs | Read from the registry per machine, for `/action/result/<id>`. `-p` overrides all of them. |
 | Chain RPC | The keeper's own endpoint — a failure here is cause 2, distinct from the extension's supply RPCs. |
@@ -472,14 +505,15 @@ owes it is one **cycle record per tick**, emitted regardless of outcome — impl
 | `keeperId`, `cycleStartedAt`, `cycleEndedAt` | always |
 | `requestTxStatus` (`mined` / `failed`), `instructionId` | step 1 |
 | `resultStatus` (`1` / `0` / `timeout`), `errorClass` | step 2 |
-| `proxy`, `teeId` — which machine served the cycle | step 2 |
+| `proxy` — the first machine to answer; `teeIds`, `prices`, `observedAt` — who made the batch and what each signed | steps 2–3 |
 | `sourceHealth` | step 2, from proxy `GET /info` |
 | `submitOutcome` (`accepted` / revert name / not attempted) | step 3 |
 | `storeObservedAtAfter` | step 3 |
 
-`teeId` is recovered from the report's own signature, which is the only thing that names the
-machine the registry routed to — the request itself does not choose one. Together with `proxy`,
-it is what attributes a failure to one machine rather than to the feed.
+`teeIds` are recovered from the updates' own signatures, which is the only thing that names the
+machines that actually answered. `prices` lists each contributor's value at its own scale, in the
+same order — the keeper never aggregates them; the store takes the median. Together with `proxy`,
+they are what attribute a failure to one machine rather than to the feed.
 
 Two constraints carried over from the monitoring doc, because they are keeper-side:
 

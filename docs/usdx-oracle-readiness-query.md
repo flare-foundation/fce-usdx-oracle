@@ -71,9 +71,9 @@ number — never a credential, a URL, or an upstream's own words.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `endpointsSet` | bool | |
-| `endpointsHash` | hash | what `send-endpoints` compares against `expectedEndpointsHash(feedId, teeId)` |
+| `endpointsHash` | hash | what `send-endpoints` compares against `latestEndpointsHash(feedId)` |
 | `adminsSet` | bool | |
-| `adminsHash` | hash | what `send-admins` compares against `expectedAdminsHash(feedId, teeId)` |
+| `adminsHash` | hash | what `send-admins` compares against `latestAdminsHash(feedId)` |
 | `missingSecretRefs` | []string | **ref names only.** Never a value, never a hint about one |
 | `ready` | bool | every credential the current configuration names is installed |
 

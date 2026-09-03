@@ -38,7 +38,7 @@ ext-proxy (tee-proxy)
   :6663 internal   TEE machines poll here for queued actions
   :6664 external   PUBLIC — /info, /action/result/<id>, /direct
 
-extension-tee ──── one process, built from go/cmd/docker
+extension-tee ──── one process, built from cmd/docker
   ├ tee-node       :5501 config · :9090 POST /sign, POST /decrypt
   │                polls proxy for actions → POSTs them to :8080/action
   │                polls GET :8080/state → folds it into attested state
@@ -54,17 +54,17 @@ redis              the proxy's action queue
 
 | Path | What it is |
 | --- | --- |
-| `go/` | the extension implementation (the only language checked in) |
-| `contracts/` | vendored upstream `ITeeOracle*` interfaces — the on-chain contracts come from flare-smart-contracts-v2, nothing is deployed from this repo |
+| `cmd/`, `internal/`, `pkg/` | the extension implementation (the Go module at the repository root) |
+| `contracts/` | Foundry project that compiles the upstream `ITeeOracle*` interfaces straight out of a sibling flare-smart-contracts-v2 checkout — nothing is deployed from this repo |
 | `tools/` | deployment, registration and the keeper — **language-neutral**, talks wire format only |
-| `scripts/` | setup, start/stop, the three `oracle-*.sh` operator commands, and the two `upload-*.sh` credential uploads |
-| `test/` | Foundry wire-vector tests (the ABI encodings both Go codecs assert against) |
+| `deploy/scripts/` | setup, start/stop, the three `oracle-*.sh` operator commands, and the two `upload-*.sh` credential uploads |
+| `contracts/test/` | Foundry wire-vector tests (the ABI encodings both Go codecs assert against) |
 | `docs/` | spec, rationale, findings, flows, deployment |
 
-The split that matters: `go/` is one possible implementation, `tools/` and `contracts/`
+The split that matters: the root module is one possible implementation, `tools/` and `contracts/`
 are the spine. `tools/pkg/feedupdate` deliberately re-declares the wire layout instead
-of importing `go/internal/wire/feedupdate`, so the tooling stays honest about the contract, and
-both are pinned to the same Solidity-generated fixtures in `testdata/wire`.
+of importing `internal/wire/feedupdate`, so the tooling stays honest about the contract, and
+both are pinned to the same Solidity-generated fixtures in `deploy/testdata/wire`.
 
 ---
 
@@ -91,7 +91,7 @@ Roughly bottom-up. "Flow" refers to §6.
 | `pkg/types` | the **public** `/state` and readiness-payload shapes | `State`, `Readiness`, `ReadinessReport`, `StateResponse` | D, D2 |
 | `pkg/server` | wires everything together | `StartExtension` `:25` | boot |
 
-### Binaries (`go/cmd/`)
+### Binaries (`cmd/`)
 
 | Binary | For |
 | --- | --- |
@@ -106,7 +106,7 @@ Roughly bottom-up. "Flow" refers to §6.
 
 ## 5. Boot & wiring
 
-`go/pkg/server/server.go:25` is the whole dependency graph in 10 lines:
+`pkg/server/server.go:25` is the whole dependency graph in 10 lines:
 
 ```
 teenode.New(signPort)                     ── talks to tee-node on localhost
@@ -171,7 +171,7 @@ governance → TeeOracleInstructionsSender.setEndpoints(feedId, teeIds, groups, 
           (upstream contract; onlyGovernance — tools/cmd/send-endpoints encodes the
            call and either sends it directly, while the caller is still governance,
            or hands the calldata to the governance executor)
-          expectedEndpointsHash[feedId][teeId] = keccak256(payload)   ← recorded BEFORE dispatch
+          latestEndpointsHash[feedId] = keccak256(payload)            ← recorded BEFORE dispatch
           registry.sendInstructions(...), one instruction per target machine
             ↓ cosigned → proxy → tee-node → POST /action
         extension.processSetEndpoints                       provisioning.go:27
@@ -186,14 +186,14 @@ governance → TeeOracleInstructionsSender.setEndpoints(feedId, teeIds, groups, 
 ```
 
 That hash rides in every signed update, and the store compares it against
-`expectedEndpointsHash(feedId, teeId)` on the sender. Without it, the chain would record
+`latestEndpointsHash(feedId)` on the sender. Without it, the chain would record
 what was *sent*, never what a machine is *running*.
 
 ### Flow A2 — `SET_ADMINS` (who may provision this machine)
 
 ```
 governance → TeeOracleInstructionsSender.setAdmins(feedId, teeIds, roles, claimBack)
-          expectedAdminsHash[feedId][teeId] = keccak256(payload)      ← recorded BEFORE dispatch
+          latestAdminsHash[feedId] = keccak256(payload)               ← recorded BEFORE dispatch
           registry.sendInstructions(...), one instruction per target machine
             ↓ cosigned → proxy → tee-node → POST /action
         extension.processSetAdmins                          provisioning.go:44
@@ -219,7 +219,7 @@ substituted into URLs `SET_ENDPOINTS` chooses). The ref-to-set mapping is pinned
 toward the other's threshold — see rationale §9.
 
 Same shape as Flow A otherwise, and the same enforcement: the hash rides in every signed
-update and the store compares it against `expectedAdminsHash(feedId, teeId)` on the
+update and the store compares it against `latestAdminsHash(feedId)` on the
 sender. The version counter is the one addition — the admin sets are the root of trust
 for every credential that follows, so a captured `SET_ADMINS` must not be able to
 reinstate a rotated-out signer. The sender assigns versions per feed
@@ -234,13 +234,13 @@ the outgoing admins signed be replayed against the incoming set.
 
 Three steps, three different people, chain never touched. Two uploads, because
 the ref selects the admin set and the two sets are held by different parties:
-`scripts/upload-hex-key.sh` for `hex_api_key` (backing, ≥1 signature) and
-`scripts/upload-rpc-keys.sh` for every RPC credential (providers, ≥2). Both gate
+`deploy/scripts/upload-hex-key.sh` for `hex_api_key` (backing, ≥1 signature) and
+`deploy/scripts/upload-rpc-keys.sh` for every RPC credential (providers, ≥2). Both gate
 on `tools/cmd/verify-tee` first, and read every secret from the environment
 rather than argv, where `ps` would expose it.
 
 ```
-admin laptop (go/cmd/usdxprov)
+admin laptop (cmd/usdxprov)
   usdxprov build    GET proxy/info → TEE public key; ciphertext = ECIES(pubkey, secret)
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
   usdxprov sign     admin #1, then admin #2   (refuses a duplicate signer)
@@ -393,13 +393,17 @@ tools/cmd/keeper → keeper.Run (timer, single-flight) → keeper.RunCycle   cyc
                         all refusing → request_skipped, no fee spent
   1. TRIGGER   instrutils.RequestFeedUpdate(feedId, teeIds) → instructionId
                  the keeper names the target machines (-tee); fee = opFee × count
-  2. COLLECT   PollResultAny: GET proxy/action/result/<id>, backoff 1s → 16s
-                 every named machine's proxy, since one of them answers
+  2. COLLECT   pollResults: GET proxy/action/result/<id>, backoff 1s → 16s
+                 every named machine's proxy — each files its own result there —
+                 until all have answered or the poll timeout passes
                  404 = pending, not an error
-                 status 0 → STOP and record the error class; inventing a price
-                 is the one thing the keeper must never do
-  3. RELAY     feedupdate.Decode → Preflight (simulate every store guard and map
-                 the revert to a NAMED guard) → store.submitFeedUpdate(FeedUpdate, Signature)
+                 status 0 → that machine is skipped and its error class recorded;
+                 inventing a price is the one thing the keeper must never do
+  3. RELAY     feedupdate.Decode each → chooseBatch (one per signer; the largest
+                 group agreeing on observedAt) → Preflight (feed-level commitments,
+                 requiredSignatures, the ratchet, then an eth_call rehearsal of the
+                 submission that names the failing guard)
+                 → store.submitFeedUpdates(SignedFeedUpdate[])
                  → wait for the receipt; a timeout is not chased, the next cycle
                    supersedes it
   → Record with an Outcome: accepted · race_lost · stale_submission · rejected …
@@ -410,29 +414,35 @@ so it must never alert. That taxonomy lives in `tools/pkg/keeper/record.go`.
 
 ### Flow F — on-chain acceptance, then the consumer read
 
-`TeeOracleFeedStore.submitFeedUpdate(FeedUpdate, Signature)`, in execution order:
+`TeeOracleFeedStore.submitFeedUpdates(SignedFeedUpdate[])`, in execution order:
 
 ```
- 1 verifyTeeSignature(extensionId, sig,     5 sender.expectedAdminsHash(feedId, teeId)
-   messageHash) — recover over the EIP-191     published AND matching   ← closes Flow A2
-   digest; signer must be on THIS extension    (StaleAdmins)
-   AND PRODUCTION, and the extension not     6 observedAt strictly greater than stored
-   emergency paused                             (replay + out-of-order — NotNewer)
- 2 update.extensionId == store's             7 observedAt < block.timestamp — never in
-   (WrongExtensionId)                           the future (TooFarAhead)
- 3 update.feedId == store's (WrongFeedId)
- 4 sender.expectedEndpointsHash(feedId, teeId)
-   published AND matching   ← closes Flow A
-   (StaleEndpoints)
-   ────────► store value/decimals/observedAt · emit FeedUpdated(value, decimals, observedAt, teeId)
+ 1  batch shape — count ≥ requiredSignatures (NotEnoughSignatures) and ≤ 32
+    (TooManySignatures); one common observedAt (ObservedAtMismatch); the
+    contributors' decimals within one spread (DecimalsSpreadTooBig)
+ 2  the two values bracketing the median lie within the policy's bound —
+    maxSpreadBIPS of |median| plus maxSpreadAbsolute (SpreadTooBig)
+ 3  observedAt strictly greater than stored (NotNewer) and < block.timestamp
+    (TooFarAhead) — checked once, since the whole batch shares one stamp
+ 4  sender.latestEndpointsHash(feedId) and latestAdminsHash(feedId) published
+    (NoEndpointsPublished / NoAdminsPublished)
+ 5  per contributor, in submission order: verifyTeeSignature(extensionId, sig,
+    messageHash) recovers the signer over the EIP-191 digest — on THIS extension
+    AND PRODUCTION, extension not emergency paused; not seen earlier in the batch
+    (DuplicateTeeId); update.extensionId == store's (WrongExtensionId);
+    update.feedId == store's (WrongFeedId); endpointsHash == latest
+    (StaleEndpoints) ← closes Flow A; adminsHash == latest (StaleAdmins) ← closes Flow A2
+    ────────► store the median at the finest int32 scale it fits · emit
+              FeedUpdated(value, decimals, observedAt, teeIds[]) · emit FeedOutliers
+              naming the machines whose value lay beyond the bound
 ```
 
 The store keeps **no per-machine bookkeeping** — the old `lastReport[teeId]` /
 `seenTees` / `isProvenConfigured` are gone. What was "commissioning legible
-on-chain" is now assembled from the sender's per-feed mappings
-(`expectedEndpointsHash` / `expectedAdminsHash` / versions), the machine's own
-`GET_READINESS`, and the `FeedUpdated` event that names the signing machine. See
-`fleet-status`, which reconciles those three.
+on-chain" is now assembled from the sender's per-feed commitments
+(`latestEndpointsHash` / `latestAdminsHash` / versions, plus `isTeeIdConfigured` per
+machine), the machine's own `GET_READINESS`, and the `FeedUpdated` event that names every
+contributing machine. See `fleet-status`, which reconciles those three.
 
 ```
 FtsoV2 → TeeOracleFeedStore.getCurrentFeed()      payable
@@ -451,13 +461,13 @@ reads.
 ## 7. Contracts
 
 Both contracts are upstream's generic TEE oracle contracts — this repo deploys
-nothing; the interfaces are vendored into `contracts/interfaces/` for the Go
-bindings.
+nothing; the Go bindings are generated from the interfaces in a sibling
+flare-smart-contracts-v2 checkout (see `contracts/`).
 
 | Contract | Entry points | Notes |
 | --- | --- | --- |
-| `TeeOracleInstructionsSender` | `requestFeedUpdate(feedId, teeIds)` payable, **anyone** · `setEndpoints(feedId, teeIds, groups, cb)` and `setAdmins(feedId, teeIds, roles, cb)` payable, **governance** · reads: `expectedEndpointsHash`/`expectedAdminsHash`/`…Version` (per feed + machine), `getFeedIds()`, `isTeeIdConfigured(feedId, teeId)` | the extension's registered instructions sender; assigns the config version and records the commitments before dispatch |
-| `TeeOracleFeedStore` | `submitFeedUpdate(FeedUpdate, Signature)` **anyone** · `getCurrentFeed()` payable (also `feedId()`, `calculateFee()`) · governance: `setAcceptanceWindow`, `setFeeDestination` | implements `IICustomFeed` and registers with FtsoV2 directly; verifies the signature through `Fdc2Verification` |
+| `TeeOracleInstructionsSender` | `requestFeedUpdate(feedId, teeIds)` payable, **anyone** · `setEndpoints(feedId, teeIds, groups, cb)` and `setAdmins(feedId, teeIds, roles, cb)` payable, **governance** · reads: `latestEndpointsHash`/`latestAdminsHash`/`…Version` (per feed), `getFeedIds()`, `isTeeIdConfigured(feedId, teeId)` | the extension's registered instructions sender; assigns the config version and records the commitments before dispatch |
+| `TeeOracleFeedStore` | `submitFeedUpdates(SignedFeedUpdate[])` **anyone** · `getCurrentFeed()` payable (also `observedAt()`, `getSubmissionPolicy()`, `calculateFee()`) · governance: `setSubmissionPolicy`, `setFeeDestination` | implements `IICustomFeed` and registers with FtsoV2 directly; verifies every signature through `Fdc2Verification`, takes the median of a batch and bounds its spread |
 
 ---
 
@@ -472,7 +482,7 @@ bindings.
 | `pkg/keeper` | `Run` (timer) · `RunCycle` · `PollResult` · `Preflight` · `Record`/`Outcome` |
 | `pkg/utils/instructions.go` | `RequestFeedUpdate`, `EncodeSetEndpoints`/`EncodeSetAdmins` (+ `Publication`), fee reads (fees are **read**, never hard-coded) |
 | `pkg/fccutils` | FCC registration, governance, policy-consistency, revert decoding |
-| `pkg/contracts/*` | generated bindings from the vendored interfaces (`scripts/generate-bindings.sh`) |
+| `pkg/contracts/*` | generated bindings from the upstream interfaces (`deploy/scripts/generate-bindings.sh`) |
 | `pkg/validate` | the deploy/verify check suite behind `verify-deploy` |
 | `cmd/*` | one binary per operation: `register-tee`, `allow-tee-version`, `set-governance`, `send-endpoints`, `send-admins`, `keeper`, `fleet-status`, `verify-tee`, `verify-deploy`, `audit-deploy`, `query-tee`, `start-proxy` |
 
@@ -506,26 +516,26 @@ construction if they look like one), and readiness names secret *refs* never val
 ## 10. Where to start reading
 
 ```
-go/pkg/server/server.go            the whole dependency graph, 10 lines
-go/internal/extension/extension.go the HTTP surface and the router
-go/internal/observation/observation.go       one observation, start to finish
-go/internal/observation/poller/poller.go     why observing and signing are separate
-go/internal/wire/feedupdate/feedupdate.go       the FeedUpdate encoder + SignedPayload digest
+pkg/server/server.go            the whole dependency graph, 10 lines
+internal/extension/extension.go the HTTP surface and the router
+internal/observation/observation.go       one observation, start to finish
+internal/observation/poller/poller.go     why observing and signing are separate
+internal/wire/feedupdate/feedupdate.go       the FeedUpdate encoder + SignedPayload digest
 tools/pkg/keeper/cycle.go          the relay, end to end
 ```
 
-The on-chain guards live upstream (`TeeOracleFeedStore.submitFeedUpdate`); the
-vendored interfaces in `contracts/interfaces/` are what the Go binds against.
+The on-chain guards live upstream (`TeeOracleFeedStore.submitFeedUpdates`); the
+upstream interfaces, compiled via `contracts/`, are what the Go binds against.
 
 Every package's doc comment carries the reasoning; `docs/usdx-oracle-rationale.md`
 carries the long form.
 
 | Question | Command |
 | --- | --- |
-| Do the real sources yield a sane price? | `./scripts/oracle-observe.sh` |
-| Does the wire contract hold? | `./scripts/test-conformance.sh` |
-| Does the whole chain work? | `./scripts/oracle-cycle.sh` |
-| What is it publishing right now? | `./scripts/oracle-status.sh` |
+| Do the real sources yield a sane price? | `./deploy/scripts/oracle-observe.sh` |
+| Does the wire contract hold? | `./deploy/scripts/test-conformance.sh` |
+| Does the whole chain work? | `./deploy/scripts/oracle-cycle.sh` |
+| What is it publishing right now? | `./deploy/scripts/oracle-status.sh` |
 
 ---
 
@@ -535,7 +545,7 @@ carries the long form.
   none and rejects every `SET_SECRET` until `SET_ADMINS` lands, so they must be republished
   after every restart and *before* any credential. There are TWO sets and the envelope's
   ref picks one: `hex_api_key` → `backing` (1-of-N allowed), everything else → `providers`
-  (2-of-N minimum). The checked-in `testdata/admins/dev-wellknown-keys.json` names private
+  (2-of-N minimum). The checked-in `deploy/config/admins/dev-wellknown-keys.json` names private
   keys 1, 2 and 3 — local and testnet only.
 - **`/state` counters count served `GET_FEED` actions, not the poller.**
   `observe.Poller.Stats()` exists but is never called — a machine nobody queries reports
