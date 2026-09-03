@@ -569,12 +569,12 @@ func (s *Store) Open() (observation.Sources, observation.Binding, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Endpoints are all an observation needs. The admin sets are not required
+	// here: a machine without them can still observe, publish its price and
+	// source health, and answer GET_READINESS; what it cannot do is sign a feed
+	// update, since the binding it would commit to names no admin set — the
+	// poller refuses that by name (see Poller.Report).
 	if s.endpoints == nil {
-		return observation.Sources{}, observation.Binding{}, failure.NotConfigured
-	}
-	// An update that cannot commit to published admin sets would be rejected by
-	// the store anyway; refusing to observe says so at the honest point.
-	if !s.adminsSet {
 		return observation.Sources{}, observation.Binding{}, failure.NotConfigured
 	}
 

@@ -166,6 +166,14 @@ func (p *Poller) Report(ctx context.Context, requestedAt uint64) (observation.Ob
 		// an operator reading a refusal needs to see they are fine.
 		return observation.Observation{Health: obs.Health}, err
 	}
+	// Observing needs only the endpoints, so the price and the source health
+	// are visible as soon as those are published. Signing needs the whole
+	// binding: the on-chain store rejects an update that commits to no admin
+	// set, so one is refused here by name rather than left to the encoder's
+	// zero-hash check, which would read as an internal error.
+	if obs.Binding.AdminsHash == (common.Hash{}) {
+		return observation.Observation{Health: obs.Health}, failure.NotConfigured
+	}
 	return observation.Sign(ctx, p.signer, obs)
 }
 

@@ -780,16 +780,30 @@ func TestReadiness_ExposesNoSecrets(t *testing.T) {
 
 // --- admin sets ---
 
-func TestApplyAdmins_RequiredBeforeAnythingElse(t *testing.T) {
+// Observation needs only the endpoints: a machine that has not been told who
+// its admins are can still observe and show its price and source health. The
+// binding it opens under names no admin set, which is what stops the poller
+// signing a feed update — the refusal is the poller's, not the store's.
+func TestOpen_DoesNotWaitForAdmins(t *testing.T) {
 	s := newStore(t)
 	if err := setEndpoints(s, 1, testGroups(t)); err != nil {
 		t.Fatalf("SetEndpoints: %v", err)
 	}
-	setSecret(t, s, config.HexAPIKeyRef, []byte("k"))
-	setSecret(t, s, config.HexCashURLRef, testCashBlob(t))
+	// The provider credentials the groups name; without them Open has no URL to
+	// dial and refuses for that reason, which is not the one under test.
+	for _, ref := range []string{"ankr_flare_key", "ankr_eth_key", "alchemy_flare_key"} {
+		setSecret(t, s, ref, []byte("value-"+ref))
+	}
 
-	if _, _, err := s.Open(); !errors.Is(err, failure.NotConfigured) {
-		t.Errorf("Resolve without admins = %v, want NotConfigured", err)
+	_, binding, err := s.Open()
+	if err != nil {
+		t.Fatalf("Open without admins = %v, want the sources", err)
+	}
+	if binding.AdminsHash != (common.Hash{}) {
+		t.Errorf("binding commits to admins %s before any were installed", binding.AdminsHash.Hex())
+	}
+	if s.Readiness().Ready {
+		t.Error("a machine without admins must still report not ready")
 	}
 }
 
