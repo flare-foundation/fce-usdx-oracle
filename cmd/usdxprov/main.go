@@ -148,13 +148,12 @@ func build(args []string) error {
 	}
 
 	env := envelope.Envelope{
-		ChainID:     big.NewInt(*chainID),
-		TeeID:       teeID,
-		Version:     *version,
-		IssuedAt:    uint64(time.Now().UTC().Unix()),
-		Ref:         *ref,
-		PayloadHash: crypto.Keccak256Hash(ciphertext),
-		Payload:     ciphertext,
+		ChainID:  big.NewInt(*chainID),
+		TeeID:    teeID,
+		Version:  *version,
+		IssuedAt: uint64(time.Now().UTC().Unix()),
+		Ref:      *ref,
+		Payload:  ciphertext,
 	}
 
 	body, err := envelope.EncodeBody(env)
@@ -316,13 +315,12 @@ func submit(args []string) error {
 	}
 
 	message, err := envelope.Encode(envelope.Envelope{
-		ChainID:     chainID,
-		TeeID:       common.HexToAddress(f.TeeID),
-		Version:     f.Version,
-		IssuedAt:    f.IssuedAt,
-		Ref:         f.Ref,
-		PayloadHash: crypto.Keccak256Hash(ciphertext),
-		Payload:     ciphertext,
+		ChainID:  chainID,
+		TeeID:    common.HexToAddress(f.TeeID),
+		Version:  f.Version,
+		IssuedAt: f.IssuedAt,
+		Ref:      f.Ref,
+		Payload:  ciphertext,
 	}, sigs)
 	if err != nil {
 		return err

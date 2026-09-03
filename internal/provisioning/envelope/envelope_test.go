@@ -86,9 +86,8 @@ func testEnvelope(payload []byte) Envelope {
 		Version:  1,
 		IssuedAt: uint64(time.Now().UTC().Unix()),
 		// A provider ref: the backing ref is governed by a different set entirely.
-		Ref:         "ankr_flare_key",
-		PayloadHash: crypto.Keccak256Hash(payload),
-		Payload:     payload,
+		Ref:     "ankr_flare_key",
+		Payload: payload,
 	}
 }
 
@@ -434,7 +433,7 @@ func FuzzVerify(f *testing.F) {
 	e := Envelope{
 		ChainID: testChainID, TeeID: testTeeID, Version: 1,
 		IssuedAt: uint64(time.Now().Unix()), Ref: "k",
-		PayloadHash: crypto.Keccak256Hash([]byte("c")), Payload: []byte("c"),
+		Payload: []byte("c"),
 	}
 	if msg, err := Encode(e, [][]byte{make([]byte, 65)}); err == nil {
 		f.Add(msg)
@@ -451,9 +450,6 @@ func FuzzVerify(f *testing.F) {
 			// escape verification.
 			if got.TeeID != testTeeID || got.ChainID.Cmp(testChainID) != 0 {
 				t.Errorf("accepted an envelope bound elsewhere: %+v", got)
-			}
-			if crypto.Keccak256Hash(got.Payload) != got.PayloadHash {
-				t.Error("accepted an envelope whose payload does not match its hash")
 			}
 		}
 	})

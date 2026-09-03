@@ -127,14 +127,16 @@ func Domain() common.Hash { return crypto.Keccak256Hash([]byte(DomainName)) }
 
 // Envelope is a verified provisioning message.
 type Envelope struct {
-	ChainID     *big.Int
-	TeeID       common.Address
-	Version     uint64
-	IssuedAt    uint64
-	Ref         string
-	PayloadHash common.Hash
+	ChainID  *big.Int
+	TeeID    common.Address
+	Version  uint64
+	IssuedAt uint64
+	Ref      string
 
-	// Verified to match PayloadHash before this is populated.
+	// The ciphertext the signatures commit to. The signed body carries
+	// keccak256(Payload) rather than the payload itself, so the commitment is
+	// derived here on encoding and checked against the body on decoding: a
+	// decoded Envelope cannot disagree with what its admins signed.
 	Payload []byte
 }
 
@@ -196,8 +198,11 @@ func EncodeBody(e Envelope) ([]byte, error) {
 	if e.ChainID == nil {
 		return nil, errors.New("provision: chain id is required")
 	}
+	if len(e.Payload) == 0 {
+		return nil, errors.New("provision: payload is required")
+	}
 	return bodyArgs.Pack(
-		Domain(), e.ChainID, e.TeeID, e.Version, e.IssuedAt, e.Ref, e.PayloadHash,
+		Domain(), e.ChainID, e.TeeID, e.Version, e.IssuedAt, e.Ref, crypto.Keccak256Hash(e.Payload),
 	)
 }
 
@@ -366,14 +371,6 @@ func (v *Verifier) Verify(message []byte) (Envelope, error) {
 	if e.Ref == "" || len(e.Ref) > 64 {
 		return Envelope{}, failure.ProvisionRejected
 	}
-	if len(e.Payload) == 0 {
-		return Envelope{}, failure.ProvisionRejected
-	}
-	// The signatures cover the hash, not the payload.
-	if crypto.Keccak256Hash(e.Payload) != e.PayloadHash {
-		return Envelope{}, failure.ProvisionRejected
-	}
-
 	now := v.now()
 	issued := time.Unix(int64(e.IssuedAt), 0).UTC()
 	if e.IssuedAt == 0 {
@@ -494,13 +491,18 @@ func decode(message []byte) (Envelope, [][]byte, error) {
 		return Envelope{}, nil, errors.New("wrong domain")
 	}
 
+	// The signatures cover the hash, not the payload, so the payload delivered
+	// alongside must be the one the body commits to.
+	if len(outer.Payload) == 0 || crypto.Keccak256Hash(outer.Payload) != body.PayloadHash {
+		return Envelope{}, nil, errors.New("payload does not match the signed hash")
+	}
+
 	return Envelope{
-		ChainID:     body.ChainID,
-		TeeID:       body.TeeID,
-		Version:     body.Version,
-		IssuedAt:    body.IssuedAt,
-		Ref:         strings.TrimSpace(body.Ref),
-		PayloadHash: body.PayloadHash,
-		Payload:     outer.Payload,
+		ChainID:  body.ChainID,
+		TeeID:    body.TeeID,
+		Version:  body.Version,
+		IssuedAt: body.IssuedAt,
+		Ref:      strings.TrimSpace(body.Ref),
+		Payload:  outer.Payload,
 	}, outer.Signatures, nil
 }

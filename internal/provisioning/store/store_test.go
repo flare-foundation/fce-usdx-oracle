@@ -909,7 +909,10 @@ func TestApplySecret_RejectsCredentialThatWouldAlterAURL(t *testing.T) {
 	}
 	setAdmins(t, s, 1)
 
-	for _, bad := range []string{"a/b", "a?b", "a#b", "a&b", "a b", ""} {
+	// An empty credential is not in the list: it cannot be enveloped at all —
+	// EncodeBody refuses a body with nothing to commit to, and an empty payload
+	// on the wire fails decode — which the envelope package's tests cover.
+	for _, bad := range []string{"a/b", "a?b", "a#b", "a&b", "a b"} {
 		err := s.ApplySecret(context.Background(),
 			envelopeFor(t, "ankr_flare_key", []byte(bad), 1))
 		if err == nil {
@@ -973,13 +976,12 @@ func envelopeFor(t *testing.T, ref string, payload []byte, version uint64) []byt
 	t.Helper()
 
 	env := envelope.Envelope{
-		ChainID:     testChainID,
-		TeeID:       testTeeID,
-		Version:     version,
-		IssuedAt:    uint64(time.Now().UTC().Unix()),
-		Ref:         ref,
-		PayloadHash: crypto.Keccak256Hash(payload),
-		Payload:     payload,
+		ChainID:  testChainID,
+		TeeID:    testTeeID,
+		Version:  version,
+		IssuedAt: uint64(time.Now().UTC().Unix()),
+		Ref:      ref,
+		Payload:  payload,
 	}
 
 	body, err := envelope.EncodeBody(env)
