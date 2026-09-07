@@ -8,7 +8,8 @@
 #   --chain coston   → + docker-compose.coston.yaml
 #   --chain coston2  → + docker-compose.coston2.yaml
 #
-# Pass --local to stop background Go processes instead.
+# Without flags the stack recorded by start-services.sh (deploy/config/stack.env)
+# is stopped; --local forces the host-process stack, --chain the compose one.
 #
 # Usage:
 #   ./deploy/scripts/stop-services.sh                       # local devnet, docker compose
@@ -36,11 +37,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# --- Load .env from project root (if present) ---
-if [[ -f "$PROJECT_DIR/.env" ]]; then
-    set -a
-    source "$PROJECT_DIR/.env"
-    set +a
+# .env, then the stack start-services.sh recorded (deploy/config/stack.env).
+source "$SCRIPT_DIR/lib/env.sh"; load_env
+# Without --local, the recorded stack decides what "stop" means: a host-process
+# stack is stopped as such rather than a compose stack that is not there.
+if [[ "$USE_LOCAL" == "false" && "${STACK:-}" == "host" ]]; then
+    log "the recorded stack is the host-process one — stopping that"
+    USE_LOCAL=true
 fi
 
 LOCAL_MODE="${LOCAL_MODE:-true}"
@@ -65,6 +68,7 @@ if [[ "$USE_LOCAL" == "true" ]]; then
 
     log "Stopping background Go processes..."
     "$E2E" stop-all "$PID_DIR"
+    [[ "$(grep -E "^STACK=" "$PROJECT_DIR/deploy/config/stack.env" 2>/dev/null)" == "STACK=host" ]] && rm -f "$PROJECT_DIR/deploy/config/stack.env"
     log "Done."
 else
     # --- Stop Docker Compose services ---
@@ -88,5 +92,6 @@ else
 
     log "Stopping Docker Compose services (chain: $CHAIN)..."
     docker compose "${COMPOSE_FILES[@]}" down
+    [[ "$(grep -E "^STACK=" "$PROJECT_DIR/deploy/config/stack.env" 2>/dev/null)" == "STACK=docker" ]] && rm -f "$PROJECT_DIR/deploy/config/stack.env"
     log "Done."
 fi

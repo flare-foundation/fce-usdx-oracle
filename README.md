@@ -249,7 +249,7 @@ go test ./... && (cd tools && go test ./...) && (cd contracts && forge test)
 - **Unit tests** — `go test ./...` at the repo root and in `tools/`, covering the quorum procedure, price arithmetic, decimal parsing, the provisioning verifier, the wire encodings and the keeper cycle.
 - **Contract tests** — `forge test` prints Solidity's own ABI encoding of the wire payloads (endpoints, admins, the signed feed update) into `deploy/testdata/wire/`, which both Go codecs assert against. The structs are imported straight from the upstream `ITeeOracle*` interfaces (see `contracts/`), so the fixtures cannot drift from the ABI the bindings are generated off.
 - **Conformance** — `TestConformance` in `internal/extension` replays the golden wire fixtures in `deploy/testdata/conformance/` against a running extension and diffs the responses. No chain, no proxy, no Docker. This is the acceptance test for any new language implementation.
-- **On-chain end-to-end** — `./deploy/scripts/oracle-cycle.sh -tee @<machine> --dry-run` preflights the addressed machines without submitting; dropping `--dry-run` drives one full request → sign → relay cycle. To drive the full feed, follow *"Running the USDX oracle end to end yourself"* in [docs/testing.md](docs/testing.md).
+- **On-chain end-to-end** — `./deploy/scripts/oracle-cycle.sh -tee <machine> --dry-run` preflights the addressed machines without submitting; dropping `--dry-run` drives one full request → sign → relay cycle. To drive the full feed, follow *"Running the USDX oracle end to end yourself"* in [docs/testing.md](docs/testing.md).
 
 Three things that are easy to misread as failures:
 

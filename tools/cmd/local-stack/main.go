@@ -6,10 +6,11 @@
 // Redis is the only external service. By default it is the simulation's fourth
 // instance, which e2e reserves for an extension proxy.
 //
-// Ports follow the host-process convention of start-services.sh --local: the
-// proxy binds its internal and external ports (6663, 6664) on the host
-// directly, so the follow-up scripts need EXT_PROXY_URL=http://localhost:6664.
-// The extension TEE uses the ports fixed in cmd/start-tee.
+// Ports are the host-process block of tools/pkg/configs: the proxy binds 6683
+// and 6684 directly, the TEE the ports fixed in cmd/start-tee, all clear of the
+// e2e simulation's own processes. start-services.sh records the proxy URL for
+// the follow-up scripts. The TEE takes CHAIN_ID and EXTENSION_ID from the
+// environment this runner gives it.
 //
 // The proxy configuration is rendered from the local devnet template into out/:
 // the redis address, the chain id reported by the RPC, and the
@@ -74,7 +75,7 @@ func main() {
 	redis := flag.String("redis", defaultRedis, "redis address for the proxy queue (host:port or :port)")
 	template := flag.String("template", filepath.Join("deploy", "config", "proxy", "extension_proxy.docker.toml"),
 		"proxy config template for the local devnet, rendered into out/ (relative to the module root)")
-	extensionID := flag.String("extensionID", "", "extension id passed to start-tee (default: its pinned id)")
+	extensionID := flag.String("extensionID", "", "extension id for the TEE and the extension, set as EXTENSION_ID in the child's environment (default: the build's)")
 	flag.Parse()
 	*af = rootRelative(root, *af)
 	*template = rootRelative(root, *template)
@@ -111,6 +112,9 @@ func main() {
 	}
 	if _, err := exec.LookPath("go"); err != nil {
 		logger.Fatalf("go is not on PATH; the extension TEE is built from %s", root)
+	}
+	if *extensionID == "" && os.Getenv("EXTENSION_ID") == "" {
+		logger.Fatalf("EXTENSION_ID is not set and no -extensionID given; the TEE and the extension refuse to guess it")
 	}
 	if os.Getenv("PROXY_PRIVATE_KEY") == "" {
 		logger.Fatalf("PROXY_PRIVATE_KEY is not set; the proxy signs with it")
@@ -152,11 +156,10 @@ func main() {
 			env = append(env, key+"="+value)
 		}
 	}
-	args := []string{}
 	if *extensionID != "" {
-		args = append(args, "-extensionID", *extensionID)
+		env = append(env, "EXTENSION_ID="+*extensionID)
 	}
-	tee := exec.Command(binary, args...)
+	tee := exec.Command(binary)
 	tee.Dir = root
 	tee.Env = env
 	teeExit := make(chan error, 1)
@@ -239,9 +242,8 @@ Ctrl-C stops both processes.
 		info.TeeInfo.LastSigningPolicyHash.Hex(), proxyURL, proxyURL, proxyURL, teeID.Hex())
 }
 
-// renderProxyConfig writes the template with this run's redis address, chain id
-// and contract addresses, and returns the external port the proxy will bind.
-// The internal port must be the one cmd/start-tee points the node at.
+// renderProxyConfig writes the template with this run's redis address, chain id,
+// contract addresses and the host port block, and returns the external port.
 func renderProxyConfig(template, dst, redis string, chainID uint64, addresses map[string]string) (string, error) {
 	raw, err := os.ReadFile(template)
 	if err != nil {
@@ -271,28 +273,19 @@ func renderProxyConfig(template, dst, redis string, chainID uint64, addresses ma
 	// processes reach it on localhost.
 	text = strings.ReplaceAll(text, `"host.docker.internal"`, `"localhost"`)
 
-	internal := tomlValue(text, "internal")
-	if internal != fmt.Sprint(configs.ExtProxyInternalPort) {
-		return "", fmt.Errorf("%s binds the internal port to %q; cmd/start-tee expects %d", template, internal, configs.ExtProxyInternalPort)
+	// The template carries the container's ports; the host stack binds its own
+	// block, the one cmd/start-tee points the node at.
+	if err := replace("internal", fmt.Sprintf("%q", fmt.Sprint(configs.ExtProxyInternalPort))); err != nil {
+		return "", err
 	}
-	external := tomlValue(text, "external")
-	if external == "" {
-		return "", fmt.Errorf("%s has no external port", template)
+	if err := replace("external", fmt.Sprintf("%q", fmt.Sprint(configs.ExtProxyExternalPort))); err != nil {
+		return "", err
 	}
+	external := fmt.Sprint(configs.ExtProxyExternalPort)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return "", err
 	}
 	return external, os.WriteFile(dst, []byte(text), 0o644)
-}
-
-// tomlValue returns the unquoted value of a top-of-line `key = "value"` entry.
-func tomlValue(text, key string) string {
-	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `\s*=\s*"?([^"\s]*)"?`)
-	m := re.FindStringSubmatch(text)
-	if m == nil {
-		return ""
-	}
-	return m[1]
 }
 
 // ownerAddress is INITIAL_OWNER, or the address of DEPLOYMENT_PRIVATE_KEY, the

@@ -69,6 +69,8 @@ func main() {
 	recordsF := flag.String("records", "",
 		"append JSON cycle records to this file (default: stdout)")
 	onceF := flag.Bool("once", false, "run a single cycle and exit — useful for a cron-driven keeper")
+	dryRunF := flag.Bool("dry-run", false,
+		"run the cycle through the on-chain preflight and stop before submitting; the request is still sent and paid for")
 	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
 		"proxy API key for the GET_READINESS preflight, which is skipped without one "+
 			"(default: $DIRECT_API_KEY)")
@@ -158,6 +160,7 @@ func main() {
 			DirectAPIKey:  *apiKeyF,
 			PollTimeout:   *pollF,
 			SubmitTimeout: *submitF,
+			DryRun:        *dryRunF,
 		},
 		Interval:      *intervalF,
 		ProxyOverride: proxyOverride,

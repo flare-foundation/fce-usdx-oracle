@@ -27,7 +27,7 @@ GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC
 section() { echo -e "\n${CYAN}=== $* ===${NC}"; }
 warn() { echo -e "${YELLOW}$*${NC}"; }
 
-[[ -f "$PROJECT_DIR/.env" ]] && { set -a; source "$PROJECT_DIR/.env"; set +a; }
+source "$SCRIPT_DIR/lib/env.sh"; load_env
 
 RPC="${CHAIN_URL:-https://coston2-api.flare.network/ext/C/rpc}"
 ADDR_FILE="${ADDRESSES_FILE:-./deploy/config/coston2/deployed-addresses.json}"
@@ -51,21 +51,28 @@ if [[ -z "$STORE" || "$STORE" == "0x0000000000000000000000000000000000000000" ]]
     exit 1
 fi
 
-# This repo's .env sets CHAIN=coston2, which `cast` reads as its own --chain
-# flag and rejects — it wants a name from its own network list. It arrives by
-# two routes and both have to be cut: sourcing .env above exported it into the
-# environment, and cast additionally auto-loads .env from the working
-# directory. Hence env -u for the first and a neutral cwd for the second.
-NEUTRAL="$(mktemp -d)"
-trap 'rm -rf "$NEUTRAL"' EXIT
-c() { (cd "$NEUTRAL" && env -u CHAIN cast "$@" --rpc-url "$RPC"); }
-
+# Reads go through a hand-built eth_call rather than `cast call`: Hardhat rejects
+# cast's call object, which carries both `input` and `data`. The signature keeps
+# cast's `name(args)(returns)` shape, and the values come back one per line as
+# `cast call` prints them. C_VALUE attaches value, which the store's consumer read
+# needs: FTSO custom feeds charge a read fee, and eth_call spends nothing.
+FROM="$(cast wallet address --private-key "${LOCAL_GOVERNANCE_KEY:-${DEPLOYMENT_PRIVATE_KEY:?set DEPLOYMENT_PRIVATE_KEY or LOCAL_GOVERNANCE_KEY}}")"
+c() {  # c call <to> 'name(args)(returns)' [args...]
+    [[ "$1" == "call" ]] || { echo "c: only 'call' is supported" >&2; return 1; }
+    local to="$2" sig="$3"; shift 3
+    local inputs="${sig%)(*})" returns="(${sig##*)(}"
+    local data raw
+    data="$(cast calldata "$inputs" "$@")"
+    raw="$(cast rpc eth_call "{\"from\":\"$FROM\",\"to\":\"$to\",\"data\":\"$data\",\"value\":\"${C_VALUE:-0x0}\"}" latest --rpc-url "$RPC" 2>&1 | tr -d '"')"
+    [[ "$raw" == 0x* ]] || { echo "$raw" >&2; return 1; }
+    cast abi-decode "f()$returns" "$raw"
+}
 # cast prints each returned value on its own line and annotates large numbers
 # like "100000000 [1e8]"; strip the annotation and flatten to one line.
 clean() { sed 's/\[[^]]*\]//g' | tr -d ' ' | tr '\n' ' '; }
 
 section "Store + feed — what a consumer reads ($STORE)"
-FEED_TRIPLE="$(c call "$STORE" 'getCurrentFeed()(uint256,int8,uint64)' | clean)"
+FEED_TRIPLE="$(C_VALUE=0xde0b6b3a7640000 c call "$STORE" 'getCurrentFeed()(uint256,int8,uint64)' | clean)"
 VALUE="$(echo "$FEED_TRIPLE" | cut -d' ' -f1)"
 DECIMALS="$(echo "$FEED_TRIPLE" | cut -d' ' -f2)"
 TS="$(echo "$FEED_TRIPLE" | cut -d' ' -f3)"
@@ -109,17 +116,20 @@ else
 fi
 
 section "Extension health — GET /state"
-# Under Docker the extension port is container-internal, so reach it from a
-# throwaway container on the same network rather than from the host.
+# The compose stack keeps the extension port container-internal, so it is read
+# from a throwaway container on the same network; a host-process stack records
+# where it serves GET /state in deploy/config/stack.env.
+STATE_FILTER='.state | {lastPrice, lastObservedAt, updateCount, failureCount, lastErrorClass, sourceHealth, readiness}'
 NET="$(docker inspect deploy-extension-tee-1 \
         --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null || true)"
-if [[ -n "$NET" ]]; then
+if [[ -n "${EXTENSION_STATE_URL:-}" ]]; then
+    curl -sf -m 10 "$EXTENSION_STATE_URL" | jq "$STATE_FILTER" \
+        || warn "  the recorded host extension at $EXTENSION_STATE_URL did not answer"
+elif [[ -n "$NET" ]]; then
     docker run --rm --network "$NET" curlimages/curl:latest \
-        -s -m 10 http://extension-tee:7702/state 2>/dev/null \
-        | jq '.state | {lastPrice, lastObservedAt, updateCount, failureCount,
-                        lastErrorClass, sourceHealth, readiness}' \
+        -s -m 10 http://extension-tee:7702/state 2>/dev/null | jq "$STATE_FILTER" \
         || warn "  extension did not answer"
 else
-    warn "  extension-tee container is not running"
+    warn "  no extension running: neither a recorded host stack nor the compose container"
 fi
 echo ""

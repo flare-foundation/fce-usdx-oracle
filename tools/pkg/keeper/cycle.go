@@ -221,7 +221,7 @@ func Relay(
 
 	if cfg.DryRun {
 		rec.SubmitOutcome = "dry_run"
-		return finish(ctx, s, cfg, rec, OutcomeRejected, nil)
+		return finish(ctx, s, cfg, rec, OutcomeDryRun, nil)
 	}
 
 	tx, err := submit(ctx, s, cfg, batch)

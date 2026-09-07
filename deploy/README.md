@@ -28,10 +28,13 @@ Two things hold everywhere:
 - **`.env` is the active configuration.** `use-chain.sh <chain>` copies `.env.<chain>` to `.env`;
   every script sources it. `.env.local` (tracked, Hardhat test keys only) is the simulation;
   create `.env.coston` / `.env.coston2` from `.env.example` for the testnets.
-- **The environment outranks `.env` for the proxy URL.** A host-process stack serves the proxy
-  on `http://localhost:6664`; the compose stack publishes it on `6674`. Scripts read
-  `EXT_PROXY_URL` from the environment first, so `EXT_PROXY_URL=http://localhost:6664 ./deploy/scripts/publish-local.sh endpoints`
-  addresses a host stack while `.env.local` names the compose port.
+- **The started stack names its proxy.** On the simulation, `start-services.sh` records the
+  proxy URL of the stack it brought up (6674 for the compose stack, 6684 for host processes)
+  in `deploy/config/stack.env`; every follow-up script and Go tool reads it after `.env`, so
+  the commands after the start are the same for both stacks. The recorded stack outranks
+  `.env` and an `EXT_PROXY_URL` inherited from the shell; the tools' `-p` flag is the explicit
+  override. `stop-services.sh` stops that stack and removes the record. On the testnets nothing is recorded and
+  `EXT_PROXY_URL` in `.env` (the public proxy URL) applies.
 
 ## Testing on the local simulation
 
@@ -43,25 +46,42 @@ troubleshooting table, is [docs/local-e2e.md](../docs/local-e2e.md).
 ```bash
 ./deploy/scripts/use-chain.sh local                 # .env.local → .env
 ./deploy/scripts/deploy-oracle-local.sh             # oracle contracts on the sim, extension 1 reserved
-(cd tools && go run ./cmd/wire-extension -a ../deploy/config/local/deployed-addresses.json)
-./deploy/scripts/full-setup.sh --chain local        # extension + proxy in Docker, machine registered
+(cd tools && go run ./cmd/wire-extension)           # owner wiring: sender, allowed machine owners, key types
+
+# Start the extension TEE and its proxy, and register the machine. Two ways,
+# use one or the other; the commands after them are the same:
+USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup.sh --chain local   # a) in Docker: compose stack, proxy on 6674
+USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh            # b) as host processes: no Docker, proxy on 6684
+
 ./deploy/scripts/publish-local.sh endpoints         # SET_ENDPOINTS, one transaction
 ./deploy/scripts/publish-local.sh admins            # SET_ADMINS, dev-only well-known keys
-./deploy/scripts/oracle-cycle.sh -tee <TEE_ID> --dry-run
+./deploy/scripts/oracle-cycle.sh -tee <TEE_ID> --dry-run   # wait two minutes after the publications first
 ./deploy/scripts/oracle-cycle.sh -tee <TEE_ID>
 ./deploy/scripts/oracle-status.sh
+
+./deploy/scripts/stop-services.sh                   # stops whichever stack was started, a) or b)
 ```
+
+**a) Docker** builds the images (from the sibling tee-node and tee-proxy checkouts with
+`USE_LOCAL_SIBLINGS=1`, which a simulation built from develop needs) and brings up the
+compose stack, recreated on every start so no state from an old chain survives.
+
+**b) Host processes** run the same extension the way e2e runs the standard TEE and proxy:
+`tools/cmd/local-stack` starts the proxy in-process and the extension TEE as its child,
+built from the module root, with redis on the simulation's fourth instance (emptied at start).
+Logs and pids sit under `out/`. The proxy binds
+6684 directly, a block clear of the e2e simulation's own processes; the start records it,
+so the follow-up scripts find it by themselves.
+
+Either way `<TEE_ID>` is the machine `post-build.sh` registers, printed at the end and listed
+by `fleet-status`. The machine observes on a 2-minute timer and nothing re-triggers it when a
+configuration lands, so give it one interval between the publications and the first cycle, or
+the dry run reports `StaleEndpoints` once.
 
 `deploy-oracle-local.sh` deploys upstream's contracts from the sibling checkout through
 `contracts/script/DeployTeeOracleLocal.s.sol`, leaving the sender governed by the deployer
 (no production mode), so publications execute at once instead of after the simulation's
 hour-long governance timelock. Nothing here touches the chain clock.
-
-The stack can run as host processes instead of containers, the way e2e runs the standard
-TEE and proxy. `full-setup-host.sh` is `full-setup.sh --chain local --local`; the follow-up
-scripts then need `EXT_PROXY_URL=http://localhost:6664`, and `stop-services.sh --local`
-stops the processes. Logs and pids sit under `out/`. `USE_LOCAL_SIBLINGS=1` applies to both
-stacks: a simulation built from develop checkouts needs the node built from them too.
 
 After a simulation restart, run the sequence again from `deploy-oracle-local.sh`; the
 local stack is recreated on every start so no state from the old chain survives, and the
@@ -98,7 +118,7 @@ machine identity is the registered one.
 | `full-setup.sh [--chain c] [--local]` | Start the stack (`start-services.sh`), then `post-build.sh`. `--local` runs the extension TEE and proxy as host processes. |
 | `full-setup-host.sh` | `full-setup.sh --chain local --local`. |
 | `start-services.sh [--chain c] [--local]` | Build images if needed and bring the compose stack up (recreated every run on `local`), or start `tools/cmd/local-stack` as host processes. `USE_LOCAL_SIBLINGS=1` builds node and proxy from the sibling checkouts. |
-| `stop-services.sh [--chain c] [--local]` | Stop the compose stack, or the host processes under `out/pids/`. |
+| `stop-services.sh [--chain c] [--local]` | Stop the stack recorded by the last start (`deploy/config/stack.env`); `--local` forces the host processes under `out/pids/`, `--chain` the compose stack. Removes the record. |
 | `post-build.sh` | Allow the TEE version, set the extension's TEE governance, register the machine and take it to production. Re-runnable: a machine already in production is left alone. |
 | `publish-local.sh endpoints\|admins [config]` | Simulation only: publish a configuration. One transaction on a deployer-governed sender; on a production-mode sender it records, saves the hand-off under `out/publications/`, and executes after the real timelock (`--wait`, or later `--execute <file>`). |
 | `oracle-cycle.sh -tee <a,b> [--dry-run] [--loop 10m]` | One keeper cycle against the deployed stack: request a feed update, collect the results, submit. |

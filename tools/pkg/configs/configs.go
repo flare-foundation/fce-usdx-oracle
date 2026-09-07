@@ -4,23 +4,57 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"runtime"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/joho/godotenv"
 	"github.com/pkg/errors"
 )
 
 // Defaults honour the same env vars the scripts use (full-setup.sh, post-build.sh),
-// so the tools run flag-free from a sourced .env. Fallbacks point at the
-// coston2 deployment: the old docker/sim_dump path no longer exists.
+// so the tools run flag-free from the project's .env and the recorded stack: both
+// are loaded here, before the defaults are taken, from the module root. Fallbacks
+// point at the coston2 deployment.
 var (
 	// The port Docker Compose publishes: the container listens on 6664 and compose
-	// maps 6674 -> 6664. Under `start-services.sh --local` the proxy binds 6664 on
-	// the host, so a hand-run tool there needs EXT_PROXY_URL or -p.
-	ExtensionProxyURL = envOrDefault("EXT_PROXY_URL", "http://localhost:6674")
-	ChainNodeURL      = envOrDefault("CHAIN_URL", "https://coston2-api.flare.network/ext/C/rpc")
-	AddressesFile     = envOrDefault("ADDRESSES_FILE", "../deploy/config/coston2/deployed-addresses.json")
+	// maps 6674 -> 6664. A host-process stack binds 6684 directly; on the
+	// simulation start-services.sh records whichever is running.
+	ExtensionProxyURL string
+	ChainNodeURL      string
+	AddressesFile     string
 )
+
+func init() {
+	root := projectRoot()
+	_ = godotenv.Load(filepath.Join(root, ".env"))
+	// The stack start-services.sh brought up last on the simulation names its
+	// proxy in deploy/config/stack.env. It is authoritative, above .env and above
+	// an EXT_PROXY_URL inherited from the shell; -p is the explicit override.
+	_ = godotenv.Overload(filepath.Join(root, "deploy", "config", "stack.env"))
+	ExtensionProxyURL = envOrDefault("EXT_PROXY_URL", "http://localhost:6674")
+	ChainNodeURL = envOrDefault("CHAIN_URL", "https://coston2-api.flare.network/ext/C/rpc")
+	AddressesFile = rootRelative(root, envOrDefault("ADDRESSES_FILE", "deploy/config/coston2/deployed-addresses.json"))
+}
+
+// projectRoot is the repository root: this file sits in tools/pkg/configs.
+func projectRoot() string {
+	_, thisFile, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
+}
+
+// rootRelative resolves a relative path against the repository root, which is
+// how .env spells paths, unless it exists from the working directory.
+func rootRelative(root, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return filepath.Join(root, path)
+}
 
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -30,10 +64,13 @@ func envOrDefault(key, fallback string) string {
 }
 
 const (
-	ExtConfigurationPort = 5501 // port on tee for setting the configurations (proxyURL, initialOwner, extensionID)
-	ExtProxyInternalPort = 6663 // internal port for tee to get actions from the queue from the proxy
-	ExtensionServerPort  = 7701 // port on the tee that the extension server calls for signing, encrypting, etc.
-	ExtensionPort        = 7702 // the port on the extension server that the tee calls to send non system actions
+	// The host-process port block, as cmd/start-tee binds it; clear of the e2e
+	// simulation's own processes (5500–5503, 6661–6668, 7701, 7702).
+	ExtConfigurationPort = 5521 // port on tee for setting the configurations (proxyURL, initialOwner, extensionID)
+	ExtProxyInternalPort = 6683 // internal port for tee to get actions from the queue from the proxy
+	ExtProxyExternalPort = 6684 // the proxy's public port: /info, /action, /direct
+	ExtensionServerPort  = 7721 // port on the tee that the extension server calls for signing, encrypting, etc.
+	ExtensionPort        = 7722 // the port on the extension server that the tee calls to send non system actions
 )
 
 var PrvWithFunds *ecdsa.PrivateKey

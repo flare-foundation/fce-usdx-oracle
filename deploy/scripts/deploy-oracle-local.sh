@@ -160,4 +160,4 @@ section "Addresses → deploy/config/local"
 DEPLOYS_SRC="$DEPLOY_OUT" SIM_DUMP="$SIM_DUMP" "$SCRIPT_DIR/import-upstream-addresses.sh" local "$UPSTREAM"
 
 echo ""
-log "next: (cd tools && go run ./cmd/wire-extension -a ../deploy/config/local/deployed-addresses.json) then ./deploy/scripts/full-setup.sh --chain local"
+log "next: (cd tools && go run ./cmd/wire-extension) then USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup.sh --chain local"

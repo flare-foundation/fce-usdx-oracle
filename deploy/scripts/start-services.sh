@@ -38,6 +38,10 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[start-services]${NC} $*"; }
 die()  { echo -e "${RED}[start-services] ERROR:${NC} $*" >&2; exit 1; }
 warn() { echo -e "${YELLOW:-}[start-services] WARN:${NC} $*" >&2; }
+# Sibling image builds fetch their Go modules from the host module cache.
+source "$SCRIPT_DIR/lib/modcache-proxy.sh"
+# load_env / record_stack: the proxy URL the follow-up scripts pick up.
+source "$SCRIPT_DIR/lib/env.sh"
 
 # --- Parse flags ---
 USE_LOCAL=false
@@ -113,6 +117,7 @@ mkdir -p "$(dirname "$CONFIG_FILE")"
 # Reserved id 1 (pinned in internal/config); the upstream sender/store are
 # not deployed locally. May be overridden for a test extension on another id.
 EXTENSION_ID="${EXTENSION_ID:-1}"
+EXT_PROXY_EXTERNAL_BIND="${EXT_PROXY_EXTERNAL_BIND:-0.0.0.0:6674}"
 PROXY_PRIVATE_KEY="${PROXY_PRIVATE_KEY:-983760a4ebf75b2ac3a93531168a0f225d01e5dc6e3568adbd46233ba1fb4fa4}"
 LOCAL_MODE="${LOCAL_MODE:-true}"
 
@@ -270,6 +275,10 @@ if [[ "$USE_LOCAL" == "false" ]]; then
     UP_FLAGS=()
     [[ "$CHAIN" == "local" ]] && UP_FLAGS=(--force-recreate)
     docker compose "${COMPOSE_FILES[@]}" up -d --build "${UP_FLAGS[@]}" || die "docker compose up failed"
+    # The simulation's follow-up scripts find this stack's proxy through
+    # deploy/config/stack.env; a testnet operator's EXT_PROXY_URL in .env is
+    # the public URL and stays untouched.
+    [[ "$CHAIN" == "local" ]] && record_stack docker "http://localhost:${EXT_PROXY_EXTERNAL_BIND##*:}"
 
     # Wait for proxy to be ready
     E2E="$SCRIPT_DIR/e2e.sh"
@@ -316,14 +325,16 @@ fi
 # tools/cmd/local-stack runs the proxy in-process and the extension TEE as its
 # child, built from the module root (against the sibling tee-node when a go.work
 # is present). Redis is the simulation's fourth instance unless
-# LOCAL_STACK_REDIS names another. The proxy binds 6663 and 6664 on the host.
+# LOCAL_STACK_REDIS names another. The proxy binds 6683 and 6684 on the host,
+# clear of the e2e simulation's own processes.
 log "Starting the extension TEE and proxy as host processes (--local)..."
 [[ "$USE_LOCAL_SIBLINGS" == "true" ]] || log "pinned tee-node (set USE_LOCAL_SIBLINGS=1 to build against the sibling checkouts, as a develop simulation needs)"
 
 E2E="$SCRIPT_DIR/e2e.sh"
 PID_DIR="$PROJECT_DIR/out/pids"; LOG_DIR="$PROJECT_DIR/out/logs"; BIN_DIR="$PROJECT_DIR/out/bin"
 PIDFILE="$PID_DIR/local-stack.pid"; LOGFILE="$LOG_DIR/local-stack.log"
-HOST_PROXY_URL="http://localhost:6664"
+HOST_PROXY_URL="http://localhost:6684"
+HOST_EXTENSION_PORT=7722   # the extension's /action and /state, as cmd/start-tee binds it
 mkdir -p "$PID_DIR" "$LOG_DIR" "$BIN_DIR"
 
 log "Building out/bin/local-stack from tools/ ..."
@@ -354,6 +365,7 @@ until curl -sf -m 3 "$HOST_PROXY_URL/info" >/dev/null 2>&1; do
     sleep 3
 done
 for _ in $(seq 20); do grep -q 'Extension stack running' "$LOGFILE" 2>/dev/null && break; sleep 3; done
+[[ "$CHAIN" == "local" ]] && record_stack host "$HOST_PROXY_URL" "http://localhost:$HOST_EXTENSION_PORT/state"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
@@ -364,5 +376,5 @@ sed -n '/Extension stack running/,/^Ctrl-C/p' "$LOGFILE" | grep -vE '^Continue w
     || echo "  (the runner has not printed its summary yet; see ${LOGFILE#$PROJECT_DIR/})"
 echo ""
 echo -e "${CYAN}Processes${NC}   local-stack PID $(cat "$PIDFILE"), log ${LOGFILE#$PROJECT_DIR/} (the TEE's lines tagged)"
-echo -e "${CYAN}Proxy${NC}       $HOST_PROXY_URL — pass EXT_PROXY_URL=$HOST_PROXY_URL to the follow-up scripts"
+echo -e "${CYAN}Proxy${NC}       $HOST_PROXY_URL (recorded in deploy/config/stack.env for the follow-up scripts)"
 echo -e "${CYAN}Stop${NC}        $SCRIPT_DIR/stop-services.sh --local"

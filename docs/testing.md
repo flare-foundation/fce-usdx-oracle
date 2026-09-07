@@ -8,7 +8,7 @@ Tests split into two groups: those covering **your extension**, and those coveri
 |-------|--------------|------------|--------|
 | **Unit** | Your handlers, dispatch, encoding — in your chosen language | `./deploy/scripts/test-unit.sh` | no |
 | **Conformance** | The wire contract, against golden fixtures | `go test ./internal/extension/ -run TestConformance` | no |
-| **End-to-end** | The full feed cycle (request → observe → sign → relay) | `./deploy/scripts/oracle-cycle.sh -tee @<machine>` | yes |
+| **End-to-end** | The full feed cycle (request → observe → sign → relay) | `./deploy/scripts/oracle-cycle.sh -tee <machine>` | yes |
 
 
 ### Conformance testing
@@ -70,7 +70,7 @@ For the whole thing on a local Hardhat simulation — oracle contracts included 
 (services up, machine registered), drive one full cycle against the running stack:
 
 ```bash
-./deploy/scripts/oracle-cycle.sh -tee @<machine>
+./deploy/scripts/oracle-cycle.sh -tee <machine>
 ```
 
 Add `--dry-run` to stop after the preflight (send nothing), or `--loop 10m` to keep cycling on a
@@ -102,10 +102,10 @@ The tools default to **`http://localhost:6674`**, which is what Docker Compose p
 (`6674 -> 6664`; the container itself listens on 6664). Under the default deployment they run
 flag-free.
 
-Two cases still need `-p` or `EXT_PROXY_URL`:
+On the simulation the scripts and tools address whichever stack `start-services.sh` brought up
+last, compose or host processes, through `deploy/config/stack.env`; nothing needs `-p`. One case
+still does:
 
-- **`start-services.sh --local`** and **`tools/cmd/local-stack`** — the proxy binds **6664** on
-  the host directly, with no Docker mapping. Use `-p http://localhost:6664`.
 - **Reaching the machine over its public URL** — pass the tunnel address.
 
 `go run` does not read `.env`, so an `EXT_PROXY_URL` set there is not in scope for a
@@ -118,10 +118,10 @@ export EXT_PROXY_URL=http://localhost:6674
 A wrong port shows up as:
 
 ```
-deriving TEE identity from http://localhost:6664/info: connect: connection refused
+deriving TEE identity from http://localhost:6684/info: connect: connection refused
 ```
 
-`post-build.sh` detects the running mode (Docker's 6674 vs local's 6664) and sets this itself,
+`post-build.sh` reads the recorded stack (Docker's 6674 vs the host stack's 6684) and sets this itself,
 so it is unaffected. Registration is the one step that genuinely needs the **public** URL,
 because data providers verify the availability proof from outside.
 
@@ -389,17 +389,17 @@ The cheap check first — preflight every store guard against the addressed mach
 nothing:
 
 ```bash
-./deploy/scripts/oracle-cycle.sh -tee @<MACHINE> --dry-run
+./deploy/scripts/oracle-cycle.sh -tee <MACHINE> --dry-run
 ```
 
 Then the real thing. The keeper requests, polls with a bounded deadline, decodes, preflights
 every store guard, and submits:
 
 ```bash
-./deploy/scripts/oracle-cycle.sh -tee @<MACHINE>
+./deploy/scripts/oracle-cycle.sh -tee <MACHINE>
 ```
 
-(or the binary directly: `cd tools && go run ./cmd/keeper -tee @<MACHINE> -once`)
+(or the binary directly: `cd tools && go run ./cmd/keeper -tee <MACHINE> -once`)
 
 Add `--loop 10m` to stay up and cycle on a timer — the same code path the unattended keeper
 runs — and `--records <file>` to append the JSON cycle records somewhere other than stdout.
@@ -464,7 +464,7 @@ the `teeIds` list in the store's `FeedUpdated` events, one entry per contributin
 thing, then stops at the preflight instead of submitting, and emits its cycle record:
 
 ```bash
-./deploy/scripts/oracle-cycle.sh -tee @<MACHINE> --dry-run
+./deploy/scripts/oracle-cycle.sh -tee <MACHINE> --dry-run
 ```
 
 The record names each contributor's price, the batch's `observedAt`, the instruction id, and the
@@ -521,7 +521,7 @@ Everything here was hit for real while bringing this up.
 | `submitFeedUpdates` reverts `WrongExtensionId` / `WrongFeedId` | A signed update names a different extension or feed than the store's. | Deployment mismatch — check the extension id and feed id pinned in the build (`internal/config`) against the store's `extensionId()`. |
 | `SET_SECRET` rejected right after a restart | The admin set is memory-only and was lost. | Re-run `send-admins`, then re-submit the envelope. |
 | `submitFeedUpdates` rejects a signature | A signer is not a registered PRODUCTION machine on the store's extension, **or the extension is emergency paused** — `Fdc2Verification` rejects both. | Check `getTeeMachineStatus(<TEE_ID>)` is 2 and re-run `post-build.sh` if the machine was re-created; check the extension's pause state. |
-| `connect: connection refused` on `localhost:6664` | Running under `--local`, where the proxy binds 6664 directly. (Before 6 Aug 2026 this was the default and Docker users hit it instead.) | `-p http://localhost:6664`, or export `EXT_PROXY_URL`. See "Which proxy port" above. |
+| `connect: connection refused` on `localhost:6684` | Running under `--local`, where the proxy binds 6684 directly. (Before 6 Aug 2026 this was the default and Docker users hit it instead.) | `-p http://localhost:6664`, or export `EXT_PROXY_URL`. See "Which proxy port" above. |
 | `submitFeedUpdates` reverts `NotNewer` | A newer update already landed. | **Not a fault** — with ≥2 keepers exactly one submission wins per cycle. |
 | `submitFeedUpdates` reverts `NoEndpointsPublished` | No `setEndpoints` has ever been published for the feed. | Step 4. |
 | Preflight `NotEnoughSignatures` | Fewer machines agreed on one `observedAt` than the store's `requiredSignatures`. | The record's `teeIds` says who made the batch; a machine that stamped a different instant is left out, and one that never answered cost the poll timeout. |

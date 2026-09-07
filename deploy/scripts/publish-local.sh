@@ -35,11 +35,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# The environment outranks .env for the proxy URL: a host-process stack serves 6664
-# while .env.local names the compose stack's port.
-PRESET_EXT_PROXY_URL="${EXT_PROXY_URL:-}"
-[[ -f "$PROJECT_DIR/.env" ]] && { set -a; source "$PROJECT_DIR/.env"; set +a; }
-[[ -n "$PRESET_EXT_PROXY_URL" ]] && EXT_PROXY_URL="$PRESET_EXT_PROXY_URL"
+source "$SCRIPT_DIR/lib/env.sh"; load_env
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 log() { echo -e "${GREEN}[publish-local]${NC} $*"; }

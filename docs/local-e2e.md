@@ -46,13 +46,14 @@ The relay is what delivers cosigned instructions to *this* extension's proxy too
 ```bash
 ./deploy/scripts/use-chain.sh local            # .env.local → .env (Hardhat test keys only)
 ./deploy/scripts/deploy-oracle-local.sh        # oracle contracts on the sim, extension 1 reserved, addresses imported
-(cd tools && go run ./cmd/wire-extension -a ../deploy/config/local/deployed-addresses.json)   # owner wiring: sender, machine owners, key types
+(cd tools && go run ./cmd/wire-extension)      # owner wiring: sender, allowed machine owners, key types
 ./deploy/scripts/full-setup.sh --chain local   # extension + proxy in Docker, version, governance, machine registered
 ./deploy/scripts/publish-local.sh endpoints    # SET_ENDPOINTS, executed at once: the local sender is deployer-governed
 ./deploy/scripts/publish-local.sh admins       # SET_ADMINS, dev-only well-known keys
 ./deploy/scripts/oracle-cycle.sh -tee <TEE_ID> --dry-run
 ./deploy/scripts/oracle-cycle.sh -tee <TEE_ID>
 ./deploy/scripts/oracle-status.sh
+./deploy/scripts/stop-services.sh              # stops whichever stack was started
 ```
 
 `publish-local.sh` prints the machines the sender will dispatch to; that is the `<TEE_ID>`.
@@ -64,23 +65,26 @@ The same flow runs with the extension TEE and its proxy as plain processes, the 
 repository runs the standard TEE and proxy. In place of `full-setup.sh`:
 
 ```bash
-USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh   # local-stack in the background, then post-build
-EXT_PROXY_URL=http://localhost:6664 ./deploy/scripts/publish-local.sh endpoints
-EXT_PROXY_URL=http://localhost:6664 ./deploy/scripts/publish-local.sh admins
-./deploy/scripts/stop-services.sh --local        # when done
+USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh   # local-stack in the background, then post-build; follow-ups as above
+./deploy/scripts/publish-local.sh endpoints
+./deploy/scripts/publish-local.sh admins
+./deploy/scripts/oracle-cycle.sh -tee <TEE_ID> --dry-run
+./deploy/scripts/stop-services.sh                # when done; it stops the recorded stack
 ```
 
 `full-setup-host.sh` is `full-setup.sh --chain local` with phase 2 replaced: it starts
 `tools/cmd/local-stack` under `out/pids/` (proxy in-process, extension TEE as its child; the
 runner can also be run by hand with `(cd tools && go run ./cmd/local-stack)`, Ctrl-C stopping
-both), waits for the proxy, and runs `post-build.sh` against it.
+both), waits for the proxy, records its URL in `deploy/config/stack.env` for every follow-up
+script and tool, and runs `post-build.sh` against it.
 
 `local-stack` builds `cmd/start-tee` from the module root (against the sibling tee-node when
 `start-services.sh` has written a `go.work`, else the pinned module), renders the local devnet
 proxy config into `out/` with the simulation's addresses and chain id, and uses the simulation's
 fourth redis (`:6382`, which e2e reserves for an extension proxy; `-redis` picks another). The
-proxy binds 6663 and 6664 on the host directly, hence the `EXT_PROXY_URL` override: `.env.local`
-points at the compose stack's 6674. The two stacks do not clash and can run side by side.
+proxy binds 6683 and 6684 on the host directly (clear of e2e's own processes), and the start records that in
+`deploy/config/stack.env`, so the follow-up commands are the same as for the compose stack.
+The two stacks do not clash, and the record names whichever was started last.
 
 ## What each script does, and why
 

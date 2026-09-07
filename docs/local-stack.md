@@ -181,6 +181,10 @@ container via Docker Compose.
 | 6674 | Proxy external | Clients query results, `/info` endpoint |
 | 7701 | TEE sign port | Extension calls TEE for signing/decrypting |
 | 7702 | Extension server | TEE forwards `POST /action` to the extension |
+
+A host-process stack (`start-services.sh --local`) binds its own block on the host instead:
+5521 (TEE config), 7721 (TEE sign), 7722 (extension), 6683/6684 (proxy internal/external),
+clear of the e2e simulation's 5500–5503, 6661–6668 and 7701/7702.
 | 8100 | Types server | Decodes raw instruction data to JSON |
 
 ---

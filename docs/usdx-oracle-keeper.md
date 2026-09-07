@@ -110,10 +110,10 @@ every T:                                  # single-flight — never overlap cycl
 `RunCycle` never exits the process and returns a `Record` for every outcome, which is what
 lets the same code serve a one-shot and a timer. It is `Collect` then `Relay`, split so a caller
 can inspect a decoded update before deciding to submit it — which is what `oracle-cycle.sh
---dry-run` does. Run it:
+--dry-run` does; the record then carries the outcome `dry_run`. Run it:
 
 ```
-go run ./cmd/keeper -tee @a,@b,@c -interval 10m -keeperId keeper-a
+go run ./cmd/keeper -tee a,b,c -interval 10m -keeperId keeper-a
 ```
 
 The store resolves from `-store` or the `TeeOracleFeedStore` entry in the addresses file, and
@@ -329,7 +329,7 @@ possible:
 5. Confirm `configured`, `ready: true` and an empty `missingSecretRefs` in `fleet-status` —
    which reads the sender's commitments on-chain and asks the machine directly over
    `GET_READINESS`, and so does not depend on it having landed anything.
-6. Let the keeper run with the machine in `-tee`; `oracle-cycle.sh -tee @<machine>` drives one
+6. Let the keeper run with the machine in `-tee`; `oracle-cycle.sh -tee <machine>` drives one
    cycle by hand. Its first accepted update is its commissioning.
 
 Two things to expect at step 6:

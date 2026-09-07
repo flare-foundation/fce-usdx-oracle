@@ -17,10 +17,10 @@
 # fleet-wide form.
 #
 # Usage:
-#   ./deploy/scripts/oracle-cycle.sh -tee @a,@b,@c                      # one cycle, submit for real
-#   ./deploy/scripts/oracle-cycle.sh -tee @a,@b,@c --dry-run            # preflight only, send nothing
-#   ./deploy/scripts/oracle-cycle.sh -tee @a,@b,@c --loop 10m           # stay up and cycle on a timer
-#   ./deploy/scripts/oracle-cycle.sh -tee @a,@b,@c --loop 10m --records cycles.jsonl
+#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c                      # one cycle, submit for real
+#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --dry-run            # preflight only, send nothing
+#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --loop 10m           # stay up and cycle on a timer
+#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --loop 10m --records cycles.jsonl
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -29,7 +29,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 die() { echo -e "${RED}[oracle-cycle] ERROR:${NC} $*" >&2; exit 1; }
 
-[[ -f "$PROJECT_DIR/.env" ]] && { set -a; source "$PROJECT_DIR/.env"; set +a; }
+source "$SCRIPT_DIR/lib/env.sh"; load_env
 
 DRY_RUN=false; INTERVAL=""; RECORDS=""; TEE=""
 while [[ $# -gt 0 ]]; do
@@ -58,7 +58,8 @@ if [[ -z "$STORE" || "$STORE" == "0x0000000000000000000000000000000000000000" ]]
     die "no TeeOracleFeedStore address in $ADDR_FILE — slot it in after the upstream deploy"
 fi
 
-PROXY="${ORACLE_PROXY_URL:-http://localhost:6674}"
+# The proxy every machine is reached through (-p overrides the registered URLs).
+PROXY="${EXT_PROXY_URL:-http://localhost:6674}"
 
 echo -e "${CYAN}store: ${NC} $STORE"
 echo -e "${CYAN}proxy: ${NC} $PROXY"
@@ -70,6 +71,10 @@ BIN_DIR="${TMPDIR:-/tmp}/usdx-oracle-bin"
 mkdir -p "$BIN_DIR"
 
 ARGS=(-a "$ADDR_FILE" -p "$PROXY" -store "$STORE" -tee "$TEE")
+# The readiness preflight needs the proxy's direct-channel key. The simulation's
+# proxy accepts any (api_key_optional), so a recorded local stack gets a placeholder
+# and the keeper stops warning about paying fees blind.
+[[ -n "${STACK:-}" ]] && ARGS+=(-directApiKey "${DIRECT_API_KEY:-local}")
 [[ "$DRY_RUN" == "true" ]] && ARGS+=(-dry-run)
 [[ -n "$RECORDS" ]] && ARGS+=(-records "$RECORDS")
 

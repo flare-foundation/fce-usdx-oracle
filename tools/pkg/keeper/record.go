@@ -42,6 +42,10 @@ const (
 	// StaleAdmins, NotNewer, TooFarAhead and friends.
 	OutcomeRejected Outcome = "rejected"
 
+	// OutcomeDryRun is a cycle that requested, collected and passed the store's
+	// rehearsal, then stopped before submitting because it was asked to.
+	OutcomeDryRun Outcome = "dry_run"
+
 	// Submitted, but no receipt inside the deadline. Not chased.
 	OutcomeNotMined Outcome = "not_mined"
 
