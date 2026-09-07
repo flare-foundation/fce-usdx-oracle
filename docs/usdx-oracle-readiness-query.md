@@ -66,7 +66,7 @@ poll to write ephemeral state into permanent public calldata. The direct channel
 Four groups. Every field is either a boolean, a hash, a name from a closed vocabulary, or a
 number — never a credential, a URL, or an upstream's own words.
 
-### Provisioning — from `runtimecfg.Store`
+### Provisioning — from `store.Store`
 
 | Field | Type | Notes |
 | --- | --- | --- |

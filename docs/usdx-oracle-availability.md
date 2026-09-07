@@ -3,7 +3,7 @@
 **Status:** ⚠ **OPEN QUESTION — needs a decision owner** · **Raised:** 2026-08-03
 
 _Companion docs: design intent in `usdx-oracle-spec.md`, implementation findings in
-`usdx-oracle-findings.md`, plan in `usdx-oracle-plan.md`._
+`usdx-oracle-findings.md`._
 
 ---
 

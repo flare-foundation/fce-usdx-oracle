@@ -201,13 +201,13 @@ only hand off, and it says so before it starts.
 **Admin B — signs, passes on:**
 
 ```bash
-cd go && USDXPROV_KEY=<ADMIN_B_KEY> go run ./cmd/usdxprov sign -in <ENVELOPE_JSON>
+USDXPROV_KEY=<ADMIN_B_KEY> go run ./cmd/usdxprov sign -in <ENVELOPE_JSON>
 ```
 
 **Admin C — signs and submits over the direct channel:**
 
 ```bash
-cd go && USDXPROV_KEY=<ADMIN_C_KEY> go run ./cmd/usdxprov sign -in <ENVELOPE_JSON> && USDXPROV_API_KEY=<DIRECT_API_KEY> go run ./cmd/usdxprov submit -in <ENVELOPE_JSON> -url <PROXY_URL>
+USDXPROV_KEY=<ADMIN_C_KEY> go run ./cmd/usdxprov sign -in <ENVELOPE_JSON> && USDXPROV_API_KEY=<DIRECT_API_KEY> go run ./cmd/usdxprov submit -in <ENVELOPE_JSON> -url <PROXY_URL>
 ```
 
 Only the submitter needs `DIRECT_API_KEY`. `usdxprov sign` refuses a duplicate signer, so the
@@ -242,7 +242,7 @@ cd tools && go run ./cmd/verify-tee -p <PROXY_URL> -code-hash <0x…>
 ```
 
 ```bash
-cd go && USDXPROV_VALUE=<HEX_API_KEY> go run ./cmd/usdxprov build -url <PROXY_URL> -chain-id <CHAIN_ID> -ref hex_api_key -version $(date +%s) -out <ENVELOPE_JSON>
+USDXPROV_VALUE=<HEX_API_KEY> go run ./cmd/usdxprov build -url <PROXY_URL> -chain-id <CHAIN_ID> -ref hex_api_key -version $(date +%s) -out <ENVELOPE_JSON>
 ```
 
 Then the backing admin signs and submits, exactly as admin C does in step 3.

@@ -7,25 +7,15 @@ Tests split into two groups: those covering **your extension**, and those coveri
 | Layer | What it tests | How to run | Chain? |
 |-------|--------------|------------|--------|
 | **Unit** | Your handlers, dispatch, encoding — in your chosen language | `./deploy/scripts/test-unit.sh` | no |
-| **Conformance** | The wire contract, against golden fixtures | `./deploy/scripts/test-conformance.sh` | no |
+| **Conformance** | The wire contract, against golden fixtures | `go test ./internal/extension/ -run TestConformance` | no |
 | **End-to-end** | The full feed cycle (request → observe → sign → relay) | `./deploy/scripts/oracle-cycle.sh -tee @<machine>` | yes |
-
-Both script-driven layers accept a language or `--all`:
-
-```bash
-./deploy/scripts/test-unit.sh python
-```
-
-```bash
-go test ./internal/extension/ -run TestConformance
-```
 
 
 ### Conformance testing
 
 This is the layer that pins the wire contract: the exact envelope, status codes and `GET /state` body the extension serves, independent of any source or chain.
 
-`deploy/scripts/test-conformance.sh` starts **only the extension process** — no tee-node, no proxy, no chain, no Docker — replays the 16 fixtures in `deploy/testdata/conformance/`, and diffs every response field. The response payload is compared **byte-for-byte**, because tee-node hashes it and signs the result.
+The conformance replay starts **only the extension process** — no tee-node, no proxy, no chain, no Docker — replays the 16 fixtures in `deploy/testdata/conformance/`, and diffs every response field. The response payload is compared **byte-for-byte**, because tee-node hashes it and signs the result.
 
 ```bash
 go test ./internal/extension/ -run TestConformance

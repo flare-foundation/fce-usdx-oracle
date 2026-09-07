@@ -3,8 +3,7 @@
 **Status:** 📋 **PLAN — not built** · **Raised:** 2026-08-04
 
 _Companion docs: the fail-closed decision and its consequences in `usdx-oracle-availability.md`,
-design intent in `usdx-oracle-spec.md`, implementation findings in `usdx-oracle-findings.md`,
-working plan in `usdx-oracle-plan.md`. **The keeper that emits these signals is specified in
+design intent in `usdx-oracle-spec.md`, implementation findings in `usdx-oracle-findings.md`. **The keeper that emits these signals is specified in
 `usdx-oracle-keeper.md`** — this doc is its alerting half._
 
 ---

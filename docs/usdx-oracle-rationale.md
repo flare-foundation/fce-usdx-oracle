@@ -672,7 +672,7 @@ destination is otherwise pinned and therefore not the owner's to choose.
 
 ### Locking
 
-`runtimecfg.Store` holds two locks because they protect different things over
+`store.Store` holds two locks because they protect different things over
 different spans:
 
 - `applyMu` covers a whole `Apply*` call, including the verifier — which keeps
@@ -765,7 +765,7 @@ healthy fully-backed one.
 
 So there is no way left to build a stub by accident. Every production constructor
 panics on a nil observer, and the only stub path is `NewStub`, named at its
-single call site (`deploy/scripts/test-conformance.sh`, which exercises the extension
+single call site (the conformance replay, `go test ./internal/extension/ -run TestConformance`, which exercises the extension
 alone — no tee-node, no chain, no credentials).
 
 Redirects are never followed when fetching backing figures: Go strips

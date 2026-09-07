@@ -487,7 +487,7 @@ at 30 blocks, which looks like a blocker until you notice we don't use it.
 
 ### 2.8 Endpoint inventory
 
-Full surveyed table lives in `usdx-oracle-plan.md`. The operationally important
+The operationally important
 result: **Songbird has exactly one working public RPC**
 (`songbird-api.flare.network`), so the 3-provider rule cannot be met there with
 free endpoints. Flare has four, Ethereum five usable. Production should assume
@@ -728,7 +728,7 @@ someone, and there should be an agreed comms path to Hex when it fires.
 | 8.1 | Unit tests for the formula: over/under-collateralised, `S == 0`, rounding, extreme values | | |
 | 8.2 | Mock Hex API server (incl. malformed, stale, slow, 5xx responses) | | |
 | 8.3 | Mock/forked RPC for supply reads, incl. provider disagreement | | |
-| 8.4 | Conformance suite (`./deploy/scripts/test-conformance.sh`) with USDX fixtures | | |
+| 8.4 | Conformance replay (`go test ./internal/extension/ -run TestConformance`) with USDX fixtures | | |
 | 8.5 | Foundry wire-vector tests pinning the upstream interfaces' ABI encoding | | |
 | 8.6 | E2E on Coston2: instruction → TEE → result → store → feed read | | |
 | 8.7 | Shadow run: compute prices for N days without publishing, compare against expectation | | |

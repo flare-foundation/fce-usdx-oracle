@@ -40,7 +40,7 @@ redis            the proxy's action queue
 ```
 
 `pkg/server/server.go:35` wires it: `teenode.Client` → `provision.Verifier` →
-`runtimecfg.Store` → `observe.Poller` → `extension.Extension`.
+`store.Store` → `observe.Poller` → `extension.Extension`.
 
 ---
 
@@ -261,7 +261,7 @@ Runs whether or not anyone asks for a price. Nothing else touches the network.
 ```
 poller.Poller.Run — every 2 minutes                poller.go:114
   │
-  ├─ store.Resolve()                           store.go:415
+  ├─ store.Open()
   │     re-run every tick, never cached
   │     builds RPC clients, bonds source, cash source (nil if no secret)
   │     provider names are positional ("rpc_flare_1") so nothing an operator
@@ -456,7 +456,7 @@ either public surface. That is a compile error, not a review item.
 | Question | Command |
 | --- | --- |
 | Do the real sources yield a sane price? | `./deploy/scripts/oracle-observe.sh` |
-| Does the wire contract hold? | `./deploy/scripts/test-conformance.sh` |
+| Does the wire contract hold? | `go test ./internal/extension/ -run TestConformance` |
 | Does provisioning work? | `./deploy/scripts/set-endpoints.sh` then `usdxprov` |
 | Does the whole chain work? | `./deploy/scripts/oracle-cycle.sh` |
 | What is it publishing right now? | `./deploy/scripts/oracle-status.sh` |

@@ -64,7 +64,7 @@ The same flow runs with the extension TEE and its proxy as plain processes, the 
 repository runs the standard TEE and proxy. In place of `full-setup.sh`:
 
 ```bash
-./deploy/scripts/full-setup-host.sh              # local-stack in the background, then post-build
+USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh   # local-stack in the background, then post-build
 EXT_PROXY_URL=http://localhost:6664 ./deploy/scripts/publish-local.sh endpoints
 EXT_PROXY_URL=http://localhost:6664 ./deploy/scripts/publish-local.sh admins
 ./deploy/scripts/stop-services.sh --local        # when done

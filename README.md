@@ -217,11 +217,11 @@ Two more worth knowing before you touch anything: **stub mode is indistinguishab
 The highest-value local test needs no chain, no TEE and no credentials — it runs the real observation path against live Flare, Ethereum, Songbird and Hex:
 
 ```bash
-cd go && go run ./cmd/mocknode
+go run ./cmd/mocknode
 ```
 
 ```bash
-cd go && go run ./cmd/devserver
+go run ./cmd/devserver
 ```
 
 ```bash
@@ -291,14 +291,14 @@ The repository root is the Go module: the extension is the repository. `tools/` 
 **Operating it**
 
 - [Production setup runbook](docs/usdx-oracle-production-setup.md) — configuration on-chain, credentials under two admin sets, and starting the feed. Who holds what, in which order
-- [Tooling reference](docs/usdx-oracle-tooling.md) · [Local & Coston2 stack](docs/local-stack.md) · [Machine deployment](docs/deployment-steps.md)
+- [Operator scripts](deploy/README.md) · [Tooling reference](docs/usdx-oracle-tooling.md) · [Local & Coston2 stack](docs/local-stack.md) · [Machine deployment](docs/deployment-steps.md)
 - [Keeper specification](docs/usdx-oracle-keeper.md) — the cycle and its reliability semantics
 - [Monitoring](docs/usdx-oracle-monitoring.md) · [Failure modes](docs/usdx-oracle-failure-modes.md) · [Machine lifecycle](docs/usdx-oracle-machine-lifecycle.md) · [Source availability](docs/usdx-oracle-availability.md)
 - [Readiness query](docs/usdx-oracle-readiness-query.md) — what a signed self-report does and does not settle
 
 **Reference**
 
-- [Spec](docs/usdx-oracle-spec.md) — price definition, inputs, verified addresses, work packages · [Plan & TODO](docs/usdx-oracle-plan.md) · [Operational flows](docs/usdx-oracle-flows.md) · [Mint/redeem dynamics](docs/usdx-oracle-mint-redeem-dynamics.md)
+- [Spec](docs/usdx-oracle-spec.md) — price definition, inputs, verified addresses, work packages · [Operational flows](docs/usdx-oracle-flows.md) · [Mint/redeem dynamics](docs/usdx-oracle-mint-redeem-dynamics.md)
 - [Extension Container Contract](docs/extension-contract.md) — the normative wire and container spec · [Testing Guide](docs/testing.md) · [Reproducibility](REPRODUCIBILITY.md)
 
 ---

@@ -49,7 +49,7 @@ Read the fleet as the registry sees it — this excludes paused machines, so it 
 to "what is actually serving":
 
 ```
-cd tools && go run ./cmd/query-tee -reg <FlareTeeManager> -ext <EXTENSION_ID>
+cd tools && go run ./cmd/fleet-status -a ../deploy/config/<chain>/deployed-addresses.json -c $CHAIN_URL
 ```
 
 ---
@@ -69,7 +69,7 @@ because each can fail independently and re-running the whole thing is sometimes 
 The normal invocation is all four:
 
 ```
-cd tools && go run ./cmd/register-tee -a ../config/coston2/deployed-addresses.json -c $CHAIN_URL -p <PROXY_URL> -h <PROXY_URL> -ep $NORMAL_PROXY_URL -command rRap -state ../config/register-tee-<name>.state
+cd tools && go run ./cmd/register-tee -a ../deploy/config/coston2/deployed-addresses.json -c $CHAIN_URL -p <PROXY_URL> -h <PROXY_URL> -ep $NORMAL_PROXY_URL -command rRap -state ../config/register-tee-<name>.state
 ```
 
 `-h` is the URL written on-chain, and it must be reachable **by the FTDC data providers**, not just
@@ -156,7 +156,7 @@ Any restart mints a new enclave key. The sequence, and the order matters:
    leaves the published machine data pointing at an enclave key that no longer exists — `/info`
    reports one identity while the node signs as another. Only `stop-services.sh` clears it.
 3. Rebuild and start: `./deploy/scripts/start-services.sh --chain coston2`
-4. Register the new identity (`-command rRap`, a **new** `-state` file).
+4. Register the new identity (a **new** `-state` file).
 5. **Pause the old identity.** Otherwise it stays `PRODUCTION` forever and on-chain instructions
    are dispatched to a machine that cannot answer.
 6. Re-provision — steps 1–4 of the production runbook, per machine. All of it is memory-only.
@@ -249,7 +249,7 @@ sudo systemctl disable --now usdx-keeper
    cannot be promoted while the old is `PRODUCTION`:
    `cast send <FlareTeeManager> "pause(address)" <OLD_TEE_ID> --private-key $DEPLOYMENT_PRIVATE_KEY --rpc-url $CHAIN_URL`
 5. **Register the new identity**, with its own state file:
-   `cd tools && go run ./cmd/register-tee -a ../config/coston2/deployed-addresses.json -c $CHAIN_URL -p <PROXY_URL> -h <PROXY_URL> -ep $NORMAL_PROXY_URL -command rRap -state ../config/register-tee-<name>-v2.state`
+   `cd tools && go run ./cmd/register-tee -a ../deploy/config/coston2/deployed-addresses.json -c $CHAIN_URL -p <PROXY_URL> -h <PROXY_URL> -ep $NORMAL_PROXY_URL -command rRap -state ../config/register-tee-<name>-v2.state`
 6. **Re-provision it** — steps 1–4 of the [production runbook](usdx-oracle-production-setup.md),
    addressed at this machine. All of it is memory-only and none of it survived the restart:
    `send-endpoints`, `send-admins`, then the RPC credentials and the Hex credential.
@@ -352,7 +352,7 @@ useful part. Run on a three-machine Coston2 fleet, extension 66281, 15–16 Aug 
 
 | Path | Status | Evidence |
 | --- | --- | --- |
-| register a machine (`rRap`) | **verified** | six times across two generations |
+| register a machine | **verified** | six times across two generations |
 | pause | **verified** | 2 → 4, three orphans plus two live machines |
 | pause is enforced at the store | **verified** | paused machine signed a *newer* observation; store refused it `UnknownSigner … status 4` |
 | fleet shrinks when a machine is paused | **verified** | `getActiveTeeMachines` and the keeper both reported 2 of 3 |

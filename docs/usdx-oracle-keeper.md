@@ -21,7 +21,7 @@ _**Not built, and tracked below:** replace-by-fee bumping, the ≥2-instance dep
 chain-age watcher — which by design must run outside this process's failure domain._
 
 _Companion docs: architecture and flow in `usdx-oracle-spec.md` §4 and WP5, missed-update
-alerting in `usdx-oracle-monitoring.md`, working plan in `usdx-oracle-plan.md`._
+alerting in `usdx-oracle-monitoring.md`._
 
 ---
 

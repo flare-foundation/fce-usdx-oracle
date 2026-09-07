@@ -268,7 +268,7 @@ touches the network for data.**
 
 ```
 poller.Poller.Run — every 2 min                poller.go:69
-  ├─ store.Resolve()                       store.go:415
+  ├─ store.Open()
   │     re-run every tick (never cached), so a rotated credential needs no restart
   │     builds RPC clients, bonds source, cash source (nil if no secret yet)
   │     provider names are POSITIONAL — "rpc_flare_1" — so nothing an operator
@@ -484,7 +484,6 @@ flare-smart-contracts-v2 checkout (see `contracts/`).
 | `pkg/fccutils` | FCC registration, governance, policy-consistency, revert decoding |
 | `pkg/contracts/*` | generated bindings from the upstream interfaces (`deploy/scripts/generate-bindings.sh`) |
 | `pkg/validate` | the deploy/verify check suite behind `verify-deploy` |
-| `cmd/*` | one binary per operation: `register-tee`, `allow-tee-version`, `set-governance`, `send-endpoints`, `send-admins`, `keeper`, `fleet-status`, `verify-tee`, `verify-deploy`, `audit-deploy`, `query-tee`, `start-proxy` |
 
 ---
 
@@ -533,7 +532,7 @@ carries the long form.
 | Question | Command |
 | --- | --- |
 | Do the real sources yield a sane price? | `./deploy/scripts/oracle-observe.sh` |
-| Does the wire contract hold? | `./deploy/scripts/test-conformance.sh` |
+| Does the wire contract hold? | `go test ./internal/extension/ -run TestConformance` |
 | Does the whole chain work? | `./deploy/scripts/oracle-cycle.sh` |
 | What is it publishing right now? | `./deploy/scripts/oracle-status.sh` |
 

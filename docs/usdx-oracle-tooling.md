@@ -128,7 +128,6 @@ allowlist, EVM key type) once governance has run `registerReserved`.
 | `a` | run the FTDC availability check (data providers cosign) |
 | `p` | promote to `PRODUCTION` |
 
-Use `rRap`, not the default `rap`. The availability check needs a one-shot challenge; `r` skips
 issuing one once the machine is already registered, so every re-run (new image, retry) would
 revert `ChallengeExpired`. `R` issues it unconditionally. Progress is written to the `-state`
 file so a failed run resumes instead of repeating on-chain steps.
@@ -271,7 +270,6 @@ The keeper preflights the store's guards before spending gas, so a rejection arr
 | `fleet-status` | "Which machines are configured for the feed, and are they all running the same thing?" Registry status, `isTeeIdConfigured`, the sender's expected endpoints/admins hashes vs each machine's live state — for every machine at once. `-store`/`-feedId`, `-json`. |
 | `oracle-status.sh` | What the oracle publishes right now: the feed, the store, the registry, and the machine's `/state`. Reads only. |
 | `oracle-observe.sh` | Runs the real observation against live sources with no chain, Docker or TEE. The highest-value local check: if this is wrong, everything downstream is. |
-| `query-tee` | Raw registry lookup — `-ext <id>` lists the active machines and their URLs. |
 | `audit-deploy` | Sanity-checks `deployed-addresses.json` against a chain: code present, supported platforms and code hashes, and replays a failing `addTeeVersion` as `eth_call` to decode the custom error. |
 | `verify-deploy` | Post-deploy assertions by stage: `-step register\|services\|tee-version\|tee-machine\|all`, `-checks D5,R2` to narrow, `-json` for machines. |
 
@@ -285,12 +283,6 @@ Its table prints only **unhealthy** sources as notes, so a clean run says nothin
 sources that are fine. For the full per-source matrix — including everything reporting `ok` —
 use `-json` and read `sourceHealth`. Note that log lines share stdout with the JSON, so strip
 anything before the first line that is exactly `[`.
-
-`query-tee` needs `-reg` pointed at the **FlareTeeManager diamond**, not the `MachineManagerFacet`
-address in `deployed-addresses.json`; every TEE facet is called through the diamond, and calling a
-facet directly reverts. Its default is a hard-coded address that may not match your deployment, so
-pass `-reg` explicitly. Because it lists only *active* machines, it is the quickest way to confirm
-a `pause` took effect.
 
 ### Environment overrides worth knowing
 
@@ -320,12 +312,11 @@ most likely to meet are tabulated in
 | `cmd/mocknode` | Stands in for tee-node: `/sign`, `/decrypt`, `/info`, key from a fixed seed. **Not secure, not for deployment.** |
 | `cmd/start-tee` | Host-process runner behind `start-services.sh --local`. |
 | `set-endpoints.sh` | Posts a `SET_ENDPOINTS` payload straight to a running extension's `/action`, no chain. |
-| `start-proxy` | Temporary: runs the extension proxy as a Go process. |
 | `local-stack` | Runs the extension TEE and its proxy as host processes on the local simulation: the proxy in-process, `cmd/start-tee` as a child. No Docker; see [local-e2e.md](local-e2e.md). |
 | `full-setup-host.sh` | `full-setup.sh --chain local` with the stack as host processes: starts `local-stack` under `out/pids/`, then runs `post-build.sh` against it. |
 | `deploy-oracle-local.sh` | Deploys upstream's oracle contracts on the simulation through `contracts/script/DeployTeeOracleLocal.s.sol`, deployer-governed (no production mode), reserves extension 1 and imports the addresses. |
 | `publish-local.sh` | Publishes endpoints or admin sets on the simulation: one transaction on a deployer-governed sender; record, real timelock and execute on a production-mode one. |
-| `e2e.sh` | Temporary: manages background Go processes for local dev. |
+| `e2e.sh` | Starts, stops and waits on the host-process stack's background processes (pids and logs under `out/`). |
 
 The upload scripts take `--no-verify` for a mocknode, which has no attestation and no on-chain
 registration. Never against a machine that will hold a real credential.
@@ -348,10 +339,9 @@ cannot help, because the siblings build's context root is `tee/`, not the repo.
 | --- | --- |
 | `generate-bindings.sh` | Compiles the TEE oracle interfaces out of the sibling flare-smart-contracts-v2 checkout (`contracts/`) and regenerates the Go bindings. **Run when upstream moves.** |
 | `regen-wire-fixtures.sh` | Regenerates `deploy/testdata/wire/` from the Forge vector tests (the ABI ground truth both Go codecs assert against). |
-| `build-node-base.sh` | Builds the shared tee-node base image, needed by non-Go language images. |
 | `check-versions.sh` | Fails when the dependency pins drift apart. |
 | `test-unit.sh` | A language implementation's unit tests. |
-| `test-conformance.sh` | Verifies an implementation against [extension-contract.md](extension-contract.md). |
+| `go test ./internal/extension/ -run TestConformance` | Replays the wire fixtures in `deploy/testdata/conformance` against the extension, no chain and no tee-node; the check behind [extension-contract.md](extension-contract.md). |
 
 ---
 

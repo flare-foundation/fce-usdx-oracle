@@ -421,7 +421,7 @@ monitoring in WP7 is designed to detect, and precisely the state it cannot see.
    outside, so a banner is not a defence. The production constructors
    (`NewWithObserver`, `NewWithProvisioner`) now **panic** on a nil observer,
    and the only stub path is `extension.NewStub`, called at exactly one site:
-   `./cmd`, the binary used by `test-conformance.sh`, which has no credentials
+   `./cmd`, the binary the conformance replay (`go test ./internal/extension/ -run TestConformance`) starts, which has no credentials
    by design. `./cmd/docker` is production and is what `Dockerfile` builds.
    `Extension.StubMode()` remains exposed for health checks.
 
@@ -859,7 +859,7 @@ invocations, so the caller already holds a lock."
 
 **No such lock existed.** `/action` is an ordinary `net/http` handler, so
 tee-node delivering two direct actions at once runs two `ApplySecret`
-goroutines. `runtimecfg.Store` took `s.mu` only around the `s.secrets` write,
+goroutines. `store.Store` took `s.mu` only around the `s.secrets` write,
 well after `Verify` had already read and written the version map.
 
 Two consequences, and the second is the serious one:
@@ -883,7 +883,7 @@ Two consequences, and the second is the serious one:
   but within that window the defence was bypassable by firing concurrently
   rather than sequentially.
 
-**Resolution.** `runtimecfg.Store` gained a dedicated `applyMu`, held across the
+**Resolution.** `store.Store` gained a dedicated `applyMu`, held across the
 whole of `ApplyEndpoints` and `ApplySecret`, so the verifier is never entered
 concurrently.
 

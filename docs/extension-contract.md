@@ -296,23 +296,16 @@ Every language image must:
 
 Determinism is not equal across languages. Go on distroless is bit-for-bit reproducible across machines. Python wheels and `node_modules` trees embed build-host paths and npm-version-dependent layout, so those images target *same-machine* determinism only. See `REPRODUCIBILITY.md` for the honest per-language caveats.
 
-**tee-node version pinning.** Non-Go images build the tee-node `./cmd/extension` binary from source. The version must match the Go module pin in `go.mod`, or the node and the proxy will disagree on signature formats and surface confusing verification failures. That pin is frequently a Go *pseudo-version* (`v0.0.21-0.20260619120252-31fc839ae6d2`), whose last segment is an **abbreviated** commit SHA. Two obvious approaches both fail on it: `git clone --branch <sha>` resolves tags and branches only, and `git fetch --depth 1 origin <sha>` requires a full 40-char SHA plus server-side `uploadpack.allowAnySHA1InWant`, which GitHub rejects with `couldn't find remote ref`. Use a blobless partial clone, which fetches all refs cheaply and lets an abbreviated SHA resolve locally:
+**tee-node version pinning.** The extension links tee-node as a Go module, so `go.mod` is the single pin; the sibling build (`Dockerfile.siblings`) replaces it with the on-disk checkout for development.
 
-```dockerfile
-RUN git clone --filter=blob:none https://github.com/flare-foundation/tee-node.git tee-node && cd tee-node && git checkout "${TEE_NODE_REF}"
-```
-
-`deploy/scripts/lib/versions.sh` derives `TEE_NODE_REF` from `go.mod`, and `deploy/scripts/check-versions.sh` fails the build if the pins drift apart.
+`deploy/scripts/check-versions.sh` fails when the tee-node or go-flare-common pins of the two Go modules, or the tee-proxy pin and the proxy image's build argument, drift apart.
 
 ---
 
 ## 8. Adding a language
 
-Only the Go implementation is checked in; the scaffold's `LANGUAGE=<dir>` dispatch still works,
-so a port is possible but is not something this repo currently ships.
-
-1. Create `<language>/` with a `Dockerfile` producing an image that satisfies §2, §4, §6.
-2. Implement the framework layer (`base/`): HTTP server, wire types, bytes32 helpers, dispatch registry, serialization.
-3. Implement the oracle: the `TEE_ORACLE` commands (`GET_FEED`, `GET_READINESS`, `SET_ENDPOINTS`, `SET_ADMINS`, `SET_SECRET`) with the `FeedUpdate` wire format, behaviourally identical to the Go implementation.
-4. Run `cd go && go test ./internal/extension/ -run TestConformance`. No chain, no registration, no proxy required — it replays the fixtures in `deploy/testdata/conformance/`.
-5. Set `LANGUAGE=<language>` in `.env` and run the normal flow. Nothing in `deploy/scripts/`, `tools/` or `deploy/docker-compose.yaml` needs to change — language selection resolves by directory convention.
+Only the Go implementation exists, and the deploy scripts build one image from the
+root `Dockerfile`. A port would have to satisfy §2, §4 and §6, pass the conformance
+replay (`go test ./internal/extension/ -run TestConformance` replays the fixtures in
+`deploy/testdata/conformance` against a running extension; no chain, no registration, no
+proxy), and bring its own image build, since nothing in `deploy/` dispatches on a language.
