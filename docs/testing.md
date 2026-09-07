@@ -75,8 +75,9 @@ the deployer-key source detection the registration flow relies on.
 
 ## End-to-End Tests
 
-After `full-setup.sh` completes (services up, machine registered), drive one full cycle against
-the running stack:
+For the whole thing on a local Hardhat simulation — oracle contracts included — see
+[local-e2e.md](local-e2e.md). Against an existing deployment, after `full-setup.sh` completes
+(services up, machine registered), drive one full cycle against the running stack:
 
 ```bash
 ./deploy/scripts/oracle-cycle.sh -tee @<machine>
@@ -113,8 +114,8 @@ flag-free.
 
 Two cases still need `-p` or `EXT_PROXY_URL`:
 
-- **`start-services.sh --local`** — the proxy binds **6664** on the host directly, with no
-  Docker mapping. Use `-p http://localhost:6664`.
+- **`start-services.sh --local`** and **`tools/cmd/local-stack`** — the proxy binds **6664** on
+  the host directly, with no Docker mapping. Use `-p http://localhost:6664`.
 - **Reaching the machine over its public URL** — pass the tunnel address.
 
 `go run` does not read `.env`, so an `EXT_PROXY_URL` set there is not in scope for a
@@ -276,7 +277,7 @@ payload the extension rejects will leave every later `submitFeedUpdates` reverti
 `StaleEndpoints`:
 
 ```bash
-cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -tee <MACHINE,...> -config ../deploy/config/endpoints/public-only.json
+cd tools && go run ./cmd/send-endpoints -instructionSender <SENDER> -config ../deploy/config/endpoints/public-only.json
 ```
 
 The tool reads `endpointsVersion(feedId)`, predicts the version the sender will assign
@@ -292,7 +293,7 @@ store requires both hashes, so a machine with endpoints but no admin set still c
 update — it reverts `NoAdminsPublished`:
 
 ```bash
-cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -tee <MACHINE,...> -config ../deploy/config/admins/dev-wellknown-keys.json
+cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../deploy/config/admins/dev-wellknown-keys.json
 ```
 
 ### Handing the Hex credential to the machine

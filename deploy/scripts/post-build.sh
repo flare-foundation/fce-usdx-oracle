@@ -23,11 +23,15 @@ step() { echo -e "\n${CYAN}=== Step $1: $2 ===${NC}"; }
 die()  { echo -e "${RED}[post-build] ERROR:${NC} $*" >&2; exit 1; }
 
 # --- Load .env from project root (if present) ---
+PRESET_EXT_PROXY_URL="${EXT_PROXY_URL:-}"
 if [[ -f "$PROJECT_DIR/.env" ]]; then
     set -a
     source "$PROJECT_DIR/.env"
     set +a
 fi
+# The environment outranks .env for the proxy URL: a host-process stack serves 6664
+# while .env.local names the compose stack's port.
+[[ -n "$PRESET_EXT_PROXY_URL" ]] && EXT_PROXY_URL="$PRESET_EXT_PROXY_URL"
 
 # Auto-detect proxy port: use Docker port (6674) if ext-proxy container is running,
 # otherwise fall back to local Go process port (6664).

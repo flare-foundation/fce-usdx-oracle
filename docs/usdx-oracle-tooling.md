@@ -83,7 +83,7 @@ rejected payload costs a transaction *and* leaves the machine unable to land pri
 post-build. Everything after stage 3 is deliberately manual: it moves credentials and money.
 
 Stages 3, 5 and 7 repeat **per machine**. Stages 4 and 6 are fleet-wide: `send-endpoints` /
-`send-admins` take every machine in one `-tee` list, and one keeper serves them all. Stage 7 is
+`send-admins` reach every machine active on the extension in one call (the sender reads that set itself), and one keeper serves them all. Stage 7 is
 not exceptional — a rebuild mints a new enclave key, so replacing a machine is the ordinary
 consequence of shipping a change, and the identity it replaces has to be paused or it stays
 registered forever.
@@ -151,7 +151,7 @@ governance — before `switchToProductionMode`, i.e. local and test deployments.
 ### `send-endpoints` — which RPC sources the machine reads
 
 ```bash
-cd tools && go run ./cmd/send-endpoints -dry-run -tee <TEE1>,<TEE2> -feedId <FEED_ID> -config <ENDPOINTS_JSON>
+cd tools && go run ./cmd/send-endpoints -dry-run -feedId <FEED_ID> -config <ENDPOINTS_JSON>
 ```
 
 The sender resolves from the `TeeOracleInstructionsSender` entry in the addresses file (or
@@ -178,7 +178,7 @@ refused as a provider secret, and `hex_cash` required to be a single PRIVATE end
 ### `send-admins` — who may install credentials in the machine
 
 ```bash
-cd tools && go run ./cmd/send-admins -dry-run -tee <TEE1>,<TEE2> -feedId <FEED_ID> -config <ADMINS_JSON>
+cd tools && go run ./cmd/send-admins -dry-run -feedId <FEED_ID> -config <ADMINS_JSON>
 ```
 
 The JSON is two role-tagged signer sets: `backing` (governs `hex_api_key`, floor 1) and
@@ -321,13 +321,20 @@ most likely to meet are tabulated in
 | `cmd/start-tee` | Host-process runner behind `start-services.sh --local`. |
 | `set-endpoints.sh` | Posts a `SET_ENDPOINTS` payload straight to a running extension's `/action`, no chain. |
 | `start-proxy` | Temporary: runs the extension proxy as a Go process. |
+| `local-stack` | Runs the extension TEE and its proxy as host processes on the local simulation: the proxy in-process, `cmd/start-tee` as a child. No Docker; see [local-e2e.md](local-e2e.md). |
+| `full-setup-host.sh` | `full-setup.sh --chain local` with the stack as host processes: starts `local-stack` under `out/pids/`, then runs `post-build.sh` against it. |
+| `deploy-oracle-local.sh` | Deploys upstream's oracle contracts on the simulation through `contracts/script/DeployTeeOracleLocal.s.sol`, deployer-governed (no production mode), reserves extension 1 and imports the addresses. |
+| `publish-local.sh` | Publishes endpoints or admin sets on the simulation: one transaction on a deployer-governed sender; record, real timelock and execute on a production-mode one. |
 | `e2e.sh` | Temporary: manages background Go processes for local dev. |
 
 The upload scripts take `--no-verify` for a mocknode, which has no attestation and no on-chain
 registration. Never against a machine that will hold a real credential.
 
 **Building against on-disk tee-node / tee-proxy.** `USE_LOCAL_SIBLINGS=1 ./deploy/scripts/start-services.sh`
-swaps the pinned node build for one compiled from sibling checkouts. Two things to know: the
+swaps the pinned node build for one compiled from sibling checkouts. The in-image module downloads
+are served from the host's module cache while the build runs (`deploy/scripts/lib/modcache-proxy.sh`),
+so `go` and `python3` must be on `PATH`; without them the builds fall back to the public proxy.
+Two things to know: the
 sibling layout is resolved as `$PROJECT_DIR/../..`, so the repo has to sit at
 `tee/extension-examples/<repo>` with `tee/tee-node` and `tee/tee-proxy` beside it — both must exist
 even if only one is being changed. And `start-services.sh` writes a `go.work` at the repo root for
