@@ -20,3 +20,5 @@ Dockerfile*
 .dockerignore
 go.work
 go.work.sum
+# Runtime output of start-services.sh; must not perturb the build context.
+out/

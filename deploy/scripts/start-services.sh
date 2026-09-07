@@ -25,7 +25,9 @@
 #   - Infrastructure running (Hardhat, indexer, Redis, normal TEE + proxy)
 #   - EXTENSION_ID is set (defaults to reserved id 1; config/extension.env
 #     written by full-setup.sh)
-#   - Redis will be started on :6382 automatically (separate from infrastructure Redis)
+#   - The extension Redis is published on a free host port chosen on every run
+#     (REDIS_BIND=host:port overrides); the choice is recorded in
+#     deploy/config/extension.env and printed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -34,6 +36,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[start-services]${NC} $*"; }
 die()  { echo -e "${RED}[start-services] ERROR:${NC} $*" >&2; exit 1; }
+warn() { echo -e "${YELLOW:-}[start-services] WARN:${NC} $*" >&2; }
 
 # --- Parse flags ---
 USE_LOCAL=false
@@ -56,11 +59,55 @@ if [[ -f "$PROJECT_DIR/.env" ]]; then
 fi
 
 # --- Load extension config ---
+# REDIS_BIND from the environment or .env is an explicit choice and wins. The
+# copy recorded in extension.env by an earlier run is deliberately NOT reused:
+# a fresh port is picked on every start, so a stale binding can never collide
+# with whatever else has since claimed the old one.
+REDIS_BIND_OVERRIDE="${REDIS_BIND:-}"
 CONFIG_FILE="$PROJECT_DIR/deploy/config/extension.env"
 if [[ -f "$CONFIG_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$CONFIG_FILE"
 fi
+
+# --- Redis host port ---
+# The e2e stack publishes its own four redis instances on 6379-6382, and other
+# sibling stacks claim ports too, so a fixed default is a recurring collision.
+# Ask the OS for a free port instead; compose recreates the redis container on
+# a changed binding, which loses nothing (it runs with persistence off).
+if [[ -n "$REDIS_BIND_OVERRIDE" ]]; then
+    REDIS_BIND="$REDIS_BIND_OVERRIDE"
+else
+    REDIS_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')" \
+        || die "could not pick a free port for redis (python3 required)"
+    REDIS_BIND="127.0.0.1:$REDIS_PORT"
+fi
+export REDIS_BIND
+
+# --- Proxy config rendering ---
+# The proxy TOMLs embed three contract addresses that the simulation redeploys
+# on every run, and the host-mode TOML embeds the redis port. Rather than edit
+# the committed files, a copy is rendered into out/ from the e2e sim dump.
+SIM_DUMP_FILE="${SIM_DUMP:-$PROJECT_DIR/../../e2e/docker/sim_dump/deployed-addresses.json}"
+[[ "$SIM_DUMP_FILE" != /* ]] && SIM_DUMP_FILE="$PROJECT_DIR/$SIM_DUMP_FILE"
+render_proxy_config() {  # render_proxy_config <src.toml> <dst.toml> [redis-port]
+    local src="$1" dst="$2" port="${3:-}" args=() pair key name addr
+    mkdir -p "$(dirname "$dst")"
+    if [[ "$CHAIN" == "local" && -f "$SIM_DUMP_FILE" ]]; then
+        for pair in flare_systems_manager:FlareSystemsManager relay:Relay voter_registry:VoterRegistry; do
+            key="${pair%%:*}"; name="${pair##*:}"
+            addr="$(jq -r --arg n "$name" '.[$n] // empty' "$SIM_DUMP_FILE")"
+            [[ -n "$addr" ]] && args+=(-e "s#^$key = .*#$key = \"$addr\"#")
+        done
+        log "proxy addresses from the sim dump ($(basename "$(dirname "$SIM_DUMP_FILE")")/$(basename "$SIM_DUMP_FILE"))"
+    elif [[ "$CHAIN" == "local" ]]; then
+        warn "no sim dump at $SIM_DUMP_FILE — the proxy keeps the committed addresses, which are stale after every new simulation"
+    fi
+    [[ -n "$port" ]] && args+=(-e "s#^redis_port = .*#redis_port = \":$port\"#")
+    if (( ${#args[@]} )); then sed "${args[@]}" "$src" > "$dst"; else cp "$src" "$dst"; fi
+}
+mkdir -p "$(dirname "$CONFIG_FILE")"
+{ grep -vE '^REDIS_BIND=' "$CONFIG_FILE" 2>/dev/null || true; echo "REDIS_BIND=$REDIS_BIND"; } > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 
 # Reserved id 1 (pinned in internal/config); the upstream sender/store are
 # not deployed locally. May be overridden for a test extension on another id.
@@ -92,6 +139,7 @@ EXTENSION_DOCKERFILE="Dockerfile"
 # scripts/lib/versions.sh for why a pseudo-version needs a SHA, not a tag.
 # shellcheck source=lib/versions.sh
 source "$SCRIPT_DIR/lib/versions.sh"
+source "$SCRIPT_DIR/lib/modcache-proxy.sh"
 load_versions "$PROJECT_DIR" || die "could not derive dependency versions"
 
 # --- Resolve local-siblings toggle ---
@@ -105,6 +153,7 @@ log "Extension ID:   $EXTENSION_ID"
 log "Local mode:     $LOCAL_MODE"
 log "Local siblings: $USE_LOCAL_SIBLINGS"
 log "tee-node ref:   $TEE_NODE_REF"
+log "Redis bind:     $REDIS_BIND (host side; a new free port each run unless REDIS_BIND is set)"
 
 # --- Manage go.work for host builds (git-ignored, fully managed here) ---
 # Toggle on: host `go` builds (e.g. --local mode) resolve the on-disk sibling
@@ -119,7 +168,7 @@ if [[ "$USE_LOCAL_SIBLINGS" == "true" ]]; then
     log "Writing $GOWORK_FILE (host builds use sibling tee-node / tee-proxy)"
     GO_VERSION=$(grep '^go ' "$PROJECT_DIR/go.mod" | awk '{print $2}')
     cat > "$GOWORK_FILE" <<EOF
-// Generated by scripts/start-services.sh for USE_LOCAL_SIBLINGS (git-ignored).
+// Generated by deploy/scripts/start-services.sh for USE_LOCAL_SIBLINGS (git-ignored).
 // Points host \`go\` builds at the on-disk sibling tee-node / tee-proxy checkouts.
 // Re-run start-services.sh without USE_LOCAL_SIBLINGS (or delete this file) to
 // return to the pinned module versions in go.mod / tools/go.mod.
@@ -132,6 +181,9 @@ use (
 	../../tee-proxy
 )
 EOF
+    # The siblings may require a newer Go than this module's directive; `go work
+    # use` raises the workspace's go line to whatever its members need.
+    (cd "$PROJECT_DIR" && go work use . ./tools ../../tee-node ../../tee-proxy) || die "go work use failed"
 elif [[ -f "$GOWORK_FILE" ]]; then
     log "Removing stale $GOWORK_FILE — host builds use pinned modules"
     rm -f "$GOWORK_FILE" "$PROJECT_DIR/go.work.sum"
@@ -164,20 +216,27 @@ if [[ "$USE_LOCAL" == "false" ]]; then
 
     # --- Build tee-proxy image locally if no remote registry is configured ---
     if [[ -z "${REGISTRY:-}" ]]; then
-        if ! docker image inspect local/tee-proxy >/dev/null 2>&1; then
+        # In siblings mode an existing image is the pinned build, not the sibling,
+        # so it is always rebuilt (Docker's layer cache keeps that cheap).
+        if [[ "$USE_LOCAL_SIBLINGS" == "true" ]] || ! docker image inspect local/tee-proxy >/dev/null 2>&1; then
             if [[ "$USE_LOCAL_SIBLINGS" == "true" ]]; then
-                # Dev build: use the on-disk sibling tee-proxy checkout.
+                # Dev build: use the on-disk sibling tee-proxy checkout. Its Dockerfile
+                # declares no module proxy argument, so the build reads a copy with
+                # GOPROXY declared after the first FROM; the copy is otherwise the
+                # sibling's Dockerfile verbatim, and the checkout is the build context.
                 TEE_PROXY_DIR="$SIBLINGS_ROOT/tee-proxy"
                 [[ -d "$TEE_PROXY_DIR" ]] || die "USE_LOCAL_SIBLINGS set but tee-proxy repo not present at $TEE_PROXY_DIR.\n  Clone it into $SIBLINGS_ROOT/, or unset USE_LOCAL_SIBLINGS to build the pinned proxy."
+                modcache_proxy_start
                 log "Building local/tee-proxy from sibling checkout $TEE_PROXY_DIR (USE_LOCAL_SIBLINGS)..."
-                docker build -f "$TEE_PROXY_DIR/Dockerfile" -t local/tee-proxy "$TEE_PROXY_DIR" || die "Failed to build tee-proxy image"
+                awk '{ print } /^FROM / && !done { print "ARG GOPROXY=https://proxy.golang.org,direct"; print "ENV GOPROXY=$GOPROXY"; done = 1 }' "$TEE_PROXY_DIR/Dockerfile" \
+                    | docker build --load --build-arg GOPROXY="$GOPROXY_BUILD" -f - -t local/tee-proxy "$TEE_PROXY_DIR" || die "Failed to build tee-proxy image"
             else
                 # Default: pinned, self-contained build from the in-repo Dockerfile
                 # (clones tee-proxy at the version in proxy/Dockerfile, matching tools/go.mod).
                 PROXY_DOCKERFILE="$PROJECT_DIR/deploy/proxy/Dockerfile"
                 [[ -f "$PROXY_DOCKERFILE" ]] || die "Image local/tee-proxy not found and proxy Dockerfile missing at $PROXY_DOCKERFILE.\n  Set REGISTRY in .env to pull from a remote registry, restore proxy/Dockerfile, or use USE_LOCAL_SIBLINGS=1 to build from a sibling checkout."
                 log "Building local/tee-proxy from $PROXY_DOCKERFILE (pinned, self-cloning)..."
-                docker build -f "$PROXY_DOCKERFILE" -t local/tee-proxy "$PROJECT_DIR/proxy" || die "Failed to build tee-proxy image"
+                docker build --load -f "$PROXY_DOCKERFILE" -t local/tee-proxy "$PROJECT_DIR/deploy/proxy" || die "Failed to build tee-proxy image"
             fi
             log "local/tee-proxy image built successfully"
         else
@@ -191,6 +250,7 @@ if [[ "$USE_LOCAL" == "false" ]]; then
     if [[ "$USE_LOCAL_SIBLINGS" == "true" ]]; then
         log "USE_LOCAL_SIBLINGS — node built from on-disk tee-node via Dockerfile.siblings"
         COMPOSE_FILES+=("-f" "$PROJECT_DIR/deploy/docker-compose.siblings.yaml")
+        modcache_proxy_start
     fi
 
     case "$CHAIN" in
@@ -205,7 +265,28 @@ if [[ "$USE_LOCAL" == "false" ]]; then
             ;;
     esac
 
-    docker compose "${COMPOSE_FILES[@]}" up -d --build || die "docker compose up failed"
+    # A container created but never started by an aborted run keeps that run's
+    # port binding and network id; starting it fails on either. Nothing lives in
+    # such a container, so it is removed rather than diagnosed.
+    for c in $(docker compose "${COMPOSE_FILES[@]}" ps -a --status created -q 2>/dev/null); do
+        log "removing never-started container $(docker inspect --format '{{.Name}}' "$c" | tr -d /) left by an aborted run"
+        docker rm -f "$c" >/dev/null
+    done
+    if [[ "$CHAIN" == "local" ]]; then
+        PROXY_CONFIG_FILE="$PROJECT_DIR/out/extension_proxy.docker.local.toml"
+        render_proxy_config "$PROJECT_DIR/deploy/config/proxy/extension_proxy.docker.toml" "$PROXY_CONFIG_FILE"
+        export PROXY_CONFIG_FILE
+    fi
+    # Local mode recreates every container on each start. Redis is published on a
+    # fresh port per run and so is always new, and a proxy that outlives its redis,
+    # or the simulation it synced against, keeps signing-policy state for a chain
+    # that no longer exists and never initialises the node for the current one.
+    # A recreated node can come up under a new identity, so the machine has to be
+    # registered again: full-setup.sh does that in its next phase. Coston stacks
+    # keep their containers.
+    UP_FLAGS=()
+    [[ "$CHAIN" == "local" ]] && UP_FLAGS=(--force-recreate)
+    docker compose "${COMPOSE_FILES[@]}" up -d --build "${UP_FLAGS[@]}" || die "docker compose up failed"
 
     # Wait for proxy to be ready
     E2E="$SCRIPT_DIR/e2e.sh"
@@ -238,6 +319,7 @@ if [[ "$USE_LOCAL" == "false" ]]; then
     echo -e "${CYAN}Services${NC}"
     echo "  redis, ext-proxy, extension-tee"
     echo "  Proxy URL: $EXT_PROXY_URL"
+    echo "  Redis:     $REDIS_BIND on the host (redis-cli -h ${REDIS_BIND%:*} -p ${REDIS_BIND##*:})"
     echo ""
     echo -e "${CYAN}Commands${NC}"
     echo "  Logs:    docker compose ${COMPOSE_FILES[*]} logs -f"
@@ -273,10 +355,10 @@ EXTENSION_ID="$EXTENSION_ID" "$E2E" start ext-tee "$PID_DIR/ext-tee.pid" "$LOG_D
 log "Waiting for extension TEE to initialize..."
 sleep 5
 
-# --- Start extension Redis on port 6382 via Docker Compose ---
+# --- Start extension Redis via Docker Compose, published on $REDIS_BIND ---
 log "Starting Redis via Docker Compose..."
 docker compose -f "$PROJECT_DIR/deploy/docker-compose.yaml" up -d redis
-log "Waiting for Redis on :6382..."
+log "Waiting for Redis on $REDIS_BIND..."
 retries=0
 while ! docker compose -f "$PROJECT_DIR/deploy/docker-compose.yaml" exec -T redis redis-cli ping > /dev/null 2>&1; do
     retries=$((retries + 1))
@@ -285,11 +367,15 @@ while ! docker compose -f "$PROJECT_DIR/deploy/docker-compose.yaml" exec -T redi
     fi
     sleep 1
 done
-log "Redis on :6382 ready"
+log "Redis on $REDIS_BIND ready"
 
 # --- Start extension proxy ---
-log "Starting extension proxy..."
-PROXY_PRIVATE_KEY="$PROXY_PRIVATE_KEY" "$E2E" start ext-proxy "$PID_DIR/ext-proxy.pid" "$LOG_DIR/ext-proxy.log" \
+# The host proxy reads a TOML, which cannot carry a per-run port, so the
+# committed template is rendered with the chosen binding into out/.
+PROXY_CONFIG="$PROJECT_DIR/out/extension_proxy.local.toml"
+render_proxy_config "$PROJECT_DIR/deploy/config/proxy/extension_proxy.toml" "$PROXY_CONFIG" "${REDIS_BIND##*:}"
+log "Starting extension proxy (config rendered to $PROXY_CONFIG)..."
+PROXY_PRIVATE_KEY="$PROXY_PRIVATE_KEY" PROXY_CONFIG="$PROXY_CONFIG" "$E2E" start ext-proxy "$PID_DIR/ext-proxy.pid" "$LOG_DIR/ext-proxy.log" \
     "$BIN_DIR/start-proxy"
 
 cd "$PROJECT_DIR"
@@ -311,7 +397,7 @@ echo -e "${GREEN} Services started (local Go processes)${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${CYAN}Processes${NC}"
-echo "  Extension Redis  Docker container (port 6382)"
+echo "  Extension Redis  Docker container ($REDIS_BIND)"
 echo "  Extension TEE    PID $EXT_TEE_PID"
 echo "  Extension Proxy  PID $EXT_PROXY_PID"
 echo "  Proxy URL        http://localhost:6664"

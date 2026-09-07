@@ -42,7 +42,7 @@ RUN \
 
 # Copy only the module manifest first so `go mod download` is cached independently of source edits.
 # tee-node and every other dependency are fetched from the network during download.
-COPY --chmod=644 --chown=0:0 go.mod go/go.sum ./
+COPY --chmod=644 --chown=0:0 go.mod go.sum ./
 RUN go mod download
 RUN go mod verify
 

@@ -71,7 +71,7 @@ load_versions() {
     fi
     TEE_NODE_REF="$(_versions_ref "$TEE_NODE_VERSION")"
 
-    TEE_PROXY_VERSION="$(grep -E '^ARG TEE_PROXY_VERSION=' "$root/proxy/Dockerfile" 2>/dev/null | head -1 | cut -d= -f2)"
+    TEE_PROXY_VERSION="$(grep -E '^ARG TEE_PROXY_VERSION=' "$root/deploy/proxy/Dockerfile" 2>/dev/null | head -1 | cut -d= -f2)"
 
     export TEE_NODE_VERSION TEE_NODE_REF TEE_PROXY_VERSION
 }

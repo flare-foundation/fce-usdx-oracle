@@ -22,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
-head() { echo -e "\n${CYAN}=== $* ===${NC}"; }
+section() { echo -e "\n${CYAN}=== $* ===${NC}"; }
 
 CONFIG="${1:-$PROJECT_DIR/deploy/config/endpoints/public-only.json}"
 [[ "$CONFIG" != /* ]] && CONFIG="$PROJECT_DIR/$CONFIG"
@@ -60,7 +60,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-head "Building mocknode and devserver"
+section "Building mocknode and devserver"
 cd "$PROJECT_DIR"
 # Built rather than `go run`: go run execs the compiled binary as a CHILD, so
 # killing the go run process on exit would leave that child holding the port and
@@ -68,7 +68,7 @@ cd "$PROJECT_DIR"
 go build -o "$LOG_DIR/mocknode" ./cmd/mocknode
 go build -o "$LOG_DIR/devserver" ./cmd/devserver
 
-head "Starting mocknode (:$SIGN_PORT) and devserver (:$EXT_PORT)"
+section "Starting mocknode (:$SIGN_PORT) and devserver (:$EXT_PORT)"
 SIGN_PORT="$SIGN_PORT" "$LOG_DIR/mocknode" >"$LOG_DIR/mocknode.log" 2>&1 &
 MOCK_PID=$!
 EXTENSION_PORT="$EXT_PORT" SIGN_PORT="$SIGN_PORT" "$LOG_DIR/devserver" >"$LOG_DIR/devserver.log" 2>&1 &
@@ -88,15 +88,15 @@ curl -sf -m 2 "http://127.0.0.1:$EXT_PORT/state" >/dev/null 2>&1 || {
     exit 1
 }
 
-head "Provisioning endpoints from $(basename "$CONFIG")"
+section "Provisioning endpoints from $(basename "$CONFIG")"
 "$SCRIPT_DIR/set-endpoints.sh" "$CONFIG" "$EXT_PORT"
 
 # Without an admin set the machine observes but will not sign a feed update: it
 # would commit to no admin set, and the store would reject it on-chain anyway.
-head "Publishing the dev admin set from $(basename "$ADMINS")"
+section "Publishing the dev admin set from $(basename "$ADMINS")"
 "$SCRIPT_DIR/set-admins.sh" "$ADMINS" "$EXT_PORT"
 
-head "Requesting a feed update"
+section "Requesting a feed update"
 # originalMessage is abi.encode(FeedUpdateRequest{feedId}): the 21-byte feed id
 # left-aligned in a single 32-byte word (its only field is static, so the tuple
 # encodes inline). Derived from the id rather than written out, because the
@@ -151,7 +151,7 @@ while :; do
 done
 echo "$RESP" | jq '{status, log}'
 
-head "Observation"
+section "Observation"
 STATE="$(curl -sS "http://127.0.0.1:$EXT_PORT/state")"
 echo "$STATE" | jq '.state | {lastPrice, lastDecimals, lastObservedAt,
                               updateCount, failureCount, lastErrorClass,

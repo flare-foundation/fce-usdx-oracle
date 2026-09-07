@@ -1,7 +1,7 @@
-redis_port = ":6382"
+# Rewritten per run by start-services.sh --local to the port it published redis on.
+redis_port = ":6389"
 
 private_key_variable = "PROXY_PRIVATE_KEY"
-initial_signing_policy_offset = 0
 signing_policy_fetch_interval = "20s"
 
 chain_id = 114

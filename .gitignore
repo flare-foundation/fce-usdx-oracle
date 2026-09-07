@@ -1,5 +1,7 @@
 .env*
 *.env
+# The local simulation's environment holds only Hardhat test keys, so it is tracked.
+!.env.local
 !*.example
 
 # Coston/Coston2 proxy configs (contain DB credentials)
@@ -8,6 +10,10 @@ deploy/config/proxy/extension_proxy.coston.docker.toml
 deploy/config/proxy/extension_proxy.coston2.toml
 deploy/config/proxy/extension_proxy.coston2.docker.toml
 deploy/config/extension.env
+# Written by import-upstream-addresses.sh local from the e2e sim dump; changes per sim run.
+deploy/config/local/
+# Rendered proxy configs, and in --local mode pids, logs and host binaries.
+out/
 deploy/config/**/*.log
 deploy/config/register-tee.state
 results/
@@ -18,6 +24,7 @@ results/
 contracts/out/
 contracts/cache/
 contracts/lib/
+contracts/broadcast/
 
 # go.work is generated on demand by deploy/scripts/start-services.sh for
 # USE_LOCAL_SIBLINGS=1 (points host builds at sibling tee-node / tee-proxy).

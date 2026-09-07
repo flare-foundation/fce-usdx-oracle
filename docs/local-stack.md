@@ -27,6 +27,9 @@ what every command does.
 
 ## Quick start
 
+For the complete local run — simulation, oracle contracts, publications and a keeper cycle —
+follow [local-e2e.md](local-e2e.md). The rest of this page is the Docker Compose stack on its own.
+
 With local infrastructure running, one command runs the whole lifecycle:
 
 ```bash
@@ -52,9 +55,8 @@ deployed here — that is upstream's `deploy-tee-oracle.sh` plus governance foll
 ./deploy/scripts/start-services.sh
 ```
 
-Resolves `LANGUAGE` from `.env`, builds the matching extension image (and the `tee-node`
-base / `local/tee-proxy` images when needed), then brings up Docker Compose. Prefer this
-over a bare `docker compose up`, which defaults to `Dockerfile` and ignores `LANGUAGE`.
+Builds the extension image (and the `local/tee-proxy` image from `deploy/proxy/Dockerfile` when
+it is missing), then brings up Docker Compose.
 
 > The base compose file joins the external `docker_default` network created by the e2e
 > infrastructure. Start the e2e stack first, or this fails with "network not found".
@@ -95,8 +97,8 @@ deployed stack:
 ./deploy/scripts/oracle-cycle.sh -tee <TEE1>              # request, poll, submit
 ```
 
-The wire contract itself (independent of any chain) is checked by
-`./deploy/scripts/test-conformance.sh`. For the full feed walkthrough see [testing.md](testing.md).
+The wire contract itself (independent of any chain) is checked by `TestConformance`
+(`go test ./internal/extension/`). For the full feed walkthrough see [testing.md](testing.md).
 
 ### Running single steps
 
@@ -174,7 +176,7 @@ container via Docker Compose.
 | Port | Service | Purpose |
 |------|---------|---------|
 | 5501 | TEE config | Set proxy URL, initial owner, extension ID |
-| 6382 | Redis | Queue storage for proxy |
+| chosen per run | Redis | Host-side debug binding for the proxy's queue; `start-services.sh` picks a free port each run, prints it and records it in `deploy/config/extension.env` (`REDIS_BIND` overrides) |
 | 6673 | Proxy internal | TEE polls actions from the proxy queue |
 | 6674 | Proxy external | Clients query results, `/info` endpoint |
 | 7701 | TEE sign port | Extension calls TEE for signing/decrypting |
@@ -185,6 +187,11 @@ container via Docker Compose.
 
 ## Docker Compose details
 
+In local mode every `start-services.sh` run recreates the containers: redis comes up on a fresh
+port each time, and a proxy that outlives its redis or its simulation keeps stale signing-policy
+state. A recreated node can come up under a new identity, which is why `full-setup.sh`
+registers the machine again right after; a stale identity stays registered on the simulation.
+
 `deploy/docker-compose.yaml` uses `build.context: .` and the build is self-contained: `go.mod`
 pins `tee-node`, which is fetched from the network and verified against `go.sum`, so no
 sibling `tee-node/` checkout is needed.
@@ -192,6 +199,10 @@ sibling `tee-node/` checkout is needed.
 To build the node and proxy from on-disk sibling checkouts instead (while developing
 `tee-node`/`tee-proxy`), run `USE_LOCAL_SIBLINGS=1 ./deploy/scripts/start-services.sh`, which
 selects `Dockerfile.siblings` (build context `tee/`) via `deploy/docker-compose.siblings.yaml`.
+Both sibling images download their Go modules from the host's module cache, which the script
+serves for the duration of the build with the public proxy as fallback
+(`deploy/scripts/lib/modcache-proxy.sh`); the checkouts' dependency graphs run to several hundred
+modules, so on a slow link this is the difference between a minute and an hour.
 Caveats in [usdx-oracle-tooling.md](usdx-oracle-tooling.md#local-development).
 
 Rebuild the extension image after code changes:

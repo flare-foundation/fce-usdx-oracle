@@ -4,39 +4,17 @@
 # is selected through docker-compose.siblings.yaml; the default reproducible, self-contained,
 # pinned build lives in ./Dockerfile.
 
-# pin base image by digest so every build starts from the same bytes
-FROM golang:1.25.1-trixie@sha256:ff83f3762390c2cccb53618ccc18af23e556aff9b1db4428637e9f63287c8171 AS builder
+# Pinned by digest so every build starts from the same bytes. The sibling checkouts
+# require Go 1.25.8, ahead of the pinned build's 1.25.1. The alpine variant ships the
+# CA bundle the final stage copies, so this dev build needs no package installs; the
+# reproducible apt snapshot machinery stays with the production build in ./Dockerfile.
+FROM golang:1.25.8-alpine@sha256:8e02eb337d9e0ea459e041f1ee5eece41cbb61f1d83e7d883a3e2fb4862063fa AS builder
 
 # commit timestamp, propagated through the build to clamp file mtimes and normalize embedded dates
 ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH
 
 WORKDIR /build
-
-# apt normally resolves to whatever package versions the mirror serves at build time, so two builds days apart install different bytes
-# redirect apt at snapshot.debian.org keyed on SOURCE_DATE_EPOCH so every build installs the exact package set that existed at that instant
-# NOTE: taken verbatim from https://github.com/reproducible-containers/repro-sources-list.sh/blob/master/alternative/Dockerfile.debian-13
-RUN \
-  --mount=type=cache,target=/var/cache/apt,sharing=locked \
-  --mount=type=cache,target=/var/lib/apt,sharing=locked \
-  if [ "${SOURCE_DATE_EPOCH:-0}" -gt 0 ] 2>/dev/null; then \
-    : "${SOURCE_DATE_EPOCH:=$(stat --format=%Y /etc/apt/sources.list.d/debian.sources)}" && \
-    snapshot="$(/bin/bash -euc "printf \"%(%Y%m%dT%H%M%SZ)T\n\" \"${SOURCE_DATE_EPOCH}\"")" && \
-    : "Enabling snapshot" && \
-    sed -i -e '/Types: deb/ a\Snapshot: true' /etc/apt/sources.list.d/debian.sources && \
-    : "Enabling cache" && \
-    rm -f /etc/apt/apt.conf.d/docker-clean && \
-    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' >/etc/apt/apt.conf.d/keep-cache && \
-    : "Fetching the snapshot and installing ca-certificates in one command" && \
-    apt-get install --update --snapshot "${snapshot}" -o Acquire::Check-Valid-Until=false -o Acquire::https::Verify-Peer=false -y ca-certificates && \
-    : "Installing ca-certificates" && \
-    apt-get install --snapshot "${snapshot}" -y ca-certificates && \
-    : "Clean up for improving reproducibility (optional)" && \
-    rm -rf /var/log/* /var/cache/ldconfig/aux-cache; \
-  else \
-    apt-get update && apt-get install -y ca-certificates && \
-    rm -rf /var/log/* /var/cache/ldconfig/aux-cache; \
-  fi
 
 # bring in both modules; tee-node sits next to fce-usdx-oracle so the replace directive resolves
 # explicit chmod/chown on COPY so file metadata does not depend on host umask or ownership
@@ -58,6 +36,11 @@ RUN go mod edit -replace github.com/flare-foundation/tee-node=../../tee-node
 # deliberately does not copy (the proxy is a separate image). Dropped rather than
 # satisfied: the explicit replace is what this build resolves tee-node through.
 RUN rm -f go.work go.work.sum
+
+# Module source for the download. start-services.sh passes the host module cache,
+# served for the build's duration, with the public proxy as fallback.
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=$GOPROXY
 
 RUN GOFLAGS=-mod=mod go mod download
 
