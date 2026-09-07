@@ -15,7 +15,7 @@ host-specific survives, so an auditor on different hardware can independently
 reproduce the code hash that gets registered on-chain.
 
 The tee-node server binary is compiled once from a pinned ref on the same
-digest-pinned golang image (`docker/node-base.Dockerfile`), and
+digest-pinned golang image, and
 `deploy/scripts/check-versions.sh` fails the build if that pin drifts from `go.mod`.
 
 ## How it works

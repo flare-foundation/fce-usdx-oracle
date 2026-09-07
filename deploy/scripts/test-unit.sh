@@ -5,7 +5,7 @@
 #
 # For the wire-format conformance replay, run
 #   go test ./internal/extension/ -run TestConformance
-# For the on-chain end-to-end test, use ./deploy/scripts/test.sh.
+# For the on-chain end-to-end cycle, see ./deploy/scripts/oracle-cycle.sh.
 #
 # Usage:
 #   ./deploy/scripts/test-unit.sh

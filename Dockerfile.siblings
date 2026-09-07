@@ -67,7 +67,7 @@ WORKDIR /app
 COPY --chmod=644 --chown=65532:65532 --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --chmod=755 --chown=65532:65532 --from=builder /app/extension-tee /app/extension-tee
 
-# production mode
+# MODE=1 is simulated attestation, as in the pinned image; compose overrides it.
 ENV MODE=1 CONFIG_PORT=5501 SIGN_PORT=7701 EXTENSION_PORT=7702
 
 # match tee-node: run as root (USER 0:0) — the TEE workload itself is the isolation boundary

@@ -2,13 +2,13 @@
 #
 # check-versions.sh — fail fast when dependency pins drift apart.
 #
-# The Go image pins tee-node via go.mod; non-Go images build tee-node from
-# source at TEE_NODE_REF. If those diverge, the node and proxy disagree on
-# signature formats and the symptom is an opaque "signature check fail" at
-# runtime, long after the build. Same for tee-proxy between tools/go.mod and
-# deploy/proxy/Dockerfile.
+# The extension module and the tools module both pin tee-node and
+# go-flare-common; if they diverge, the node and the tooling disagree on
+# signature and ABI formats and the symptom is an opaque failure at runtime,
+# long after the build. tee-proxy is pinned twice as well: tools/go.mod and the
+# proxy image's build argument in deploy/proxy/Dockerfile.
 #
-# Run standalone (full-setup.sh / post-build.sh do not invoke it today).
+# Run standalone; full-setup.sh and post-build.sh do not invoke it.
 #
 # Usage: ./deploy/scripts/check-versions.sh
 set -euo pipefail
@@ -25,12 +25,7 @@ die()  { echo -e "${RED}[check-versions] ERROR:${NC} $*" >&2; exit 1; }
 source "$SCRIPT_DIR/lib/versions.sh"
 load_versions "$PROJECT_DIR" || die "could not load versions"
 
-# Locate the two go.mod files (extension module may be at ./ or ./go/).
-if [[ -f "$PROJECT_DIR/go.mod" ]]; then
-    EXT_GOMOD="$PROJECT_DIR/go.mod"
-else
-    EXT_GOMOD="$PROJECT_DIR/go.mod"
-fi
+EXT_GOMOD="$PROJECT_DIR/go.mod"
 TOOLS_GOMOD="$PROJECT_DIR/tools/go.mod"
 
 pin() { grep -E "^[[:space:]]*${2//\//\\/}[[:space:]]+v" "$1" 2>/dev/null | head -1 | awk '{print $2}'; }
@@ -80,12 +75,9 @@ else
     log "tee-proxy      $TOOLS_PROXY (tools == proxy/Dockerfile)"
 fi
 
-# --- 4. Report the ref that language images will clone ---
-log "TEE_NODE_REF   $TEE_NODE_REF $([[ "$TEE_NODE_REF" != "$TEE_NODE_VERSION" ]] && echo '(commit SHA from pseudo-version)' || echo '(tag)')"
-
 if [[ "$FAILED" -ne 0 ]]; then
     echo "" >&2
-    die "version pins are inconsistent. Align them before building, or the Go and non-Go images will run different tee-node builds."
+    die "version pins are inconsistent; align them before building"
 fi
 
 log "all version pins consistent"

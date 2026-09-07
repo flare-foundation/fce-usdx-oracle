@@ -8,12 +8,13 @@
 #   --chain coston   → + docker-compose.coston.yaml
 #   --chain coston2  → + docker-compose.coston2.yaml
 #
-# Pass --local to start services as background Go processes instead of Docker.
+# Pass --local to run the extension TEE and proxy as host processes
+# (tools/cmd/local-stack) instead of containers.
 #
 # Usage:
 #   ./deploy/scripts/start-services.sh                       # local devnet, docker compose
 #   ./deploy/scripts/start-services.sh --chain coston        # Coston, docker compose
-#   ./deploy/scripts/start-services.sh --local               # local devnet, Go processes
+#   ./deploy/scripts/start-services.sh --local               # local devnet, host processes
 #
 # By default the node and proxy are built from PINNED module/image versions
 # (tee-node + tee-proxy), fully self-contained — no sibling repos required.
@@ -131,16 +132,7 @@ esac
 [[ -n "$EXTENSION_ID" ]] || die "EXTENSION_ID is empty"
 
 # The repo root is the Go module and the build context; compose builds Dockerfile.
-EXTENSION_DIR="$PROJECT_DIR"
-EXTENSION_DOCKERFILE="Dockerfile"
 
-# --- Derive dependency versions from the Go module pin ------------------------
-# Images that build tee-node from source consume TEE_NODE_REF; see
-# scripts/lib/versions.sh for why a pseudo-version needs a SHA, not a tag.
-# shellcheck source=lib/versions.sh
-source "$SCRIPT_DIR/lib/versions.sh"
-source "$SCRIPT_DIR/lib/modcache-proxy.sh"
-load_versions "$PROJECT_DIR" || die "could not derive dependency versions"
 
 # --- Resolve local-siblings toggle ---
 case "${USE_LOCAL_SIBLINGS:-}" in
@@ -152,7 +144,6 @@ log "Chain:          $CHAIN"
 log "Extension ID:   $EXTENSION_ID"
 log "Local mode:     $LOCAL_MODE"
 log "Local siblings: $USE_LOCAL_SIBLINGS"
-log "tee-node ref:   $TEE_NODE_REF"
 log "Redis bind:     $REDIS_BIND (host side; a new free port each run unless REDIS_BIND is set)"
 
 # --- Manage go.work for host builds (git-ignored, fully managed here) ---
@@ -205,14 +196,6 @@ if [[ "$USE_LOCAL" == "false" ]]; then
         fi
     fi
     log "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
-
-    # --- Build the shared tee-node base image if this language needs it ---
-    # Two-process languages run a prebuilt tee-node `server` binary; the Go
-    # image links tee-node as a library and needs nothing here.
-    if grep -q 'tee-node-base' "$PROJECT_DIR/$EXTENSION_DOCKERFILE" 2>/dev/null; then
-        log "Language '$LANGUAGE' needs the shared tee-node base image"
-        "$SCRIPT_DIR/build-node-base.sh" || die "failed to build tee-node base image"
-    fi
 
     # --- Build tee-proxy image locally if no remote registry is configured ---
     if [[ -z "${REGISTRY:-}" ]]; then
@@ -328,85 +311,58 @@ if [[ "$USE_LOCAL" == "false" ]]; then
 fi
 
 # ============================================================
-# Local Go process mode (--local)
+# Host-process mode (--local)
 # ============================================================
-log "Starting services as local Go processes (--local)..."
+# tools/cmd/local-stack runs the proxy in-process and the extension TEE as its
+# child, built from the module root (against the sibling tee-node when a go.work
+# is present). Redis is the simulation's fourth instance unless
+# LOCAL_STACK_REDIS names another. The proxy binds 6663 and 6664 on the host.
+log "Starting the extension TEE and proxy as host processes (--local)..."
+[[ "$USE_LOCAL_SIBLINGS" == "true" ]] || log "pinned tee-node (set USE_LOCAL_SIBLINGS=1 to build against the sibling checkouts, as a develop simulation needs)"
 
 E2E="$SCRIPT_DIR/e2e.sh"
-PID_DIR="$PROJECT_DIR/out/pids"
-LOG_DIR="$PROJECT_DIR/out/logs"
+PID_DIR="$PROJECT_DIR/out/pids"; LOG_DIR="$PROJECT_DIR/out/logs"; BIN_DIR="$PROJECT_DIR/out/bin"
+PIDFILE="$PID_DIR/local-stack.pid"; LOGFILE="$LOG_DIR/local-stack.log"
+HOST_PROXY_URL="http://localhost:6664"
+mkdir -p "$PID_DIR" "$LOG_DIR" "$BIN_DIR"
 
-# --- Build Go binaries (once) so we run the actual binary, not `go run` ---
-BIN_DIR="$PROJECT_DIR/out/bin"
-mkdir -p "$BIN_DIR"
-log "Building Go binaries..."
-# start-tee links the Go extension in-process, so it lives in the extension
-# module; start-proxy is deployment tooling and lives in tools/.
-cd "$EXTENSION_DIR"
-go build -o "$BIN_DIR/start-tee" ./cmd/start-tee
-cd "$PROJECT_DIR/tools"
-go build -o "$BIN_DIR/start-proxy" ./cmd/start-proxy
+log "Building out/bin/local-stack from tools/ ..."
+( cd "$PROJECT_DIR/tools" && go build -o "$BIN_DIR/local-stack" ./cmd/local-stack ) || die "building local-stack failed"
 
-# --- Start extension TEE ---
-log "Starting extension TEE node..."
-EXTENSION_ID="$EXTENSION_ID" "$E2E" start ext-tee "$PID_DIR/ext-tee.pid" "$LOG_DIR/ext-tee.log" \
-    "$BIN_DIR/start-tee" -extensionID "$EXTENSION_ID"
-
-log "Waiting for extension TEE to initialize..."
-sleep 5
-
-# --- Start extension Redis via Docker Compose, published on $REDIS_BIND ---
-log "Starting Redis via Docker Compose..."
-docker compose -f "$PROJECT_DIR/deploy/docker-compose.yaml" up -d redis
-log "Waiting for Redis on $REDIS_BIND..."
-retries=0
-while ! docker compose -f "$PROJECT_DIR/deploy/docker-compose.yaml" exec -T redis redis-cli ping > /dev/null 2>&1; do
-    retries=$((retries + 1))
-    if [ $retries -ge 15 ]; then
-        die "Redis container failed to become healthy"
-    fi
-    sleep 1
-done
-log "Redis on $REDIS_BIND ready"
-
-# --- Start extension proxy ---
-# The host proxy reads a TOML, which cannot carry a per-run port, so the
-# committed template is rendered with the chosen binding into out/.
-PROXY_CONFIG="$PROJECT_DIR/out/extension_proxy.local.toml"
-render_proxy_config "$PROJECT_DIR/deploy/config/proxy/extension_proxy.toml" "$PROXY_CONFIG" "${REDIS_BIND##*:}"
-log "Starting extension proxy (config rendered to $PROXY_CONFIG)..."
-PROXY_PRIVATE_KEY="$PROXY_PRIVATE_KEY" PROXY_CONFIG="$PROXY_CONFIG" "$E2E" start ext-proxy "$PID_DIR/ext-proxy.pid" "$LOG_DIR/ext-proxy.log" \
-    "$BIN_DIR/start-proxy"
-
-cd "$PROJECT_DIR"
-
-# --- Wait for proxy to be ready ---
-if [[ "$EXT_PROXY_URL" != *"localhost"* && "$EXT_PROXY_URL" != *"127.0.0.1"* ]]; then
-    log "NOTE: EXT_PROXY_URL=$EXT_PROXY_URL (not localhost) — health check targets this URL"
+# A stack from an earlier run holds signing-policy state for the chain it synced
+# against; a fresh start is what the compose path does too.
+if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    log "a previous local-stack is running; stopping it first"
+    "$E2E" stop "$PIDFILE" || true
 fi
-log "Waiting for extension proxy..."
-"$E2E" wait-for-url "http://localhost:6664/info" 60
+: > "$LOGFILE"
 
-# --- Summary ---
-EXT_TEE_PID=$(cat "$PID_DIR/ext-tee.pid" 2>/dev/null || echo "?")
-EXT_PROXY_PID=$(cat "$PID_DIR/ext-proxy.pid" 2>/dev/null || echo "?")
+ARGS=(-extensionID "$EXTENSION_ID")
+[[ -n "${LOCAL_STACK_REDIS:-}" ]] && ARGS+=(-redis "$LOCAL_STACK_REDIS")
+"$E2E" start local-stack "$PIDFILE" "$LOGFILE" "$BIN_DIR/local-stack" "${ARGS[@]}"
+
+# Ready means the proxy answers; the runner builds start-tee first (a minute
+# against a cold cache), then brings the proxy up. Its summary, printed once the
+# node reports its signing policy, is shown when it has appeared.
+DEADLINE=$(( $(date +%s) + 240 ))
+until curl -sf -m 3 "$HOST_PROXY_URL/info" >/dev/null 2>&1; do
+    if ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        tail -n 25 "$LOGFILE" >&2
+        die "local-stack exited; its log is above (full log: ${LOGFILE#$PROJECT_DIR/})"
+    fi
+    (( $(date +%s) >= DEADLINE )) && { tail -n 25 "$LOGFILE" >&2; die "the host proxy did not answer on $HOST_PROXY_URL within 240s"; }
+    sleep 3
+done
+for _ in $(seq 20); do grep -q 'Extension stack running' "$LOGFILE" 2>/dev/null && break; sleep 3; done
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN} Services started (local Go processes)${NC}"
+echo -e "${GREEN} Services started (host processes)${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "${CYAN}Processes${NC}"
-echo "  Extension Redis  Docker container ($REDIS_BIND)"
-echo "  Extension TEE    PID $EXT_TEE_PID"
-echo "  Extension Proxy  PID $EXT_PROXY_PID"
-echo "  Proxy URL        http://localhost:6664"
+sed -n '/Extension stack running/,/^Ctrl-C/p' "$LOGFILE" | grep -vE '^Continue with|^  EXT_PROXY_URL|^  \./deploy|^Ctrl-C|^$' \
+    || echo "  (the runner has not printed its summary yet; see ${LOGFILE#$PROJECT_DIR/})"
 echo ""
-echo -e "${CYAN}Logs${NC}"
-echo "  Redis log        docker compose logs redis"
-echo "  TEE log          $LOG_DIR/ext-tee.log"
-echo "  Proxy log        $LOG_DIR/ext-proxy.log"
-echo ""
-echo -e "${CYAN}Commands${NC}"
-echo "  Status:  $SCRIPT_DIR/e2e.sh status $PID_DIR"
-echo "  Stop:    $SCRIPT_DIR/stop-services.sh --local"
+echo -e "${CYAN}Processes${NC}   local-stack PID $(cat "$PIDFILE"), log ${LOGFILE#$PROJECT_DIR/} (the TEE's lines tagged)"
+echo -e "${CYAN}Proxy${NC}       $HOST_PROXY_URL — pass EXT_PROXY_URL=$HOST_PROXY_URL to the follow-up scripts"
+echo -e "${CYAN}Stop${NC}        $SCRIPT_DIR/stop-services.sh --local"

@@ -47,7 +47,7 @@ done
 
 [[ -n "$TEE" ]] || die "-tee is required: at least one TEE machine address"
 
-ADDR_FILE="${ADDRESSES_FILE:-./config/coston2/deployed-addresses.json}"
+ADDR_FILE="${ADDRESSES_FILE:-./deploy/config/coston2/deployed-addresses.json}"
 [[ "$ADDR_FILE" != /* ]] && ADDR_FILE="$PROJECT_DIR/$ADDR_FILE"
 [[ -f "$ADDR_FILE" ]] || die "addresses file not found: $ADDR_FILE"
 

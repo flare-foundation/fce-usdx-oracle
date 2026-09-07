@@ -60,6 +60,7 @@ if [[ -z "$ADDRESSES_FILE" ]]; then
         [[ "$LOCAL_MODE" == "true" ]] && CHAIN="local" || CHAIN="coston2"
     fi
     case "$CHAIN" in
+        local)   candidate="$PROJECT_DIR/deploy/config/local/deployed-addresses.json" ;;
         coston)  candidate="$PROJECT_DIR/deploy/config/coston/deployed-addresses.json" ;;
         coston2) candidate="$PROJECT_DIR/deploy/config/coston2/deployed-addresses.json" ;;
         *)       candidate="" ;;
@@ -68,19 +69,6 @@ if [[ -z "$ADDRESSES_FILE" ]]; then
         ADDRESSES_FILE="$(cd "$(dirname "$candidate")" && pwd)/$(basename "$candidate")"
     fi
 
-    # Fall back to sim_dump candidates (local devnet)
-    if [[ -z "$ADDRESSES_FILE" ]]; then
-        for candidate in \
-            "$PROJECT_DIR/../../e2e/docker/sim_dump/deployed-addresses.json" \
-            "$PROJECT_DIR/../docker/sim_dump/deployed-addresses.json" \
-            "$PROJECT_DIR/../../docker/sim_dump/deployed-addresses.json" \
-            "$PROJECT_DIR/../../../docker/sim_dump/deployed-addresses.json"; do
-            if [[ -f "$candidate" ]]; then
-                ADDRESSES_FILE="$(cd "$(dirname "$candidate")" && pwd)/$(basename "$candidate")"
-                break
-            fi
-        done
-    fi
 
     [[ -n "$ADDRESSES_FILE" ]] || die "Cannot find deployed-addresses.json. Set ADDRESSES_FILE."
 fi

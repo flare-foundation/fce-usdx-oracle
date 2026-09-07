@@ -24,7 +24,7 @@ usage() {
 use-chain.sh — Activate a chain-specific .env file.
 
 Usage:
-  $SCRIPT_NAME <chain>       Copy .env.<chain> → .env (e.g. coston, coston2).
+  $SCRIPT_NAME <chain>       Copy .env.<chain> → .env (local, coston, coston2).
   $SCRIPT_NAME --list        List available .env.<chain> files.
   $SCRIPT_NAME -h | --help   Show this help.
 
@@ -38,7 +38,7 @@ list_chains() {
     for f in "$PROJECT_DIR"/.env.*; do
         [[ -f "$f" ]] || continue
         name="${f##*/.env.}"
-        case "$name" in example|local|template|sample) continue ;; esac
+        case "$name" in example|template|sample) continue ;; esac
         echo "  $name"
         any=1
     done

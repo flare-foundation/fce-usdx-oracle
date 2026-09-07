@@ -30,7 +30,7 @@ warn() { echo -e "${YELLOW}$*${NC}"; }
 [[ -f "$PROJECT_DIR/.env" ]] && { set -a; source "$PROJECT_DIR/.env"; set +a; }
 
 RPC="${CHAIN_URL:-https://coston2-api.flare.network/ext/C/rpc}"
-ADDR_FILE="${ADDRESSES_FILE:-./config/coston2/deployed-addresses.json}"
+ADDR_FILE="${ADDRESSES_FILE:-./deploy/config/coston2/deployed-addresses.json}"
 [[ "$ADDR_FILE" != /* ]] && ADDR_FILE="$PROJECT_DIR/$ADDR_FILE"
 
 lookup() { jq -r --arg n "$1" '[.[] | select(.name == $n) | .address][0] // empty' "$ADDR_FILE"; }
@@ -111,7 +111,7 @@ fi
 section "Extension health — GET /state"
 # Under Docker the extension port is container-internal, so reach it from a
 # throwaway container on the same network rather than from the host.
-NET="$(docker inspect fce-usdx-oracle-extension-tee-1 \
+NET="$(docker inspect deploy-extension-tee-1 \
         --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null || true)"
 if [[ -n "$NET" ]]; then
     docker run --rm --network "$NET" curlimages/curl:latest \

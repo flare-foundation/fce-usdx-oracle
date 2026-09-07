@@ -16,7 +16,6 @@ deploy/config/local/
 out/
 deploy/config/**/*.log
 deploy/config/register-tee.state
-results/
 .DS_Store
 
 # Foundry build artifacts and dependencies — run `forge install` in contracts/ after cloning.
@@ -32,16 +31,11 @@ go.work
 go.work.sum
 
 # Compiled tooling binaries
-tools/start-*
 tools/allow-*
-tools/deploy-*
 tools/register-*
-tools/run-*
 tools/verify-*
-tools/query-*
 tools/set-*
 tools/audit-*
-tools/test-*
 tools/fleet-status
 tools/keeper
 tools/send-endpoints
@@ -53,7 +47,3 @@ tools/pkg/contracts/*/autogen.go
 tools/pkg/contracts/*/*.abi
 tools/pkg/contracts/*/*.bin
 
-docs/superpowers
-notes/
-NOTES.md
-DEPLOYMENT.md

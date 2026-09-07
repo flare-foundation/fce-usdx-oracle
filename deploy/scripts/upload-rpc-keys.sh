@@ -345,7 +345,7 @@ for ref in "${REFS[@]}"; do
     echo "        kept at $OUT_DIR/$ref.json"
     echo "        Before the expiry printed above, the next admin runs this with"
     echo "        their own key in USDXPROV_KEY:"
-    echo "          cd go && go run ./cmd/usdxprov sign -in <file> && go run ./cmd/usdxprov submit -in <file> -url $PROXY_URL"
+    echo "          go run ./cmd/usdxprov sign -in <file> && go run ./cmd/usdxprov submit -in <file> -url $PROXY_URL"
   }
 
   sigs="$(jq -r '.signatures | length' "$envelope")"
