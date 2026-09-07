@@ -30,10 +30,6 @@ func FatalWithCause(err error) {
 	}
 }
 
-func EncodeFTDCTeeAvailabilityCheckRequest(data fdc2.ITeeAvailabilityCheckRequestBody) ([]byte, error) {
-	return structs.Encode(fdc2.AttestationTypeArguments[fdc2.AvailabilityCheck].Request, data)
-}
-
 func DecodeFTDCTeeAvailabilityCheckRequest(data []byte) (fdc2.ITeeAvailabilityCheckRequestBody, error) {
 	var request fdc2.ITeeAvailabilityCheckRequestBody
 	err := structs.DecodeTo(fdc2.AttestationTypeArguments[fdc2.AvailabilityCheck].Request, data, &request)
@@ -41,10 +37,6 @@ func DecodeFTDCTeeAvailabilityCheckRequest(data []byte) (fdc2.ITeeAvailabilityCh
 		return fdc2.ITeeAvailabilityCheckRequestBody{}, errors.Errorf("%s", err)
 	}
 	return request, nil
-}
-
-func EncodeFTDCTeeAvailabilityCheckResponse(data fdc2.ITeeAvailabilityCheckResponseBody) ([]byte, error) {
-	return structs.Encode(fdc2.AttestationTypeArguments[fdc2.AvailabilityCheck].Response, data)
 }
 
 func DecodeFTDCTeeAvailabilityCheckResponse(data []byte) (fdc2.ITeeAvailabilityCheckResponseBody, error) {

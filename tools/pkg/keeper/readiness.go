@@ -89,8 +89,8 @@ func QueryReadiness(
 }
 
 // wouldRefuse reports whether EVERY machine that could serve the request says it
-// would refuse to sign, and why. All of them, because getRandomTeeIds picks the
-// machine. Every uncertainty answers false: "not known" is not "do not try".
+// would refuse to sign, and why. All of them, because the request goes to every
+// listed machine and any one of them signing is enough. Every uncertainty answers false: "not known" is not "do not try".
 func wouldRefuse(ctx context.Context, cfg Config) (bool, string) {
 	if cfg.DirectAPIKey == "" {
 		return false, ""
@@ -131,24 +131,6 @@ func wouldRefuse(ctx context.Context, cfg Config) (bool, string) {
 // readinessPreflightTimeout is short on purpose: this runs before the real work
 // and must not eat the cycle's budget. Failing it simply means requesting.
 const readinessPreflightTimeout = 15 * time.Second
-
-// QueryReadinessSigner is QueryReadiness with the signer checked against the
-// machine the caller believes it is talking to. Without it a proxy could serve a
-// valid report signed by a different enclave.
-func QueryReadinessSigner(
-	ctx context.Context, proxyURL, apiKey string, want common.Address, timeout time.Duration,
-) (readinessreport.Report, error) {
-	report, err := QueryReadiness(ctx, proxyURL, apiKey, timeout)
-	if err != nil {
-		return readinessreport.Report{}, err
-	}
-	if want != (common.Address{}) && report.Signer != want {
-		return readinessreport.Report{}, errors.Errorf(
-			"readiness is signed by %s, not the expected %s",
-			report.Signer.Hex(), want.Hex())
-	}
-	return report, nil
-}
 
 // postDirectAction enqueues one direct action on a proxy and returns the id it
 // assigned. Takes the op pair loose rather than reading it off the instruction

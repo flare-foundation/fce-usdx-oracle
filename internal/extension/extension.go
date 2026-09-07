@@ -21,7 +21,7 @@ type Observer interface {
 	// requestedAt is the requesting instruction's block timestamp. It is a
 	// reference clock, not a value to publish: the observer measures its cached
 	// observation against it and refuses rather than restamping. See
-	// internal/poller.checkClock.
+	// internal/observation/poller.
 	Report(ctx context.Context, requestedAt uint64) (observation.Observation, error)
 
 	// ReadinessReport answers GET_READINESS. It takes the provisioning half because

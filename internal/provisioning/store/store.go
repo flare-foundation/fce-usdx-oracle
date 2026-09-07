@@ -1,4 +1,4 @@
-// Package runtimecfg manages post-startup configuration: RPC provider URLs,
+// Package store manages post-startup configuration: RPC provider URLs,
 // admin signer sets, and credentials. All other config is fixed in internal/config.
 //
 //	ApplyEndpoints ─┐
@@ -16,7 +16,7 @@
 // Only HTTPS is accepted, and credentials can't alter URL structure.
 // Reserved sources are restricted: hex_bonds is fixed, hex_cash must be PRIVATE and match a preprovisioned secret.
 //
-// All runtimecfg state is in-memory only; a restart reverts to not_configured.
+// All store state is in-memory only; a restart reverts to not_configured.
 // SET_ADMINS must always be republished after restart before other settings can be applied.
 package store
 
@@ -53,7 +53,7 @@ const maxPayloadBytes = 256 << 10
 // restructure the URL it lands in. One copy, used at every checkpoint.
 const urlUnsafe = " \t\r\n/?#&"
 
-var errBadPayload = errors.New("runtimecfg: payload is not a known configuration")
+var errBadPayload = errors.New("store: payload is not a known configuration")
 
 // Endpoints is a decoded SET_ENDPOINTS payload, keyed by tag.
 type Endpoints struct {
@@ -157,7 +157,7 @@ func (s *Store) ApplyEndpoints(payload []byte) error {
 	defer s.applyMu.Unlock()
 
 	if len(payload) == 0 || len(payload) > maxPayloadBytes {
-		return errors.New("runtimecfg: endpoint payload is empty or too large")
+		return errors.New("store: endpoint payload is empty or too large")
 	}
 
 	wire, err := decodeEndpoints(payload)
@@ -180,7 +180,7 @@ func (s *Store) ApplyEndpoints(payload []byte) error {
 	s.mu.RUnlock()
 	if e.Version <= lastVersion {
 		return fmt.Errorf(
-			"runtimecfg: endpoints version %d is not newer than %d", e.Version, lastVersion)
+			"store: endpoints version %d is not newer than %d", e.Version, lastVersion)
 	}
 
 	// Any credential already provisioned must fit the configuration that is
@@ -214,7 +214,7 @@ func (s *Store) ApplyAdmins(payload []byte) error {
 	defer s.applyMu.Unlock()
 
 	if len(payload) == 0 || len(payload) > maxPayloadBytes {
-		return errors.New("runtimecfg: admin payload is empty or too large")
+		return errors.New("store: admin payload is empty or too large")
 	}
 
 	wire, err := decodeAdmins(payload)
@@ -231,7 +231,7 @@ func (s *Store) ApplyAdmins(payload []byte) error {
 	// set. Checked before SetAdmins so a replay leaves the live sets untouched.
 	if version <= s.adminsVersion {
 		return fmt.Errorf(
-			"runtimecfg: admin version %d is not newer than %d", version, s.adminsVersion)
+			"store: admin version %d is not newer than %d", version, s.adminsVersion)
 	}
 
 	if err := s.verifier.SetAdmins(sets); err != nil {
@@ -255,7 +255,7 @@ func (s *Store) ApplyAdmins(payload []byte) error {
 func checkFeedID(feedID [21]byte) error {
 	if feedID != config.FeedID {
 		return fmt.Errorf(
-			"runtimecfg: payload names feed %#x, this machine serves %#x",
+			"store: payload names feed %#x, this machine serves %#x",
 			feedID, config.FeedID)
 	}
 	return nil
@@ -275,15 +275,15 @@ func convertEndpoints(w wireEndpoints) (Endpoints, error) {
 		tag, ok := tagString(g.Group)
 		if !ok {
 			// Not echoed: an unprintable tag is attacker-chosen bytes.
-			return Endpoints{}, errors.New("runtimecfg: endpoint group tag is not a printable name")
+			return Endpoints{}, errors.New("store: endpoint group tag is not a printable name")
 		}
 		if _, dup := e.Groups[tag]; dup {
-			return Endpoints{}, fmt.Errorf("runtimecfg: duplicate endpoint group %q", tag)
+			return Endpoints{}, fmt.Errorf("store: duplicate endpoint group %q", tag)
 		}
 
 		threshold, ok := narrow(g.Threshold)
 		if !ok {
-			return Endpoints{}, fmt.Errorf("runtimecfg: group %q threshold is out of range", tag)
+			return Endpoints{}, fmt.Errorf("store: group %q threshold is out of range", tag)
 		}
 
 		endpoints := make([]Endpoint, 0, len(g.Endpoints))
@@ -308,7 +308,7 @@ func convertAdmins(w wireAdmins, policy envelope.Policy) (uint64, map[string]env
 	// Zero is the "never applied" sentinel for adminsVersion, so it could never
 	// be accepted; saying so here beats a confusing version comparison.
 	if w.Version == 0 {
-		return 0, nil, errors.New("runtimecfg: admin version must be non-zero")
+		return 0, nil, errors.New("store: admin version must be non-zero")
 	}
 	if err := checkFeedID(w.FeedId); err != nil {
 		return 0, nil, err
@@ -318,17 +318,17 @@ func convertAdmins(w wireAdmins, policy envelope.Policy) (uint64, map[string]env
 	for _, r := range w.Roles {
 		tag, ok := tagString(r.Role)
 		if !ok {
-			return 0, nil, errors.New("runtimecfg: admin role tag is not a printable name")
+			return 0, nil, errors.New("store: admin role tag is not a printable name")
 		}
 		if _, dup := sets[tag]; dup {
-			return 0, nil, fmt.Errorf("runtimecfg: duplicate admin role %q", tag)
+			return 0, nil, fmt.Errorf("store: duplicate admin role %q", tag)
 		}
 
 		floor, known := policy.FloorFor(tag)
 		if !known {
 			// Same posture as an unknown endpoint group: a role this build does
 			// not understand means publisher and build disagree about the schema.
-			return 0, nil, fmt.Errorf("runtimecfg: unknown admin role %q", tag)
+			return 0, nil, fmt.Errorf("store: unknown admin role %q", tag)
 		}
 
 		set, err := parseAdminSet(tag, r, floor)
@@ -342,7 +342,7 @@ func convertAdmins(w wireAdmins, policy envelope.Policy) (uint64, map[string]env
 	// check. What matters is that each envelope is verified against exactly one.
 	for _, role := range envelope.Roles() {
 		if _, ok := sets[role]; !ok {
-			return 0, nil, fmt.Errorf("runtimecfg: admin role %q is missing", role)
+			return 0, nil, fmt.Errorf("store: admin role %q is missing", role)
 		}
 	}
 	return w.Version, sets, nil
@@ -351,13 +351,13 @@ func convertAdmins(w wireAdmins, policy envelope.Policy) (uint64, map[string]env
 func parseAdminSet(role string, in wireAdminRole, floor int) (envelope.AdminSet, error) {
 	if len(in.Admins) == 0 || len(in.Admins) > envelope.MaxAdmins {
 		return envelope.AdminSet{}, fmt.Errorf(
-			"runtimecfg: %s admin count %d is not between 1 and %d",
+			"store: %s admin count %d is not between 1 and %d",
 			role, len(in.Admins), envelope.MaxAdmins)
 	}
 
 	threshold, ok := narrow(in.Threshold)
 	if !ok {
-		return envelope.AdminSet{}, fmt.Errorf("runtimecfg: %s admin threshold is out of range", role)
+		return envelope.AdminSet{}, fmt.Errorf("store: %s admin threshold is out of range", role)
 	}
 	// The ceiling is the smaller of the set size and envelope.MaxThreshold:
 	// beyond the latter the verifier drops the envelope before it counts
@@ -366,7 +366,7 @@ func parseAdminSet(role string, in wireAdminRole, floor int) (envelope.AdminSet,
 	ceiling := min(len(in.Admins), envelope.MaxThreshold)
 	if threshold < floor || threshold > ceiling {
 		return envelope.AdminSet{}, fmt.Errorf(
-			"runtimecfg: %s admin threshold %d is not between %d and %d",
+			"store: %s admin threshold %d is not between %d and %d",
 			role, threshold, floor, ceiling)
 	}
 
@@ -377,10 +377,10 @@ func parseAdminSet(role string, in wireAdminRole, floor int) (envelope.AdminSet,
 		// Re-checked because the floor and ceiling above are ours alone, and a
 		// set that passed on-chain can still be unsatisfiable here.
 		if addr == (common.Address{}) {
-			return envelope.AdminSet{}, fmt.Errorf("runtimecfg: %s admin address is zero", role)
+			return envelope.AdminSet{}, fmt.Errorf("store: %s admin address is zero", role)
 		}
 		if seen[addr] {
-			return envelope.AdminSet{}, fmt.Errorf("runtimecfg: duplicate %s admin address", role)
+			return envelope.AdminSet{}, fmt.Errorf("store: duplicate %s admin address", role)
 		}
 		seen[addr] = true
 		out = append(out, addr)
@@ -455,15 +455,15 @@ func verifySecret(e *Endpoints, ref string, value []byte) error {
 
 			if ep.Kind == KindPrivate {
 				if _, err := resolvePrivateURL(ep, value); err != nil {
-					return fmt.Errorf("runtimecfg: group %q: %w", tag, err)
+					return fmt.Errorf("store: group %q: %w", tag, err)
 				}
 				continue
 			}
 			if err := checkCredential(ref, value); err != nil {
-				return fmt.Errorf("runtimecfg: group %q: %w", tag, err)
+				return fmt.Errorf("store: group %q: %w", tag, err)
 			}
 			if _, err := resolveURL(ep.URL, ep.SecretRef, string(value)); err != nil {
-				return fmt.Errorf("runtimecfg: group %q: %w", tag, err)
+				return fmt.Errorf("store: group %q: %w", tag, err)
 			}
 		}
 	}
@@ -685,13 +685,13 @@ func newBacking(spec config.BackingSpec) (backing.Source, error) {
 // than at the next observation.
 func validate(e Endpoints) error {
 	if e.Version == 0 {
-		return errors.New("runtimecfg: endpoints version must be non-zero")
+		return errors.New("store: endpoints version must be non-zero")
 	}
 	if err := checkFeedID(e.FeedID); err != nil {
 		return err
 	}
 	if len(e.Groups) == 0 {
-		return errors.New("runtimecfg: no endpoint groups configured")
+		return errors.New("store: no endpoint groups configured")
 	}
 
 	for _, tag := range sortedTags(e.Groups) {
@@ -699,13 +699,13 @@ func validate(e Endpoints) error {
 
 		_, isChain := config.LookupChain(tag)
 		if !isChain && tag != config.HexCashGroup {
-			return fmt.Errorf("runtimecfg: unknown endpoint group %q", tag)
+			return fmt.Errorf("store: unknown endpoint group %q", tag)
 		}
 		if len(g.Endpoints) == 0 {
-			return fmt.Errorf("runtimecfg: group %q has no endpoints", tag)
+			return fmt.Errorf("store: group %q has no endpoints", tag)
 		}
 		if g.Threshold < 1 || g.Threshold > len(g.Endpoints) {
-			return fmt.Errorf("runtimecfg: group %q threshold %d is not between 1 and %d",
+			return fmt.Errorf("store: group %q threshold %d is not between 1 and %d",
 				tag, g.Threshold, len(g.Endpoints))
 		}
 
@@ -724,13 +724,13 @@ func validate(e Endpoints) error {
 
 	for _, c := range config.Chains {
 		if _, ok := e.Groups[c.Name]; !ok {
-			return fmt.Errorf("runtimecfg: endpoint group %q is missing", c.Name)
+			return fmt.Errorf("store: endpoint group %q is missing", c.Name)
 		}
 	}
 	// Without it the machine cannot even run cash-less deliberately — it would
 	// run cash-less because a group was forgotten, which is a different thing.
 	if _, ok := e.Groups[config.HexCashGroup]; !ok {
-		return fmt.Errorf("runtimecfg: endpoint group %q is missing", config.HexCashGroup)
+		return fmt.Errorf("store: endpoint group %q is missing", config.HexCashGroup)
 	}
 	return nil
 }
@@ -742,17 +742,17 @@ func validate(e Endpoints) error {
 func validateCashGroup(g Group) error {
 	if len(g.Endpoints) != 1 || g.Threshold != 1 {
 		return fmt.Errorf(
-			"runtimecfg: group %q must hold exactly one endpoint at threshold 1", config.HexCashGroup)
+			"store: group %q must hold exactly one endpoint at threshold 1", config.HexCashGroup)
 	}
 	ep := g.Endpoints[0]
 	if ep.Kind != KindPrivate {
-		return fmt.Errorf("runtimecfg: group %q must be PRIVATE", config.HexCashGroup)
+		return fmt.Errorf("store: group %q must be PRIVATE", config.HexCashGroup)
 	}
 	// Pinned so the role that governs the cash URL is not the publisher's
 	// choice — see config.AdminPolicy.
 	if ep.SecretRef != config.HexCashURLRef {
 		return fmt.Errorf(
-			"runtimecfg: group %q must name secret %q", config.HexCashGroup, config.HexCashURLRef)
+			"store: group %q must name secret %q", config.HexCashGroup, config.HexCashURLRef)
 	}
 	return nil
 }
@@ -764,29 +764,29 @@ func validateEndpoint(tag string, isChain bool, ep Endpoint) error {
 		// decoder that let a malformed pair through would otherwise dial a URL
 		// nobody committed to.
 		if ep.URL != "" || ep.URLHash == (common.Hash{}) {
-			return fmt.Errorf("runtimecfg: group %q: private endpoint must carry only a commitment", tag)
+			return fmt.Errorf("store: group %q: private endpoint must carry only a commitment", tag)
 		}
 		if ep.SecretRef == "" {
-			return fmt.Errorf("runtimecfg: group %q: private endpoint needs a secret ref", tag)
+			return fmt.Errorf("store: group %q: private endpoint needs a secret ref", tag)
 		}
 	case KindPublic:
 		if ep.URL == "" || ep.URLHash != (common.Hash{}) {
-			return fmt.Errorf("runtimecfg: group %q: public endpoint must carry only a url", tag)
+			return fmt.Errorf("store: group %q: public endpoint must carry only a url", tag)
 		}
 		// A dummy credential: this checks URL shape, not whether the secret has
 		// arrived yet.
 		if _, err := resolveURL(ep.URL, ep.SecretRef, "placeholder"); err != nil {
-			return fmt.Errorf("runtimecfg: group %q: %w", tag, err)
+			return fmt.Errorf("store: group %q: %w", tag, err)
 		}
 	default:
-		return fmt.Errorf("runtimecfg: group %q: unknown endpoint kind", tag)
+		return fmt.Errorf("store: group %q: unknown endpoint kind", tag)
 	}
 
 	// Without this a payload author could name a backing credential as a chain
 	// provider's secret and have it substituted into a host of their choosing.
 	if isChain && config.IsBackingRef(ep.SecretRef) {
 		return fmt.Errorf(
-			"runtimecfg: group %q: %q governs the backing sources and may not be used here",
+			"store: group %q: %q governs the backing sources and may not be used here",
 			tag, ep.SecretRef)
 	}
 	return nil

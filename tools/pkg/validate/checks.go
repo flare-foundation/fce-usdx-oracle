@@ -938,14 +938,3 @@ func RegisterTestChecks(r *Report, extensionEnvPath string) {
 		Message: "OPType/OPCommand hashes are validated at runtime — if a 501 error occurs, check the hash values in the error message",
 	})
 }
-
-// RegisterStubChecks adds one SKIP result as a placeholder for unimplemented checks.
-func RegisterStubChecks(r *Report, step, idRange, name string) {
-	r.Add(CheckResult{
-		Step:    step,
-		ID:      idRange,
-		Name:    name,
-		Status:  SKIP,
-		Message: "not yet implemented",
-	})
-}

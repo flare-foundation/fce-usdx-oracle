@@ -32,7 +32,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Port constants matching the extension-e2e configs.
+// Port constants matching tools/pkg/configs.
 const (
 	ExtConfigurationPort = 5501 // TEE configuration port (proxyURL, initialOwner, extensionID)
 	ExtProxyInternalPort = 6663 // Internal port: TEE polls actions from proxy queue

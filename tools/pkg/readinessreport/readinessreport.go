@@ -181,15 +181,3 @@ func recoverSigner(body, signature []byte) (common.Address, error) {
 	}
 	return crypto.PubkeyToAddress(*pub), nil
 }
-
-// UnhealthySources returns the sources that are neither ok nor unknown, so a
-// caller can report what is wrong without restating the vocabulary.
-func (r Report) UnhealthySources() map[string]string {
-	out := map[string]string{}
-	for name, health := range r.Payload.SourceHealth {
-		if health != "ok" && health != "unknown" {
-			out[name] = health
-		}
-	}
-	return out
-}

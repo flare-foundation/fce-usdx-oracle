@@ -1,4 +1,4 @@
-// Package provision verifies signed configuration envelopes.
+// Package envelope verifies signed configuration envelopes.
 //
 //	body = abi.encode(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
 //

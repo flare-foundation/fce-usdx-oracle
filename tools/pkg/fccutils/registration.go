@@ -56,6 +56,10 @@ func saveState(path string, state *registrationState) error {
 	return nil
 }
 
+// teeStatusProduction is the registry's TeeStatus value for a machine that has
+// passed its availability check; the feed store accepts signatures from no other.
+const teeStatusProduction = 2
+
 func RegisterNode(s *support.Support, teeInfo *types.SignedTeeInfoResponse, hostURL, ftdcTeeURL string, ftdcTee common.Address, command, instructionIDstring, stateFilePath string) error {
 	teeID, proxyID, err := TeeProxyId(teeInfo)
 	if err != nil {
@@ -81,6 +85,12 @@ func RegisterNode(s *support.Support, teeInfo *types.SignedTeeInfoResponse, host
 			callOpts := &bind.CallOpts{Context: context.Background()}
 			machineInfo, machineErr := s.TeeMachineRegistry.GetTeeMachine(callOpts, teeID)
 			if machineErr == nil && machineInfo.TeeId != (common.Address{}) {
+				// A machine already in production has nothing left to do; ToProduction
+				// would revert InvalidTeeStatus. post-build.sh re-runs land here.
+				if status, statusErr := s.TeeMachineRegistry.GetTeeMachineStatus(callOpts, teeID); statusErr == nil && status == teeStatusProduction {
+					logger.Infof("TEE machine %s is already in production; nothing to register", teeID.Hex())
+					return nil
+				}
 				// Already registered (e.g. a re-run): skip pre-registration, but
 				// request a FRESH attestation — the original challenge is one-shot
 				// and an expired one reverts with ChallengeExpired.

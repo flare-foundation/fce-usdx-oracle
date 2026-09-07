@@ -46,6 +46,7 @@ import (
 	proxyConfig "github.com/flare-foundation/tee-proxy/pkg/config"
 	initProxy "github.com/flare-foundation/tee-proxy/pkg/init"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 )
 
 // The simulation's redis instances sit on 6379–6382; the fourth is the one
@@ -88,6 +89,13 @@ func main() {
 	}
 	if err := dialCheck(*redis); err != nil {
 		logger.Fatalf("redis %s: %v (the simulation's compose publishes redis on 6379–6382)", *redis, err)
+	}
+	// The redis instance outlives this process, and a proxy that inherits a
+	// previous instance's queues and signing-policy state serves stale answers;
+	// the compose stack gets a fresh redis per run for the same reason. This
+	// instance is reserved for one extension proxy, so it is emptied here.
+	if err := flushRedis(ctx, *redis); err != nil {
+		logger.Fatalf("emptying redis %s: %v", *redis, err)
 	}
 	addresses := map[string]string{}
 	for key, name := range map[string]string{
@@ -321,6 +329,19 @@ func chainIDOf(ctx context.Context, url string) (uint64, error) {
 		return 0, err
 	}
 	return id.Uint64(), nil
+}
+
+// flushRedis empties the database the proxy is about to use. Plain redis, no
+// auth: that is what the simulation runs.
+func flushRedis(ctx context.Context, addr string) error {
+	if strings.HasPrefix(addr, ":") {
+		addr = "localhost" + addr
+	}
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return client.FlushDB(ctx).Err()
 }
 
 func dialCheck(addr string) error {

@@ -225,7 +225,7 @@ func checkHexCash(g oraclepayload.Group) error {
 	return nil
 }
 
-// checkURL mirrors the shape half of runtimecfg.resolveURL: that the URL and
+// checkURL mirrors the shape half of store.resolveURL (internal/provisioning/store): that the URL and
 // secret ref agree, and that a credential could not move the request to another
 // host. Whether the credential has arrived is SET_SECRET's business.
 func checkURL(raw, secretRef string) error {

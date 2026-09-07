@@ -54,7 +54,7 @@ var (
 func mustStructsABI() *abi.ABI {
 	parsed, err := teeoraclestructs.TeeOracleStructsMetaData.GetAbi()
 	if err != nil {
-		panic("runtimecfg: parsing TeeOracleStructs ABI: " + err.Error())
+		panic("store: parsing TeeOracleStructs ABI: " + err.Error())
 	}
 	return parsed
 }
@@ -62,7 +62,7 @@ func mustStructsABI() *abi.ABI {
 func structMethodInputs(method string) abi.Arguments {
 	m, ok := structsABI.Methods[method]
 	if !ok {
-		panic("runtimecfg: TeeOracleStructs ABI has no method " + method)
+		panic("store: TeeOracleStructs ABI has no method " + method)
 	}
 	return m.Inputs
 }
@@ -99,7 +99,7 @@ func mustArgs(specs ...argSpec) abi.Arguments {
 	for i, spec := range specs {
 		ty, err := abi.NewType(spec.typ, "", nil)
 		if err != nil {
-			panic("runtimecfg: invalid ABI type " + spec.typ + ": " + err.Error())
+			panic("store: invalid ABI type " + spec.typ + ": " + err.Error())
 		}
 		args[i] = abi.Argument{Name: spec.name, Type: ty}
 	}

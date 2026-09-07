@@ -59,14 +59,6 @@ func GetCodeHashAndPlatform(teeInfo *types.SignedTeeInfoResponse) (common.Hash, 
 	return codeHash, platform, nil
 }
 
-func HashArrayToBytes32Array(hashes []common.Hash) [][32]byte {
-	bytes32Array := make([][32]byte, len(hashes))
-	for i, hash := range hashes {
-		bytes32Array[i] = [32]byte(hash)
-	}
-	return bytes32Array
-}
-
 // isHash32 reports whether s is exactly 32 bytes of hex, with or without 0x.
 // common.HexToHash silently truncates and left-pads anything else, which would
 // turn a typo into a valid-looking hash for a build nobody is running.

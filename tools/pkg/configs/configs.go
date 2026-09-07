@@ -10,7 +10,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Defaults honour the same env vars the scripts use (full-setup.sh, test.sh),
+// Defaults honour the same env vars the scripts use (full-setup.sh, post-build.sh),
 // so the tools run flag-free from a sourced .env. Fallbacks point at the
 // coston2 deployment: the old docker/sim_dump path no longer exists.
 var (
@@ -20,10 +20,6 @@ var (
 	ExtensionProxyURL = envOrDefault("EXT_PROXY_URL", "http://localhost:6674")
 	ChainNodeURL      = envOrDefault("CHAIN_URL", "https://coston2-api.flare.network/ext/C/rpc")
 	AddressesFile     = envOrDefault("ADDRESSES_FILE", "../deploy/config/coston2/deployed-addresses.json")
-)
-
-const (
-	ExtensionProxyConfigFile = "./configs/proxy/extension_proxy.toml"
 )
 
 func envOrDefault(key, fallback string) string {

@@ -151,35 +151,15 @@ func buildReport(
 	// bookkeeping is gone.
 	storeObservedAt, _ := store.ObservedAt(&bind.CallOpts{Context: ctx})
 
-	active, err := s.TeeMachineRegistry.GetActiveTeeMachines(
-		&bind.CallOpts{Context: ctx}, nil) // nil = all extensions; we filter below
+	// The registry lists machines per extension; the feed store only accepts
+	// signers from the sender's own.
+	extID, err := sender.ExtensionId(&bind.CallOpts{Context: ctx})
 	if err != nil {
-		// Fall back to the extension's own machines.
-		extID, extErr := sender.ExtensionId(&bind.CallOpts{Context: ctx})
-		if extErr != nil {
-			return nil, errors.Errorf("listing machines and reading extension id both failed: %s", err)
-		}
-		active, err = s.TeeMachineRegistry.GetActiveTeeMachines(
-			&bind.CallOpts{Context: ctx}, extID)
-		if err != nil {
-			return nil, errors.Errorf("listing machines for extension %s: %s", extID, err)
-		}
-	} else {
-		// Filter to this extension: GetActiveTeeMachines(nil) returns every
-		// extension's machines, and the feed store only accepts signers from its
-		// own.
-		extID, _ := sender.ExtensionId(&bind.CallOpts{Context: ctx})
-		if extID != nil {
-			filtered := make([]common.Address, 0, len(active.TeeIds))
-			for _, id := range active.TeeIds {
-				if machineExt, err := s.TeeMachineRegistry.GetExtensionId(
-					&bind.CallOpts{Context: ctx}, id); err == nil && machineExt.Cmp(extID) == 0 {
-					filtered = append(filtered, id)
-				}
-			}
-			active.TeeIds = filtered
-			active.Urls = active.Urls[:len(filtered)]
-		}
+		return nil, errors.Errorf("reading the extension id: %s", err)
+	}
+	active, err := s.TeeMachineRegistry.GetActiveTeeMachines(&bind.CallOpts{Context: ctx}, extID)
+	if err != nil {
+		return nil, errors.Errorf("listing machines for extension %s: %s", extID, err)
 	}
 
 	opts := &bind.CallOpts{Context: ctx}

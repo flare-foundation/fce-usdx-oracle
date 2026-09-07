@@ -1,9 +1,7 @@
 package fccutils
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -110,29 +108,4 @@ func ActionResult(nodeURL string, actionID common.Hash) (*types.ActionResponse, 
 	}
 
 	return &response, nil
-}
-
-func SetProxyUrl(configurationPort int, proxyPort int) error {
-	url := fmt.Sprintf("http://localhost:%d", proxyPort)
-	request := types.ConfigureProxyURLRequest{
-		URL: &url,
-	}
-
-	body, err := json.Marshal(request)
-	if err != nil {
-		return err
-	}
-
-	url = fmt.Sprintf("http://localhost:%d/proxy", configurationPort)
-	logger.Infof("Setting proxy url on tee: %s", url)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	return nil
 }

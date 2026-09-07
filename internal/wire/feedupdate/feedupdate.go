@@ -1,4 +1,4 @@
-// Package report defines the main feed wire structs: the GET_FEED request envelope
+// Package feedupdate defines the main feed wire structs: the GET_FEED request envelope
 // and the signed feed update.
 //
 //	Hashes:

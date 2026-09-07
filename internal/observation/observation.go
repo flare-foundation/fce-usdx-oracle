@@ -1,4 +1,4 @@
-// Package oracle orchestrates one price observation: the ordering and the
+// Package observation orchestrates one price observation: the ordering and the
 // deadlines. Arithmetic lives in package price, parsing in package decimal,
 // I/O in packages backing and supply.
 //

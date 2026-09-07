@@ -19,8 +19,6 @@ import (
 const (
 	Version = "0.1.0"
 
-	TimeoutShutdown = 5 * time.Second
-
 	// GET_FEED carries an ABI-encoded FeedUpdateRequest naming the feed (see
 	// feedupdate.DecodeFeedRequest); this extension refuses any feed but its own.
 
@@ -54,7 +52,7 @@ var (
 
 	// SET_ENDPOINTS/SET_ADMINS are instruction-only: the direct channel would skip
 	// the sender's onlyGovernance check. SET_SECRET is direct-only: a ciphertext
-	// on-chain would be permanent and public. Enforced in config_handler.go.
+	// on-chain would be permanent and public. Enforced when a configuration is applied (internal/provisioning/store).
 	OPCommandSetEndpoints = teeutils.ToHash("SET_ENDPOINTS")
 	OPCommandSetAdmins    = teeutils.ToHash("SET_ADMINS")
 	OPCommandSetSecret    = teeutils.ToHash("SET_SECRET")
@@ -70,10 +68,9 @@ func OpName(h common.Hash) string {
 // Source health per upstream in GET /state. Unknown is the zero value: a source
 // that has never been polled must not read as healthy.
 const (
-	HealthUnknown  = "unknown"
-	HealthOK       = "ok"
-	HealthDegraded = "degraded"
-	HealthDown     = "down"
+	HealthUnknown = "unknown"
+	HealthOK      = "ok"
+	HealthDown    = "down"
 
 	// Answered but lost the agreement vote: a WRONG value is a different problem
 	// from no value.

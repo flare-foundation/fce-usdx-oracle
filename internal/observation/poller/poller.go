@@ -1,4 +1,4 @@
-// Package observe runs price observations on a timer and serves the latest one.
+// Package poller runs price observations on a timer and serves the latest one.
 //
 // A full observation takes 2.0–2.9s and tee-node allows 2s per action, so the
 // slow half runs here and the handler does only the signing round trip.
