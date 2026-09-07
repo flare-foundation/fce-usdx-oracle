@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -246,42 +247,74 @@ func LookupChain(name string) (Chain, bool) {
 	return Chain{}, false
 }
 
-// ChainID binds provisioning envelopes to one network and is signed into every
-// feed update. Set with -ldflags "-X fce-usdx-oracle/internal/config.chainIDStr=14".
-var ChainID = mustChainID()
-
-var chainIDStr = "114"
-
-func mustChainID() uint64 {
-	v, err := strconv.ParseUint(chainIDStr, 10, 64)
-	if err != nil || v == 0 {
-		panic("config: chainIDStr must be a positive integer, got " + chainIDStr)
-	}
-	return v
+// ChainID is the chain every signed artefact is bound to, provisioning
+// envelopes and feed updates alike. It is tee-node's chain: both read the same
+// CHAIN_ID, so the node and the extension cannot disagree, and a process without
+// it stops rather than sign for a chain nobody chose. Decimal or 0x-hex, as
+// tee-node accepts it. Read on first use so the failure is a startup message.
+func ChainID() uint64 {
+	chainIDOnce.Do(func() {
+		v, err := chainIDFrom(os.Getenv("CHAIN_ID"))
+		if err != nil {
+			panic("config: " + err.Error())
+		}
+		chainID = v
+	})
+	return chainID
 }
 
-// Named inside every signed update and checked by the store, GET_FEED,
-// SET_ENDPOINTS and SET_ADMINS. Pinned like the token addresses, and
-// ldflags-overridable via extensionIDStr/feedIDHex for a test deployment.
 var (
-	ExtensionID = mustExtensionID()
-	FeedID      = mustFeedID()
+	chainIDOnce sync.Once
+	chainID     uint64
 )
 
+func chainIDFrom(env string) (uint64, error) {
+	s := strings.TrimSpace(env)
+	if s == "" {
+		return 0, fmt.Errorf("CHAIN_ID is not set; the extension signs for the chain tee-node is configured for and does not guess it")
+	}
+	v, err := strconv.ParseUint(s, 0, 64)
+	if err != nil || v == 0 {
+		return 0, fmt.Errorf("CHAIN_ID must be a positive integer, got %q", s)
+	}
+	return v, nil
+}
+
+// ExtensionID names the extension in every signed update, where the store,
+// GET_FEED, SET_ENDPOINTS and SET_ADMINS check it. Like ChainID it is
+// tee-node's value, read from the same EXTENSION_ID and mandatory for the same
+// reason. FeedID is a build fact of this extension (feedIDHex).
+func ExtensionID() *big.Int {
+	extensionIDOnce.Do(func() {
+		v, err := extensionIDFrom(os.Getenv("EXTENSION_ID"))
+		if err != nil {
+			panic("config: " + err.Error())
+		}
+		extensionID = v
+	})
+	return new(big.Int).Set(extensionID)
+}
+
 var (
-	// Reserved id 1, per upstream's chain-config.
-	extensionIDStr = "1"
+	extensionIDOnce sync.Once
+	extensionID     *big.Int
+
+	FeedID = mustFeedID()
 
 	// Custom-feed category 0x20, then "USDX/USD" zero-padded to twenty bytes.
 	feedIDHex = "0x20555344582f555344000000000000000000000000"
 )
 
-func mustExtensionID() *big.Int {
-	v, ok := new(big.Int).SetString(strings.TrimPrefix(extensionIDStr, "0x"), baseFor(extensionIDStr))
-	if !ok || v.Sign() < 0 {
-		panic("config: extensionIDStr must be a non-negative integer, got " + extensionIDStr)
+func extensionIDFrom(env string) (*big.Int, error) {
+	s := strings.TrimSpace(env)
+	if s == "" {
+		return nil, fmt.Errorf("EXTENSION_ID is not set; the extension serves the extension tee-node is configured for and does not guess it")
 	}
-	return v
+	v, ok := new(big.Int).SetString(strings.TrimPrefix(s, "0x"), baseFor(s))
+	if !ok || v.Sign() < 0 {
+		return nil, fmt.Errorf("EXTENSION_ID %q is neither a decimal nor a 0x-prefixed hex integer", s)
+	}
+	return v, nil
 }
 
 func baseFor(s string) int {
@@ -291,25 +324,22 @@ func baseFor(s string) int {
 	return 10
 }
 
-// ExtensionIDEnv returns the value tee-node expects in EXTENSION_ID — the id as
-// a 32-byte hex word — from however an operator wrote it: decimal, 0x-prefixed
-// hex, or nothing at all, which means the pinned id. Any other id is refused:
-// tee-node would serve that extension while every update signed here names this
-// one, and the store would reject them all as WrongExtensionId.
+// ExtensionIDEnv returns ExtensionID as tee-node expects it in EXTENSION_ID, a
+// 32-byte hex word, from however the operator wrote it: decimal, 0x-hex, or
+// nothing, which means the configured id. A value naming another id is refused:
+// the extension and the node read the same variable, so it can only mean a
+// caller bypassed it.
 func ExtensionIDEnv(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	id := ExtensionID
-	if raw != "" {
-		v, ok := new(big.Int).SetString(strings.TrimPrefix(raw, "0x"), baseFor(raw))
-		if !ok || v.Sign() < 0 {
-			return "", fmt.Errorf("config: EXTENSION_ID %q is neither a decimal nor a 0x-prefixed hex integer", raw)
+	if strings.TrimSpace(raw) != "" {
+		v, err := extensionIDFrom(raw)
+		if err != nil {
+			return "", fmt.Errorf("config: %w", err)
 		}
-		if v.Cmp(ExtensionID) != 0 {
-			return "", fmt.Errorf("config: EXTENSION_ID %q names extension %s, but this build is pinned to %s", raw, v, ExtensionID)
+		if v.Cmp(ExtensionID()) != 0 {
+			return "", fmt.Errorf("config: EXTENSION_ID %q names extension %s, but this process is configured for %s", raw, v, ExtensionID())
 		}
-		id = v
 	}
-	return common.BigToHash(id).Hex(), nil
+	return common.BigToHash(ExtensionID()).Hex(), nil
 }
 
 // mustFeedID parses the 21-byte FTSO feed id: a category byte plus a 20-byte name.

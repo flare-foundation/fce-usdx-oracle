@@ -727,10 +727,14 @@ lives in the pinned block instead.
   2026, the two endpoints return different shapes and the public one omits
   `currency` entirely. A single shared struct that asserts `currency == "USD"`
   would fail closed against it forever.
-- **`ChainID` is an ldflags constant.** It binds provisioning envelopes to one
-  network, so an envelope signed for Coston2 cannot be replayed against mainnet.
-  A constant rather than a config file because it is a pure function of which
-  network the build targets.
+- **`ChainID` and `ExtensionID` are tee-node's.** Both bind every signed artefact
+  (provisioning envelopes, feed updates) to one network and one extension, so an
+  envelope signed for Coston2 cannot be replayed against mainnet. The extension
+  reads them from the same `CHAIN_ID` and `EXTENSION_ID` the node reads, so the
+  two processes in one container cannot disagree, and neither has a default: a
+  process without them stops at startup, because a default that happens to
+  differ from the node's fails silently, with every update signed for the wrong
+  chain and rejected as a stranger's.
 - **`GetPriceRequestV1`.** The observation needs nothing from the caller, so the
   natural payload is none at all — but the registry rejects an empty `message`
   with `MessageEmpty()`, found the first time this path ran on Coston2 (5 Aug
@@ -874,11 +878,12 @@ copy in every command that needs it.
   `GOVERNANCE_SIGNERS` / `GOVERNANCE_THRESHOLD`, and `MachineManager.register`
   only accepts a machine whose signed `governanceHash` matches what was
   registered on-chain.
-- **`EXT_PROXY_URL` defaults to 6674.** The container listens on 6664 and the
-  compose file maps 6674 → 6664, so the two ports are the same proxy reached from
-  different sides. Under `start-services.sh --local` the proxy binds 6664 on the
-  host directly, so a bare `go run` there needs
-  `EXT_PROXY_URL=http://localhost:6664` or `-p`.
+- **The started stack names its proxy.** The compose stack publishes the proxy on 6674
+  and a host-process stack binds 6684 directly, in a block clear of the e2e simulation's own processes; rather than every follow-up script and tool
+  needing to be told which, `start-services.sh` records the URL of the stack it brought up in
+  `deploy/config/stack.env`, read after `.env` and above the environment (the e2e scripts
+  share that shell), so the commands after a start are the same for both. The tools' `-p`
+  flag is the explicit override; on the testnets nothing is recorded and `.env` applies.
 - **`--local` mode is Go-only.** `cmd/start-tee` links the Go extension
   in-process, so it lives in the extension module; `tools/` must stay independent
   of any one language implementation so it can deploy and test all of them.

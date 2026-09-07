@@ -220,7 +220,7 @@ func (p *Poller) ReadinessReport(
 		Observations:   p.observations,
 		Failures:       p.failures,
 		LastErrorClass: string(lastClass),
-		ChainID:        config.ChainID,
+		ChainID:        config.ChainID(),
 	}
 
 	if p.haveLast {

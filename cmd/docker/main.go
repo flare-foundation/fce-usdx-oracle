@@ -26,15 +26,17 @@ func main() {
 	signPort := config.SignPort
 	extensionPort := config.ExtensionPort
 
-	// tee-node reads EXTENSION_ID as a 32-byte hex word; the compose file and
-	// extension.env carry the decimal id. Normalised here, and refused if it is
-	// not the id this build is pinned to.
+	// The extension and tee-node read the same EXTENSION_ID and CHAIN_ID, so they
+	// cannot disagree on the extension or the chain every update is signed for.
+	// tee-node wants the extension id as a 32-byte hex word where the compose
+	// file carries the decimal id, so it is normalised. Neither value has a
+	// default: a process without them stops here.
 	extEnv, err := config.ExtensionIDEnv(os.Getenv("EXTENSION_ID"))
 	if err != nil {
 		logger.Fatalf("%v", err)
 	}
 	os.Setenv("EXTENSION_ID", extEnv)
-	logger.Infof("extension id %s (EXTENSION_ID=%s)", config.ExtensionID, extEnv)
+	logger.Infof("extension id %s (EXTENSION_ID=%s), chain id %d", config.ExtensionID(), extEnv, config.ChainID())
 
 	// Start tee-node in extension mode.
 	go teeServer.StartServerExtension(configPort, signPort, extensionPort)

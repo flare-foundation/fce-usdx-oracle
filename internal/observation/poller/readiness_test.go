@@ -100,8 +100,8 @@ func TestReadinessReport_ReflectsTheObservation(t *testing.T) {
 	if !rep.Readiness.EndpointsSet || !rep.Readiness.Ready {
 		t.Error("the provisioning half was not carried through")
 	}
-	if rep.ChainID != config.ChainID {
-		t.Errorf("chainId = %d, want %d", rep.ChainID, config.ChainID)
+	if rep.ChainID != config.ChainID() {
+		t.Errorf("chainId = %d, want %d", rep.ChainID, config.ChainID())
 	}
 	if signer.count() != 1 {
 		t.Errorf("expected exactly one signing call, got %d", signer.count())

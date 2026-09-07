@@ -218,7 +218,7 @@ func signPayload(ctx context.Context, signer Signer, obs Observation) ([]byte, e
 
 	// The signer receives the SignedPayload preimage, not its hash: tee-node
 	// hashes what it is given and applies EIP-191 itself. See package feedupdate.
-	message, err := feedupdate.SigningMessage(update, config.ChainID)
+	message, err := feedupdate.SigningMessage(update, config.ChainID())
 	if err != nil {
 		return nil, err
 	}

@@ -639,7 +639,7 @@ func (s *Store) Open() (observation.Sources, observation.Binding, error) {
 	}
 
 	binding := observation.Binding{
-		ExtensionID:   config.ExtensionID,
+		ExtensionID:   config.ExtensionID(),
 		FeedID:        config.FeedID,
 		EndpointsHash: s.endpointsHash,
 		AdminsHash:    s.adminsHash,

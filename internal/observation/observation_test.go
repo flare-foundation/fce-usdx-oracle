@@ -377,7 +377,7 @@ func TestObserve_SignsTheEncodedBody(t *testing.T) {
 		ObservedAt:    got.ObservedAt,
 		EndpointsHash: testEndpointsHash,
 		AdminsHash:    testAdminsHash,
-	}, config.ChainID); err != nil {
+	}, config.ChainID()); err != nil {
 		t.Fatalf("SigningMessage: %v", err)
 	} else if !bytes.Equal(signer.signed[0], want) {
 		t.Error("the signed message is not the SignedPayload preimage for this observation")

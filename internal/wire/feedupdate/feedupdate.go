@@ -230,7 +230,7 @@ func ValueFromBig(v *big.Int) (int32, error) {
 // accepted, so a doomed update fails here rather than as an opaque revert.
 func validate(u FeedUpdate) error {
 	// Zero is the store's ZeroExtensionId sentinel, and an unset feed id means
-	// the build was never given one — see config.ExtensionID.
+	// the build was never given one — see config.ExtensionID().
 	if u.ExtensionID == nil || u.ExtensionID.Sign() <= 0 {
 		return failure.Internal
 	}

@@ -710,8 +710,8 @@ func TestOpen_CarriesTheFeedBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if binding.ExtensionID == nil || binding.ExtensionID.Cmp(config.ExtensionID) != 0 {
-		t.Errorf("extension id = %v, want %v", binding.ExtensionID, config.ExtensionID)
+	if binding.ExtensionID == nil || binding.ExtensionID.Cmp(config.ExtensionID()) != 0 {
+		t.Errorf("extension id = %v, want %v", binding.ExtensionID, config.ExtensionID())
 	}
 	if binding.FeedID != config.FeedID {
 		t.Errorf("feed id = %x, want %x", binding.FeedID, config.FeedID)

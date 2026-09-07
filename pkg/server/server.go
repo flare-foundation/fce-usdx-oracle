@@ -49,7 +49,7 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 	// floor — is pinned in config, so no published payload can move a credential
 	// under the weaker set: role TAGS come off the wire, the policy does not.
 	verifier := envelope.NewVerifier(
-		new(big.Int).SetUint64(config.ChainID), teeID, config.AdminPolicy())
+		new(big.Int).SetUint64(config.ChainID()), teeID, config.AdminPolicy())
 	configStore := store.New(verifier, node)
 
 	loop := poller.New(configStore, node)

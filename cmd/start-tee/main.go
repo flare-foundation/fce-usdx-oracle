@@ -32,17 +32,18 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Port constants matching tools/pkg/configs.
+// The host-process port block, shared with tools/pkg/configs. It stays clear of
+// the e2e simulation's own processes (5500–5503, 6661–6668, 7701, 7702) so both
+// can run on one machine; the container image keeps the conventional ports,
+// which are never bound on the host.
 const (
-	ExtConfigurationPort = 5501 // TEE configuration port (proxyURL, initialOwner, extensionID)
-	ExtProxyInternalPort = 6663 // Internal port: TEE polls actions from proxy queue
-	ExtensionServerPort  = 7701 // TEE signing port: extension calls TEE for signing/encrypting
-	ExtensionPort        = 7702 // Extension server port: TEE forwards POST /action here
+	ExtConfigurationPort = 5521 // TEE configuration port (proxyURL, initialOwner, extensionID)
+	ExtProxyInternalPort = 6683 // Internal port: TEE polls actions from proxy queue
+	ExtensionServerPort  = 7721 // TEE signing port: extension calls TEE for signing/encrypting
+	ExtensionPort        = 7722 // Extension server port: TEE forwards POST /action here
 )
 
 func main() {
-	extensionID := flag.String("extensionID", "",
-		"extension id, decimal or 0x-hex; must be this build's pinned id (default: the pinned id, or EXTENSION_ID)")
 	flag.Parse()
 
 	signalChan := make(chan os.Signal, 1)
@@ -52,17 +53,15 @@ func main() {
 
 	_ = setOwnerAddress()
 
-	// tee-node reads EXTENSION_ID as a 32-byte hex word; normalise whatever was
-	// given, and refuse an id other than the one this build is pinned to.
-	raw := *extensionID
-	if raw == "" {
-		raw = os.Getenv("EXTENSION_ID")
-	}
-	extEnv, err := config.ExtensionIDEnv(raw)
+	// The extension and tee-node read the same EXTENSION_ID and CHAIN_ID; the
+	// node wants the extension id as a 32-byte hex word, so it is normalised.
+	// Neither value has a default: a process without them stops here.
+	extEnv, err := config.ExtensionIDEnv(os.Getenv("EXTENSION_ID"))
 	if err != nil {
 		logger.Fatalf("%v", err)
 	}
 	os.Setenv("EXTENSION_ID", extEnv)
+	logger.Infof("extension id %s, chain id %d", config.ExtensionID(), config.ChainID())
 
 	runExtension()
 

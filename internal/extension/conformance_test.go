@@ -67,7 +67,7 @@ func (o *conformanceObserver) Report(context.Context, uint64) (observation.Obser
 		Decimals:   conformanceDecimals,
 		ObservedAt: conformanceObservedAt,
 		Binding: observation.Binding{
-			ExtensionID:   config.ExtensionID,
+			ExtensionID:   config.ExtensionID(),
 			FeedID:        config.FeedID,
 			EndpointsHash: common.HexToHash("0x9f3c"),
 			AdminsHash:    common.HexToHash("0x5e21"),
@@ -96,7 +96,7 @@ func conformancePayload(t *testing.T) []byte {
 	sig[64] = 27
 
 	data, err := feedupdate.EncodeData(feedupdate.FeedUpdate{
-		ExtensionID:   config.ExtensionID,
+		ExtensionID:   config.ExtensionID(),
 		FeedID:        config.FeedID,
 		Value:         conformanceValue,
 		Decimals:      conformanceDecimals,
