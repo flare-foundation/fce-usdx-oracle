@@ -1,5 +1,5 @@
 // Command start-tee runs the tee-node and the Go extension as a single host
-// process, without Docker. It backs `./scripts/start-services.sh --local`.
+// process, without Docker. It backs `./deploy/scripts/start-services.sh --local`.
 //
 // It lives in the extension module rather than tools/ because it links the Go
 // extension in-process; tools/ must stay independent of any one language
@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"encoding/json"
+	"fce-usdx-oracle/internal/config"
 	"flag"
 	"fmt"
 	"net/http"
@@ -40,7 +41,8 @@ const (
 )
 
 func main() {
-	extensionID := flag.String("extensionID", "", "extension ID (bytes32 hex)")
+	extensionID := flag.String("extensionID", "",
+		"extension id, decimal or 0x-hex; must be this build's pinned id (default: the pinned id, or EXTENSION_ID)")
 	flag.Parse()
 
 	signalChan := make(chan os.Signal, 1)
@@ -50,9 +52,17 @@ func main() {
 
 	_ = setOwnerAddress()
 
-	if *extensionID != "" {
-		os.Setenv("EXTENSION_ID", *extensionID)
+	// tee-node reads EXTENSION_ID as a 32-byte hex word; normalise whatever was
+	// given, and refuse an id other than the one this build is pinned to.
+	raw := *extensionID
+	if raw == "" {
+		raw = os.Getenv("EXTENSION_ID")
 	}
+	extEnv, err := config.ExtensionIDEnv(raw)
+	if err != nil {
+		logger.Fatalf("%v", err)
+	}
+	os.Setenv("EXTENSION_ID", extEnv)
 
 	runExtension()
 

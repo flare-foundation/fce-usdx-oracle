@@ -294,6 +294,27 @@ func baseFor(s string) int {
 	return 10
 }
 
+// ExtensionIDEnv returns the value tee-node expects in EXTENSION_ID — the id as
+// a 32-byte hex word — from however an operator wrote it: decimal, 0x-prefixed
+// hex, or nothing at all, which means the pinned id. Any other id is refused:
+// tee-node would serve that extension while every update signed here names this
+// one, and the store would reject them all as WrongExtensionId.
+func ExtensionIDEnv(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	id := ExtensionID
+	if raw != "" {
+		v, ok := new(big.Int).SetString(strings.TrimPrefix(raw, "0x"), baseFor(raw))
+		if !ok || v.Sign() < 0 {
+			return "", fmt.Errorf("config: EXTENSION_ID %q is neither a decimal nor a 0x-prefixed hex integer", raw)
+		}
+		if v.Cmp(ExtensionID) != 0 {
+			return "", fmt.Errorf("config: EXTENSION_ID %q names extension %s, but this build is pinned to %s", raw, v, ExtensionID)
+		}
+		id = v
+	}
+	return common.BigToHash(id).Hex(), nil
+}
+
 // mustFeedID parses the 21-byte FTSO feed id: a category byte plus a 20-byte name.
 // The category must sit in [0x20, 0x40) or the store's initializer reverts
 // InvalidFeedCategory — catching it here fails at startup rather than at deploy.
