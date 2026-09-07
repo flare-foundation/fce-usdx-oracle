@@ -57,7 +57,7 @@ redis            the proxy's action queue
 | `cmd/start-tee` | `start-services.sh --local` | no Docker |
 | `cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
 | `tools/cmd/keeper` | ops | the relay timer (`-tee` names the target machines) |
-| `tools/cmd/send-endpoints` | ops | publish `SET_ENDPOINTS` to the fleet (`-store`/`-tee`/`-feedId`) |
+| `tools/cmd/send-endpoints` | ops | publish `SET_ENDPOINTS` to the extension's active machines (`-feedId`, `-config`) |
 | `tools/cmd/send-admins` | ops | publish `SET_ADMINS` to the fleet |
 | `tools/cmd/fleet-status` | ops | reconcile on-chain vs live config per machine |
 | `tools/cmd/verify-tee` | ops | gate before a credential: is this proxy fronting an accepted enclave? |

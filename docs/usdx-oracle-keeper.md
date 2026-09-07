@@ -316,10 +316,10 @@ possible:
 
 1. Register the machine and get it to `PRODUCTION` in the TEE machine registry —
    `post-build.sh` runs `allow-tee-version` → `set-governance` → `register-tee`.
-2. `send-endpoints -tee <machine> -feedId <feed>` — publishes its endpoint configuration and
+2. `send-endpoints -feedId <feed>` — publishes the endpoint configuration to every active machine and
    waits until the machine reports the matching `endpointsHash`. It will not report success
    until the machine is actually running what was published.
-3. `send-admins -tee <machine> -feedId <feed>` — same for the admin signer sets. The store
+3. `send-admins -feedId <feed>` — same for the admin signer sets. The store
    requires both commitments, so a machine with endpoints but no admin set still cannot land an
    update — it reverts `NoAdminsPublished`.
 4. `upload-hex-key.sh` and `upload-rpc-keys.sh` — deposit its credentials. Two uploads under

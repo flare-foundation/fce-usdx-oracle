@@ -93,13 +93,13 @@ Validate before anything is recorded — a rejected payload is silent, and leave
 expecting a config the machine is not running:
 
 ```bash
-cd tools && go run ./cmd/send-endpoints -dry-run -tee <TEE_ID> -config <ENDPOINTS_JSON>
+cd tools && go run ./cmd/send-endpoints -dry-run -config <ENDPOINTS_JSON>
 ```
 
 Then build the publication, once per machine:
 
 ```bash
-cd tools && go run ./cmd/send-endpoints -tee <TEE_ID> -config <ENDPOINTS_JSON> -out /tmp/endpoints-<TEE_ID>.json
+cd tools && go run ./cmd/send-endpoints -config <ENDPOINTS_JSON> -claimBack <EXECUTOR_WALLET> -out /tmp/endpoints.json
 ```
 
 `setEndpoints` is governance-only once the sender is in production mode, so the command does
@@ -138,11 +138,11 @@ payload** — otherwise whoever publishes admins could move a credential under w
 hold. A ref the build does not recognise falls under the stronger set.
 
 ```bash
-cd tools && go run ./cmd/send-admins -dry-run -tee <TEE_ID> -config <ADMINS_JSON>
+cd tools && go run ./cmd/send-admins -dry-run -config <ADMINS_JSON>
 ```
 
 ```bash
-cd tools && go run ./cmd/send-admins -tee <TEE_ID> -config <ADMINS_JSON> -out /tmp/admins-<TEE_ID>.json
+cd tools && go run ./cmd/send-admins -config <ADMINS_JSON> -claimBack <EXECUTOR_WALLET> -out /tmp/admins.json
 ```
 
 Same hand-off model as step 1: the file carries the exact calldata and fee for the Flare

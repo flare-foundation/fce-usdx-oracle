@@ -12,9 +12,10 @@
 // list from it. It predicts the version (adminsVersion(feedId) + 1) so it can
 // predict the hash every later feed update and SET_SECRET will have to carry.
 //
-// One publication fans out to every machine named with -tee in a single
-// transaction, and the fee is operationFee × len(teeIds). In production mode
-// setAdmins is governance-only and the calldata goes through the timelock; the
+// One publication fans out to every machine active on the extension when the
+// call executes; the sender reads that set itself and quotes the fee for it
+// (getAdminsPublicationFee), which this tool reports and attaches. In production
+// mode setAdmins is governance-only and the calldata goes through the timelock; the
 // direct Send path works only before switchToProductionMode. On a real
 // deployment (where the upstream deploy script has already switched to
 // production mode) use -out to export the governance hand-off — calldata, fee
@@ -40,6 +41,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"github.com/pkg/errors"
 )
@@ -54,10 +56,9 @@ func main() {
 	configF := flag.String("config", "", "admin set JSON file")
 	feedIDF := flag.String("feedId", "0x20555344582f555344000000000000000000000000",
 		"feed id (bytes21 hex); defaults to USDX/USD")
-	teeF := flag.String("tee", "",
-		"comma-separated TEE machine addresses to publish to (required)")
 	claimBackF := flag.String("claimBack", "",
-		"address that can claim back unspent fees; zero (default) to skip")
+		"payer of record for the dispatched instruction, written on-chain for the reward "+
+			"calculation (default: this tool's key; with -out, name the executor's wallet)")
 	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
 		"proxy API key, used to confirm delivery via a signed GET_READINESS when the "+
 			"proxy publishes no attested state (default: $DIRECT_API_KEY)")
@@ -117,21 +118,10 @@ func main() {
 		return
 	}
 
-	if *teeF == "" {
-		fccutils.FatalWithCause(errors.New("-tee is required (or -encode for a chain-less payload)"))
-	}
 	instructionSenderAddress, err := configs.ResolveContract(*instructionSenderF, *af, "TeeOracleInstructionsSender")
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("resolving the instructions sender: %s — pass -instructionSender "+
 			"or run scripts/import-upstream-addresses.sh after the upstream deploy", err))
-	}
-
-	teeIDs, err := parseAddresses(*teeF)
-	if err != nil {
-		fccutils.FatalWithCause(errors.Errorf("-tee: %s", err))
-	}
-	if len(teeIDs) == 0 {
-		fccutils.FatalWithCause(errors.New("-tee must name at least one machine"))
 	}
 
 	var claimBack common.Address
@@ -160,21 +150,28 @@ func main() {
 	}
 	version := currentVersion + 1
 
-	publication, err := instrutils.EncodeSetAdmins(feedID, teeIDs, roles, claimBack, version)
+	// The sender records the payer for the reward calculation and refuses the
+	// zero address; absent a choice, the key sending (or, with -out, quoting) is it.
+	if claimBack == (common.Address{}) {
+		claimBack = crypto.PubkeyToAddress(testSupport.Prv.PublicKey)
+	}
+
+	publication, err := instrutils.EncodeSetAdmins(feedID, roles, claimBack, version)
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("encoding setAdmins: %s", err))
 	}
-	if err := publication.ResolveFee(testSupport, "SET_ADMINS"); err != nil {
+	if err := publication.ResolveFee(testSupport, instructionSenderAddress, instrutils.OpCommandSetAdmins); err != nil {
 		fccutils.FatalWithCause(errors.Errorf("resolving the fee: %s", err))
 	}
 
-	logger.Infof("Publishing to %d machine(s) for feed %s:", len(teeIDs), *feedIDF)
-	for _, id := range teeIDs {
+	logger.Infof("Publishing for feed %s; the sender dispatches to its %d active machine(s):", *feedIDF, len(publication.TeeIDs))
+	for _, id := range publication.TeeIDs {
 		logger.Infof("  tee: %s", id.Hex())
 	}
 	logger.Infof("  predicted version:    %d (current %d)", publication.Version, currentVersion)
 	logger.Infof("  predicted adminsHash: %s", publication.PayloadHash.Hex())
-	logger.Infof("  fee (× %d machine(s)): %s wei", len(teeIDs), publication.Fee)
+	logger.Infof("  fee quoted by the sender: %s wei", publication.Fee)
+	logger.Infof("  claim-back address:   %s", claimBack.Hex())
 
 	if *dryRunF {
 		logger.Infof("Dry run: nothing sent. The sender assigns the version, so the predicted " +
@@ -252,22 +249,6 @@ func parseFeedID(s string) ([21]byte, error) {
 	}
 	copy(id[:], raw)
 	return id, nil
-}
-
-// parseAddresses splits a comma-separated list of hex addresses.
-func parseAddresses(s string) ([]common.Address, error) {
-	var out []common.Address
-	for _, raw := range strings.Split(s, ",") {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		if !common.IsHexAddress(raw) {
-			return nil, errors.Errorf("%q is not an address", raw)
-		}
-		out = append(out, common.HexToAddress(raw))
-	}
-	return out, nil
 }
 
 // waitForAdmins polls the machine's own /state until it reports the hash just

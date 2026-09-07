@@ -63,18 +63,6 @@ func FeedUpdateFee(s *support.Support, teeIDs int) (*big.Int, error) {
 	return operationFee(s, OpCommandGetFeed, teeIDs)
 }
 
-// EndpointsFee is the same lookup for SET_ENDPOINTS. One publication dispatches
-// one instruction PER TARGET MACHINE, so the fee scales with the fleet — a
-// single-machine fee would underpay a fleet-wide publish and revert.
-func EndpointsFee(s *support.Support, teeIDs int) (*big.Int, error) {
-	return operationFee(s, OpCommandSetEndpoints, teeIDs)
-}
-
-// AdminsFee is the same, for SET_ADMINS.
-func AdminsFee(s *support.Support, teeIDs int) (*big.Int, error) {
-	return operationFee(s, OpCommandSetAdmins, teeIDs)
-}
-
 func operationFee(s *support.Support, command string, teeIDs int) (*big.Int, error) {
 	if teeIDs < 1 {
 		return nil, errors.New("at least one target machine is required")
@@ -188,8 +176,9 @@ type Publication struct {
 	// byte for byte, so this is the artefact to store — not a description of it.
 	Calldata []byte
 
-	// Fee is operationFee × len(TeeIDs). In production mode the EXECUTOR attaches
-	// it to executeGovernanceCall; recording the call rejects value.
+	// Fee is the sender's quote for dispatching to its active machines, filled in
+	// by ResolveFee. In production mode the EXECUTOR attaches it to
+	// executeGovernanceCall; recording the call rejects value.
 	Fee *big.Int
 
 	// PayloadHash is what the sender will record as latestEndpointsHash /
@@ -199,22 +188,29 @@ type Publication struct {
 
 	Version uint64
 	FeedID  [21]byte
-	TeeIDs  []common.Address
+
+	// TeeIDs are the machines the sender quoted the fee for: the extension's
+	// active set when ResolveFee ran. The call itself names no machines; the
+	// sender dispatches to the active set as it stands when the call executes.
+	TeeIDs []common.Address
 }
 
 // EncodeSetEndpoints builds the governance call that publishes an endpoint
-// configuration for one feed to a set of machines.
+// configuration for one feed. The sender dispatches it to every machine active
+// on the extension when the call executes; ResolveFee reports which those are.
 //
 // version is the version the sender WILL assign — endpointsVersion(feedId) + 1
 // — and is needed only to predict PayloadHash. The contract assigns the real
 // one; if another publication for this feed lands first, the prediction is stale
 // and the hash will not match.
+//
+// claimBack is the payer of record the sender writes into TeeInstructionsSent
+// for the off-chain reward calculation; the contract rejects the zero address.
 func EncodeSetEndpoints(
-	feedID [21]byte, teeIDs []common.Address, groups []oraclepayload.Group,
-	claimBack common.Address, version uint64,
+	feedID [21]byte, groups []oraclepayload.Group, claimBack common.Address, version uint64,
 ) (*Publication, error) {
-	if len(teeIDs) == 0 {
-		return nil, errors.New("at least one target machine is required")
+	if claimBack == (common.Address{}) {
+		return nil, errors.New("the claim-back address must be non-zero (the sender reverts ZeroClaimBackAddress)")
 	}
 
 	hash, err := oraclepayload.EndpointsHash(version, feedID, groups)
@@ -226,24 +222,20 @@ func EncodeSetEndpoints(
 	if err != nil {
 		return nil, err
 	}
-	calldata, err := parsed.Pack("setEndpoints", feedID, teeIDs, senderGroups(groups), claimBack)
+	calldata, err := parsed.Pack("setEndpoints", feedID, senderGroups(groups), claimBack)
 	if err != nil {
 		return nil, errors.Errorf("packing setEndpoints: %s", err)
 	}
 
-	return &Publication{
-		Calldata: calldata, PayloadHash: hash,
-		Version: version, FeedID: feedID, TeeIDs: teeIDs,
-	}, nil
+	return &Publication{Calldata: calldata, PayloadHash: hash, Version: version, FeedID: feedID}, nil
 }
 
 // EncodeSetAdmins is the same for the role-tagged admin signer sets.
 func EncodeSetAdmins(
-	feedID [21]byte, teeIDs []common.Address, roles []oraclepayload.Role,
-	claimBack common.Address, version uint64,
+	feedID [21]byte, roles []oraclepayload.Role, claimBack common.Address, version uint64,
 ) (*Publication, error) {
-	if len(teeIDs) == 0 {
-		return nil, errors.New("at least one target machine is required")
+	if claimBack == (common.Address{}) {
+		return nil, errors.New("the claim-back address must be non-zero (the sender reverts ZeroClaimBackAddress)")
 	}
 
 	hash, err := oraclepayload.AdminsHash(version, feedID, roles)
@@ -255,15 +247,12 @@ func EncodeSetAdmins(
 	if err != nil {
 		return nil, err
 	}
-	calldata, err := parsed.Pack("setAdmins", feedID, teeIDs, senderRoles(roles), claimBack)
+	calldata, err := parsed.Pack("setAdmins", feedID, senderRoles(roles), claimBack)
 	if err != nil {
 		return nil, errors.Errorf("packing setAdmins: %s", err)
 	}
 
-	return &Publication{
-		Calldata: calldata, PayloadHash: hash,
-		Version: version, FeedID: feedID, TeeIDs: teeIDs,
-	}, nil
+	return &Publication{Calldata: calldata, PayloadHash: hash, Version: version, FeedID: feedID}, nil
 }
 
 // Send submits a publication directly, for a caller that IS governance.
@@ -297,13 +286,40 @@ func (p *Publication) Send(s *support.Support, senderAddress common.Address) (co
 	return receipt.TxHash, nil
 }
 
-// ResolveFee reads the current operation fee for a publication and fills it in.
-func (p *Publication) ResolveFee(s *support.Support, command string) error {
-	fee, err := operationFee(s, command, len(p.TeeIDs))
+// ResolveFee asks the sender what dispatching this publication costs now, and
+// records the fee together with the machines it would go to. The sender
+// dispatches to the extension's active set as it stands when the call executes,
+// so the quote is a snapshot: a machine registered or paused in between changes
+// the fee, and a short fee reverts inside the diamond, which is retryable.
+//
+// An extension with no active machine is refused here: the sender would record
+// the publication without dispatching it, which is never what these tools mean.
+func (p *Publication) ResolveFee(s *support.Support, senderAddress common.Address, command string) error {
+	caller, err := Sender(s, senderAddress)
 	if err != nil {
 		return err
 	}
-	p.Fee = fee
+	opts := &bind.CallOpts{Context: context.Background()}
+	var quote struct {
+		TeeIds []common.Address
+		Fee    *big.Int
+	}
+	switch command {
+	case OpCommandSetEndpoints:
+		quote, err = caller.GetEndpointsPublicationFee(opts)
+	case OpCommandSetAdmins:
+		quote, err = caller.GetAdminsPublicationFee(opts)
+	default:
+		return errors.Errorf("%s is not a publication", command)
+	}
+	if err != nil {
+		return errors.Errorf("reading the publication fee: %s", err)
+	}
+	if len(quote.TeeIds) == 0 {
+		return errors.New("the extension has no active machine: the sender would record the publication without dispatching it")
+	}
+	p.Fee = quote.Fee
+	p.TeeIDs = quote.TeeIds
 	return nil
 }
 
@@ -328,7 +344,8 @@ type Handoff struct {
 	Note        string   `json:"note"`
 }
 
-// Handoff renders the publication for the executor. ResolveFee must have run.
+// Handoff renders the publication for the executor. ResolveFee must have run;
+// TeeIDs and ValueWei are its quote, taken from the active set at that moment.
 func (p *Publication) Handoff(target common.Address, command string) (*Handoff, error) {
 	if p.Fee == nil {
 		return nil, errors.New("publication has no fee; call ResolveFee first")

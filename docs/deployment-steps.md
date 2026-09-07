@@ -249,11 +249,11 @@ governance calls; the tools' direct-send path works before
 `switchToProductionMode`:
 
 ```bash
-cd tools && go run ./cmd/send-endpoints -store <STORE> -tee <TEE1>,<TEE2> -config ../deploy/config/endpoints/public-only.json
+cd tools && go run ./cmd/send-endpoints -config ../deploy/config/endpoints/public-only.json
 ```
 
 ```bash
-cd tools && go run ./cmd/send-admins -store <STORE> -tee <TEE1>,<TEE2> -config ../deploy/config/admins/dev-wellknown-keys.json
+cd tools && go run ./cmd/send-admins -config ../deploy/config/admins/dev-wellknown-keys.json
 ```
 
 > `<STORE>` is the `TeeOracleFeedStore` address; the instructions sender is
