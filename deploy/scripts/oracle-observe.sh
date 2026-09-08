@@ -71,6 +71,10 @@ go build -o "$LOG_DIR/devserver" ./cmd/devserver
 section "Starting mocknode (:$SIGN_PORT) and devserver (:$EXT_PORT)"
 SIGN_PORT="$SIGN_PORT" "$LOG_DIR/mocknode" >"$LOG_DIR/mocknode.log" 2>&1 &
 MOCK_PID=$!
+# The extension refuses to start without CHAIN_ID and EXTENSION_ID, the same
+# way the production entrypoint does. The harness has no chain, so the
+# simulation's values stand in unless the environment says otherwise.
+CHAIN_ID="${CHAIN_ID:-31337}" EXTENSION_ID="${EXTENSION_ID:-1}" \
 EXTENSION_PORT="$EXT_PORT" SIGN_PORT="$SIGN_PORT" "$LOG_DIR/devserver" >"$LOG_DIR/devserver.log" 2>&1 &
 DEV_PID=$!
 # Disowned so the shell does not announce their termination when cleanup kills
