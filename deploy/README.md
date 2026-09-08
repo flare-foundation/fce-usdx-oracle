@@ -45,6 +45,8 @@ troubleshooting table, is [docs/local-e2e.md](../docs/local-e2e.md).
 
 ```bash
 ./deploy/scripts/use-chain.sh local                 # .env.local → .env
+#   with a private Hex token (see "Private Hex credentials" below):
+#   HEX_API_KEY=<token> HEX_CASH_URL=https://… ./deploy/scripts/use-chain.sh local
 ./deploy/scripts/deploy-oracle-local.sh             # oracle contracts on the sim, extension 1 reserved
 (cd tools && go run ./cmd/wire-extension)           # owner wiring: sender, allowed machine owners, key types
 
@@ -52,11 +54,13 @@ troubleshooting table, is [docs/local-e2e.md](../docs/local-e2e.md).
 # use one or the other; the commands after them are the same:
 USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup.sh --chain local   # a) in Docker: compose stack, proxy on 6674
 USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh            # b) as host processes: no Docker, proxy on 6684
+#   b) with the proxy and node logs in this terminal afterwards (see "Attached mode" below):
+#   USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh --attach
 
 ./deploy/scripts/publish-local.sh endpoints         # SET_ENDPOINTS, one transaction
 ./deploy/scripts/publish-local.sh admins            # SET_ADMINS, dev-only well-known keys
-./deploy/scripts/upload-hex-key.sh                  # optional: hand the Hex credentials to the machine, see below
-./deploy/scripts/oracle-cycle.sh -tee <TEE_ID> --dry-run   # wait two minutes after the publications first
+./deploy/scripts/upload-hex-key.sh                  # only with a private Hex token: hand the credentials to the machine
+./deploy/scripts/oracle-cycle.sh -tee <TEE_ID> --dry-run   # two minutes after the last publication or upload
 ./deploy/scripts/oracle-cycle.sh -tee <TEE_ID>
 ./deploy/scripts/oracle-status.sh
 
@@ -74,25 +78,60 @@ Logs and pids sit under `out/`. The proxy binds
 6684 directly, a block clear of the e2e simulation's own processes; the start records it,
 so the follow-up scripts find it by themselves.
 
-**With a private Hex token.** Without one the machine runs cash-less: the public reserves
-endpoint needs no key, and the price counts bonds only. To use the restricted cash endpoint,
-give the credentials to the chain switch once:
+Either way `<TEE_ID>` is the machine `post-build.sh` registers, printed at the end and listed
+by `fleet-status`. The machine observes on a 2-minute timer and nothing re-triggers it when a
+configuration lands, so give it one interval after the last publication (or upload) before
+the first cycle. A cycle inside that interval is refused once, as `StaleEndpoints` or as
+`extension is not provisioned` when the observation predates the admin set, and costs the
+request fee.
+
+### Options
+
+**Private Hex credentials.** Without them the machine runs cash-less: the public reserves
+endpoint needs no key, the price counts bonds only, and `sourceHealth` shows
+`hex_cash: not_configured`. To use the restricted cash endpoint, give the two credentials to
+the chain switch once:
 
 ```bash
 HEX_API_KEY=<token> HEX_CASH_URL=https://… ./deploy/scripts/use-chain.sh local
 ```
 
-It writes them into `.env`, and later switches carry them (and the salt) over from the
-previous `.env`, so no file is edited by hand; `--no-hex` drops them. `publish-local.sh
-endpoints` then commits the `hex_cash` group to that URL and records the salt it used as
-`HEX_CASH_SALT`, and `upload-hex-key.sh` hands the URL and the key to the machine from the
-same variables, unattended on the simulation. Credentials are memory-only, so a restarted
-stack needs the upload again.
+`use-chain.sh` writes them into `.env`, and every later switch carries them, together with the
+salt, over from the `.env` it replaces, so the file is never edited by hand; `--no-hex` drops
+them. From there the normal sequence does the rest:
 
-Either way `<TEE_ID>` is the machine `post-build.sh` registers, printed at the end and listed
-by `fleet-status`. The machine observes on a 2-minute timer and nothing re-triggers it when a
-configuration lands, so give it one interval between the publications and the first cycle, or
-the dry run reports `StaleEndpoints` once.
+- `publish-local.sh endpoints` commits the `hex_cash` group to that URL instead of the config's
+  placeholder, generating a random salt on the first run and recording it as `HEX_CASH_SALT`.
+  The salt binds the published commitment to the URL the machine is later handed, so it must
+  not change between the two; treat URL and salt as one confidential pair.
+- `upload-hex-key.sh` hands both credentials to the machine: the URL as the commitment
+  preimage, then the key. On the recorded local stack everything defaults (proxy, chain id,
+  API key, the dev backing admin key), so it runs unattended, waits for the machine's own
+  verdict on each upload and ends with `ready: true`.
+- The confirmation that the cash figure is in the price is `hex_cash: ok` in the machine's
+  `sourceHealth`, shown by `oracle-status.sh` after the first served cycle. The figure itself
+  is never published, by design.
+
+Credentials are memory-only: a restarted stack is a new machine and needs the publications
+and the upload again. On the simulation the token is used from your machine against Hex's
+production endpoint.
+
+**Attached mode: the stack's logs in the terminal.** The host stack starts detached, because
+`post-build.sh` registers the machine against it while it runs, and restarting it in the
+foreground afterwards would mint a new machine identity. To end up with the proxy and node
+logs in front of you anyway:
+
+```bash
+USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh --attach   # setup as usual, then follow the log
+./deploy/scripts/stack-logs.sh                                       # attach to a running stack later
+```
+
+With `--attach` the setup runs exactly as without it; once `post-build.sh` is done the
+terminal switches to the stack's log from the top of the run and stays there, and Ctrl-C then
+stops the stack, the way ending a foreground process would. `stack-logs.sh` attaches to a
+running stack at any time and tells you when the stack exits underneath it; its Ctrl-C detaches
+and leaves the stack running, or stops it with `--stop`. Run the publications and cycles from
+a second terminal while attached.
 
 `deploy-oracle-local.sh` deploys upstream's contracts from the sibling checkout through
 `contracts/script/DeployTeeOracleLocal.s.sol`, leaving the sender governed by the deployer
@@ -132,7 +171,8 @@ machine identity is the registered one.
 | `deploy-oracle-local.sh [--refresh]` | Simulation only: deploy the oracle contracts deployer-governed, reserve extension 1, import addresses. |
 | `import-upstream-addresses.sh <network> [upstream]` | Merge upstream's deployed addresses into `config/<network>/deployed-addresses.json`; for `local` it seeds the file from the sim dump. |
 | `full-setup.sh [--chain c] [--local]` | Start the stack (`start-services.sh`), then `post-build.sh`. `--local` runs the extension TEE and proxy as host processes. |
-| `full-setup-host.sh` | `full-setup.sh --chain local --local`. |
+| `full-setup-host.sh [--attach]` | `full-setup.sh --chain local --local`; `--attach` then follows the stack's log in the terminal, Ctrl-C stopping the stack. |
+| `stack-logs.sh [--stop]` | Follow the host-process stack's log from the top of the current run. Ctrl-C detaches, or with `--stop` stops the stack. |
 | `start-services.sh [--chain c] [--local]` | Build images if needed and bring the compose stack up (recreated every run on `local`), or start `tools/cmd/local-stack` as host processes. `USE_LOCAL_SIBLINGS=1` builds node and proxy from the sibling checkouts. |
 | `stop-services.sh [--chain c] [--local]` | Stop the stack recorded by the last start (`deploy/config/stack.env`); `--local` forces the host processes under `out/pids/`, `--chain` the compose stack. Removes the record. |
 | `post-build.sh` | Allow the TEE version, set the extension's TEE governance, register the machine and take it to production. Re-runnable: a machine already in production is left alone. |
