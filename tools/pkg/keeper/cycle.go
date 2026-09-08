@@ -15,6 +15,7 @@ package keeper
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"strings"
@@ -430,6 +431,10 @@ func pollResults(
 	backoff := time.Second
 	pending := append([]string(nil), proxies...)
 	answered := map[string]teetypes.ActionResult{}
+	// What each unanswered proxy last said. A result that has not landed yet
+	// reads as a proxy error (404) on every round until it does, so the rounds
+	// are reported at DEBUG only and the outcome names each proxy's last answer.
+	lastSeen := map[string]string{}
 
 	for attempt := 1; ; attempt++ {
 		// Sequential across proxies: a fleet is a handful of machines, and one
@@ -439,14 +444,16 @@ func pollResults(
 			res, ok, err := fetchResult(proxy, id, tag)
 			switch {
 			case err != nil:
-				logger.Warnf("attempt %d (%s): %s", attempt, proxy, err)
+				lastSeen[proxy] = err.Error()
 				still = append(still, proxy)
 			case ok:
 				answered[proxy] = res
+				continue
 			default:
-				logger.Infof("attempt %d (%s): pending (status %d)", attempt, proxy, res.Status)
+				lastSeen[proxy] = fmt.Sprintf("pending (status %d)", res.Status)
 				still = append(still, proxy)
 			}
+			logger.Debugf("attempt %d (%s): %s", attempt, proxy, lastSeen[proxy])
 		}
 		pending = still
 
@@ -469,11 +476,21 @@ func pollResults(
 		}
 	}
 
+	unanswered := make([]string, 0, len(pending))
+	for _, proxy := range pending {
+		unanswered = append(unanswered, proxy+": "+lastSeen[proxy])
+	}
 	if len(answered) == 0 {
 		return nil, errors.Errorf(
-			"no terminal result for %s within %s on any of %d proxy/proxies — FCC is "+
+			"no terminal result for %s within %s on any of %d proxy/proxies (%s) — FCC is "+
 				"fire-and-forget, so a dropped instruction is an expected outcome, not an "+
-				"exceptional one", id.Hex(), timeout, len(proxies))
+				"exceptional one", id.Hex(), timeout, len(proxies), strings.Join(unanswered, "; "))
+	}
+	if len(unanswered) > 0 {
+		// A short round is not an error — the store's threshold judges it — but
+		// it is worth one line saying who was missing and why.
+		logger.Infof("%d of %d proxies answered within %s; unanswered: %s",
+			len(answered), len(proxies), timeout, strings.Join(unanswered, "; "))
 	}
 	out := make([]polled, 0, len(answered))
 	for _, proxy := range proxies {

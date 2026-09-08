@@ -27,13 +27,23 @@ const teeIDTimeout = time.Minute
 // teeIDRetry is the gap between resolution attempts during startup.
 const teeIDRetry = time.Second
 
+// signTimeout bounds each call to tee-node's signing service. Signing and
+// decrypting are in-memory operations over loopback, so a call that has not
+// returned within a second means tee-node is not answering, not that it is
+// busy. It also has to sit inside the 2s tee-node allows an action before
+// abandoning it: a signature or a decrypted secret produced after that point
+// is one nobody reads, and for SET_SECRET it would take effect after the
+// operator was told it failed. The startup identity probe has its own
+// schedule (teeIDRetry, teeIDTimeout) and does not depend on this value.
+const signTimeout = time.Second
+
 // StartExtension starts the HTTP server and the observation loop, returning a channel
 // that receives any ListenAndServe failure. The extension boots UNPROVISIONED and that
 // is normal: it serves not_configured until SET_ENDPOINTS and SET_SECRET land.
 func StartExtension(extensionPort, signPort int) <-chan error {
 	errCh := make(chan error, 1)
 
-	node := teenode.New(signPort, 10*time.Second)
+	node := teenode.New(signPort, signTimeout)
 
 	// Resolved before the verifier exists
 	teeID, err := resolveTeeID(context.Background(), node)
@@ -100,7 +110,10 @@ func resolveTeeID(ctx context.Context, node *teenode.Client) (common.Address, er
 				"tee identity unresolved after %s, so the extension cannot be provisioned: %w",
 				teeIDTimeout, err)
 		case <-time.After(teeIDRetry):
-			logger.Warnf("attempt %d: tee identity not resolved (%v); retrying", attempt, err)
+			// The signing service is routinely not up yet on the first rounds,
+			// so each wait is reported at DEBUG; the deadline error above
+			// carries the last cause.
+			logger.Debugf("attempt %d: tee identity not resolved (%v); retrying", attempt, err)
 		}
 	}
 }
