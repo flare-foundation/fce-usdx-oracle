@@ -27,6 +27,7 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/provisioning/envelope"
+	"fce-usdx-oracle/internal/provisioning/store"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -56,6 +57,8 @@ func main() {
 	switch os.Args[1] {
 	case "build":
 		err = build(os.Args[2:])
+	case "commit":
+		err = commit(os.Args[2:])
 	case "sign":
 		err = sign(os.Args[2:])
 	case "submit":
@@ -73,13 +76,19 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usdxprov — build, sign and submit provisioning envelopes
 
   usdxprov build  -url <proxy> -chain-id <n> -ref <name> -value <secret> [-version <n>] [-tee <id>] -out env.json
+  usdxprov commit                      print the urlHash a SET_ENDPOINTS publishes for the cash URL
   usdxprov sign   -in env.json -key <hex-private-key> [-out env.json]
-  usdxprov submit -in env.json -url <proxy> [-api-key <k>] [-action-url <url>]
+  usdxprov submit -in env.json -url <proxy> [-api-key <k>] [-wait <d>] [-action-url <url>]
 
 Always pass -tee for a real credential. build encrypts to whatever public key the
 proxy's /info serves, and -tee is what makes it refuse a substituted one; take the
 value from the attestation, with "verify-tee -print-tee-id". The upload scripts do
 this for you.
+
+The `+config.HexCashURLRef+` credential is not a string but abi.encode(salt, url), the
+preimage of the urlHash the hex_cash group publishes. build takes it from HEX_CASH_URL
+and HEX_CASH_SALT rather than from a value, and commit prints the matching urlHash
+from the same two variables.
 
 The freshness window is `+envelope.Freshness.String()+`: sign and submit within it, or
 the envelope is rejected as stale.
@@ -92,6 +101,53 @@ are whatever SET_ADMINS published, and only the target machine can tell you
 whether an envelope satisfies them.
 `)
 	os.Exit(2)
+}
+
+// privateURL validates the cash URL and its salt as the store will see them.
+// The salt is what keeps the on-chain commitment from being brute-forced back
+// to the URL, so a zero or short one is refused here rather than published.
+func privateURL(rawURL, rawSalt string) (store.PrivateURL, error) {
+	if rawURL == "" || rawSalt == "" {
+		return store.PrivateURL{}, fmt.Errorf(
+			"HEX_CASH_URL and HEX_CASH_SALT are both required for %s", config.HexCashURLRef)
+	}
+	if !strings.HasPrefix(rawURL, "https://") {
+		return store.PrivateURL{}, fmt.Errorf("HEX_CASH_URL must use https")
+	}
+	saltBytes, err := hex.DecodeString(strings.TrimPrefix(strings.TrimPrefix(rawSalt, "0x"), "0X"))
+	if err != nil || len(saltBytes) != 32 {
+		return store.PrivateURL{}, fmt.Errorf("HEX_CASH_SALT must be 32 bytes of hex (openssl rand -hex 32)")
+	}
+	salt := common.BytesToHash(saltBytes)
+	if salt == (common.Hash{}) {
+		return store.PrivateURL{}, fmt.Errorf("HEX_CASH_SALT is zero")
+	}
+	return store.PrivateURL{Salt: salt, Url: rawURL}, nil
+}
+
+// --- commit ---
+
+// commit prints the urlHash the hex_cash group of a SET_ENDPOINTS must carry for
+// HEX_CASH_URL under HEX_CASH_SALT: keccak256 of the very blob build provisions
+// for hex_cash_url. Stdout carries the hash and nothing else, so a script can
+// substitute it into an endpoints configuration.
+func commit(args []string) error {
+	fs := flags("commit", args, map[string]*string{}, nil)
+	cashURL := fs.secret("private-url", "HEX_CASH_URL", "the restricted cash URL")
+	cashSalt := fs.secret("salt", "HEX_CASH_SALT", "32-byte hex salt of the commitment")
+	if err := fs.parse(); err != nil {
+		return err
+	}
+	u, err := privateURL(cashURL(), cashSalt())
+	if err != nil {
+		return err
+	}
+	h, err := store.CommitPrivateURL(u)
+	if err != nil {
+		return fmt.Errorf("committing the cash URL: %w", err)
+	}
+	fmt.Println(h.Hex())
+	return nil
 }
 
 // --- build ---
@@ -107,12 +163,37 @@ func build(args []string) error {
 	teeIDFlag := fs.str("tee", "",
 		"the teeId the ATTESTATION derived (verify-tee -print-tee-id); "+
 			"build refuses to encrypt if /info serves a key deriving to anything else")
+	cashURL := fs.secret("private-url", "HEX_CASH_URL",
+		"the restricted cash URL, the value of -ref "+config.HexCashURLRef)
+	cashSalt := fs.secret("salt", "HEX_CASH_SALT",
+		"32-byte hex salt of the cash URL commitment")
 	if err := fs.parse(); err != nil {
 		return err
 	}
-	credential := value()
-	if *proxyURL == "" || *ref == "" || credential == "" || *chainID == 0 {
-		return fmt.Errorf("-url, -chain-id, -ref and -value are required")
+
+	// Every credential but one is the string the operator holds. The cash URL is
+	// provisioned as its commitment preimage, abi.encode(salt, url), which no
+	// environment variable can carry (it contains zero bytes), so it is built
+	// here from the URL and the salt, and a value given for it is refused rather
+	// than encrypted as a string the enclave would reject.
+	var credential []byte
+	if *ref == config.HexCashURLRef {
+		if value() != "" {
+			return fmt.Errorf("%s is derived from HEX_CASH_URL and HEX_CASH_SALT, not given as a value",
+				config.HexCashURLRef)
+		}
+		u, err := privateURL(cashURL(), cashSalt())
+		if err != nil {
+			return err
+		}
+		if credential, err = store.EncodePrivateURL(u); err != nil {
+			return fmt.Errorf("encoding the cash URL: %w", err)
+		}
+	} else {
+		credential = []byte(value())
+	}
+	if *proxyURL == "" || *ref == "" || len(credential) == 0 || *chainID == 0 {
+		return fmt.Errorf("-url, -chain-id, -ref and a value are required")
 	}
 
 	pub, teeID, err := fetchKey(*proxyURL)
@@ -142,7 +223,7 @@ func build(args []string) error {
 
 	// Encrypt to the enclave. From here the credential exists in plaintext only
 	// inside the target TEE.
-	ciphertext, err := ecies.Encrypt(cryptoRand(), ecies.ImportECDSAPublic(pub), []byte(credential), nil, nil)
+	ciphertext, err := ecies.Encrypt(cryptoRand(), ecies.ImportECDSAPublic(pub), credential, nil, nil)
 	if err != nil {
 		return fmt.Errorf("encrypting to the TEE key: %w", err)
 	}
@@ -262,6 +343,8 @@ func submit(args []string) error {
 	apiKey := fs.secret("api-key", "USDXPROV_API_KEY", "proxy API key")
 	actionURL := fs.str("action-url", "",
 		"post straight to an extension's /action instead of the proxy (local testing)")
+	wait := fs.fs.Duration("wait", 60*time.Second,
+		"how long to wait for the machine's own result; 0 returns as soon as the proxy accepts")
 	if err := fs.parse(); err != nil {
 		return err
 	}
@@ -333,11 +416,74 @@ func submit(args []string) error {
 	if *proxyURL == "" {
 		return fmt.Errorf("-url or -action-url is required")
 	}
-	return postDirect(*proxyURL, apiKey(), message)
+	id, err := postDirect(*proxyURL, apiKey(), message)
+	if err != nil {
+		return err
+	}
+	if *wait <= 0 {
+		fmt.Printf("not waiting for the result; the extension applies it when the machine next polls the direct queue\n")
+		return nil
+	}
+	return awaitResult(*proxyURL, id, *wait)
 }
 
-// postDirect submits through the proxy, which is the production path.
-func postDirect(proxyURL, apiKey string, message []byte) error {
+// resultPollInterval is the gap between polls of a submitted action's result.
+var resultPollInterval = time.Second
+
+// awaitResult waits for the machine's own verdict on a submitted action. The
+// proxy files it under the action id once tee-node has run it: status 1 is
+// applied, 0 is rejected with the extension's one-line reason in Log, and a 404
+// means not yet. The wait is what turns "the proxy accepted it" into "the
+// enclave holds it"; without it a state read straight after the submit can
+// race the machine and report a credential missing that lands a moment later.
+func awaitResult(proxyURL string, id common.Hash, wait time.Duration) error {
+	url := strings.TrimRight(proxyURL, "/") + "/action/result/" + id.Hex() +
+		"?submissionTag=" + string(teetypes.Submit)
+	deadline := time.Now().Add(wait)
+	for {
+		res, terminal, err := fetchResult(url)
+		if err == nil && terminal {
+			if res.Status == 1 {
+				fmt.Printf("applied by the machine (action %s)\n", id.Hex())
+				return nil
+			}
+			return fmt.Errorf("rejected by the machine: %s", strings.TrimSpace(res.Log))
+		}
+		if time.Now().After(deadline) {
+			last := "no result filed"
+			if err != nil {
+				last = err.Error()
+			}
+			return fmt.Errorf("no verdict on action %s within %s (%s); the machine may still apply it — "+
+				"check its state before resubmitting", id.Hex(), wait, last)
+		}
+		time.Sleep(resultPollInterval)
+	}
+}
+
+// fetchResult reads one action result off the proxy and reports whether it is
+// terminal. A 404 is the normal state until tee-node has answered.
+func fetchResult(url string) (teetypes.ActionResult, bool, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return teetypes.ActionResult{}, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return teetypes.ActionResult{}, false, fmt.Errorf("proxy returned %d", resp.StatusCode)
+	}
+	var body teetypes.ActionResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return teetypes.ActionResult{}, false, fmt.Errorf("decoding the result: %w", err)
+	}
+	st := body.Result.Status
+	return body.Result, st == 0 || st == 1, nil
+}
+
+// postDirect submits through the proxy, which is the production path, and
+// returns the id of the action the proxy enqueued.
+func postDirect(proxyURL, apiKey string, message []byte) (common.Hash, error) {
 	payload := map[string]string{
 		"opType":    config.OPTypeTeeOracle.Hex(),
 		"opCommand": config.OPCommandSetSecret.Hex(),
@@ -347,7 +493,7 @@ func postDirect(proxyURL, apiKey string, message []byte) error {
 
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(proxyURL, "/")+"/direct", bytes.NewReader(raw))
 	if err != nil {
-		return err
+		return common.Hash{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
@@ -356,17 +502,25 @@ func postDirect(proxyURL, apiKey string, message []byte) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return common.Hash{}, err
 	}
 	defer resp.Body.Close()
 	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("proxy returned %d: %s", resp.StatusCode, strings.TrimSpace(string(out)))
+		return common.Hash{}, fmt.Errorf("proxy returned %d: %s", resp.StatusCode, strings.TrimSpace(string(out)))
 	}
-	fmt.Printf("submitted to %s/direct\n", strings.TrimRight(proxyURL, "/"))
-	fmt.Printf("the extension applies it when the machine next polls the direct queue\n")
-	return nil
+	// The proxy echoes the action it enqueued; the id is what its result is
+	// filed under.
+	var action teetypes.Action
+	if err := json.Unmarshal(out, &action); err != nil {
+		return common.Hash{}, fmt.Errorf("decoding the proxy response: %w", err)
+	}
+	if action.Data.ID == (common.Hash{}) {
+		return common.Hash{}, fmt.Errorf("the proxy returned no action id")
+	}
+	fmt.Printf("submitted to %s/direct as action %s\n", strings.TrimRight(proxyURL, "/"), action.Data.ID.Hex())
+	return action.Data.ID, nil
 }
 
 // postAction delivers straight to an extension, bypassing proxy and chain. Local

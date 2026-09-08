@@ -48,12 +48,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- Auto-activate chain-specific env when --chain was passed explicitly ---
-# If --chain <name> was given and a .env.<name> exists, activate it (copy → .env)
-# BEFORE loading, so --chain actually switches chains. Put per-chain values in
-# .env.<name>; note this overwrites the active .env.
+# If --chain <name> was given and a .env.<name> exists, activate it BEFORE
+# loading, so --chain actually switches chains. Through use-chain.sh rather than
+# a copy, so the Hex credentials in the active .env survive the switch the same
+# way they do when the operator switches by hand. Put per-chain values in
+# .env.<name>; note this replaces the active .env.
 if [[ -n "$CHAIN" && -f "$PROJECT_DIR/.env.$CHAIN" ]]; then
-    cp "$PROJECT_DIR/.env.$CHAIN" "$PROJECT_DIR/.env"
-    log "Activated .env.$CHAIN → .env"
+    "$SCRIPT_DIR/use-chain.sh" "$CHAIN" || exit 1
 elif [[ -n "$CHAIN" && "$CHAIN" != "local" && ! -f "$PROJECT_DIR/.env.$CHAIN" ]]; then
     warn "No .env.$CHAIN found — using the existing .env as-is, which may target a different chain."
     warn "Create .env.$CHAIN (e.g. from .env.example) so '--chain $CHAIN' switches automatically."

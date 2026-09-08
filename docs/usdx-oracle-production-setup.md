@@ -23,7 +23,7 @@ The split is the security model. No single party can both choose a credential an
 | Role | Holds | Used for |
 | --- | --- | --- |
 | **Flare governance** | the timelocked governance authority | publishing endpoints and admin sets on-chain (steps 1–2) via `setEndpoints`/`setAdmins` |
-| **Backing admin(s)** | an admin private key | authorising `hex_api_key` only — ≥1 signature |
+| **Backing admin(s)** | an admin private key | authorising `hex_api_key` and `hex_cash_url` — ≥1 signature |
 | **Provider admins** | one admin private key each, on separate machines | authorising the RPC credentials — ≥2 distinct signatures |
 | **Hex credential holder** | the Hex API key | building that envelope (step 4) |
 | **RPC credential holder** | the RPC provider keys | building those envelopes (step 3) |
@@ -130,7 +130,7 @@ publications for that machine.
 
 | Set | Governs | Floor | Why the floor differs |
 | --- | --- | --- | --- |
-| `backing` | `hex_api_key` only | 1 | A wrong value degrades the feed to cash-less; it cannot move the price |
+| `backing` | `hex_api_key` and `hex_cash_url` | 1 | A wrong value degrades the feed to cash-less; it cannot move the price |
 | `providers` | every other ref | 2 | A rogue RPC value denies service on every chain that uses it |
 
 The mapping from ref to set is **pinned in the extension build and is not read from this
@@ -229,9 +229,13 @@ command — no handoff, no coordination window:
 ./deploy/scripts/upload-hex-key.sh
 ```
 
-It prompts for the proxy URL, the chain id and the expected code hash, then — hidden — the
-backing admin key, the proxy API key and the Hex API key itself. This is the case the split
-exists for: they never see an RPC credential, and the provider admins never see theirs.
+It reads `.env` first (`HEX_API_KEY`, and the proxy URL, chain id and API key where set) and
+prompts for whatever is missing: the proxy URL, the chain id and the expected code hash, then —
+hidden — the backing admin key, the proxy API key and the Hex API key itself. With
+`HEX_CASH_URL` and `HEX_CASH_SALT` set it also uploads `hex_cash_url`, the restricted cash URL
+as the preimage of the commitment the endpoints publication carries; the machine counts the
+cash figure only once it holds both. This is the case the split exists for: they never see an
+RPC credential, and the provider admins never see theirs.
 
 If the Hex key holder is **not** a backing admin, this script does not apply — it signs and
 submits in one pass. Use the three commands directly, keeping the envelope somewhere durable so
@@ -243,7 +247,12 @@ cd tools && go run ./cmd/verify-tee -p <PROXY_URL> -code-hash <0x…>
 
 ```bash
 USDXPROV_VALUE=<HEX_API_KEY> go run ./cmd/usdxprov build -url <PROXY_URL> -chain-id <CHAIN_ID> -ref hex_api_key -version $(date +%s) -out <ENVELOPE_JSON>
+HEX_CASH_URL=<URL> HEX_CASH_SALT=<0x…> go run ./cmd/usdxprov build -url <PROXY_URL> -chain-id <CHAIN_ID> -ref hex_cash_url -version $(date +%s) -out <ENVELOPE_JSON>
 ```
+
+The second envelope carries the cash URL as `abi.encode(salt, url)`; the salt must be the one
+the published `hex_cash` commitment was made with (`usdxprov commit` prints that commitment for
+the endpoints configuration from the same two variables).
 
 Then the backing admin signs and submits, exactly as admin C does in step 3.
 

@@ -1,18 +1,25 @@
 package main
 
 import (
+	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"fce-usdx-oracle/internal/config"
+	"fce-usdx-oracle/internal/provisioning/store"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/ecies"
+	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
 // The proxy's /info carries no teeId field; the machine identity must be
@@ -149,4 +156,178 @@ func infoServer(t *testing.T, publicKey map[string]string) *httptest.Server {
 			t.Errorf("encoding payload: %v", err)
 		}
 	}))
+}
+
+const (
+	testCashURL  = "https://api.example/restricted/cash"
+	testCashSalt = "0x1111111111111111111111111111111111111111111111111111111111111111"
+)
+
+// The cash URL is provisioned as abi.encode(salt, url), never as a string, so
+// build derives it from HEX_CASH_URL and HEX_CASH_SALT and must refuse a value
+// given for it: a URL pasted into USDXPROV_VALUE would otherwise be encrypted as
+// a string the enclave then rejects against its commitment.
+func TestBuildRefusesAValueForTheCashURL(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := infoServer(t, map[string]string{
+		"x": common.BigToHash(key.PublicKey.X).Hex(),
+		"y": common.BigToHash(key.PublicKey.Y).Hex(),
+	})
+	defer srv.Close()
+
+	out := filepath.Join(t.TempDir(), "envelope.json")
+	t.Setenv("USDXPROV_VALUE", testCashURL)
+	t.Setenv("HEX_CASH_URL", testCashURL)
+	t.Setenv("HEX_CASH_SALT", testCashSalt)
+
+	err = build([]string{
+		"-url", srv.URL, "-chain-id", "114", "-ref", config.HexCashURLRef, "-out", out,
+	})
+	if err == nil {
+		t.Fatal("build accepted a string value for the cash URL")
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Error("an envelope was written despite the refusal")
+	}
+}
+
+// What build encrypts for hex_cash_url must be byte-identical to the preimage
+// the store recomputes the commitment from, and that commitment must be the one
+// commit prints for the endpoints configuration; otherwise the machine refuses
+// the URL it is handed.
+func TestBuildEncryptsTheCashURLPreimage(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := infoServer(t, map[string]string{
+		"x": common.BigToHash(key.PublicKey.X).Hex(),
+		"y": common.BigToHash(key.PublicKey.Y).Hex(),
+	})
+	defer srv.Close()
+
+	out := filepath.Join(t.TempDir(), "envelope.json")
+	t.Setenv("USDXPROV_VALUE", "")
+	t.Setenv("HEX_CASH_URL", testCashURL)
+	t.Setenv("HEX_CASH_SALT", testCashSalt)
+
+	err = build([]string{
+		"-url", srv.URL, "-chain-id", "114", "-ref", config.HexCashURLRef,
+		"-tee", crypto.PubkeyToAddress(key.PublicKey).Hex(), "-out", out,
+	})
+	if err != nil {
+		t.Fatalf("build refused the cash URL: %v", err)
+	}
+
+	var f envelopeFile
+	if err := readJSON(out, &f); err != nil {
+		t.Fatalf("reading the envelope: %v", err)
+	}
+	ciphertext, err := hex.DecodeString(strings.TrimPrefix(f.Ciphertext, "0x"))
+	if err != nil {
+		t.Fatalf("ciphertext is not hex: %v", err)
+	}
+	plaintext, err := ecies.ImportECDSA(key).Decrypt(ciphertext, nil, nil)
+	if err != nil {
+		t.Fatalf("the envelope does not decrypt with the served key: %v", err)
+	}
+
+	u := store.PrivateURL{Salt: common.HexToHash(testCashSalt), Url: testCashURL}
+	want, err := store.EncodePrivateURL(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(plaintext, want) {
+		t.Fatalf("provisioned blob differs from the store's preimage:\n got %x\nwant %x", plaintext, want)
+	}
+	commitment, err := store.CommitPrivateURL(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commitment != crypto.Keccak256Hash(plaintext) {
+		t.Fatalf("commitment %s is not the hash of the provisioned blob", commitment.Hex())
+	}
+}
+
+// privateURL is the one check the URL and salt pass before either is committed
+// on-chain or encrypted, so its refusals are pinned.
+func TestPrivateURLValidation(t *testing.T) {
+	cases := []struct {
+		name, url, salt string
+		ok              bool
+	}{
+		{"accepted", testCashURL, testCashSalt, true},
+		{"accepted without 0x", testCashURL, strings.TrimPrefix(testCashSalt, "0x"), true},
+		{"missing url", "", testCashSalt, false},
+		{"missing salt", testCashURL, "", false},
+		{"plain http", "http://api.example/cash", testCashSalt, false},
+		{"short salt", testCashURL, "0xabcd", false},
+		{"zero salt", testCashURL, "0x" + strings.Repeat("00", 32), false},
+		{"salt is not hex", testCashURL, "0x" + strings.Repeat("zz", 32), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := privateURL(tc.url, tc.salt)
+			if tc.ok != (err == nil) {
+				t.Fatalf("ok=%v, err=%v", tc.ok, err)
+			}
+			if tc.ok && (u.Url != tc.url || u.Salt != common.HexToHash(testCashSalt)) {
+				t.Fatalf("parsed %+v", u)
+			}
+		})
+	}
+}
+
+// resultServer files a result for id after `after` polls; before that it 404s,
+// as the proxy does until tee-node has answered.
+func resultServer(t *testing.T, id common.Hash, after int, result teetypes.ActionResult) (*httptest.Server, *int) {
+	t.Helper()
+	polls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/action/result/"+id.Hex() || r.URL.Query().Get("submissionTag") != string(teetypes.Submit) {
+			t.Errorf("unexpected request %s", r.URL)
+		}
+		polls++
+		if polls < after {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(teetypes.ActionResponse{Result: result})
+	}))
+	return srv, &polls
+}
+
+// submit's wait is the machine's own verdict, not the proxy's acceptance: a 404
+// until tee-node has answered, then status 1 applied or 0 rejected with the
+// extension's reason. Returning early on the 404 is exactly the race that made
+// the upload script report a credential missing that landed a moment later.
+func TestAwaitResultReportsTheMachinesVerdict(t *testing.T) {
+	resultPollInterval = 2 * time.Millisecond
+	t.Cleanup(func() { resultPollInterval = time.Second })
+	id := common.HexToHash("0x11")
+
+	applied, polls := resultServer(t, id, 3, teetypes.ActionResult{ID: id, Status: 1})
+	defer applied.Close()
+	if err := awaitResult(applied.URL, id, time.Second); err != nil {
+		t.Fatalf("an applied result was reported as: %v", err)
+	}
+	if *polls < 3 {
+		t.Fatalf("returned after %d polls, before the result was filed", *polls)
+	}
+
+	rejected, _ := resultServer(t, id, 1, teetypes.ActionResult{ID: id, Status: 0, Log: "provisioning rejected"})
+	defer rejected.Close()
+	err := awaitResult(rejected.URL, id, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "provisioning rejected") {
+		t.Fatalf("a rejection must surface the machine's reason, got: %v", err)
+	}
+
+	never, _ := resultServer(t, id, 1<<30, teetypes.ActionResult{})
+	defer never.Close()
+	if err := awaitResult(never.URL, id, 20*time.Millisecond); err == nil {
+		t.Fatal("a result that never arrives must be reported, not treated as applied")
+	}
 }

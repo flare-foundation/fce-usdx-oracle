@@ -55,6 +55,7 @@ USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh            # b) as host
 
 ./deploy/scripts/publish-local.sh endpoints         # SET_ENDPOINTS, one transaction
 ./deploy/scripts/publish-local.sh admins            # SET_ADMINS, dev-only well-known keys
+./deploy/scripts/upload-hex-key.sh                  # optional: hand the Hex credentials to the machine, see below
 ./deploy/scripts/oracle-cycle.sh -tee <TEE_ID> --dry-run   # wait two minutes after the publications first
 ./deploy/scripts/oracle-cycle.sh -tee <TEE_ID>
 ./deploy/scripts/oracle-status.sh
@@ -72,6 +73,21 @@ built from the module root, with redis on the simulation's fourth instance (empt
 Logs and pids sit under `out/`. The proxy binds
 6684 directly, a block clear of the e2e simulation's own processes; the start records it,
 so the follow-up scripts find it by themselves.
+
+**With a private Hex token.** Without one the machine runs cash-less: the public reserves
+endpoint needs no key, and the price counts bonds only. To use the restricted cash endpoint,
+give the credentials to the chain switch once:
+
+```bash
+HEX_API_KEY=<token> HEX_CASH_URL=https://… ./deploy/scripts/use-chain.sh local
+```
+
+It writes them into `.env`, and later switches carry them (and the salt) over from the
+previous `.env`, so no file is edited by hand; `--no-hex` drops them. `publish-local.sh
+endpoints` then commits the `hex_cash` group to that URL and records the salt it used as
+`HEX_CASH_SALT`, and `upload-hex-key.sh` hands the URL and the key to the machine from the
+same variables, unattended on the simulation. Credentials are memory-only, so a restarted
+stack needs the upload again.
 
 Either way `<TEE_ID>` is the machine `post-build.sh` registers, printed at the end and listed
 by `fleet-status`. The machine observes on a 2-minute timer and nothing re-triggers it when a
@@ -112,7 +128,7 @@ machine identity is the registered one.
 
 | Script | Purpose |
 | --- | --- |
-| `use-chain.sh <chain>` | Activate `.env.<chain>` as `.env`; `--list` shows the available ones. |
+| `use-chain.sh <chain>` | Activate `.env.<chain>` as `.env`; `--list` shows the available ones. Hex credentials given on the call, or present in the `.env` being replaced, are written into the new one; `--no-hex` drops them. |
 | `deploy-oracle-local.sh [--refresh]` | Simulation only: deploy the oracle contracts deployer-governed, reserve extension 1, import addresses. |
 | `import-upstream-addresses.sh <network> [upstream]` | Merge upstream's deployed addresses into `config/<network>/deployed-addresses.json`; for `local` it seeds the file from the sim dump. |
 | `full-setup.sh [--chain c] [--local]` | Start the stack (`start-services.sh`), then `post-build.sh`. `--local` runs the extension TEE and proxy as host processes. |
@@ -125,7 +141,7 @@ machine identity is the registered one.
 | `oracle-status.sh [--store 0x…]` | Read what the oracle publishes: store, feed, machine registration, extension health. |
 | `oracle-observe.sh` | Local observation harness against a devserver and mocknode, no chain. |
 | `set-endpoints.sh`, `set-admins.sh` | Post a configuration payload straight to a running dev extension, no chain. |
-| `upload-rpc-keys.sh`, `upload-hex-key.sh` | Provision credentials into the enclave over the direct channel, signed by the admins. |
+| `upload-rpc-keys.sh`, `upload-hex-key.sh` | Provision credentials into the enclave over the direct channel, signed by the admins. The Hex one reads `HEX_API_KEY`, `HEX_CASH_URL` and `HEX_CASH_SALT` from `.env`. |
 | `check-versions.sh` | Fail when the tee-node, go-flare-common or tee-proxy pins drift between the two Go modules and the proxy image. |
 | `generate-bindings.sh` | Regenerate the Go bindings in `tools/pkg/contracts` from the upstream interfaces compiled in `contracts/`. |
 | `regen-wire-fixtures.sh` | Regenerate the ABI wire vectors under `testdata/wire` from the Foundry tests. |

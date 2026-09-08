@@ -289,20 +289,28 @@ cd tools && go run ./cmd/send-admins -instructionSender <SENDER> -config ../depl
 ### Handing the Hex credential to the machine
 
 The credential holder does not need this repo's deployment context, only the proxy URL
-and three secrets. One script covers the whole flow:
+and a few secrets. One script covers the whole flow:
 
 ```bash
 ./deploy/scripts/upload-hex-key.sh
 ```
 
-It prompts for the proxy URL, the chain id, the expected code hash, and then — hidden —
-the backing admin private key, the proxy API key, and the Hex API key. Everything can be
-preset in the environment (`PROXY_URL`, `CHAIN_ID`, `EXPECTED_CODE_HASH`, `USDXPROV_KEY`,
-`USDXPROV_API_KEY`, `USDXPROV_VALUE`) to run it unattended.
+It reads `.env` first: `HEX_API_KEY` is the credential, and with `HEX_CASH_URL` and
+`HEX_CASH_SALT` set it also uploads `hex_cash_url`, the commitment preimage of the
+restricted cash endpoint, which the machine needs alongside the key before the cash
+figure counts. On the recorded local stack the proxy URL, chain id, API key and the dev
+backing admin key default as well, so the run is unattended; elsewhere it prompts for
+whatever is unset, hidden for secrets (`PROXY_URL`, `CHAIN_ID`, `EXPECTED_CODE_HASH`,
+`USDXPROV_KEY`, `USDXPROV_API_KEY`).
 
-The five steps are: verify the machine, read its attested key, encrypt to it, sign once,
-submit over the direct channel, then confirm from the machine's own published state.
-Verification gates the rest — if it fails, nothing is sent.
+Three steps: verify the machine, which also yields the attested key everything is
+encrypted to; then, per credential, encrypt, sign once and submit over the direct channel,
+waiting for the machine's own verdict on each (`usdxprov submit -wait`, so "applied" means
+the enclave holds it, not that the proxy took it); then confirm from the machine's
+published state. Verification gates the rest — if it fails, nothing is sent. The URL goes
+before the key, because the machine accepts it only against the published commitment:
+`publish-local.sh endpoints` makes that commitment from the same two variables, and
+`usdxprov commit` prints it for a hand-written configuration.
 
 **Why the verification step is not optional.** The next step encrypts a credential to a
 public key the proxy served. A proxy that lied about that key would receive the plaintext.
