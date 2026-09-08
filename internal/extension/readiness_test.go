@@ -139,16 +139,17 @@ func TestGetReadiness_RejectsUnexpectedPayload(t *testing.T) {
 	}
 }
 
-// Stub mode has nothing to describe, and saying so is the honest answer. The
-// important part is that it does not panic on the nil observer.
-func TestGetReadiness_StubModeReportsNotConfigured(t *testing.T) {
+// An extension without a provisioner has nothing to describe, and saying so is
+// the honest answer. The important part is that the nil provisioner does not
+// panic.
+func TestGetReadiness_NoProvisionerReportsNotConfigured(t *testing.T) {
 	e := newTestExtension()
 
 	status, body := e.processAction(readinessAction())
 	result := mustResult(t, status, body, http.StatusOK)
 
 	if result.Status != 0 {
-		t.Fatalf("expected Status=0 in stub mode, got %d", result.Status)
+		t.Fatalf("expected Status=0 without a provisioner, got %d", result.Status)
 	}
 	if result.Log != "error: "+failure.NotConfigured.Error() {
 		t.Errorf("expected not_configured, got %q", result.Log)

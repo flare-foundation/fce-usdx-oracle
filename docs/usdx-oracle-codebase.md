@@ -96,7 +96,6 @@ Roughly bottom-up. "Flow" refers to §6.
 | Binary | For |
 | --- | --- |
 | `cmd/docker` | **production** — what `Dockerfile` builds (tee-node + extension in one process) |
-| `cmd` | conformance harness only — stub mode, unsigned $1.00, no sources |
 | `cmd/devserver` | local dev: real provisioning + observation, no chain |
 | `cmd/mocknode` | fake tee-node `/sign` `/decrypt` `/info` for local dev |
 | `cmd/start-tee` | host-process runner behind `start-services.sh --local` |
@@ -113,7 +112,7 @@ teenode.New(signPort)                     ── talks to tee-node on localhost
    └─► envelope.NewVerifier(chainID)     ── admin signature check
          └─► store.New(verifier, node)   ── the config Store
                ├─► poller.New(store, node)   ── Poller: Resolver = store, Signer = node
-               └─► extension.NewWithProvisioner(ports, poller, store)
+               └─► extension.NewExtension(ports, poller, store)
 go poller.Run(ctx)                        ── the engine starts immediately
 e.Server.ListenAndServe()
 ```
@@ -124,9 +123,10 @@ credentials are all memory-only, so every restart returns it to `not_configured`
 `SET_SECRET`: with no admin set installed nothing can authorise a credential, and the
 verifier rejects every envelope until one is.
 
-`extension.NewWithProvisioner` panics on a nil observer. `NewStub` is the *only* way to
-get a stub, and it is named at its single call site (`cmd/main.go`) — the scaffold's
-old `New()` once silently shipped a hard-coded price to production.
+`extension.NewExtension` panics on a nil observer, and no stub constructor or stub binary
+exists: an extension that cannot observe cannot start. The scaffold's old `New()` once
+silently shipped a hard-coded price to production (findings §12); the conformance replay
+that the stub binary used to serve is now `TestConformance` in `internal/extension`.
 
 ---
 
@@ -550,8 +550,6 @@ carries the long form.
   `observe.Poller.Stats()` exists but is never called — a machine nobody queries reports
   an empty health map while its poller may be failing every 2 minutes. Alert on on-chain
   feed *age*, not on these counters.
-- **Stub mode is indistinguishable from a healthy fully-backed feed** on the wire — both
-  print `$1.00000000`. `Extension.StubMode()` is what tells them apart.
 - **The report has no target binding.** A genuinely signed report is replayable into any
   other store registered under the same extension. Accepted trade-off, findings §18.
 - **`observedAt` is a global ratchet** across all machines: one enclave with a fast clock

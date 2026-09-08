@@ -48,6 +48,7 @@ func Compute(in Inputs, decimals int8) (*big.Int, error) {
 	value := new(big.Int).Quo(scaled.Num(), scaled.Denom())
 
 	if value.Cmp(scale) > 0 {
+		// scale represents 1
 		return scale, nil
 	}
 	return value, nil

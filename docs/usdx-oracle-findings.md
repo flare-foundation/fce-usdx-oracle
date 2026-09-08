@@ -33,7 +33,7 @@ quietly mispublished.
 | 9 | ~~The TEE machine status enum's numeric values are not published~~ **RESOLVED** | **High** | `REQUIRED_TEE_STATUS = TeeStatus.PRODUCTION` (constant) |
 | 10 | secp256k1 malleability gives one report two valid signatures | **Medium** | `test_RejectsMalleableSignature` |
 | 11 | A `TeeExtensionStateVerifier` is NOT required — the spec is wrong | Info | `register(address(0), …)` in the scaffold |
-| 12 | ~~The production entrypoint lands in stub mode silently~~ **RESOLVED** | **High** | `TestStubMode_CannotBeEnteredAccidentally` |
+| 12 | ~~The production entrypoint lands in stub mode silently~~ **RESOLVED** | **High** | `TestNilObserverPanics` |
 | 15 | The contract owner key can set any RPC host and any threshold — accepted | **High** | `TestAnyHostIsAccepted` |
 | 16 | On-chain config recorded what was *sent*, not what a machine *runs* | **High** | `test_RejectsReportFromStaleConfig` |
 | 17 | Full audit of every logging and error surface found no sensitive disclosure | Info | §17 audit + the finding-1 tests |
@@ -416,34 +416,22 @@ monitoring in WP7 is designed to detect, and precisely the state it cannot see.
 2. **`server.StartExtension` loads the embedded config and refuses to start
    without it.** There is no fallback to stub on error — falling back would
    reintroduce the exact failure, just later.
-3. **A nil observer is now unconstructible.** An interim fix logged a six-line
+3. **A nil observer is unconstructible.** An interim fix logged a six-line
    banner at `ERROR` level, but inside a TEE the logs cannot be read from
-   outside, so a banner is not a defence. The production constructors
-   (`NewWithObserver`, `NewWithProvisioner`) now **panic** on a nil observer,
-   and the only stub path is `extension.NewStub`, called at exactly one site:
-   `./cmd`, the binary the conformance replay (`go test ./internal/extension/ -run TestConformance`) starts, which has no credentials
-   by design. `./cmd/docker` is production and is what `Dockerfile` builds.
-   `Extension.StubMode()` remains exposed for health checks.
+   outside, so a banner is not a defence. The one constructor,
+   `extension.NewExtension`, **panics** on a nil observer
+   (`TestNilObserverPanics`), and no stub constructor or stub binary exists.
+   `./cmd/docker` is production and is what `Dockerfile` builds.
 
-**Still true:** the two modes emit different wire formats, so conformance
-fixtures pin the stub's JSON rather than the production ABI payload. Regenerating
-them against the real path needs a running signer, and `observedAt` becomes
-wall-clock — the byte-exact `data` assertions must become structural at that
-point. `TestStubMode_PayloadDiffersFromObserverPayload` keeps the divergence
-visible until then.
+**The conformance fixtures pin the production payload.** The stub binary and its
+JSON wire format are gone. `TestConformance` replays the fixtures against the real
+router with a fixed observation, so the `data` assertions are byte-exact
+`abi.encode(FeedUpdate, Signature)` over that observation with a well-formed
+constant signature (`internal/extension/conformance_test.go`). The earlier caveat
+that the fixtures pinned the stub's format and gave less assurance than their
+green result suggested no longer applies.
 
-**Related: the two modes emit different wire formats.** Stub mode returns JSON
-(`GetPriceResponse`); observer mode returns `abi.encode(body, signature)`. The
-conformance fixtures were generated in stub mode, so **they pin the stub's format
-and not the production payload** — conformance currently gives less assurance
-than its green result suggests.
-`TestStubMode_PayloadDiffersFromObserverPayload` asserts the divergence rather
-than letting it be discovered later. Resolving finding 12 means regenerating the
-fixtures against the real path, at which point `observedAt` becomes wall-clock
-and the byte-exact `data` assertions must become structural.
-
-**Remaining:** regenerate conformance fixtures against the real payload → E2E on
-Coston2.
+**Remaining:** E2E on Coston2.
 
 ---
 

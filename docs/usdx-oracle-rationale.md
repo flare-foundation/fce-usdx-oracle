@@ -767,10 +767,10 @@ The next defence logged a banner at startup, which is useless inside a TEE: the
 logs cannot be read from outside, and a feed frozen at $1.00 looks exactly like a
 healthy fully-backed one.
 
-So there is no way left to build a stub by accident. Every production constructor
-panics on a nil observer, and the only stub path is `NewStub`, named at its
-single call site (the conformance replay, `go test ./internal/extension/ -run TestConformance`, which exercises the extension
-alone — no tee-node, no chain, no credentials).
+So there is no way left to build a stub at all. The one constructor panics on a
+nil observer, and no stub path exists: the conformance replay
+(`go test ./internal/extension/ -run TestConformance`) exercises the real router
+with a fixed observation — no tee-node, no chain, no credentials.
 
 Redirects are never followed when fetching backing figures: Go strips
 `Authorization` on a cross-host redirect, but it does **not** strip custom
