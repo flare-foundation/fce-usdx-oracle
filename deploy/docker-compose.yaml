@@ -39,6 +39,8 @@ services:
       - path: ./config/extension.env
         required: false
     environment:
+      # Simulated attestation for the simulation. The image itself bakes MODE=0
+      # (production attestation), so this is set explicitly rather than inherited.
       - MODE=${MODE:-1}
       # Chain id the node binds signatures to — must match the proxy's chain_id
       # and the chain itself. Local e2e Hardhat = 31337; the coston/coston2

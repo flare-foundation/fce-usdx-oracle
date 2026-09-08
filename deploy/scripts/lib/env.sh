@@ -20,8 +20,8 @@ load_env() {
 
 # record_stack <docker|host> <proxy-url> [state-url] — what start-services.sh
 # brought up: the proxy the follow-up scripts address and, for host processes,
-# where the extension serves GET /state (the compose stack's is reached through
-# its container).
+# where the extension serves GET /state (the compose stack's listens on its
+# container's loopback and is read from inside that namespace instead).
 record_stack() {
     mkdir -p "$PROJECT_DIR/deploy/config"
     {

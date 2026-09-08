@@ -246,10 +246,10 @@ An extension registers handlers against `(opType, opCommand)` pairs, both compar
 
 | Variable | Meaning |
 | --- | --- |
-| `MODE` | `1` = simulated attestation (local dev), `0` = production attestation |
+| `MODE` | `0` = production attestation (the image default), `1` = simulated attestation (the local compose stack sets it); not launch-overridable |
 | `CONFIG_PORT` | tee-node configuration endpoint (default `5501`) |
 | `SIGN_PORT` | tee-node signing/crypto endpoint the extension calls (default `7701`) |
-| `EXTENSION_PORT` | port the extension serves `/action` and `/state` on (default `7702`) |
+| `EXTENSION_PORT` | port the extension serves `/action` and `/state` on, loopback only (default `7702`) |
 | `PROXY_URL` | extension proxy the node polls for actions |
 | `CHAIN_ID` | chain the node binds signatures to; must match the proxy and the chain |
 | `LOG_LEVEL` | node log level |
@@ -262,13 +262,19 @@ An extension implementation itself only needs to read `EXTENSION_PORT` and `SIGN
 ### Ports
 
 ```dockerfile
-EXPOSE 5501 7701 7702
+EXPOSE 5501
 ```
+
+Only tee-node's configuration port is declared. Confidential Space opens every `EXPOSE`d port in
+the VM firewall (subject to the operator's VPC rules), so the list is a security boundary, not
+documentation. The sign server (`SIGN_PORT`) and the extension's `/action` and `/state`
+(`EXTENSION_PORT`) bind `127.0.0.1`: tee-node reaches both over localhost inside the process, and
+the instruction channel is authorised by arrival, so neither may be reachable from the network.
 
 ### Launch policy label — required
 
 ```dockerfile
-LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,MODE,CONFIG_PORT,SIGN_PORT,EXTENSION_PORT"
+LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,CONFIG_PORT,SIGN_PORT,EXTENSION_PORT"
 ```
 
 Without this label, a GCP Confidential Space VM **rejects operator env overrides at attestation time** and whatever was baked into the image at build time is final. Every language image must carry an identical list — a mismatch produces a deployment that cannot be reconfigured, and the failure appears at attestation rather than at build.

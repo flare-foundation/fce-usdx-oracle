@@ -89,6 +89,11 @@ func NewExtension(
 	mux.HandleFunc("GET /state", e.stateHandler)
 	mux.HandleFunc("POST /action", e.actionHandler)
 
-	e.Server = &http.Server{Addr: fmt.Sprintf(":%d", extensionPort), Handler: mux}
+	// Loopback only. tee-node is the one legitimate caller, shares this process
+	// and posts to localhost, and processInstruction treats arrival on the
+	// instruction channel as authorisation; a listener reachable from anywhere
+	// else would let a network peer install its own admins and endpoints.
+	// tee-node binds its sign server the same way.
+	e.Server = &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", extensionPort), Handler: mux}
 	return e
 }

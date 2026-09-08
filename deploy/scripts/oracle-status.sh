@@ -116,20 +116,32 @@ else
 fi
 
 section "Extension health — GET /state"
-# The compose stack keeps the extension port container-internal, so it is read
-# from a throwaway container on the same network; a host-process stack records
-# where it serves GET /state in deploy/config/stack.env.
+# The extension listens on loopback only, so its state is read from inside its
+# own network namespace: directly for a host-process stack (the start records
+# the URL in deploy/config/stack.env), and by joining the container's namespace
+# for the compose stack. The proxy's /info is the fallback for a tee-node that
+# folds the extension state into the attested machine info; the current ones
+# publish that field empty.
 STATE_FILTER='.state | {lastPrice, lastObservedAt, updateCount, failureCount, lastErrorClass, sourceHealth, readiness}'
-NET="$(docker inspect deploy-extension-tee-1 \
-        --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null || true)"
+EXT_CONTAINER="deploy-extension-tee-1"
 if [[ -n "${EXTENSION_STATE_URL:-}" ]]; then
     curl -sf -m 10 "$EXTENSION_STATE_URL" | jq "$STATE_FILTER" \
         || warn "  the recorded host extension at $EXTENSION_STATE_URL did not answer"
-elif [[ -n "$NET" ]]; then
-    docker run --rm --network "$NET" curlimages/curl:latest \
-        -s -m 10 http://extension-tee:7702/state 2>/dev/null | jq "$STATE_FILTER" \
-        || warn "  extension did not answer"
+elif docker inspect "$EXT_CONTAINER" >/dev/null 2>&1; then
+    # alpine:3.21 is the base the proxy image is built on, so it is already
+    # local, and busybox wget is enough for one GET.
+    docker run --rm --network "container:$EXT_CONTAINER" alpine:3.21 \
+        wget -qO- -T 10 http://127.0.0.1:7702/state 2>/dev/null | jq "$STATE_FILTER" \
+        || warn "  the extension in $EXT_CONTAINER did not answer"
+elif [[ -n "${EXT_PROXY_URL:-}" ]]; then
+    STATE_HEX="$(curl -sf -m 10 "${EXT_PROXY_URL%/}/info" | jq -r '.teeInfo.state.state // empty' 2>/dev/null || true)"
+    if [[ -n "$STATE_HEX" && "$STATE_HEX" != "0x" ]]; then
+        printf '%s' "${STATE_HEX#0x}" | xxd -r -p | jq "$STATE_FILTER" \
+            || warn "  the state the proxy at $EXT_PROXY_URL reports is not the extension's JSON"
+    else
+        warn "  the proxy at $EXT_PROXY_URL publishes no machine state (this tee-node does not fold GET /state into /info)"
+    fi
 else
-    warn "  no extension running: neither a recorded host stack nor the compose container"
+    warn "  no extension to read: neither a recorded host stack, the compose container, nor a proxy URL"
 fi
 echo ""

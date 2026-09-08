@@ -135,17 +135,12 @@ The image is built from the `Dockerfile` at the repo root, which is the Go modul
 
 | Value | Meaning | Used for |
 |---|---|---|
-| `1` | Simulated attestation (test code hash) | local devnet — **the scaffold's default** |
-| `0` | Production attestation | a real Confidential Space VM |
+| `0` | Production attestation | a real Confidential Space VM — **the image default** |
+| `1` | Simulated attestation (test code hash) | the local simulation |
 
-**The Dockerfile deliberately ships `MODE=1`**, so a bare `docker run` and the compose stack both work against the local devnet without extra configuration. `deploy/docker-compose.yaml` reinforces this with `MODE=${MODE:-1}`.
+**The Dockerfile ships `MODE=0`**, the same default as the tee-node image, so the image a Confidential Space VM launches attests for real without any launch-time setting. The local compose stack sets `MODE=1` explicitly (`deploy/docker-compose.yaml`, `MODE=${MODE:-1}`), which is why the same image also runs against the simulation.
 
-**FTDC rejects simulated attestation**, so a production deploy must run with `MODE=0`. You have two options, and the second is preferred:
-
-1. Edit `ENV MODE=1` → `ENV MODE=0` in the `Dockerfile` before building the release image.
-2. **Leave the image as-is and override at workload launch.** The `tee.launch_policy.allow_env_override` label lists `MODE`, so the Confidential Space VM accepts an override — and without that label it would reject one. This keeps a single image usable for both local dev and production, and keeps the code hash independent of which environment it is destined for.
-
-Whichever you choose, verify what actually ended up in the image before registering its hash on-chain — see the check at the end of this section.
+`MODE` is **not** in the `tee.launch_policy.allow_env_override` label, on purpose: the attestation backend is part of the attested identity. FTDC rejects simulated attestation, and a launch must not be able to turn it on without changing the image. Verify what ended up in the image before registering its hash on-chain — see the check at the end of this section.
 
 Then build:
 
@@ -158,17 +153,16 @@ docker save <your-extension>:v0.1.0 -o <your-extension>-v0.1.0.tar
 
 Setting `SOURCE_DATE_EPOCH` makes the build reproducible (same source → same `codeHash`). The image is reproducible **across machines** — see [REPRODUCIBILITY.md](../REPRODUCIBILITY.md) for what that guarantees before promising an auditor they can reproduce your hash.
 
-Check which mode is baked into the image:
+Check what is baked into the image:
 
 ```powershell
 docker inspect <your-extension>:v0.1.0 --format '{{range .Config.Env}}{{println .}}{{end}}' | Select-String MODE
-```
-
-If you took option 1 above, expect `MODE=0`. If you took option 2, expect the scaffold default `MODE=1` and supply `MODE=0` at workload launch instead — confirm the launch policy label permits it:
-
-```powershell
+# MODE=0
 docker inspect <your-extension>:v0.1.0 --format '{{index .Config.Labels "tee.launch_policy.allow_env_override"}}'
-# MODE must appear in this list, or the VM rejects the override at attestation time
+# MODE must NOT appear in this list
+docker inspect <your-extension>:v0.1.0 --format '{{json .Config.ExposedPorts}}'
+# {"5501/tcp":{}} — Confidential Space opens every exposed port in the VM firewall;
+# the sign server and the extension's /action bind loopback and must not be listed
 ```
 
 ## 6. Deploy the image on a Confidential Space VM
