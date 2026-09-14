@@ -93,6 +93,13 @@ Authorisation is `NotOwnerOrPauser`, and the owner is the `_claimBackAddress` pa
 registration — which `fccutils.RegisterNode` sets to the deploying key. **Whoever registered a
 machine can retire it.** There is also `ban()` / `unban()` for the stronger action.
 
+`tools/cmd/retire-tee` wraps the call: `-p <proxy>` pauses the machine behind a proxy (its id
+read from the attested `/info`), `-tee <id>` one by id, and `-stale` sweeps every active
+machine of the extension whose registered URL does not answer or answers as a different
+machine — what a stopped or restarted stack leaves behind. `stop-services.sh` runs the `-p`
+form before it takes a stack down, because the identity is the enclave key in the running
+process and nothing can name the machine once it is gone.
+
 Pause when: the machine is being replaced, it is misbehaving, its host is being
 decommissioned, or a rebuild has orphaned its identity.
 

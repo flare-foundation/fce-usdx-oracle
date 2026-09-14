@@ -30,10 +30,10 @@ ext-proxy (tee-proxy)
   :6664 external → host 6674    PUBLIC: /info, /action/result/<id>, /direct
 
 extension-tee ── one process, built from cmd/docker
-  tee-node       :5501 config, :9090 POST /sign + POST /decrypt
-                 polls the proxy for actions → POSTs them to :8080
-                 polls GET :8080/state → folds it into the attested state
-  extension      :8080 POST /action, GET /state
+  tee-node       :5501 config, :7701 POST /sign + POST /decrypt
+                 polls the proxy for actions → POSTs them to :7702
+                 polls GET :7702/state → folds it into the attested state
+  extension      :7702 POST /action, GET /state
   poller         background goroutine, observes every 2 minutes
 
 redis            the proxy's action queue
@@ -247,7 +247,7 @@ enclave
        chainId · teeId · payload hash · freshness · version > last
        · ≥ set.threshold DISTINCT signatures FROM THAT SET
        every failure returns the SAME error — no probing oracle
-    node.Decrypt()   POST localhost:9090/decrypt  ← in-enclave
+    node.Decrypt()   POST localhost:7701/decrypt  ← in-enclave
     reject a value containing  space \t \r \n / ? # &
     secrets[ref] = value                          ← memory only, lost on restart
 ```
@@ -319,7 +319,7 @@ anyone → TeeOracleInstructionsSender.requestFeedUpdate(feedId, teeIds)
                             endpointsHash, adminsHash}
         dataHash    = keccak256(abi.encode(update))
         messageHash = keccak256(abi.encode(TEE_ORACLE_FEED, chainId, dataHash))
-        POST localhost:9090/sign over messageHash's PREIMAGE — tee-node applies
+        POST localhost:7701/sign over messageHash's PREIMAGE — tee-node applies
         EIP-191; wire is base64; normalise v from 0/1 → 27/28
         data = abi.encode(update, Signature{v, r, s})
     ActionResult{status: 1, data}

@@ -58,7 +58,10 @@ received and expected identifiers, which is worth imitating.
 
 ### `GET /state`
 
-No request body. Returns a `StateResponse` (§4.4) with status 200.
+No request body. Returns a `StateResponse` (§4.5) with status 200. tee-node reads it on every
+TEE info request and nothing else does: the port is loopback-only, and every consumer reads the
+state out of the proxy's `/info`. A tee-node that cannot reach the route reports its all-ones
+`StateUnavailableVersion` there instead of failing the info response.
 
 ### Routing rules
 
@@ -216,7 +219,7 @@ this naturally; the conformance fixtures compare the resulting hex exactly.
 | Field | Type | JSON | Notes |
 | --- | --- | --- | --- |
 | `stateVersion` | `common.Hash` | **32-byte hex** | bytes32 of the version string — asymmetric with `ActionResult.version` by design |
-| `state` | extension-defined | object | any JSON-serializable snapshot |
+| `state` | `hexutil.Bytes` | **hex string** | the JSON encoding of the extension's `State`. Bytes, not an object: tee-node decodes this body as its own `TeeState`, takes `state` and `stateVersion`, and carries them opaquely into the attested TEE info, which the proxy republishes as `teeInfo.state.state`. `stateVersion` names the schema of those bytes |
 
 ### 4.6 `status` and `log`
 
@@ -247,8 +250,7 @@ An extension registers handlers against `(opType, opCommand)` pairs, both compar
 | Variable | Meaning |
 | --- | --- |
 | `MODE` | `0` = production attestation (the image default), `1` = simulated attestation (the local compose stack sets it); not launch-overridable |
-| `CONFIG_PORT` | tee-node configuration endpoint (default `5501`) |
-| `SIGN_PORT` | tee-node signing/crypto endpoint the extension calls (default `7701`) |
+| `SIGN_PORT` | tee-node signing/crypto endpoint the extension calls (code default `7701`; env only overrides) |
 | `EXTENSION_PORT` | port the extension serves `/action` and `/state` on, loopback only (default `7702`) |
 | `PROXY_URL` | extension proxy the node polls for actions |
 | `CHAIN_ID` | chain the node binds signatures to; must match the proxy and the chain |
@@ -257,7 +259,7 @@ An extension registers handlers against `(opType, opCommand)` pairs, both compar
 | `GOVERNANCE_SIGNERS` | comma-separated governance signer addresses |
 | `GOVERNANCE_THRESHOLD` | governance threshold |
 
-An extension implementation itself only needs to read `EXTENSION_PORT` and `SIGN_PORT`; the rest are consumed by tee-node. All of them must still be *settable* on the container.
+An extension implementation itself only needs to read `EXTENSION_PORT` and `SIGN_PORT`; the rest are consumed by tee-node. The port pair defaults in code to the image's values, so the image sets neither; all of them must still be *settable* on the container (the launch-policy label lists them).
 
 ### Ports
 
@@ -274,7 +276,7 @@ the instruction channel is authorised by arrival, so neither may be reachable fr
 ### Launch policy label — required
 
 ```dockerfile
-LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,CONFIG_PORT,SIGN_PORT,EXTENSION_PORT"
+LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,CHAIN_ID,GOVERNANCE_SIGNERS,GOVERNANCE_THRESHOLD,SIGN_PORT,EXTENSION_PORT"
 ```
 
 Without this label, a GCP Confidential Space VM **rejects operator env overrides at attestation time** and whatever was baked into the image at build time is final. Every language image must carry an identical list — a mismatch produces a deployment that cannot be reconfigured, and the failure appears at attestation rather than at build.

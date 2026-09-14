@@ -99,12 +99,15 @@ registered forever.
 | `full-setup.sh` | Pins the extension identity (`EXTENSION_ID=1`, reserved), starts the stack, runs post-build — in one command. |
 | `start-services.sh` | Builds the extension image and brings up the compose stack (extension-tee, proxy, redis). `--local` runs the host-process variant instead. |
 | `post-build.sh` | Whitelists the image's code hash (`allow-tee-version`), sets TEE governance (`set-governance`) and registers the machine (`register-tee`). |
-| `stop-services.sh` | Tears the stack down. |
+| `stop-services.sh` | Retires the stack's machine on chain (`retire-tee -p`), then tears the stack down; `--keep-registered` skips the retirement. |
 
-The oracle contracts (`TeeOracleInstructionsSender` + `TeeOracleFeedStore`) are **not** deployed
-by this repo — that is upstream's `deploy-tee-oracle.sh` plus governance follow-ups
-(`registerReserved`, the `TEE_ORACLE` fee rows, `addCustomFeeds`). See
-[deployment-steps.md](deployment-steps.md). After the upstream deploy,
+For a production deployment the oracle contracts (`TeeOracleInstructionsSender` +
+`TeeOracleFeedStore`) are deployed upstream — `deploy-tee-oracle.sh` plus governance follow-ups
+(`registerReserved`, the `TEE_ORACLE` fee rows, `addCustomFeeds`); see
+[deployment-steps.md](deployment-steps.md). For the simulation and for a test deployment on a
+testnet, `deploy-oracle.sh --chain <chain>` deploys the same contracts deployer-governed, plus the
+extension's state verifier, and checks or registers the extension (deploy/README, "Testing on
+Coston"). After the upstream deploy,
 `import-upstream-addresses.sh <chain>` slots the deployed addresses into
 `deploy/config/<chain>/deployed-addresses.json` so the tools resolve them by name, and
 `wire-extension` performs the extension-owner share (`setExtensionContracts`, machine-owner
@@ -118,6 +121,7 @@ allowlist, EVM key type) once governance has run `registerReserved`.
 | `set-governance` | Publishes the TEE governance signer set + threshold from `GOVERNANCE_SIGNERS` / `GOVERNANCE_THRESHOLD`. **Must match what the TEE node was launched with**, or `register-tee` fails `InvalidGovernanceHash`. | |
 | `allow-tee-version` | Whitelists a code hash + platform for the extension, read from the proxy's `/info`. Idempotent — skips if already active. | `-version` |
 | `register-tee` | Registers the machine and takes it to `PRODUCTION`, in four resumable steps. | `-command`, `-state`, `-resume` |
+| `retire-tee` | Pauses a machine in the registry, the one-way retirement: `-p <proxy>` the machine behind a proxy (its id read from the attested `/info`), `-tee <id>` by id, `-stale` every active machine whose URL does not answer as itself — the leftovers of stopped stacks. Owner-only; idempotent on a paused machine. | `-p`, `-tee`, `-stale`, `-dry-run` |
 
 `register-tee -command` is a string of step letters, run in order:
 
@@ -314,7 +318,7 @@ most likely to meet are tabulated in
 | `set-endpoints.sh` | Posts a `SET_ENDPOINTS` payload straight to a running extension's `/action`, no chain. |
 | `local-stack` | Runs the extension TEE and its proxy as host processes on the local simulation: the proxy in-process, `cmd/start-tee` as a child. No Docker; see [local-e2e.md](local-e2e.md). |
 | `full-setup-host.sh` | `full-setup.sh --chain local` with the stack as host processes: starts `local-stack` under `out/pids/`, then runs `post-build.sh` against it. |
-| `deploy-oracle-local.sh` | Deploys upstream's oracle contracts on the simulation through `contracts/script/DeployTeeOracleLocal.s.sol`, deployer-governed (no production mode), reserves extension 1 and imports the addresses. |
+| `deploy-oracle-local.sh` | Deploys upstream's oracle contracts on the simulation through `contracts/script/DeployTeeOracle.s.sol`, deployer-governed (no production mode), reserves extension 1 and imports the addresses. |
 | `publish-local.sh` | Publishes endpoints or admin sets on the simulation: one transaction on a deployer-governed sender; record, real timelock and execute on a production-mode one. |
 | `e2e.sh` | Starts, stops and waits on the host-process stack's background processes (pids and logs under `out/`). |
 

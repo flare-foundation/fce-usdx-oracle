@@ -39,10 +39,10 @@ ext-proxy (tee-proxy)
   :6664 external   PUBLIC — /info, /action/result/<id>, /direct
 
 extension-tee ──── one process, built from cmd/docker
-  ├ tee-node       :5501 config · :9090 POST /sign, POST /decrypt
-  │                polls proxy for actions → POSTs them to :8080/action
-  │                polls GET :8080/state → folds it into attested state
-  ├ extension      :8080 POST /action, GET /state
+  ├ tee-node       :5501 config · :7701 POST /sign, POST /decrypt
+  │                polls proxy for actions → POSTs them to :7702/action
+  │                polls GET :7702/state → folds it into attested state
+  ├ extension      :7702 POST /action, GET /state
   └ poller         background goroutine, one observation every 2 min
 
 redis              the proxy's action queue
@@ -256,7 +256,7 @@ enclave
       · DISTINCT signatures up to the threshold of the set the ref selects
         (backing ≥1, providers ≥2), low-s only
       EVERY failure returns the same error — no probing oracle
-    teenode.Decrypt() POST localhost:9090/decrypt   ← in-enclave
+    teenode.Decrypt() POST localhost:7701/decrypt   ← in-enclave
     reject a value containing  space \t \r \n / ? # &
     secrets[ref] = value                       ← memory only, lost on restart
 ```
@@ -333,7 +333,7 @@ anyone → TeeOracleInstructionsSender.requestFeedUpdate(feedId, teeIds)   (upst
         update = FeedUpdate(extensionId, feedId, value, decimals, observedAt,
                             endpointsHash, adminsHash)
         messageHash = keccak256(abi(TEE_ORACLE_FEED, chainId, keccak256(abi(update))))
-        teenode.Sign(messageHash preimage) → POST localhost:9090/sign
+        teenode.Sign(messageHash preimage) → POST localhost:7701/sign
                                    (tee-node applies EIP-191; wire is base64, not hex)
         NormalizeV: 0/1 → 27/28, so the store can use stock OpenZeppelin
         feedupdate.EncodeData → abi(update, signature)

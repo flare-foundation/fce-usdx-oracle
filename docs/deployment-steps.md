@@ -9,7 +9,8 @@ Linear recipe to deploy a TEE extension to Flare Coston or Coston2. Run the step
 - 🔨 Foundry (`forge`, `cast`)
 - `jq`
 - Bash (Git Bash on Windows works)
-- VPN access to Flare's indexer DB (`35.241.249.150:3306`)
+- No indexer credentials: `deploy/docker-compose.<chain>-indexer.yaml` runs the chain's
+  C-chain indexer locally (its configuration is rendered by `import-upstream-addresses.sh`)
 
 ## 1. Get the extension repo
 
@@ -80,6 +81,12 @@ Copies `.env.<chain>` → `.env`, which all scripts auto-load.
 
 ## 4. The oracle contracts are deployed upstream — nothing to deploy here
 
+> For a **test deployment** on Coston or Coston2 there is a shortcut: `deploy-oracle.sh --chain
+> <chain>` deploys the same contracts deployer-governed (no production mode, no timelock, one
+> key for everything) together with the state verifier, and checks or registers the extension.
+> The deploy/README "Running on a live chain" section is that flow. The rest of this section is the
+> production path.
+
 This repo deploys **no contracts**. The `TeeOracleInstructionsSender` and one
 `TeeOracleFeedStore` per feed are deployed by
 `flare-smart-contracts-v2`'s own script, and the USDX extension is a *reserved*
@@ -111,12 +118,30 @@ tooling can find them by name (`TeeOracleFeedStore`, `TeeOracleInstructionsSende
 ./deploy/scripts/import-upstream-addresses.sh coston2     # or coston
 ```
 
+Deploy the extension's state verifier, the one contract this repository adds. The registry
+passes each machine's attested extension state through it on every availability check, and
+tee-node reports the extension's `GET /state` in that attestation, so without a verifier no
+machine reaches production (the registry accepts an empty state only). The verifier has no
+owner and no configuration; it refuses tee-node's "could not read the extension" sentinel and
+a malformed report, and nothing else:
+
+```bash
+cd contracts && forge script script/DeployStateVerifier.s.sol:DeployStateVerifier \
+    --rpc-url $CHAIN_URL --private-key $DEPLOYMENT_PRIVATE_KEY --broadcast
+# add the printed address to deploy/config/coston2/deployed-addresses.json as UsdxTeeExtensionStateVerifier
+```
+
 Then wire the reserved extension — the extension-owner share, idempotent, and a
-prerequisite for `register-tee`'s availability check (`setExtensionContracts`):
+prerequisite for `register-tee`'s availability check (`setExtensionContracts` publishes the
+sender and the verifier together):
 
 ```bash
 cd tools && go run ./cmd/wire-extension -a ../config/coston2/deployed-addresses.json -c $CHAIN_URL
 ```
+
+On a network whose machines are already in production, set the verifier **before** upgrading
+tee-node to a version that reports the state: their periodic `confirmAvailability` goes through
+the same check.
 
 The scripts here only need the identity, which is fixed — `full-setup.sh` writes
 `EXTENSION_ID=1` to `deploy/config/extension.env`:

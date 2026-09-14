@@ -234,118 +234,48 @@ LOG_LEVEL=DEBUG docker compose up -d
 
 ---
 
-## Deploying to Coston2
+## Deploying to a live chain
 
-Coston2 is Flare's public testnet. Unlike local dev it connects to the live testnet RPC,
-uses real signing policies, and needs a publicly reachable proxy URL.
-
-### Prerequisites
-
-- A **funded Coston2 account** — a private key with testnet C2FLR, from the
-  [Coston2 faucet](https://faucet.flare.network/coston2)
-- **ngrok** or similar — the TEE proxy must be publicly reachable so data providers can
-  deliver cosigned responses
-- **Indexer DB credentials** — the proxy fetches signing policies from a Flare indexer
-  database
-
-### 1. Configure `.env`
+The live-chain flow is one sequence for Coston, Coston2, Songbird and Flare, and it lives in
+[deploy/README.md](../deploy/README.md#running-on-a-live-chain-coston-coston2-songbird-flare) rather than being repeated here.
+In outline, with `<chain>` any of them:
 
 ```bash
-cp .env.example .env
+./deploy/scripts/use-chain.sh <chain>                      # .env.<chain> → .env
+./deploy/scripts/import-upstream-addresses.sh <chain>      # addresses + the indexer's config
+docker compose -f deploy/docker-compose.<chain>-indexer.yaml up -d
+./deploy/scripts/deploy-oracle.sh --chain <chain>          # test deployment only
+(cd tools && go run ./cmd/wire-extension)
+./deploy/scripts/full-setup.sh --chain <chain>             # or full-setup-host.sh --chain <chain>
 ```
 
-| Variable | Value | Notes |
-|----------|-------|-------|
-| `DEPLOYMENT_PRIVATE_KEY` | Your funded Coston2 private key | Deployments and on-chain calls |
-| `INITIAL_OWNER` | Address derived from it | Owner of deployed contracts |
-| `PROXY_PRIVATE_KEY` | Same or another funded key | Proxy signing |
-| `CHAIN_URL` | `https://coston2-api.flare.network/ext/C/rpc` | Coston2 RPC |
-| `ADDRESSES_FILE` | `./deploy/config/coston2/deployed-addresses.json` | Pre-populated |
-| `LOCAL_MODE` | `false` | **Must be `false`** on live networks — this is what enables attestation |
-| `NORMAL_PROXY_URL` | `https://tee-proxy-coston2-1.flare.rocks` | Flare's Coston2 normal/FTDC proxy |
-| `EXT_PROXY_URL` | `https://<your-subdomain>.ngrok-free.dev` | Your tunnel URL, from step 3 |
-
-### 2. Configure the proxy
-
-Proxy configs live in `deploy/config/proxy/`. Coston2 needs two — one for inside Docker
-(references the `redis` service name) and one for running the proxy outside it:
+What differs from the simulation is the same for every live chain: the proxy needs the chain's
+C-chain indexer, the machine's registered URL must be publicly reachable, and `LOCAL_MODE=false`
+turns attestation on. Nothing chain-specific is committed any more: the proxy configuration is
+rendered per run from `config/proxy/extension_proxy.live.toml`, and the indexer's from
+`config/indexer/indexer-config.toml.template`, both with the chain's addresses.
 
 ```bash
-cp deploy/config/proxy/extension_proxy.coston2.docker.toml.example deploy/config/proxy/extension_proxy.coston2.docker.toml
-```
-
-```bash
-cp deploy/config/proxy/extension_proxy.coston2.toml.example deploy/config/proxy/extension_proxy.coston2.toml
-```
-
-Then fill in `[db]` with your indexer credentials:
-
-```toml
-[db]
-host = "<indexer-db-host>"
-port = 3306
-database = "<indexer-db-name>"
-username = "<indexer-db-user>"
-password = "<indexer-db-password>"
-log_queries = false
-```
-
-The Coston2 contract addresses (`flare_systems_manager`, `relay`, `voter_registry`) are
-already correct in the examples, and `chain_id` is `114`.
-
-> Both files are gitignored: they hold database credentials.
-
-### 3. Start ngrok
-
-```bash
-ngrok http 6674
-```
-
-Copy the HTTPS URL into `EXT_PROXY_URL`.
-
-### 4–6. Deploy
-
-```bash
-./deploy/scripts/full-setup.sh --chain coston2
-```
-
-(or the phases individually: `start-services.sh --chain coston2`, then `post-build.sh`).
-The oracle contracts deploy upstream; slot their addresses into
-`deploy/config/coston2/deployed-addresses.json`, then prove the round trip with
-`./deploy/scripts/oracle-cycle.sh -tee <TEE1>`.
-
-Compared to a bare `docker compose up`, `start-services.sh --chain coston2`:
-
-- mounts `extension_proxy.coston2.docker.toml` instead of the local proxy config
-- sets `CHAIN_URL` / `CHAIN_ID` for Coston2
-- creates its own network (`extension-scaffold-coston2`) instead of joining `docker_default`
-
-```bash
-docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.coston2.yaml ps
-```
-
-```bash
-docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.coston2.yaml logs -f extension-tee
-```
-
-```bash
-./deploy/scripts/stop-services.sh --chain coston2
+docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.live.yaml ps
+docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.live.yaml logs -f extension-tee
+./deploy/scripts/stop-services.sh --chain <chain>
 ```
 
 ---
 
-## Local dev vs Coston2
+## Local dev vs a live chain
 
-| | Local dev | Coston2 |
-|---|-----------|---------|
-| Chain | Hardhat (`localhost:8545`) | `coston2-api.flare.network` |
+| | Local dev | Live chain |
+|---|-----------|------------|
+| Chain | Hardhat (`localhost:8545`) | the chain's public RPC |
 | `LOCAL_MODE` | `true` (skip attestation) | `false` (real attestation) |
-| Proxy config | `extension_proxy.docker.toml` | `extension_proxy.coston2.docker.toml` |
-| Indexer DB | Local `indexer-db` container | Remote Flare indexer |
-| Network | Joins `docker_default` (e2e infra) | Own `extension-scaffold-coston2` network |
-| Proxy accessibility | `localhost:6674` | Public URL via ngrok |
-| Normal proxy | `localhost:6662` | `https://tee-proxy-coston2-1.flare.rocks` |
-| Start services | `./deploy/scripts/start-services.sh` | `./deploy/scripts/start-services.sh --chain coston2` |
+| Proxy config | `extension_proxy.docker.toml` | rendered from `extension_proxy.live.toml` per run |
+| Indexer DB | the simulation's `indexer-db` container | `docker-compose.<chain>-indexer.yaml`, or `INDEXER_DB_*` for one of your own |
+| Compose overlay | none | `docker-compose.live.yaml` |
+| Network | joins `docker_default` (e2e infra) | own `fce-usdx-oracle-<chain>` network |
+| Proxy accessibility | `localhost:6674` | public URL (tunnel, or the machine's own) |
+| Normal proxy | `localhost:6662` | `https://tee-proxy-<chain>-1.flare.rocks` |
+| Start services | `./deploy/scripts/start-services.sh` | `./deploy/scripts/start-services.sh --chain <chain>` |
 
 ---
 

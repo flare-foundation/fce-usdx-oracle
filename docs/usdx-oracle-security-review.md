@@ -196,11 +196,9 @@ outside the container": the tee-node bind enforces that, this repository's `EXPO
 undermines it.
 
 **Status.** Fixed after the review: the extension binds `127.0.0.1`, both Dockerfiles
-declare `EXPOSE 5501` only, and `oracle-status.sh` reads the compose stack's state by
-joining the extension container's network namespace (`docker run --network
-container:…`) rather than reaching a published port. The `RemoteAddr` check was not
-added; the loopback bind makes it redundant. See SR-56 for why the proxy's `/info` could
-not serve as the read path.
+declare `EXPOSE 5501` only, and every consumer reads the state out of the proxy's `/info`,
+where tee-node now carries it (SR-56). The `RemoteAddr` check was not added; the loopback
+bind makes it redundant.
 
 ### SR-06 · Low · R — no request body limit and no server timeouts
 
@@ -316,6 +314,24 @@ network namespace, and the one working remote read of the same facts is the sign
 `GET_READINESS` report over the proxy's direct channel. The world-readable treatment of
 `/state` in the spec remains the right assumption, since the fold-in can arrive with a
 tee-node upgrade and no change here.
+
+**Status.** tee-node `4761481` (develop) folds the state in: it decodes the extension's
+`GET /state` body as its `TeeState` on every info request. That decoder expects `state` as
+hex bytes, so the extension's `StateResponse.State` changed from a JSON object to the JSON
+encoding of `State` as bytes, and every consumer (the tools via
+`fccutils.ReadExtensionState`, the scripts via `read_machine_state`, the harness via a
+mock node that folds the same way) reads the state out of `/info` and nowhere else. An
+extension tee-node cannot reach shows as the all-ones `StateUnavailableVersion`, reported
+distinctly from an empty field. The pinned tee-node still publishes the field empty until
+the pin moves.
+
+A consequence surfaced on the first live run: the registry's availability check accepts a
+non-empty state only through a registered `TeeExtensionStateVerifier`, so with the fold-in
+`toProduction` reverted with `InvalidResponseData()`. `contracts/src/UsdxTeeExtensionStateVerifier.sol`
+is the minimal verifier (refuses tee-node's unavailable sentinel and a malformed report,
+parses nothing), the local deploy and `DeployStateVerifier.s.sol` deploy it, and
+`wire-extension` publishes it with `setExtensionContracts`. On a live network it must be set
+before tee-node is upgraded, or production machines fail their periodic `confirmAvailability`.
 
 ### SR-49 · Info — `ActionResult.Version` differs from tee-node's
 
@@ -532,6 +548,12 @@ configuration matter, but the code should not accept the degenerate value on a c
 
 **Fix.** Reject `Threshold < 2` for chain groups in `store.validate` and
 `ChainSource.Validate`; document that the tolerated colluder count is `Quorum - 1`.
+
+**Status.** The code floor is unchanged. The simulation configuration
+(`deploy/config/endpoints/public-only.json`) moved `flare` and `ethereum` from 2-of-2 to
+2-of-3, after two incidents in which one unreachable public provider (a VPN route, then a
+resolver that would not resolve `ethereum-rpc.publicnode.com`) stopped every observation;
+`songbird` stays 1-of-1 because no second public provider answers the pinned-block calls.
 
 ### SR-09 · Medium · S — no chain-id verification; Flare and Songbird share the token address
 
@@ -885,10 +907,8 @@ overwrite a differing `.env`.
 network, where it reaches redis and the internal proxy port. Diagnostic only; pin by digest
 or `docker exec` into an existing container.
 
-**Status.** Reduced with SR-02: the throwaway container now runs `alpine:3.21`, the tag the
-proxy image is already built on, joined to the extension container's own network namespace
-rather than the compose network, so it reaches nothing but that container's loopback. It
-is still a tag, not a digest; pinning it belongs with SR-18.
+**Status.** Fixed: the throwaway container is gone. `oracle-status.sh` reads the state out
+of the proxy's `/info` like every other consumer (SR-56).
 
 ### SR-46 · Low · S — module-cache proxy on all interfaces
 

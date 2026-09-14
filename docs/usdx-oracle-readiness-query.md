@@ -12,21 +12,21 @@ the enclave) · [usdx-oracle-keeper.md](usdx-oracle-keeper.md) (the consumer) ·
 
 ## Why
 
-There is no way today to ask a machine about itself that is both **available** and
-**trustworthy**. Two paths exist and each fails one of those tests:
+Two ways exist to ask a machine about itself, and only one of them is meant to be used:
 
 | Path | Available? | Trustworthy? |
 | --- | --- | --- |
-| `GET /state` on the extension | No — container-internal, the proxy does not expose it | No — plain HTTP, unsigned; whatever answers the port |
-| `teeInfo.state.state` in the proxy's `/info` | No — tee-node folds `/state` in only if the version implements it, and the pinned one does not | Yes — covered by `dataSignature` and the attestation |
+| `GET /state` on the extension | No — loopback-only inside the machine; only tee-node reads it | No — plain HTTP, unsigned; whatever answers the port |
+| `teeInfo.state.state` in the proxy's `/info` | Yes — tee-node reads `/state` on every info request and carries the bytes (tee-node `4761481` and later; older versions publish the field empty, and an unreadable extension shows as the all-ones `StateUnavailableVersion`) | Yes — covered by `dataSignature` and the attestation |
 
-The attested path is the right design and is what `fleet-status`, `send-endpoints` and
-`send-admins` all read. On a tee-node that does not populate it they degrade together: delivery
-cannot be confirmed, `live` reports nothing, and `upload-rpc-keys.sh` cannot ask which refs are
-missing — so the operator names them by hand from the endpoints file instead.
+The attested path is what `fleet-status`, `send-endpoints`, `send-admins` and the scripts all
+read. On a tee-node older than that they degrade together: delivery cannot be confirmed, `live`
+reports nothing, and `upload-rpc-keys.sh` cannot ask which refs are missing — so the operator
+names them by hand from the endpoints file instead.
 
-`GET_READINESS` closes this without depending on tee-node, by carrying the answer through the
-action path that already works.
+`GET_READINESS` answers the same questions without depending on the tee-node version, through
+the action path, and adds what `/state` cannot carry: a signature over the answer bound to the
+request, and the poller's own view of whether it would sign.
 
 ### Scope
 

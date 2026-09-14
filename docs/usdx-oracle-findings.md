@@ -32,7 +32,7 @@ quietly mispublished.
 | 8 | An empty `sourceHealth` map reads as healthy | **Low** | `config.HealthUnknown` |
 | 9 | ~~The TEE machine status enum's numeric values are not published~~ **RESOLVED** | **High** | `REQUIRED_TEE_STATUS = TeeStatus.PRODUCTION` (constant) |
 | 10 | secp256k1 malleability gives one report two valid signatures | **Medium** | `test_RejectsMalleableSignature` |
-| 11 | A `TeeExtensionStateVerifier` is NOT required — the spec is wrong | Info | `register(address(0), …)` in the scaffold |
+| 11 | ~~A `TeeExtensionStateVerifier` is NOT required~~ — required since tee-node reports the state (2026-09) | Info | `UsdxTeeExtensionStateVerifier.t.sol`; was `register(address(0), …)` in the scaffold |
 | 12 | ~~The production entrypoint lands in stub mode silently~~ **RESOLVED** | **High** | `TestNilObserverPanics` |
 | 15 | The contract owner key can set any RPC host and any threshold — accepted | **High** | `TestAnyHostIsAccepted` |
 | 16 | On-chain config recorded what was *sent*, not what a machine *runs* | **High** | `test_RejectsReportFromStaleConfig` |
@@ -381,6 +381,17 @@ health that nothing on-chain consumes.
 **No contract was written.** If a future design wants attested state on-chain,
 this decision should be revisited — but building one now would be unused code in
 an audited codebase.
+
+**Revisited 2026-09-09.** tee-node now reports the extension's `GET /state` in the
+TEE info it attests, and the registry's availability check accepts a non-empty
+state only through a registered verifier (`_validateResponseBody` in upstream's
+`Verification.sol`). So a verifier became required after all, not to consume the
+state but to let machines pass `toProduction` and `confirmAvailability`.
+`contracts/src/UsdxTeeExtensionStateVerifier.sol` is the minimal one: it refuses
+tee-node's "could not read the extension" sentinel and a malformed report
+(version without bytes, or bytes without version), accepts everything else, and
+parses nothing. `wire-extension` publishes it with `setExtensionContracts`.
+Pinned by `contracts/test/UsdxTeeExtensionStateVerifier.t.sol`.
 
 ---
 

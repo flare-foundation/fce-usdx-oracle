@@ -193,10 +193,9 @@ Admin A is not asked for `DIRECT_API_KEY`: holding fewer keys than the threshold
 only hand off, and it says so before it starts.
 
 > Run without `--all` or `--refs`, the script instead asks the machine which refs it is missing,
-> by reading `/state` out of the proxy's `/info`. That only works where tee-node folds the
-> extension's state into the attested payload, which it does not do today — so the read comes back
-> empty and the step dies with `cannot read <proxy>/info`, blaming an endpoint that answered
-> perfectly well. Name the refs and the question never arises.
+> by reading its state out of the proxy's `/info`, where tee-node carries the extension's
+> `GET /state` on every request (tee-node `4761481` and later). On an older tee-node the field
+> is empty and the step says so rather than guessing; naming the refs sidesteps the question.
 
 **Admin B — signs, passes on:**
 

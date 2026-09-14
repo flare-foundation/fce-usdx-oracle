@@ -91,7 +91,7 @@ failures actually look like.
 
 | | Check |
 | --- | --- |
-| Docker stack up | `docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.coston2.yaml ps` — `extension-tee`, `ext-proxy`, `redis` |
+| Docker stack up | `docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.live.yaml ps` — `extension-tee`, `ext-proxy`, `redis` |
 | Proxy reachable **from the internet** | `curl -s $EXT_PROXY_URL/info \| jq .machineData.extensionId` returns your extension id (the reserved id 1), not an ngrok error page |
 | Operator key funded | Coston2 C2FLR on the address in `.env` |
 | `deploy/config/extension.env` current | Holds the pinned `EXTENSION_ID` (the reserved id 1). Contract addresses come from `deploy/config/coston2/deployed-addresses.json` — the `TeeOracleFeedStore` entry must be filled in from the flare-smart-contracts-v2 deployment; the sender is then derived from the store's `instructionsSender()` |
@@ -192,7 +192,9 @@ curl -sS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/getfeed
 ```
 
 ```bash
-curl -sS http://127.0.0.1:8099/state | jq '.state | {lastPrice, lastObservedAt, sourceHealth, readiness}'
+# through the node, as every consumer does: mocknode folds the dev server's state into its /info
+curl -sS http://127.0.0.1:<mocknode port>/info | jq -r .teeInfo.state.state | xxd -r -p \
+  | jq '{lastPrice, lastObservedAt, sourceHealth, readiness}'
 ```
 
 The first request is served from whatever the boot-time observation produced; the price appears
@@ -385,7 +387,7 @@ Confirm the machine actually applied it — this is the difference between what 
 what is *running*:
 
 ```bash
-docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.coston2.yaml logs extension-tee | grep SET_ENDPOINTS
+docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.live.yaml logs extension-tee | grep SET_ENDPOINTS
 ```
 
 Expect `SET_ENDPOINTS applied`, and `SET_ADMINS applied` for the admin set. The `endpointsHash` that `send-endpoints` printed must equal the
@@ -486,10 +488,10 @@ Relaying an update the store already holds ends in
 failure: the store takes strictly increasing timestamps, which is what makes replay and
 out-of-order delivery harmless.
 
-**The machine's own health** is in the extension's `GET /state` — last price, counters, error
-class and per-source health. Under Docker the extension port is container-internal, so read it
-from the logs or via the proxy's `/info` (`teeInfo.state.state`, hex-encoded JSON) once tee-node
-has polled it.
+**The machine's own health** is the extension's state — last price, counters, error class and
+per-source health. Only tee-node reads the extension's `GET /state`, on every TEE info request;
+everything else reads it out of the proxy's `/info` (`teeInfo.state.state`, the hex-encoded JSON
+of the state), which `oracle-status.sh` decodes.
 
 ### Verifying the contracts on the explorer
 
