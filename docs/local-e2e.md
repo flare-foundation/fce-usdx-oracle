@@ -45,7 +45,7 @@ The relay is what delivers cosigned instructions to *this* extension's proxy too
 
 ```bash
 ./deploy/scripts/use-chain.sh local            # .env.local → .env (Hardhat test keys only)
-./deploy/scripts/deploy-oracle-local.sh        # oracle contracts on the sim, extension 1 reserved, addresses imported
+./deploy/scripts/deploy-oracle.sh --chain local        # oracle contracts on the sim, extension 1 reserved, addresses imported
 (cd tools && go run ./cmd/wire-extension)      # owner wiring: sender + state verifier, allowed machine owners, key types
 ./deploy/scripts/full-setup.sh --chain local   # extension + proxy in Docker, version, governance, machine registered
 ./deploy/scripts/publish-local.sh endpoints    # SET_ENDPOINTS, executed at once: the local sender is deployer-governed
@@ -88,7 +88,7 @@ The two stacks do not clash, and the record names whichever was started last.
 
 ## What each script does, and why
 
-- **`deploy-oracle-local.sh`** — deploys upstream's oracle contracts from their sources in the sibling
+- **`deploy-oracle.sh --chain local`** — deploys upstream's oracle contracts from their sources in the sibling
   checkout through `contracts/script/DeployTeeOracle.s.sol`, which repeats upstream's own deploy
   for this network (`deployment/chain-config/scdev.json`: extension 1, the USDX/USD feed and its
   submission policy) except for its last step: the sender and the feed store are not switched to
@@ -123,13 +123,13 @@ Everything in `.env.local` is a public Hardhat test key.
 | `DEPLOYMENT_PRIVATE_KEY` (the funded sim key) | `0xF4E0…3a64` | deploys the oracle contracts and stays their governance; owner of reserved extension 1, owner of the TEE machine, the proxy's signer, the keeper's wallet |
 
 `publish-local.sh` decides its route by the sender's `productionMode()`: false on a
-`deploy-oracle-local.sh` deploy, true on upstream's, whose governance is then account 0.
+`deploy-oracle.sh --chain local` deploy, true on upstream's, whose governance is then account 0.
 
 ## When it goes wrong
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `deploy-oracle-local.sh`: no GovernanceSettings code at the genesis address | the chain at `CHAIN_URL` is not the Flare simulation | point `CHAIN_URL` at the e2e Hardhat node |
+| `deploy-oracle.sh --chain local`: no GovernanceSettings code at the genesis address | the chain at `CHAIN_URL` is not the Flare simulation | point `CHAIN_URL` at the e2e Hardhat node |
 | `registerReserved would revert` | extension 1 already owned by another address | a new simulation, or reuse that owner as `INITIAL_OWNER` |
 | the oracle deploy fails inside `forge script` | contracts image older than the checkout | rebuild the image (step 1) |
 | `full-setup.sh`: network not found | the e2e stack is not up | `docker compose up -d` in `tee/e2e/docker` |

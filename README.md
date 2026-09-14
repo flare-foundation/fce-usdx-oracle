@@ -225,7 +225,7 @@ go run ./cmd/devserver
 ```
 
 ```bash
-./deploy/scripts/set-endpoints.sh deploy/config/endpoints/public-only.json 8099
+./deploy/scripts/set-config.sh endpoints deploy/config/endpoints/public-only.json 8099
 ```
 
 `./deploy/scripts/oracle-observe.sh` runs this whole sequence — mock signing node, dev server, endpoint provisioning, one `GET_FEED` request — and prints the price and per-source health. Healthy output is `lastPrice: "100000000"` with `hex_cash: not_configured`.

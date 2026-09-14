@@ -99,12 +99,12 @@ read_machine_state "$NODE_URL" >/dev/null 2>&1 || {
 }
 
 section "Provisioning endpoints from $(basename "$CONFIG")"
-"$SCRIPT_DIR/set-endpoints.sh" "$CONFIG" "$EXT_PORT"
+"$SCRIPT_DIR/set-config.sh" endpoints "$CONFIG" "$EXT_PORT"
 
 # Without an admin set the machine observes but will not sign a feed update: it
 # would commit to no admin set, and the store would reject it on-chain anyway.
 section "Publishing the dev admin set from $(basename "$ADMINS")"
-"$SCRIPT_DIR/set-admins.sh" "$ADMINS" "$EXT_PORT"
+"$SCRIPT_DIR/set-config.sh" admins "$ADMINS" "$EXT_PORT"
 
 section "Requesting a feed update"
 # originalMessage is abi.encode(FeedUpdateRequest{feedId}): the 21-byte feed id

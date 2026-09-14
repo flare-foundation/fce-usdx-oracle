@@ -315,10 +315,10 @@ most likely to meet are tabulated in
 | `cmd/devserver` | The extension with real provisioning and observation, no chain. |
 | `cmd/mocknode` | Stands in for tee-node: `/sign`, `/decrypt`, `/info`, key from a fixed seed. **Not secure, not for deployment.** |
 | `cmd/start-tee` | Host-process runner behind `start-services.sh --local`. |
-| `set-endpoints.sh` | Posts a `SET_ENDPOINTS` payload straight to a running extension's `/action`, no chain. |
+| `set-config.sh endpoints\|admins` | Posts a `SET_ENDPOINTS` or `SET_ADMINS` payload straight to a running extension's `/action`, no chain. |
 | `local-stack` | Runs the extension TEE and its proxy as host processes on the local simulation: the proxy in-process, `cmd/start-tee` as a child. No Docker; see [local-e2e.md](local-e2e.md). |
 | `full-setup-host.sh` | `full-setup.sh --chain local` with the stack as host processes: starts `local-stack` under `out/pids/`, then runs `post-build.sh` against it. |
-| `deploy-oracle-local.sh` | Deploys upstream's oracle contracts on the simulation through `contracts/script/DeployTeeOracle.s.sol`, deployer-governed (no production mode), reserves extension 1 and imports the addresses. |
+| `deploy-oracle.sh --chain local` | Deploys upstream's oracle contracts on the simulation through `contracts/script/DeployTeeOracle.s.sol`, deployer-governed (no production mode), reserves extension 1 and imports the addresses. |
 | `publish-local.sh` | Publishes endpoints or admin sets on the simulation: one transaction on a deployer-governed sender; record, real timelock and execute on a production-mode one. |
 | `e2e.sh` | Starts, stops and waits on the host-process stack's background processes (pids and logs under `out/`). |
 
@@ -344,7 +344,7 @@ cannot help, because the siblings build's context root is `tee/`, not the repo.
 | `generate-bindings.sh` | Compiles the TEE oracle interfaces out of the sibling flare-smart-contracts-v2 checkout (`contracts/`) and regenerates the Go bindings. **Run when upstream moves.** |
 | `regen-wire-fixtures.sh` | Regenerates `deploy/testdata/wire/` from the Forge vector tests (the ABI ground truth both Go codecs assert against). |
 | `check-versions.sh` | Fails when the dependency pins drift apart. |
-| `test-unit.sh` | A language implementation's unit tests. |
+| `go test ./...`, in the root and in `tools/` | A language implementation's unit tests, one module at a time. |
 | `go test ./internal/extension/ -run TestConformance` | Replays the wire fixtures in `deploy/testdata/conformance` against the extension, no chain and no tee-node; the check behind [extension-contract.md](extension-contract.md). |
 
 ---

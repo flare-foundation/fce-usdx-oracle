@@ -6,7 +6,7 @@ Tests split into two groups: those covering **your extension**, and those coveri
 
 | Layer | What it tests | How to run | Chain? |
 |-------|--------------|------------|--------|
-| **Unit** | Your handlers, dispatch, encoding — in your chosen language | `./deploy/scripts/test-unit.sh` | no |
+| **Unit** | Your handlers, dispatch, encoding — in your chosen language | `go test ./...` in the root, then in `tools/` | no |
 | **Conformance** | The wire contract, against golden fixtures | `go test ./internal/extension/ -run TestConformance` | no |
 | **End-to-end** | The full feed cycle (request → observe → sign → relay) | `./deploy/scripts/oracle-cycle.sh -tee <machine>` | yes |
 
@@ -169,7 +169,7 @@ EXTENSION_PORT=8099 SIGN_PORT=9099 go run ./cmd/devserver
 ```
 
 ```bash
-./deploy/scripts/set-endpoints.sh deploy/config/endpoints/public-only.json 8099
+./deploy/scripts/set-config.sh endpoints deploy/config/endpoints/public-only.json 8099
 ```
 
 Observation needs only the endpoints, but a signed feed update also needs an admin set: the
@@ -177,7 +177,7 @@ update commits to one, and the store rejects an update that names none. The dev-
 built from well-known keys and must never be published to a live feed:
 
 ```bash
-./deploy/scripts/set-admins.sh deploy/config/admins/dev-wellknown-keys.json 8099
+./deploy/scripts/set-config.sh admins deploy/config/admins/dev-wellknown-keys.json 8099
 ```
 
 Then ask for a feed update. `originalMessage` is the ABI-encoded `FeedUpdateRequest` — the

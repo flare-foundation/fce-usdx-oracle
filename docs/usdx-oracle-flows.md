@@ -457,7 +457,7 @@ either public surface. That is a compile error, not a review item.
 | --- | --- |
 | Do the real sources yield a sane price? | `./deploy/scripts/oracle-observe.sh` |
 | Does the wire contract hold? | `go test ./internal/extension/ -run TestConformance` |
-| Does provisioning work? | `./deploy/scripts/set-endpoints.sh` then `usdxprov` |
+| Does provisioning work? | `./deploy/scripts/set-config.sh endpoints` then `usdxprov` |
 | Does the whole chain work? | `./deploy/scripts/oracle-cycle.sh` |
 | What is it publishing right now? | `./deploy/scripts/oracle-status.sh` |
 
