@@ -58,3 +58,6 @@ deploy/config/indexer/*/indexer-config.toml
 # Operator-specific active admin set (addresses only, but per-deployment like .env);
 # the tracked reference is admins/coston.example.json.
 deploy/config/admins/coston.json
+
+# The CI contracts job clones upstream here; locally the sibling checkout is used.
+contracts/lib/flare-smart-contracts-v2/

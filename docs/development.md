@@ -45,7 +45,7 @@ go build ./... && go vet ./... && go test ./...
 Both modules at once, from the repo root:
 
 ```bash
-./deploy/scripts/test-unit.sh
+go test ./... && (cd tools && go test ./...)
 ```
 
 The highest-value local check is a real observation against live sources, with no chain and no
@@ -97,3 +97,11 @@ go test ./internal/extension/ -run TestConformance
 
 Replays the golden wire fixtures in `deploy/testdata/conformance/` against the extension through its own
 handler. Run it before committing a handler change.
+
+The GitLab pipeline (`.gitlab-ci.yml`, after tee-node's) runs on every push: both Go modules build,
+`gofmt` and `go vet` gate, the extension's tests run with coverage and the tooling's without, every
+operator script must parse and `check-versions.sh` must find the dependency pins aligned, the
+Foundry project builds and its wire-vector and verifier tests run against a clone of
+`flare-smart-contracts-v2` at `UPSTREAM_REF` (the `ci` profile in `contracts/foundry.toml`), and
+both Dockerfiles are built with kaniko without pushing. `golangci-lint` with tee-node's linter set
+(`.golangci.yml`) reports without gating until its findings are cleared.

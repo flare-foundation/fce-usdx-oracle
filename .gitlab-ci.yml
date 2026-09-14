@@ -1,0 +1,198 @@
+# GitLab CI for the USDX oracle extension, after tee-node's pipeline: the same
+# Go cache, lint and coverage arrangement, extended to what this repository is
+# made of — two Go modules (the extension at the root, the operator tooling in
+# tools/), a Foundry project whose sources come from a checkout of
+# flare-smart-contracts-v2, the operator scripts, and two images.
+#
+# The private image component at the end publishes the extension image the way
+# tee-node's pipeline does; the two kaniko jobs before it only prove that both
+# Dockerfiles build, without pushing.
+
+variables:
+  # tools/go.mod needs 1.25.8; the minor tag tracks the latest patch.
+  GOLANG_VERSION: "1.25"
+  GOLINT_VERSION: "v2.7.0"
+  FOUNDRY_IMAGE: "ghcr.io/foundry-rs/foundry:stable"
+  COVERAGE_FILE: "coverage.out"
+  COBERTURA_FILE: "coverage.xml"
+  # The contracts compile against this ref of flare-smart-contracts-v2, cloned
+  # from the same GitLab group with the job token (contracts job below).
+  UPSTREAM_REF: "tee-oracle-extension"
+  FLARE_CI_DISABLE_LGTM: true
+  FLARE_CI_DISABLE_TEST_GO: true
+  FLARE_CI_DISABLE_LINT_GO: true
+
+default:
+  tags:
+    - flarenetwork
+
+stages:
+  - build
+  - test
+  - contracts
+  - image
+
+.gocache:
+  variables:
+    GOPATH: ${CI_PROJECT_DIR}/.go
+  before_script:
+    - mkdir -p ${GOPATH}
+  cache:
+    key: go-${CI_COMMIT_REF_SLUG}
+    paths:
+      - ${GOPATH}/pkg/mod/
+      - ${GOPATH}/bin
+
+# ── build ─────────────────────────────────────────────────────────────────────
+
+build:
+  stage: build
+  image: golang:${GOLANG_VERSION}
+  extends: .gocache
+  needs: []
+  script:
+    - go mod download
+    - go build ./...
+    - cd tools && go mod download && go build ./...
+
+# ── test ──────────────────────────────────────────────────────────────────────
+
+# Formatting and vet, for both modules; what every commit must pass.
+lint:
+  stage: test
+  needs: [build]
+  image: golang:${GOLANG_VERSION}
+  extends: .gocache
+  script:
+    - "! gofmt -l . | grep -q ."
+    - go vet ./...
+    - cd tools && go vet ./...
+
+# tee-node's linter set (.golangci.yml), reported but not yet gating: the
+# findings are cleared module by module before this job loses allow_failure.
+golangci:
+  stage: test
+  needs: [build]
+  image: golangci/golangci-lint:${GOLINT_VERSION}
+  extends: .gocache
+  allow_failure: true
+  script:
+    - golangci-lint run --timeout 10m0s ./...
+    - cd tools && golangci-lint run --timeout 10m0s ./...
+
+# The extension's tests, with the wire-contract conformance replay
+# (internal/extension TestConformance) among them, and the tooling's.
+test:
+  stage: test
+  image: golang:${GOLANG_VERSION}
+  needs: [build]
+  extends: .gocache
+  before_script:
+    - mkdir -p ${GOPATH}
+    - go get github.com/boumenot/gocover-cobertura
+  script:
+    - go test -v -coverpkg=fce-usdx-oracle/... -coverprofile=${COVERAGE_FILE} -covermode count ./...
+    - go tool cover -func=${COVERAGE_FILE}
+    - go run github.com/boumenot/gocover-cobertura < ${COVERAGE_FILE} > ${COBERTURA_FILE}
+    - cd tools && go test ./...
+  artifacts:
+    paths:
+      - ${COVERAGE_FILE}
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: ${COBERTURA_FILE}
+  coverage: '/total:\s+\(statements\)\s+(\d+\.\d+)%/'
+
+# The operator scripts: every one parses, and the dependency pins the two Go
+# modules and the proxy image carry agree (check-versions.sh).
+scripts:
+  stage: test
+  needs: []
+  image: golang:${GOLANG_VERSION}
+  script:
+    - for f in deploy/scripts/*.sh deploy/scripts/lib/*.sh; do bash -n "$f"; done
+    - ./deploy/scripts/check-versions.sh
+
+# ── contracts ─────────────────────────────────────────────────────────────────
+
+# The Foundry project compiles upstream's interfaces and deploy script out of a
+# flare-smart-contracts-v2 checkout. Locally that is the sibling checkout the
+# default profile names; here it is cloned under contracts/lib and the `ci`
+# profile of foundry.toml points the remappings there. The wire-vector tests
+# are what deploy/testdata/wire is regenerated from, so they and the verifier's
+# tests gate.
+contracts:
+  stage: contracts
+  needs: []
+  image:
+    name: ${FOUNDRY_IMAGE}
+    entrypoint: [""]
+  variables:
+    FOUNDRY_PROFILE: "ci"
+    UPSTREAM_DIR: "${CI_PROJECT_DIR}/contracts/lib/flare-smart-contracts-v2"
+  cache:
+    key: upstream-${UPSTREAM_REF}
+    paths:
+      - contracts/lib/flare-smart-contracts-v2/dependencies/
+  script:
+    - cd contracts
+    - git clone --depth 1 --branch "${UPSTREAM_REF}" "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/flarenetwork/FSP/flare-smart-contracts-v2.git" lib/flare-smart-contracts-v2
+    - git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
+    - (cd lib/flare-smart-contracts-v2 && forge soldeer install)
+    - forge build
+    - forge test -vv
+
+# ── images ────────────────────────────────────────────────────────────────────
+
+# The extension image is reproducible from SOURCE_DATE_EPOCH, the commit's
+# timestamp; kaniko's image has no git, so the value is taken here and handed
+# on as a dotenv artifact.
+epoch:
+  stage: build
+  needs: []
+  image: golang:${GOLANG_VERSION}
+  script:
+    - echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" > build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+
+.kaniko:
+  stage: image
+  image:
+    name: registry.gitlab.com/flarenetwork/infra-public/pipeliner/kaniko-executor-stbl:v1.23.2-debug
+    entrypoint: [""]
+  script:
+    - >-
+      args="--context ${CI_PROJECT_DIR}
+        --dockerfile ${CI_PROJECT_DIR}/${DOCKERFILE}
+        ${BUILD_ARGS}
+        --registry-mirror mirror.gcr.io
+        --compressed-caching=false
+        --snapshot-mode=redo
+        --no-push"
+    - /kaniko/executor $args
+
+# The extension TEE image, the one a Confidential Space VM runs.
+image-extension:
+  extends: .kaniko
+  needs: [build, epoch]
+  variables:
+    DOCKERFILE: "Dockerfile"
+    BUILD_ARGS: "--build-arg SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
+
+# The pinned tee-proxy image the compose stack runs next to it.
+image-proxy:
+  extends: .kaniko
+  needs: [scripts]
+  variables:
+    DOCKERFILE: "deploy/proxy/Dockerfile"
+    BUILD_ARGS: ""
+
+# Publication of the extension image, as tee-node's pipeline does it.
+include:
+  - component: gitlab.com/flarenetwork/ci-components-private/component@2
+    inputs:
+      image_name: "fce-usdx-oracle"
+      runner_tags: ["flarenetwork-md"]
