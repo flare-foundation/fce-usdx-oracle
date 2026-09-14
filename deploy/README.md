@@ -49,7 +49,7 @@ troubleshooting table, is [docs/local-e2e.md](../docs/local-e2e.md).
 ./deploy/scripts/use-chain.sh local                 # .env.local → .env
 #   with a private Hex token (see "Private Hex credentials" below):
 #   HEX_API_KEY=<token> HEX_CASH_URL=https://… ./deploy/scripts/use-chain.sh local
-./deploy/scripts/deploy-oracle-local.sh             # oracle contracts on the sim, extension 1 reserved
+./deploy/scripts/deploy-oracle.sh --chain local             # oracle contracts on the sim, extension 1 reserved
 (cd tools && go run ./cmd/wire-extension)           # owner wiring: sender + state verifier, allowed machine owners, key types
 
 # Start the extension TEE and its proxy, and register the machine. Two ways,
@@ -137,138 +137,141 @@ running stack at any time and tells you when the stack exits underneath it; its 
 and leaves the stack running, or stops it with `--stop`. Run the publications and cycles from
 a second terminal while attached.
 
-`deploy-oracle-local.sh` deploys upstream's contracts from the sibling checkout through
+`deploy-oracle.sh --chain local` deploys upstream's contracts from the sibling checkout through
 `contracts/script/DeployTeeOracle.s.sol`, leaving the sender governed by the deployer
 (no production mode), so publications execute at once instead of after the simulation's
 hour-long governance timelock. Nothing here touches the chain clock.
 
-After a simulation restart, run the sequence again from `deploy-oracle-local.sh`; the
+After a simulation restart, run the sequence again from `deploy-oracle.sh --chain local`; the
 local stack is recreated on every start so no state from the old chain survives, and the
 e2e relay, TEE and proxy must be restarted with the simulation too.
 
-## Running on a live chain (Coston, Coston2, Songbird, Flare)
+## Testing on a testnet (Coston, Coston2)
 
-One sequence for every live chain. `<chain>` below is `coston`, `coston2`, `songbird` or
-`flare`; each chain is a row in `scripts/lib/chains.sh` (id, RPC, normal proxy, faucet, the
-indexer database's host port), and nothing chain-specific is edited by hand: the proxy
-configuration is rendered per run from `config/proxy/extension_proxy.live.toml`, the indexer's
-from `config/indexer/indexer-config.toml.template`, both with the chain's addresses.
-
-What must be true before you start:
-
-- **The extension is yours.** Either Flare governance has run `registerReserved(EXTENSION_ID,
-  INITIAL_OWNER)` for your deployer's address on the chain's `FlareTeeManager`, or that address
-  is on the registry's extension-owner allowlist, in which case `deploy-oracle.sh` registers a
-  public id (>= 65536) and records it in `.env` and `.env.<chain>`.
-- **A funded deployer key** (the chain's faucet for the testnets) and a separate proxy key;
-  `openssl rand -hex 32` for `DIRECT_API_KEY`. Who holds which key is spelled out at the top
-  of `.env.example`.
-- **The chain's addresses are current.** `import-upstream-addresses.sh <chain>` refreshes the
-  system contracts from the network's own `FlareContractRegistry` — the authority, since Flare
-  redeploys contracts now and then (Coston's Relay in 2026 was found this way) — and renders
-  the indexer configuration from them.
-- **The chain's indexer is running and caught up.** The proxy reads signing policies from a
-  C-chain indexer; `docker-compose.<chain>-indexer.yaml` runs one with its database as a stack
-  of its own (no variables needed). It indexes the last seven days at start — the signing
-  policies and voter registrations of the recent reward epochs — which takes some minutes on a
-  fresh database; `start-services.sh` refuses to start the proxy against one that is behind.
-  An indexer of your own goes in `.env` as `INDEXER_DB_HOST` / `INDEXER_DB_PORT` / … instead.
-- **A public URL for the machine.** The URL is registered on chain as the machine's address, so
-  it must survive restarts. Laptop: an ngrok static domain in front of the proxy's external
-  port. Remote machine: its own URL (see "A remote machine" below).
+The same sequence as the simulation, with the machine on your laptop behind a tunnel and the
+contracts on the testnet. Prerequisites: one funded key (`cast wallet new`, then
+`https://faucet.flare.network/<chain>`), a static ngrok domain
+(`https://dashboard.ngrok.com/domains`) with ngrok logged in, the sibling checkout of
+`flare-smart-contracts-v2`, and `forge`, `cast`, `jq`, `go`, `docker`. That key and that
+domain are all you provide; the chain switch derives or generates the rest.
 
 ```bash
-cp .env.example .env.coston                          # fill in the keys and the URL (see the file)
-cp deploy/config/admins/coston.example.json deploy/config/admins/coston.json   # the test admin set; your own addresses for a real deployment
-./deploy/scripts/use-chain.sh coston                 # .env.coston → .env  (HEX_API_KEY=… HEX_CASH_URL=… in front for the cash source)
-./deploy/scripts/import-upstream-addresses.sh coston # registry-fresh addresses + the indexer's config
-docker compose -f deploy/docker-compose.coston-indexer.yaml up -d    # then wait for "Up to date" in its logs
-ngrok http --url=<your-static>.ngrok-free.app 6674   # in another terminal (6684 for host processes)
+DEPLOYMENT_PRIVATE_KEY=0x… EXT_PROXY_URL=https://<name>.ngrok-free.app ./deploy/scripts/use-chain.sh coston
+#   creates .env.coston when missing and fills in what the key implies: INITIAL_OWNER, a proxy
+#   key, DIRECT_API_KEY, the provisioning keys and deploy/config/admins/coston.json. Present
+#   values are kept, so later switches are just: ./deploy/scripts/use-chain.sh coston
+#   with a private Hex token, as on the simulation:
+#   HEX_API_KEY=<token> HEX_CASH_URL=https://… ./deploy/scripts/use-chain.sh coston
+./deploy/scripts/import-upstream-addresses.sh coston   # the chain's addresses from its contract registry, and the indexer's config
+docker compose -f deploy/docker-compose.coston-indexer.yaml up -d   # the chain's indexer; ~20 min to "Up to date" on a fresh database
+ngrok http 6674 --url=https://<name>.ngrok-free.app     # in another terminal, left running (6684 for b)
+./deploy/scripts/deploy-oracle.sh --chain coston        # oracle contracts on the testnet; extension checked or registered, its id recorded
+(cd tools && go run ./cmd/wire-extension)               # owner wiring: sender + state verifier, allowed machine owners, key types
 
-./deploy/scripts/deploy-oracle.sh --chain coston     # oracle contracts + verifier, deployer-governed; extension checked or registered
-(cd tools && go run ./cmd/wire-extension)            # owner wiring: sender + verifier, allowed machine owners, key types
-./deploy/scripts/full-setup.sh --chain coston        # compose stack, then register the machine (availability check through the tunnel)
-./deploy/scripts/full-setup-host.sh --chain coston --attach   # or as host processes on 6684, the logs staying in this terminal
+USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup.sh --chain coston        # a) in Docker: compose stack, proxy on 6674
+USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh --chain coston   # b) as host processes: proxy on 6684 (--attach as on the simulation)
 
-./deploy/scripts/publish-local.sh admins deploy/config/admins/coston.json      # BEFORE the uploads: the admins authorise them
-./deploy/scripts/publish-local.sh endpoints deploy/config/endpoints/public-only.json   # or your own endpoints file
-./deploy/scripts/upload-hex-key.sh                   # with HEX_* in .env; prompts for what is missing
-./deploy/scripts/upload-rpc-keys.sh --refs <ref,…>   # provider credentials, if the endpoints file names any
+./deploy/scripts/publish-local.sh endpoints             # SET_ENDPOINTS, one transaction (hex_cash commits to HEX_CASH_URL when set)
+./deploy/scripts/publish-local.sh admins                # SET_ADMINS, the admin set use-chain.sh wrote
+./deploy/scripts/upload-hex-key.sh                      # only with a private Hex token
 ./deploy/scripts/oracle-cycle.sh -tee <TEE_ID> --dry-run   # two minutes after the last publication or upload
-./deploy/scripts/oracle-cycle.sh -tee <TEE_ID>       # pays the request fee in the chain's native token
+./deploy/scripts/oracle-cycle.sh -tee <TEE_ID>          # pays the request fee in CFLR
 ./deploy/scripts/oracle-status.sh
 
-./deploy/scripts/stop-services.sh --chain coston     # retires the machine on chain, then stops the stack (the indexer keeps running)
+./deploy/scripts/stop-services.sh --chain coston        # retires the machine on chain, stops the stack (--local for b); the indexer keeps running
 ```
 
-Order matters once: publish the admins before any upload, because the machine verifies a
-credential's signatures against the admin set it holds — the published set, not the file on
-your disk. The machine's TEE id, if mislaid, is
-`(cd tools && go run ./cmd/verify-tee -p http://localhost:6684 -print-tee-id)`, or
-`retire-tee -stale -dry-run` for every machine registered to the extension.
+What differs from the simulation, and why: the chain needs its own indexer for the proxy's
+signing policies, which the compose file runs and `start-services.sh` waits for; the machine's
+URL is written on chain, so it is a static tunnel domain; `deploy-oracle.sh` deploys on the
+testnet, and where the deployer is not governance's reservee for extension 1 the registry
+mints a public id (>= 65536) for it, a test identity recorded in `.env` and `.env.coston`;
+and the admin set is your key rather than the dev keys. The machine attests with the simulated
+code hash (`SIMULATED_TEE=true`), which the testnet registries accept, so the upload scripts
+assume tee-node's test constant for `EXPECTED_CODE_HASH`. `<TEE_ID>` is printed by
+`full-setup.sh` and recoverable with
+`(cd tools && go run ./cmd/verify-tee -p http://localhost:6674 -print-tee-id)`.
 
-The differences from the simulation: the sender is yours and deployer-governed, so
-`publish-local.sh` publishes directly despite its name (it signs with
-`DEPLOYMENT_PRIVATE_KEY`); on the testnets the machine attests with the test code hash
-(`SIMULATED_TEE=true`, `MODE=1`), which their registries accept as `TEST_PLATFORM` — the
-upload scripts then assume tee-node's test constant for `EXPECTED_CODE_HASH`; and the
-machine's registered URL is public, which the data providers reach for the availability proof
-and the keeper for results.
+`.env.coston` is the only place the deployment's keys live, and a lost deployer key loses the
+extension, its contracts and the funds: never copy `.env.example` over it, and keep the key
+backed up. This is a test, not a deployment: the contracts stay governed by the deployer and
+the machine is simulated. The deployment is the next section; `deploy-oracle.sh` refuses
+mainnets.
 
-### Songbird and Flare
+## A remote machine
 
-The same scripts address the mainnets, with two differences of kind:
+This is the deployment: the TEE and its proxy run on a Confidential Space VM that a system
+administrator operates, and this repository is used from your workstation for the on-chain and
+provisioning steps only. It applies to the testnets and it is the only form the mainnets take,
+since their registries accept no simulated machine. Split by side:
 
-- **No simulated machines.** Their registries accept only real attestation (`GCP_*` platforms),
-  so the machine is a Confidential Space VM with `SIMULATED_TEE=false` and `MODE=0`;
-  `full-setup.sh` refuses `SIMULATED_TEE=true` there. That usually means the machine is remote
-  — the next section.
-- **No test deployment.** `deploy-oracle.sh` refuses mainnets: its contracts stay
-  deployer-governed, which is a test arrangement. The production contracts are deployed by
-  `flare-smart-contracts-v2`'s `deployment/scripts/deploy-tee-oracle.sh`, switched to
-  production mode, and finished by Flare governance (`registerReserved`, fee rows,
-  `FtsoV2.addCustomFeeds`); `import-upstream-addresses.sh <chain>` then brings the addresses
-  here. On a production-mode sender `publish-local.sh` records the governance call, waits out
-  the real timelock and executes it (`--wait`, or later `--execute`).
+**The administrator deploys**, next to each other (the first is the enclave):
 
-There is no bundled indexer file for the mainnets yet; copy `docker-compose.coston-indexer.yaml`,
-rename the services, give the database a fresh host port, and run
-`import-upstream-addresses.sh <chain>` to render its configuration — or name your own indexer
-in `.env` (`INDEXER_DB_*`). Songbird's indexer enforces a 10-day minimum history
-(`INDEXER_HISTORY_DROP=864000` when rendering).
+1. **The image**, built from this repository at an agreed commit with `SOURCE_DATE_EPOCH` from
+   git, so you can rebuild it and know the code hash; `MODE=0` is baked in, `EXPOSE 5500` is
+   the only port the VM firewall opens
+   ([docs/deployment-steps.md](../docs/deployment-steps.md) step 5). Launch environment, as
+   `tee-env-*` metadata (the launch-policy label allows exactly these):
 
-### A remote machine
+   | variable | value |
+   | --- | --- |
+   | `EXTENSION_ID` | the extension's id (1 when governance reserved it, else the minted one) |
+   | `CHAIN_ID`, `CHAIN_URL` | the chain's (`scripts/lib/chains.sh`) |
+   | `INITIAL_OWNER` | your deployer's address |
+   | `PROXY_URL` | `http://<proxy host>:6663` |
+   | `GOVERNANCE_SIGNERS`, `GOVERNANCE_THRESHOLD` | omit for the owner alone, threshold 1 |
 
-When the TEE and its proxy run elsewhere — a Confidential Space VM an operator deployed from
-this image ([docs/deployment-steps.md](../docs/deployment-steps.md) steps 5–8 are that
-hand-off) — the only scripts that fall away are the ones that start and stop the local stack.
-Everything else already addresses the machine through `EXT_PROXY_URL` and the chain through
-`CHAIN_URL`:
+2. **The tee-proxy container**, with the configuration this repository renders
+   (`start-services.sh` writes `out/proxy/extension_proxy.<chain>.docker.toml`; hand it over
+   and adjust the `[db]` host to their indexer database), `PROXY_PRIVATE_KEY` (a key they
+   generate, never funded) and `DIRECT_API_KEY` (the value from your `.env`, exchanged over a
+   secure channel — your upload scripts authenticate with the same key).
+3. **Redis** and **the chain's indexer** (`docker-compose.<chain>-indexer.yaml` with
+   `config/indexer/<chain>/`, or their own indexer).
+4. **Networking**: public HTTPS to the proxy's external port 6664; TEE → proxy 6663, proxy →
+   redis and the indexer database private. They give you back the public proxy URL.
+
+**You run**, with `EXT_PROXY_URL=<that URL>`, `SIMULATED_TEE=false` and the keys filled in by
+hand in `.env.<chain>` (`.env.example` says who holds which):
 
 ```bash
-# .env.<chain>: EXT_PROXY_URL=<the machine's public proxy URL>; no tunnel, no indexer here —
-# the machine's own proxy has one where it runs. SIMULATED_TEE=false, MODE is the image's 0.
 ./deploy/scripts/use-chain.sh <chain>
 ./deploy/scripts/import-upstream-addresses.sh <chain>
-./deploy/scripts/deploy-oracle.sh --chain <chain>    # testnets; mainnets: upstream's deploy, see above
+./deploy/scripts/deploy-oracle.sh --chain <chain>    # testnets only; mainnets: upstream's production deploy, below
 (cd tools && go run ./cmd/wire-extension)
 ./deploy/scripts/post-build.sh                       # registers THAT machine: version, governance, register, production
-# publish-local.sh, upload-*.sh, oracle-cycle.sh, oracle-status.sh — unchanged
+./deploy/scripts/publish-local.sh admins deploy/config/admins/<chain>.json
+./deploy/scripts/publish-local.sh endpoints <endpoints file>
+EXPECTED_CODE_HASH=<measured hash> ./deploy/scripts/upload-hex-key.sh
+EXPECTED_CODE_HASH=<measured hash> ./deploy/scripts/upload-rpc-keys.sh --refs <ref,…>
+./deploy/scripts/oracle-cycle.sh -tee <TEE_ID> --dry-run
 ```
 
-Two things change in substance, not in commands: `EXPECTED_CODE_HASH` for the upload scripts
-is the real measured hash, obtained out of band (`verify-tee` against the machine prints it),
-never the test constant; and retirement is not tied to a stop —
+No `start-services`, `full-setup` or `stop-services`: the machine is not yours to start.
+`EXPECTED_CODE_HASH` is the real measured hash, obtained out of band — rebuild the image from
+the agreed commit and read its hash, then confirm the machine matches with `verify-tee` against
+its URL; never accept the hash from the machine you are verifying. Retirement is on chain only:
 `(cd tools && go run ./cmd/retire-tee -p "$EXT_PROXY_URL")` when the machine is decommissioned.
-The machine's own launch environment (`EXTENSION_ID`, `CHAIN_URL`, `CHAIN_ID`,
-`INITIAL_OWNER`, `GOVERNANCE_*`, `PROXY_URL`) is the VM operator's side of the hand-off.
+
+**On Songbird and Flare** two more things differ. The registries accept only real attestation,
+so `SIMULATED_TEE=false` and `MODE=0` are the only option, which `full-setup.sh` also enforces.
+And `deploy-oracle.sh` refuses them: its deployer-governed contracts are a test arrangement. The
+production contracts are deployed by `flare-smart-contracts-v2`'s
+`deployment/scripts/deploy-tee-oracle.sh`, switched to production mode and finished by Flare
+governance (`registerReserved`, fee rows, `FtsoV2.addCustomFeeds`); `import-upstream-addresses.sh
+<chain>` brings the addresses here. On a production-mode sender `publish-local.sh` records the
+governance call, waits out the real timelock and executes it (`--wait`, or later `--execute`).
+There is no bundled indexer file for the mainnets: copy `docker-compose.coston-indexer.yaml`,
+rename the services and the database's host port, and render its configuration with
+`INDEXER_HISTORY_DROP=864000 ./deploy/scripts/import-upstream-addresses.sh <chain>` (Songbird's
+indexer enforces a ten-day minimum), or name an indexer of your own in `.env` (`INDEXER_DB_*`).
 
 ## The scripts
 
 | Script | Purpose |
 | --- | --- |
-| `use-chain.sh <chain>` | Activate `.env.<chain>` as `.env` and pin `CHAIN=<chain>` in it; `--list` shows the available ones. Hex credentials given on the call, or present in the `.env` being replaced, are written into the new one; `--no-hex` drops them. |
-| `deploy-oracle.sh --chain c [--refresh]` | Deploy the oracle contracts deployer-governed and the extension's state verifier, make the extension ours (the simulation reserves it; on a testnet it checks the reservation, or registers a public id for an allowlisted key and records it in `.env` and `.env.<chain>`), import addresses. Refuses mainnets: there the production deploy is upstream's. `deploy-oracle-local.sh` is `--chain local`. |
+| `use-chain.sh <chain>` | Activate `.env.<chain>` as `.env`. On a live chain it creates the file from the template when missing and fills in what `DEPLOYMENT_PRIVATE_KEY` (given on the call or in the file) implies: owner, proxy key, `DIRECT_API_KEY`, provisioning keys, the chain's admin set; present values are kept. Hex credentials given on the call, or present in the `.env` being replaced, are carried; `--no-hex` drops them. |
+| `deploy-oracle.sh --chain c [--refresh]` | Deploy the oracle contracts deployer-governed and the extension's state verifier, make the extension ours (the simulation reserves it; on a testnet it checks the reservation, or registers a public id for an allowlisted key and records it in `.env` and `.env.<chain>`), import addresses. Refuses mainnets: there the production deploy is upstream's. |
 | `import-upstream-addresses.sh <network> [upstream]` | Merge upstream's deployed addresses into `config/<network>/deployed-addresses.json`; for `local` it seeds the file from the sim dump. On a live chain it also refreshes the system contracts from the network's `FlareContractRegistry` (the authority — Flare redeploys contracts) and renders the chain's indexer configuration from them. |
 | `full-setup.sh [--chain c] [--local]` | Start the stack (`start-services.sh`), then `post-build.sh`. `--local` runs the extension TEE and proxy as host processes. |
 | `full-setup-host.sh [--chain c] [--attach]` | `full-setup.sh --chain c --local` (default `local`); on a live chain the host proxy's redis is the base compose file's and the tunnel forwards to 6684. `--attach` then follows the stack's log in the terminal, Ctrl-C stopping the stack. |
@@ -286,11 +289,10 @@ Not part of the chain flow — development, tests and pins:
 
 | Script | Purpose |
 | --- | --- |
-| `oracle-observe.sh`, `set-endpoints.sh`, `set-admins.sh` | The chainless harness: a devserver and mocknode stand in for the sources and the chain, and configuration payloads are posted straight to a running dev extension. For observing prices and iterating on the extension, never for a deployment. |
+| `oracle-observe.sh`, `set-config.sh endpoints\|admins [config] [port]` | The chainless harness: a devserver and mocknode stand in for the sources and the chain, and configuration payloads are posted straight to a running dev extension. For observing prices and iterating on the extension, never for a deployment. |
 | `check-versions.sh` | Fail when the tee-node, go-flare-common or tee-proxy pins drift between the two Go modules and the proxy image. |
 | `generate-bindings.sh` | Regenerate the Go bindings in `tools/pkg/contracts` from the upstream interfaces compiled in `contracts/`. |
 | `regen-wire-fixtures.sh` | Regenerate the ABI wire vectors under `testdata/wire` from the Foundry tests. |
-| `test-unit.sh` | Unit tests of both Go modules. The wire-contract replay is `go test ./internal/extension/ -run TestConformance`. |
 | `e2e.sh` | Internal: start, stop and wait on the host-process stack's background processes; the stack scripts call it. |
 
 Helpers under `scripts/lib/`: `chains.sh` is the chain table every script resolves the target
@@ -316,6 +318,6 @@ does not turn a build into an hour of downloads.
   `docker-compose.<chain>-indexer.yaml` mounts it.
 - `config/<network>/deployed-addresses.json` — the chain's contract addresses: upstream's
   deploys merged with the network registry's system contracts. Coston and Coston2 are tracked;
-  `local/` is written by `deploy-oracle-local.sh` on every run.
+  `local/` is written by `deploy-oracle.sh --chain local` on every run.
 - `config/extension.env` — written by `full-setup.sh`, carries the extension id into the
   container.

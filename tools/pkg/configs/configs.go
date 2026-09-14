@@ -15,9 +15,12 @@ import (
 
 // Defaults honour the same env vars the scripts use (full-setup.sh, post-build.sh),
 // so the tools run flag-free from the project's .env and the recorded stack: both
-// are loaded here, before the defaults are taken, from the module root. Fallbacks
-// point at the coston2 deployment.
+// are loaded here, before the defaults are taken, from the module root. What .env
+// leaves unset falls back to the chain it names (FLARE_CHAIN, else CHAIN_ID), the
+// same rows as deploy/scripts/lib/chains.sh.
 var (
+	// Chain is the network .env targets: local, coston, coston2, songbird or flare.
+	Chain string
 	// The port Docker Compose publishes: the container listens on 6664 and compose
 	// maps 6674 -> 6664. A host-process stack binds 6684 directly; on the
 	// simulation start-services.sh records whichever is running.
@@ -37,10 +40,41 @@ func init() {
 	// proxy in deploy/config/stack.env. It is authoritative, above .env and above
 	// an EXT_PROXY_URL inherited from the shell; -p is the explicit override.
 	_ = godotenv.Overload(filepath.Join(root, "deploy", "config", "stack.env"))
+	Chain = resolveChain()
 	ExtensionProxyURL = envOrDefault("EXT_PROXY_URL", "http://localhost:6674")
-	ChainNodeURL = envOrDefault("CHAIN_URL", "https://coston2-api.flare.network/ext/C/rpc")
-	AddressesFile = rootRelative(root, envOrDefault("ADDRESSES_FILE", "deploy/config/coston2/deployed-addresses.json"))
+	ChainNodeURL = envOrDefault("CHAIN_URL", chainRPC[Chain])
+	AddressesFile = rootRelative(root, envOrDefault("ADDRESSES_FILE", "deploy/config/"+Chain+"/deployed-addresses.json"))
 	ExtensionID = envOrDefault("EXTENSION_ID", "1")
+}
+
+// The chains the scripts know (deploy/scripts/lib/chains.sh), as far as the tools
+// need them: the public RPC and the chain id that names each.
+var (
+	chainRPC = map[string]string{
+		"local":    "http://127.0.0.1:8545",
+		"coston":   "https://coston-api.flare.network/ext/C/rpc",
+		"coston2":  "https://coston2-api.flare.network/ext/C/rpc",
+		"songbird": "https://songbird-api.flare.network/ext/C/rpc",
+		"flare":    "https://flare-api.flare.network/ext/C/rpc",
+	}
+	chainByID = map[string]string{"31337": "local", "16": "coston", "114": "coston2", "19": "songbird", "14": "flare"}
+)
+
+// resolveChain is the chain .env targets: FLARE_CHAIN, which use-chain.sh pins
+// (not CHAIN: Foundry's cast reads that as its --chain option); else the chain
+// with the CHAIN_ID given; else the simulation unless LOCAL_MODE says otherwise,
+// in which case the legacy default, coston2.
+func resolveChain() string {
+	if c := os.Getenv("FLARE_CHAIN"); chainRPC[c] != "" {
+		return c
+	}
+	if c := chainByID[os.Getenv("CHAIN_ID")]; c != "" {
+		return c
+	}
+	if envOrDefault("LOCAL_MODE", "true") == "true" {
+		return "local"
+	}
+	return "coston2"
 }
 
 // projectRoot is the repository root: this file sits in tools/pkg/configs.

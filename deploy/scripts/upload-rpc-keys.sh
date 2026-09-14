@@ -142,7 +142,10 @@ envVarFor() {
 # subshell is where every caller would run it — and `exit` inside $( ) ends the
 # subshell only, which would turn an unreachable proxy into an empty ref list and
 # a cheerful "nothing to upload".
-source "$REPO_ROOT/deploy/scripts/lib/env.sh"
+# .env and the recorded stack, as upload-hex-key.sh loads them: the proxy URL,
+# the chain, the /direct key and the admin keys default from there.
+source "$REPO_ROOT/deploy/scripts/lib/chains.sh"
+source "$REPO_ROOT/deploy/scripts/lib/env.sh"; load_env
 STATE_JSON=""
 readMachineState() {
   # Cleared first: a failed read must not leave the previous, now stale, state
@@ -180,8 +183,13 @@ echo "band), at least one provider admin private key, the credential for each"
 echo "ref, and — only if you hold enough keys to submit — the proxy API key."
 echo
 
+# The machine's proxy and the /direct key default from .env, as in
+# upload-hex-key.sh; the prompt only covers what neither .env nor the
+# environment names.
+: "${PROXY_URL:=${EXT_PROXY_URL:-}}"
+: "${USDXPROV_API_KEY:=${DIRECT_API_KEY:-}}"
 ask PROXY_URL          "Extension proxy URL"    "http://localhost:6674"
-ask CHAIN_ID           "Chain id"               "114"
+ask CHAIN_ID           "Chain id"               "$(chain_id "$(resolve_chain "")")"
 # A machine run with SIMULATED_TEE=true attests with tee-node's fixed test code
 # hash rather than a build's, so when .env says the machine is simulated and
 # names no hash, that constant is what the check can expect. A real Confidential

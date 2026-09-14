@@ -69,4 +69,3 @@ func main() {
 		logger.Fatalf("extension server error: %v", err)
 	}
 }
-

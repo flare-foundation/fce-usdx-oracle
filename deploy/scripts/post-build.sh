@@ -6,7 +6,7 @@
 # Inputs (env vars):
 #   EXT_PROXY_URL       — extension proxy URL (auto-detected: :6674 for Docker, :6684 for local)
 #   NORMAL_PROXY_URL    — normal/FTDC proxy URL (default: http://localhost:6662)
-#   CHAIN_URL           — chain RPC URL (default: http://127.0.0.1:8545)
+#   CHAIN_URL           — chain RPC URL (default: the chain's, lib/chains.sh)
 #   ADDRESSES_FILE      — path to deployed-addresses.json (auto-detected if unset)
 #   TEE_VERSION         — version string (default: v0.1.0)
 #   LOCAL_MODE          — skip attestation (default: true)
@@ -26,8 +26,13 @@ die()  { echo -e "${RED}[post-build] ERROR:${NC} $*" >&2; exit 1; }
 source "$SCRIPT_DIR/lib/env.sh"; load_env
 source "$SCRIPT_DIR/lib/chains.sh"
 
-# Auto-detect proxy port: use Docker port (6674) if ext-proxy container is running,
-# otherwise fall back to the host-process port (6684).
+# The URL registered on chain as the machine's address. On the simulation it is
+# the local stack's, detected from the port the proxy answers on (6674 for the
+# container, 6684 for host processes); on a live chain it is the public URL in
+# .env, and a guess would go on chain, so none is made.
+if [[ -z "${EXT_PROXY_URL:-}" && "${LOCAL_MODE:-true}" != true ]]; then
+    die "EXT_PROXY_URL is not set — it is registered on chain as the machine's address (the tunnel, or the remote machine's public URL); set it in .env"
+fi
 if [[ -z "${EXT_PROXY_URL:-}" ]]; then
     if docker compose -f "$PROJECT_DIR/deploy/docker-compose.yaml" ps ext-proxy --status running 2>/dev/null | grep -q ext-proxy; then
         EXT_PROXY_URL="http://localhost:6674"

@@ -59,7 +59,7 @@ The derived address becomes your `INITIAL_OWNER`. Fund it from the target chain'
 Copy `.env.example` to `.env.coston` or `.env.coston2`. Fill in:
 
 ```bash
-CHAIN=coston2                                                         # or coston
+FLARE_CHAIN=coston2                                                   # or coston
 CHAIN_URL=https://coston2-api.flare.network/ext/C/rpc                 # chain RPC
 ADDRESSES_FILE=./deploy/config/coston2/deployed-addresses.json
 NORMAL_PROXY_URL=https://tee-proxy-coston2-1.flare.rocks              # FTDC proxy
@@ -84,7 +84,7 @@ Copies `.env.<chain>` → `.env`, which all scripts auto-load.
 > For a **test deployment** on Coston or Coston2 there is a shortcut: `deploy-oracle.sh --chain
 > <chain>` deploys the same contracts deployer-governed (no production mode, no timelock, one
 > key for everything) together with the state verifier, and checks or registers the extension.
-> The deploy/README "Running on a live chain" section is that flow. The rest of this section is the
+> The deploy/README "Testing on a testnet" section is that flow. The rest of this section is the
 > production path.
 
 This repo deploys **no contracts**. The `TeeOracleInstructionsSender` and one

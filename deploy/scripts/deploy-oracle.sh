@@ -34,7 +34,7 @@
 # cast and jq.
 #
 # Usage:
-#   ./deploy/scripts/deploy-oracle.sh --chain local               # the simulation (deploy-oracle-local.sh is this)
+#   ./deploy/scripts/deploy-oracle.sh --chain local               # the simulation (deploy-oracle.sh --chain local is this)
 #   ./deploy/scripts/deploy-oracle.sh --chain coston              # deploy once, reuse if still on chain
 #   ./deploy/scripts/deploy-oracle.sh --chain coston --refresh    # redeploy
 set -euo pipefail
@@ -197,6 +197,21 @@ if [[ "$CHAIN" == "local" && -f "$ADDRS" && "$(jq -r '[.[] | select(.name=="Addr
     # against the old one is stale, so the deploy runs again.
     REFRESH=true
 fi
+# A recorded sender is reused only when it is this deployment's: deployed for
+# this extension id (immutable in the contract) and governed by this deployer,
+# who publishes through it. One left by another key or another id, as the file
+# holds after a change of deployer, is replaced.
+if [[ "$REFRESH" == "false" && -n "$SENDER" && "$(cast code "$SENDER" --rpc-url "$CHAIN_URL")" != "0x" ]]; then
+    SENDER_EXT="$(word_uint "$(eth_call "$DEPLOYER_ADDR" "$SENDER" 'extensionId()')" 2>/dev/null || echo "")"
+    SENDER_GOV="$(word_addr "$(eth_call "$DEPLOYER_ADDR" "$SENDER" 'governance()')" 2>/dev/null || echo "")"
+    if [[ "$SENDER_EXT" != "$EXTENSION_ID" ]]; then
+        log "the recorded sender $SENDER was deployed for extension ${SENDER_EXT:-?}, not $EXTENSION_ID — deploying anew"
+        REFRESH=true
+    elif [[ "$(tr '[:upper:]' '[:lower:]' <<<"$SENDER_GOV")" != "$(tr '[:upper:]' '[:lower:]' <<<"$DEPLOYER_ADDR")" ]]; then
+        log "the recorded sender $SENDER is governed by ${SENDER_GOV:-?}, not by this deployer — deploying anew"
+        REFRESH=true
+    fi
+fi
 if [[ "$REFRESH" == "false" && -n "$SENDER" && "$(cast code "$SENDER" --rpc-url "$CHAIN_URL")" != "0x" ]]; then
     log "TeeOracleInstructionsSender already on chain at $SENDER — keeping it (pass --refresh to redeploy)"
     jq '[.[] | select(.name | test("TeeOracle|FeedStore|StateVerifier"))]' "$ADDRS" > "$DEPLOY_OUT"
@@ -263,8 +278,8 @@ if [[ "$CHAIN" == "local" ]]; then
     ALREADY_SEL="$(cast sig 'ReservedExtensionIdAlreadyAssigned()')"
     eth_call "$GOV_ADDR" "$FTM" 'registerReserved(uint256,address)' "$EXTENSION_ID" "$OWNER" >/dev/null
     if [[ -z "$CALL_ERR" ]]; then
-        send_retry "$GOV_KEY" "$FTM" 'registerReserved(uint256,address)' "$EXTENSION_ID" "$OWNER" >/dev/null \
-            || die "registerReserved failed"
+        OUT="$(send_retry "$GOV_KEY" "$FTM" 'registerReserved(uint256,address)' "$EXTENSION_ID" "$OWNER")" \
+            || die "registerReserved failed:\n$OUT"
         log "extension $EXTENSION_ID reserved for $OWNER"
     elif grep -qiE "ReservedExtensionIdAlreadyAssigned|${ALREADY_SEL#0x}" <<<"$CALL_ERR"; then
         log "extension $EXTENSION_ID is already reserved — leaving it"

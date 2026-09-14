@@ -48,6 +48,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROJECT_DIR="$REPO_ROOT"
+source "$REPO_ROOT/deploy/scripts/lib/chains.sh"
 source "$REPO_ROOT/deploy/scripts/lib/env.sh"; load_env
 
 VERIFY=true
@@ -115,7 +116,7 @@ export USDXPROV_API_KEY USDXPROV_KEY USDXPROV_VALUE PROXY_URL
 echo "=== USDX oracle — upload the Hex backing credentials ==="
 
 ask PROXY_URL          "Extension proxy URL"    "http://localhost:6674"
-ask CHAIN_ID           "Chain id"               "114"
+ask CHAIN_ID           "Chain id"               "$(chain_id "$(resolve_chain "")")"
 # A machine run with SIMULATED_TEE=true attests with tee-node's fixed test code
 # hash rather than a build's, so when .env says the machine is simulated and
 # names no hash, that constant is what the check can expect. A real Confidential

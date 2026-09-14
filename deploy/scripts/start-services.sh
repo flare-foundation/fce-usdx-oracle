@@ -202,7 +202,8 @@ if [[ "$CHAIN" != local ]]; then
     # The chain's own defaults, so a .env that names only the chain is enough.
     CHAIN_URL="${CHAIN_URL:-$(chain_rpc "$CHAIN")}"
     CHAIN_ID="${CHAIN_ID:-$(chain_id "$CHAIN")}"
-    export CHAIN CHAIN_URL CHAIN_ID
+    # FLARE_CHAIN, not CHAIN, for compose and the tools: cast reads CHAIN as --chain.
+    FLARE_CHAIN="$CHAIN"; export FLARE_CHAIN CHAIN_URL CHAIN_ID
     [[ "$CHAIN_ID" == "$(chain_id "$CHAIN")" ]] \
         || die "CHAIN_ID=$CHAIN_ID in .env is not $CHAIN's ($(chain_id "$CHAIN")) — is .env the right one?"
 fi

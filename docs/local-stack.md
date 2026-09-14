@@ -236,9 +236,9 @@ LOG_LEVEL=DEBUG docker compose up -d
 
 ## Deploying to a live chain
 
-The live-chain flow is one sequence for Coston, Coston2, Songbird and Flare, and it lives in
-[deploy/README.md](../deploy/README.md#running-on-a-live-chain-coston-coston2-songbird-flare) rather than being repeated here.
-In outline, with `<chain>` any of them:
+The live-chain flow lives in [deploy/README.md](../deploy/README.md#testing-on-a-testnet-coston-coston2)
+rather than being repeated here, with every point that needs your input marked; "A remote
+machine" there is the deployment. In outline, with `<chain>` any of them:
 
 ```bash
 ./deploy/scripts/use-chain.sh <chain>                      # .env.<chain> → .env

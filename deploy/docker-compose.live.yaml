@@ -41,5 +41,5 @@ services:
 
 networks:
   default:
-    name: ${COMPOSE_NETWORK:-fce-usdx-oracle-${CHAIN:-live}}
+    name: ${COMPOSE_NETWORK:-fce-usdx-oracle-${FLARE_CHAIN:-live}}
     external: false

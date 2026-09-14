@@ -16,7 +16,7 @@
 // TeeOracleInstructionsSender entry in the addresses file (put there by
 // scripts/import-upstream-addresses.sh after the upstream deploy).
 //
-//	go run ./cmd/wire-extension -a ../deploy/config/coston2/deployed-addresses.json -c $CHAIN_URL
+//	go run ./cmd/wire-extension            # addresses and chain from .env; -a / -c override
 package main
 
 import (

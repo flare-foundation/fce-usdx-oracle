@@ -447,22 +447,22 @@
   {
     "name": "TeeOracleFeedStore",
     "contractName": "TeeOracleFeedStore.sol",
-    "address": "0xf909cBd7EE1FeAf464a7fb5DA04c0d88b2C73f15"
+    "address": "0x13C3E07d1B372882c88ab8ADFAd9dcE8AA5420A1"
   },
   {
     "name": "TeeOracleInstructionsSender",
     "contractName": "TeeOracleInstructionsSender.sol",
-    "address": "0x0eB1c4cdd2E96e5A27F3b0af0625CEA42bf3daC0"
+    "address": "0xc75E26eA824d5515017028a139cBE091e75b2EDC"
   },
   {
     "name": "UsdxFeedStore",
     "contractName": "TeeOracleFeedStore.sol",
-    "address": "0xf909cBd7EE1FeAf464a7fb5DA04c0d88b2C73f15"
+    "address": "0x13C3E07d1B372882c88ab8ADFAd9dcE8AA5420A1"
   },
   {
     "name": "UsdxTeeExtensionStateVerifier",
     "contractName": "UsdxTeeExtensionStateVerifier.sol",
-    "address": "0x5E99A61E9d86258C28e451EB513A10214a6EfE44"
+    "address": "0xAfA188cDBc47D04FEE9C42f7ee6Aa668c85E9c5c"
   },
   {
     "name": "AddressUpdater",

@@ -47,10 +47,13 @@ chain_from_id() {
 }
 
 # resolve_chain [explicit]: the chain a script works on. An explicit --chain
-# value wins; then CHAIN, which use-chain.sh writes into .env; then the CHAIN_ID
-# there; then the simulation, which is what an .env without any of them is.
+# value wins; then FLARE_CHAIN, which use-chain.sh writes into .env; then the
+# CHAIN_ID there; then the simulation, which is what an .env without any of them
+# is. The variable is not called CHAIN because the scripts export .env wholesale
+# and Foundry's cast reads CHAIN as its --chain option, where "local" or
+# "coston" is not a chain it knows and every send fails.
 resolve_chain() {
-    local c="${1:-${CHAIN:-}}"
+    local c="${1:-${FLARE_CHAIN:-}}"
     [[ -n "$c" ]] || c="$(chain_from_id "${CHAIN_ID:-}" 2>/dev/null || true)"
     [[ -n "$c" ]] || { [[ "${LOCAL_MODE:-true}" == true ]] && c=local || c=coston2; }
     echo "$c"

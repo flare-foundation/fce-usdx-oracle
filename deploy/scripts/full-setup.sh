@@ -89,7 +89,7 @@ else
         die "SIMULATED_TEE=true on $CHAIN: a mainnet registry accepts only real attestation (GCP_*). Set SIMULATED_TEE=false and MODE=0, and run the machine on a Confidential Space VM (docs/deployment-steps.md)."
     fi
 fi
-export CHAIN
+FLARE_CHAIN="$CHAIN"; export FLARE_CHAIN
 
 log "Chain: $CHAIN"
 

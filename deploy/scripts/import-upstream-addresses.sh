@@ -45,7 +45,7 @@ source "$SCRIPT_DIR_LIB/chains.sh"
 
 UPSTREAM_NETWORK="${UPSTREAM_NETWORK:-$([[ "$NETWORK" == "local" ]] && echo scdev || echo "$NETWORK")}"
 # DEPLOYS_SRC names a deploys file of the same shape written elsewhere, as
-# deploy-oracle-local.sh does for its own deploy.
+# deploy-oracle.sh --chain local does for its own deploy.
 SRC="${DEPLOYS_SRC:-$UPSTREAM/deployment/deploys/$UPSTREAM_NETWORK.json}"
 DEST="$PROJECT_DIR/deploy/config/$NETWORK/deployed-addresses.json"
 

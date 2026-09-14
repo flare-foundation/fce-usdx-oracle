@@ -2,7 +2,7 @@
 # publish-local.sh — publish SET_ENDPOINTS or SET_ADMINS through the local
 # simulation's governance timelock, end to end.
 #
-# On a sender governed by its deployer, as deploy-oracle-local.sh leaves the
+# On a sender governed by its deployer, as deploy-oracle.sh --chain local leaves the
 # simulation's, a publication is one transaction from the tools' key, and this
 # script only runs the tool. On a production-mode sender both calls are
 # governance-only, so a publication is two transactions an hour apart: governance RECORDS the call (the sender is in
@@ -36,6 +36,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/lib/chains.sh"
 source "$SCRIPT_DIR/lib/env.sh"; load_env
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -60,9 +61,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 # The default admin set is the simulation's well-known Hardhat keys, whose
-# private keys are public; off the simulation the admin set is named explicitly.
+# private keys are public. Off the simulation the default is the chain's own set,
+# deploy/config/admins/<chain>.json, which use-chain.sh writes; without one the
+# file has to be named.
 if [[ "$KIND" == admins && -z "$CONFIG" && "${LOCAL_MODE:-true}" != true ]]; then
-    die "name the admins file (deploy/config/admins/<chain>.json): the default, $DEFAULT_CONFIG, is the simulation's well-known keys"
+    CHAIN_NAME="$(resolve_chain "")"
+    CHAIN_ADMINS="$PROJECT_DIR/deploy/config/admins/$CHAIN_NAME.json"
+    [[ -f "$CHAIN_ADMINS" ]] || die "no ${CHAIN_ADMINS#$PROJECT_DIR/} — use-chain.sh $CHAIN_NAME writes it from the deployer key, or name your admins file; the default, $DEFAULT_CONFIG, is the simulation's well-known keys"
+    CONFIG="$CHAIN_ADMINS"
 fi
 CONFIG="${CONFIG:-$PROJECT_DIR/$DEFAULT_CONFIG}"
 [[ "$CONFIG" != /* ]] && CONFIG="$PROJECT_DIR/$CONFIG"
@@ -91,15 +97,18 @@ if [[ "$TOOL" == send-endpoints && -n "${HEX_CASH_URL:-}" && -z "$EXEC_FILE" ]];
 fi
 
 for t in cast jq python3 go; do command -v "$t" >/dev/null || die "$t is required"; done
-CHAIN_URL="${CHAIN_URL:-http://127.0.0.1:8545}"
+# The chain .env names (lib/chains.sh); with none, the simulation. Its RPC and
+# addresses file are the defaults for what .env leaves unset.
+CHAIN="$(resolve_chain "")"
+CHAIN_URL="${CHAIN_URL:-$(chain_rpc "$CHAIN")}"
 EXT_PROXY_URL="${EXT_PROXY_URL:-http://localhost:6674}"
 # The sender's governance signs: the simulation's governance key locally, the
 # deployer on a testnet, where deploy-oracle.sh left the contracts deployer-governed.
 GOV_KEY="${LOCAL_GOVERNANCE_KEY:-${DEPLOYMENT_PRIVATE_KEY:-}}"
 [[ -n "$GOV_KEY" ]] || die "neither LOCAL_GOVERNANCE_KEY nor DEPLOYMENT_PRIVATE_KEY is set — activate the chain's .env (use-chain.sh)"
-ADDR_FILE="${ADDRESSES_FILE:-deploy/config/local/deployed-addresses.json}"
+ADDR_FILE="${ADDRESSES_FILE:-deploy/config/$CHAIN/deployed-addresses.json}"
 [[ "$ADDR_FILE" != /* ]] && ADDR_FILE="$PROJECT_DIR/$ADDR_FILE"
-[[ -f "$ADDR_FILE" ]] || die "addresses file not found: $ADDR_FILE — run deploy-oracle-local.sh first"
+[[ -f "$ADDR_FILE" ]] || die "addresses file not found: $ADDR_FILE — run deploy-oracle.sh --chain local first"
 addr() { jq -r --arg n "$1" '[.[] | select(.name == $n) | .address][0] // empty' "$ADDR_FILE"; }
 GS="$(addr GovernanceSettings)"; GS="${GS:-0x1000000000000000000000000000000000000007}"
 GOV_ADDR="$(cast wallet address --private-key "$GOV_KEY")"
@@ -134,7 +143,7 @@ send_retry() {  # send_retry <key> <cast send args...>
     echo "$out"; return 1
 }
 
-SENDER_ADDR="$(addr TeeOracleInstructionsSender)"; [[ -n "$SENDER_ADDR" ]] || die "no TeeOracleInstructionsSender in $ADDR_FILE — run deploy-oracle-local.sh first"
+SENDER_ADDR="$(addr TeeOracleInstructionsSender)"; [[ -n "$SENDER_ADDR" ]] || die "no TeeOracleInstructionsSender in $ADDR_FILE — run deploy-oracle.sh --chain local first"
 if [[ -z "$EXEC_FILE" && "$(eth_call "$SENDER_ADDR" 'productionMode()')" == *0 ]]; then
     section "Direct publication"
     # deploy-oracle.sh leaves the sender governed by its deployer, on the
