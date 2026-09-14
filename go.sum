@@ -1,3 +1,5 @@
+filippo.io/bigmod v0.1.0 h1:UNzDk7y9ADKST+axd9skUpBQeW7fG2KrTZyOE4uGQy8=
+filippo.io/bigmod v0.1.0/go.mod h1:OjOXDNlClLblvXdwgFFOQFJEocLhhtai8vGLy0JCZlI=
 filippo.io/edwards25519 v1.1.0 h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=
 filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
 github.com/DataDog/zstd v1.4.5 h1:EndNeuB0l9syBZhut0wns3gV1hL8zX8LIu6ZiVHWLIQ=
@@ -62,10 +64,10 @@ github.com/ferranbt/fastssz v0.1.4 h1:OCDB+dYDEQDvAgtAGnTSidK1Pe2tW3nFV40XyMkTeD
 github.com/ferranbt/fastssz v0.1.4/go.mod h1:Ea3+oeoRGGLGm5shYAeDgu6PGUlcvQhE2fILyD9+tGg=
 github.com/fjl/jsonw v0.1.0 h1:V3MyR79fjLpn/+bMgvegdGUIhoJOzjmqWcKDgcOmY1I=
 github.com/fjl/jsonw v0.1.0/go.mod h1:2KMLevM6FXEJnfhtk7naXu9vZdVfOma1GlnGdPRlumU=
-github.com/flare-foundation/go-flare-common v1.2.2-0.20260623111601-c573c79c0924 h1:3H5h3idey1L6TFMJhJkxNvJRvEsSQS5mC4PGI4OUrZM=
-github.com/flare-foundation/go-flare-common v1.2.2-0.20260623111601-c573c79c0924/go.mod h1:H9I3pwQAyiOK+jC7tFHYRZa5qxDeOldW+5VpRiUs6rA=
-github.com/flare-foundation/tee-node v0.0.21-0.20260619120252-31fc839ae6d2 h1:LUU78GN2+qQd4p/Cps6OqGD5Sxyi1A1/KzNsYLhytRQ=
-github.com/flare-foundation/tee-node v0.0.21-0.20260619120252-31fc839ae6d2/go.mod h1:PRlIEYbM+EcsLpnaDYHbnNruLBy8neWxKZE7v23zn0M=
+github.com/flare-foundation/go-flare-common v1.2.2-0.20260820114858-51165807a89f h1:4fQkgwCttlfPyK4+jYVP/snMoU1OnE2BQvMxMkv12KU=
+github.com/flare-foundation/go-flare-common v1.2.2-0.20260820114858-51165807a89f/go.mod h1:H9I3pwQAyiOK+jC7tFHYRZa5qxDeOldW+5VpRiUs6rA=
+github.com/flare-foundation/tee-node v0.0.27-0.20260914073453-9c6bc46a5ee6 h1:iD91MSQUGXJ65Z/hKUGlyJyJUsUDwJYpZWTqMobQAqQ=
+github.com/flare-foundation/tee-node v0.0.27-0.20260914073453-9c6bc46a5ee6/go.mod h1:Sro66GfC+oWysa4VP5vBgBGPTTdQcOkfPc2zDkLZHSE=
 github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S9k=
 github.com/fsnotify/fsnotify v1.9.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
 github.com/gballet/go-libpcsclite v0.0.0-20190607065134-2772fd86a8ff h1:tY80oXqGNY4FhTFhk+o9oFHGINQ/+vhlm8HFzi6znCI=

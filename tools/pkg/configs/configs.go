@@ -24,6 +24,10 @@ var (
 	ExtensionProxyURL string
 	ChainNodeURL      string
 	AddressesFile     string
+	// ExtensionID is EXTENSION_ID from .env: the reserved 1 upstream's
+	// configuration uses, or the public id deploy-oracle.sh recorded when the
+	// registry minted one. The default the tools' -extensionId flags take.
+	ExtensionID string
 )
 
 func init() {
@@ -36,6 +40,7 @@ func init() {
 	ExtensionProxyURL = envOrDefault("EXT_PROXY_URL", "http://localhost:6674")
 	ChainNodeURL = envOrDefault("CHAIN_URL", "https://coston2-api.flare.network/ext/C/rpc")
 	AddressesFile = rootRelative(root, envOrDefault("ADDRESSES_FILE", "deploy/config/coston2/deployed-addresses.json"))
+	ExtensionID = envOrDefault("EXTENSION_ID", "1")
 }
 
 // projectRoot is the repository root: this file sits in tools/pkg/configs.

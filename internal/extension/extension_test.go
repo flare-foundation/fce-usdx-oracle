@@ -676,6 +676,21 @@ func doStateRequest(t *testing.T, e *Extension) []byte {
 	return rec.body
 }
 
+// decodeStateBody reads a GET /state body the way tee-node and the tools do:
+// the envelope's state field is bytes holding the JSON encoding of types.State.
+func decodeStateBody(t *testing.T, body []byte) types.State {
+	t.Helper()
+	var resp types.StateResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	state, err := types.DecodeState(resp.State)
+	if err != nil {
+		t.Fatalf("decode state bytes: %v", err)
+	}
+	return state
+}
+
 type recorder struct {
 	body   []byte
 	status int

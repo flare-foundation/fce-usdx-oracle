@@ -25,22 +25,24 @@ import (
 // (deployment/scripts/DeployTeeOracle.s.sol there), so there is nothing to
 // deploy here, only wire:
 //
-//  1. setExtensionContracts(extensionId, 0, sender) — publishes the extension's
-//     instructions sender to the diamond. The register-tee availability check
-//     dispatches through this sender, so it must land BEFORE post-build.sh.
+//  1. setExtensionContracts(extensionId, verifier, sender) — publishes the
+//     extension's instructions sender and state verifier to the diamond. The
+//     register-tee availability check dispatches through this sender, so it
+//     must land BEFORE post-build.sh; and the registry passes the machine's
+//     attested extension state through the verifier on that check, refusing an
+//     empty verifier address unless the state is empty too. tee-node reports
+//     the extension's state, so the verifier (UsdxTeeExtensionStateVerifier,
+//     deployed from contracts/) is required for any machine to reach production.
 //  2. AddAllowedTeeMachineOwners — registerTee reverts NotAllowedExtensionOwner
 //     for a machine whose owner is not on this list.
 //  3. addSupportedKeyTypes([EVM]) — parity with what register() did for
 //     minted (non-reserved) extensions.
 //
-// The state verifier is set to zero: the TEE oracle extension verifies state
-// through the feed store's commitment checks, not a diamond-side verifier.
-//
 // Every step is idempotent — a re-run against an already-wired extension is a
 // sequence of no-ops, so a failure partway through is fixed by re-running.
 func WireReservedExtension(
 	s *support.Support, privKey *ecdsa.PrivateKey,
-	extensionId *big.Int, instructionsSender common.Address,
+	extensionId *big.Int, instructionsSender, stateVerifier common.Address,
 ) error {
 	owner := crypto.PubkeyToAddress(privKey.PublicKey)
 	callOpts := &bind.CallOpts{From: owner, Context: context.Background()}
@@ -69,25 +71,35 @@ func WireReservedExtension(
 		return errors.Errorf("%s", err)
 	}
 
-	// Step 1: publish the instructions sender. The state verifier stays zero.
+	// Step 1: publish the instructions sender and the state verifier. One call
+	// sets both, so either differing means a new call.
 	currentSender, err := s.TeeExtensionRegistry.GetTeeExtensionInstructionsSender(callOpts, extensionId)
 	if err != nil {
 		return errors.Errorf("reading the current instructions sender: %s", err)
 	}
-	if currentSender == instructionsSender {
-		logger.Infof("Instructions sender already set to %s, skipping", instructionsSender.Hex())
+	currentVerifier, err := s.TeeExtensionRegistry.GetTeeExtensionStateVerifier(callOpts, extensionId)
+	if err != nil {
+		return errors.Errorf("reading the current state verifier: %s", err)
+	}
+	if currentSender == instructionsSender && currentVerifier == stateVerifier {
+		logger.Infof("Instructions sender already %s and state verifier already %s, skipping",
+			instructionsSender.Hex(), stateVerifier.Hex())
 	} else {
-		if currentSender != (common.Address{}) {
+		if currentSender != (common.Address{}) && currentSender != instructionsSender {
 			logger.Infof("Replacing instructions sender %s with %s", currentSender.Hex(), instructionsSender.Hex())
 		}
-		tx, txErr := s.TeeExtensionRegistry.SetExtensionContracts(opts, extensionId, common.Address{}, instructionsSender)
+		if currentVerifier != stateVerifier {
+			logger.Infof("Setting state verifier %s (was %s)", stateVerifier.Hex(), currentVerifier.Hex())
+		}
+		tx, txErr := s.TeeExtensionRegistry.SetExtensionContracts(opts, extensionId, stateVerifier, instructionsSender)
 		if txErr != nil {
 			return errors.Errorf("SetExtensionContracts failed: %s", txErr)
 		}
 		if _, txErr = support.CheckTx(tx, s.ChainClient); txErr != nil {
 			return errors.Errorf("%s", txErr)
 		}
-		logger.Infof("Instructions sender set to %s (tx %s)", instructionsSender.Hex(), tx.Hash().Hex())
+		logger.Infof("Extension contracts set: sender %s, state verifier %s (tx %s)",
+			instructionsSender.Hex(), stateVerifier.Hex(), tx.Hash().Hex())
 	}
 
 	// Step 2: allow the owner to register TEE machines for this extension.

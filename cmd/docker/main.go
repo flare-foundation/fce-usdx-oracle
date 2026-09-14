@@ -7,7 +7,6 @@ package main
 import (
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -18,9 +17,14 @@ import (
 	extserver "fce-usdx-oracle/pkg/server"
 )
 
-func main() {
-	configPort := intEnv("CONFIG_PORT", 5501)
+// configPort is where tee-node's configuration server listens. Fixed rather
+// than configurable, for tee-node's own reason for fixing its port: the
+// Confidential Space launch policy enumerates the environment variables an
+// operator may override, this is not one of them, so a deployment could never
+// change it in production anyway. The Dockerfile's EXPOSE names the same port.
+const configPort = 5501
 
+func main() {
 	// config.SignPort and config.ExtensionPort are set from SIGN_PORT and
 	// EXTENSION_PORT env vars via config.init().
 	signPort := config.SignPort
@@ -65,9 +69,3 @@ func main() {
 	}
 }
 
-func intEnv(key string, fallback int) int {
-	if v, err := strconv.Atoi(os.Getenv(key)); err == nil {
-		return v
-	}
-	return fallback
-}

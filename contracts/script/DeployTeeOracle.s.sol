@@ -16,28 +16,35 @@ import {ITeeOracleFeedStore} from
     "flare-smart-contracts-v2/userInterfaces/tee/ITeeOracleFeedStore.sol";
 import {ITeeOracleInstructionsSender} from
     "flare-smart-contracts-v2/userInterfaces/tee/ITeeOracleInstructionsSender.sol";
+import {UsdxTeeExtensionStateVerifier} from "../src/UsdxTeeExtensionStateVerifier.sol";
 
 /**
- * Deploys the TEE oracle contracts on the local simulation the way upstream's
- * deployment/scripts/DeployTeeOracle.s.sol does, minus its last step: the sender
- * and the feed store stay governed by the deployer instead of being switched to
- * production mode, so a publication executes in the transaction that submits it
- * rather than after GovernanceSettings' timelock. Production mode is one-way, so
- * this is a deploy-time choice, and it is only ever made for the simulation.
+ * Deploys the TEE oracle contracts deployer-governed: the way upstream's
+ * deployment/scripts/DeployTeeOracle.s.sol deploys them, minus its last step.
+ * The sender and the feed store stay governed by the deployer instead of being
+ * switched to production mode, so a publication executes in the transaction
+ * that submits it rather than after GovernanceSettings' timelock, and the
+ * deployer alone runs the whole flow. Production mode is one-way, so this is a
+ * deploy-time choice, made for the simulation and for test deployments on a
+ * testnet; a production deployment uses upstream's script.
  *
- * Everything else matches upstream's configuration for this network
- * (deployment/chain-config/scdev.json): the reserved extension id, the USDX/USD
- * feed with its submission policy, and the fee destination. The contracts are
- * upstream's own sources, compiled from the sibling checkout.
+ * Everything else matches upstream's configuration (deployment/chain-config):
+ * the USDX/USD feed with its submission policy and the fee destination. The
+ * extension id comes from the environment, since a test deployment may run
+ * under a public id the registry minted rather than the reserved 1. The
+ * contracts are upstream's own sources, compiled from the sibling checkout,
+ * plus this repository's one contract, the extension's state verifier, which the
+ * registry consults on every availability check now that tee-node reports the
+ * extension's state.
  *
- * Inputs come from the environment, set by deploy/scripts/deploy-oracle-local.sh:
- * DEPLOYER_PRIVATE_KEY, and the simulation's GOVERNANCE_SETTINGS, ADDRESS_UPDATER,
- * FLARE_TEE_MANAGER, FDC2_VERIFICATION and FEE_CALCULATOR addresses. The output
- * is the "DEPLOYED: <name>, <contract>: <address>" lines upstream's script prints,
- * which the shell turns into the addresses file.
+ * Inputs come from the environment, set by deploy/scripts/deploy-oracle.sh:
+ * DEPLOYER_PRIVATE_KEY, EXTENSION_ID (default 1), and the network's
+ * GOVERNANCE_SETTINGS, ADDRESS_UPDATER, FLARE_TEE_MANAGER, FDC2_VERIFICATION and
+ * FEE_CALCULATOR addresses. The output is the "DEPLOYED: <name>, <contract>:
+ * <address>" lines upstream's script prints, which the shell turns into the
+ * addresses file.
  */
-contract DeployTeeOracleLocal is Script {
-    uint256 internal constant EXTENSION_ID = 1;
+contract DeployTeeOracle is Script {
     string internal constant FEED_REGISTRY_NAME = "UsdxFeedStore";
     uint8 internal constant FEED_CATEGORY = 0x20;
     bytes20 internal constant FEED_NAME = bytes20("USDX/USD");
@@ -48,6 +55,7 @@ contract DeployTeeOracleLocal is Script {
 
     function run() external {
         address deployer = vm.addr(vm.envUint("DEPLOYER_PRIVATE_KEY"));
+        uint256 extensionId = vm.envOr("EXTENSION_ID", uint256(1));
         address governanceSettings = vm.envAddress("GOVERNANCE_SETTINGS");
         address addressUpdater = vm.envAddress("ADDRESS_UPDATER");
         address flareTeeManager = vm.envAddress("FLARE_TEE_MANAGER");
@@ -76,7 +84,7 @@ contract DeployTeeOracleLocal is Script {
                     IGovernanceSettings(governanceSettings),
                     deployer,
                     deployer,
-                    EXTENSION_ID,
+                    extensionId,
                     address(senderImpl)
                 )
             )
@@ -126,6 +134,13 @@ contract DeployTeeOracleLocal is Script {
         storeAddrs[1] = fdc2Verification;
         storeAddrs[2] = feeCalculator;
         store.updateContractAddresses(storeNames, storeAddrs);
+
+        // The extension owner publishes this address with setExtensionContracts
+        // (tools/cmd/wire-extension reads it from the addresses file).
+        UsdxTeeExtensionStateVerifier verifier = new UsdxTeeExtensionStateVerifier();
+        _logDeployed(
+            "UsdxTeeExtensionStateVerifier", "UsdxTeeExtensionStateVerifier", address(verifier)
+        );
 
         vm.stopBroadcast();
     }

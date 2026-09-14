@@ -528,7 +528,7 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 			ID:      "S7",
 			Name:    "port configuration",
 			Status:  PASS,
-			Message: "using defaults (standalone: 8080/9090, Docker: 7702/7701)",
+			Message: "using the defaults (extension 7702, sign 7701; host stack: 7722/7721)",
 		})
 	}
 

@@ -5,8 +5,9 @@
 // It makes three direct owner calls on the FlareTeeManager diamond, each
 // idempotent:
 //
-//  1. setExtensionContracts(extensionId, 0, sender) — register-tee's
-//     availability check dispatches through this sender, so run this BEFORE
+//  1. setExtensionContracts(extensionId, verifier, sender) — register-tee's
+//     availability check dispatches through this sender and passes the
+//     machine's attested state through this verifier, so run this BEFORE
 //     post-build.sh.
 //  2. AddAllowedTeeMachineOwners(extensionId, [owner])
 //  3. addSupportedKeyTypes(extensionId, [EVM])
@@ -36,10 +37,14 @@ import (
 func main() {
 	af := flag.String("a", configs.AddressesFile, "file with deployed addresses")
 	cf := flag.String("c", configs.ChainNodeURL, "chain node url")
-	extensionIDF := flag.String("extensionId", "1", "reserved extension id to wire")
+	extensionIDF := flag.String("extensionId", configs.ExtensionID, "extension id to wire (default: EXTENSION_ID from .env)")
 	senderF := flag.String("sender", "",
 		"TeeOracleInstructionsSender address (default: the TeeOracleInstructionsSender "+
 			"entry in the addresses file)")
+	verifierF := flag.String("stateVerifier", "",
+		"UsdxTeeExtensionStateVerifier address (default: the UsdxTeeExtensionStateVerifier "+
+			"entry in the addresses file); the registry passes every machine's attested state "+
+			"through it, so without one no machine reaches production")
 	flag.Parse()
 
 	extensionID, ok := new(big.Int).SetString(*extensionIDF, 0)
@@ -51,6 +56,12 @@ func main() {
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("resolving the instructions sender: %s — run "+
 			"scripts/import-upstream-addresses.sh after the upstream deploy, or pass -sender", err))
+	}
+	verifierAddr, err := configs.ResolveContract(*verifierF, *af, "UsdxTeeExtensionStateVerifier")
+	if err != nil {
+		fccutils.FatalWithCause(errors.Errorf("resolving the state verifier: %s — deploy it "+
+			"(deploy-oracle-local.sh on the simulation; contracts/script/DeployStateVerifier.s.sol "+
+			"elsewhere) and add its address to the addresses file, or pass -stateVerifier", err))
 	}
 
 	testSupport, err := support.DefaultSupport(*af, *cf)
@@ -75,8 +86,9 @@ func main() {
 	logger.Infof("Using key: %s (owner: %s)", keySource, crypto.PubkeyToAddress(privKey.PublicKey).Hex())
 	logger.Infof("Extension id:        %s", extensionID.String())
 	logger.Infof("Instructions sender: %s", senderAddr.Hex())
+	logger.Infof("State verifier:      %s", verifierAddr.Hex())
 
-	if err := fccutils.WireReservedExtension(testSupport, privKey, extensionID, senderAddr); err != nil {
+	if err := fccutils.WireReservedExtension(testSupport, privKey, extensionID, senderAddr, verifierAddr); err != nil {
 		fccutils.FatalWithCause(err)
 	}
 

@@ -1,6 +1,6 @@
 {
   "name": "12-get-state",
-  "description": "GET /state returns bytes32 stateVersion and operational state only. Two successes and one rejected payload have accumulated by now, and the error class from fixture 03 is still the last one recorded. This is a whole-body exact match on purpose: spec \u00a74.1 makes /state public and attested, so an accidentally added field carrying a supply or reserve figure must fail the suite rather than slip through.",
+  "description": "GET /state returns bytes32 stateVersion and the operational state as bytes: the JSON encoding of the extension's State, hex-encoded, because tee-node decodes this body as its own TeeState and carries the bytes into the attested info the proxy republishes. Two successes and one rejected payload have accumulated by now, and the error class from fixture 03 is still the last one recorded. This is a whole-body exact match on purpose: spec §4.1 makes /state public and attested, so an accidentally added field carrying a supply or reserve figure must fail the suite rather than slip through. Decoded, the bytes read: {\"readiness\":{\"endpointsSet\":false,\"endpointsHash\":\"\",\"adminsSet\":false,\"adminsHash\":\"\",\"ready\":false,\"missingSecretRefs\":[]},\"lastPrice\":\"100000000\",\"lastDecimals\":8,\"lastObservedAt\":1700000000,\"updateCount\":2,\"failureCount\":1,\"lastErrorClass\":\"source_invalid\",\"sourceHealth\":{}}",
   "request": {
     "method": "GET",
     "path": "/state"
@@ -9,23 +9,7 @@
     "status": 200,
     "json": {
       "stateVersion": "0x302e312e30000000000000000000000000000000000000000000000000000000",
-      "state": {
-        "readiness": {
-          "endpointsSet": false,
-          "endpointsHash": "",
-          "adminsSet": false,
-          "adminsHash": "",
-          "ready": false,
-          "missingSecretRefs": []
-        },
-        "lastPrice": "100000000",
-        "lastDecimals": 8,
-        "lastObservedAt": 1700000000,
-        "updateCount": 2,
-        "failureCount": 1,
-        "lastErrorClass": "source_invalid",
-        "sourceHealth": {}
-      }
+      "state": "0x7b226c6173745072696365223a22313030303030303030222c226c617374446563696d616c73223a382c226c6173744f627365727665644174223a313730303030303030302c22757064617465436f756e74223a322c226661696c757265436f756e74223a312c226c6173744572726f72436c617373223a22736f757263655f696e76616c6964222c2272656164696e657373223a7b22656e64706f696e7473536574223a66616c73652c22656e64706f696e747348617368223a22222c2261646d696e73536574223a66616c73652c2261646d696e7348617368223a22222c227265616479223a66616c73652c226d697373696e6753656372657452656673223a5b5d7d2c22736f757263654865616c7468223a7b7d7d"
     }
   }
 }

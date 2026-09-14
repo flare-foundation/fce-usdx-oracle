@@ -30,7 +30,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -325,40 +324,17 @@ func shortOrNone(h string) string {
 // fetchEndpointsHash reads the active config hash the machine publishes on
 // GET /state, republished inside the proxy's GET /info.
 func fetchEndpointsHash(proxyURL string) (string, error) {
-	resp, err := http.Get(strings.TrimRight(proxyURL, "/") + "/info")
+	raw, err := fccutils.ReadExtensionState(proxyURL)
 	if err != nil {
-		return "", errors.Errorf("querying the proxy: %s", err)
+		return "", err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", errors.Errorf("proxy returned %d", resp.StatusCode)
+	var state struct {
+		Readiness struct {
+			EndpointsHash string `json:"endpointsHash"`
+		} `json:"readiness"`
 	}
-
-	var info struct {
-		TeeInfo struct {
-			State struct {
-				State hexutil.Bytes `json:"state"`
-			} `json:"state"`
-		} `json:"teeInfo"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return "", errors.Errorf("decoding /info: %s", err)
-	}
-
-	if len(info.TeeInfo.State.State) == 0 {
-		return "", fccutils.ErrNoAttestedState
-	}
-
-	var body struct {
-		State struct {
-			Readiness struct {
-				EndpointsHash string `json:"endpointsHash"`
-			} `json:"readiness"`
-		} `json:"state"`
-	}
-	if err := json.Unmarshal(info.TeeInfo.State.State, &body); err != nil {
+	if err := json.Unmarshal(raw, &state); err != nil {
 		return "", errors.Errorf("decoding the extension state: %s", err)
 	}
-	return body.State.Readiness.EndpointsHash, nil
+	return state.Readiness.EndpointsHash, nil
 }

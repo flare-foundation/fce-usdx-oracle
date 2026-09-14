@@ -2,12 +2,17 @@
 package types
 
 import (
+	"encoding/json"
+	"errors"
+
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
-// State is PUBLIC: tee-node polls GET /state, folds it into TEEState.state, and
-// the proxy republishes it at GET /info. Nothing here may carry raw supply
-// figures, reserve components, API responses, credentials or endpoint URLs.
+// State is PUBLIC: tee-node reads GET /state on every TEE info request, carries
+// it as TeeState.State, and the proxy republishes it at GET /info. Nothing here
+// may carry raw supply figures, reserve components, API responses, credentials
+// or endpoint URLs.
 type State struct {
 	LastPrice    string `json:"lastPrice"`
 	LastDecimals int8   `json:"lastDecimals"`
@@ -91,10 +96,36 @@ type ReadinessReport struct {
 	ChainID uint64 `json:"chainId"`
 }
 
-// --- DO NOT MODIFY below this line. ---
+// --- DO NOT MODIFY below this line: this is the shape tee-node decodes. ---
 
-// StateResponse is the envelope returned by GET /state.
+// StateResponse is the envelope returned by GET /state. It is the extension
+// half of tee-node's TeeState: tee-node decodes this body as that type, takes
+// State and StateVersion, and carries them opaquely into the attested TEE info.
+// State is therefore bytes, not an object; they hold the JSON encoding of State
+// (EncodeState), and StateVersion names that schema.
 type StateResponse struct {
-	StateVersion common.Hash `json:"stateVersion"`
-	State        State       `json:"state"`
+	StateVersion common.Hash   `json:"stateVersion"`
+	State        hexutil.Bytes `json:"state"`
+}
+
+// EncodeState returns the bytes StateResponse.State carries for s.
+func EncodeState(s State) (hexutil.Bytes, error) {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	return hexutil.Bytes(b), nil
+}
+
+// DecodeState reverses EncodeState. Consumers read the bytes out of the proxy's
+// /info (teeInfo.state.state), where tee-node placed them.
+func DecodeState(b hexutil.Bytes) (State, error) {
+	if len(b) == 0 {
+		return State{}, errors.New("empty state")
+	}
+	var s State
+	if err := json.Unmarshal(b, &s); err != nil {
+		return State{}, err
+	}
+	return s, nil
 }

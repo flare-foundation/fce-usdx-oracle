@@ -27,23 +27,30 @@ func (e *Extension) stateHandler(w http.ResponseWriter, r *http.Request) {
 	for k, v := range e.sourceHealth {
 		health[k] = v
 	}
-	stateResponse := types.StateResponse{
-		StateVersion: teeutils.ToHash(config.Version),
-		State: types.State{
-			LastPrice:      e.lastPrice,
-			LastDecimals:   e.lastDecimals,
-			LastObservedAt: e.lastObservedAt,
-			UpdateCount:    e.updateCount,
-			FailureCount:   e.failureCount,
-			LastErrorClass: string(e.lastErrorClass),
-			Readiness:      readiness,
-			SourceHealth:   health,
-		},
+	state := types.State{
+		LastPrice:      e.lastPrice,
+		LastDecimals:   e.lastDecimals,
+		LastObservedAt: e.lastObservedAt,
+		UpdateCount:    e.updateCount,
+		FailureCount:   e.failureCount,
+		LastErrorClass: string(e.lastErrorClass),
+		Readiness:      readiness,
+		SourceHealth:   health,
 	}
 	e.mu.RUnlock()
 
-	err := json.NewEncoder(w).Encode(stateResponse)
+	// Bytes, not an object: tee-node decodes this body as its TeeState and
+	// carries State opaquely into the attested info the proxy republishes.
+	encoded, err := types.EncodeState(state)
 	if err != nil {
+		http.Error(w, fmt.Sprintf("encoding state: %v", err), http.StatusInternalServerError)
+		return
+	}
+	stateResponse := types.StateResponse{
+		StateVersion: teeutils.ToHash(config.Version),
+		State:        encoded,
+	}
+	if err := json.NewEncoder(w).Encode(stateResponse); err != nil {
 		http.Error(w, fmt.Sprintf("sending response: %v", err), http.StatusInternalServerError)
 		return
 	}

@@ -184,7 +184,10 @@ func main() {
 	}()
 	logger.Infof("extension proxy starting from %s", rendered)
 
-	if err := waitForURL(ctx, proxyURL+"/info", 60*time.Second); err != nil {
+	// The proxy first waits for the chain indexer's database to be within a
+	// minute of the chain, sleeping between checks, so on a testnet its first
+	// answer can be minutes away; start-services.sh checks the lag up front.
+	if err := waitForURL(ctx, proxyURL+"/info", 5*time.Minute); err != nil {
 		terminate(tee, teeExit)
 		logger.Fatalf("proxy did not come up: %v", err)
 	}

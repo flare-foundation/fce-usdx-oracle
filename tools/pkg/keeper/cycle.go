@@ -22,13 +22,13 @@ import (
 	"time"
 
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
+	"fce-usdx-oracle/tools/pkg/fccutils"
 	"fce-usdx-oracle/tools/pkg/feedupdate"
 	"fce-usdx-oracle/tools/pkg/support"
 	instrutils "fce-usdx-oracle/tools/pkg/utils"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
@@ -532,36 +532,17 @@ func fetchResult(
 // Best-effort: nil means the proxy could not be read, never "the sources are
 // fine". Stale "ok" values persist if requests stop — alert on feed age instead.
 func sourceHealth(proxyURL string) map[string]string {
-	resp, err := http.Get(strings.TrimRight(proxyURL, "/") + "/info")
+	raw, err := fccutils.ReadExtensionState(proxyURL)
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
-
-	// TeeState.State carries the extension's GET /state body as hex bytes.
-	var info struct {
-		TeeInfo struct {
-			State struct {
-				State hexutil.Bytes `json:"state"`
-			} `json:"state"`
-		} `json:"teeInfo"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil
-	}
-
 	var state struct {
-		State struct {
-			SourceHealth map[string]string `json:"sourceHealth"`
-		} `json:"state"`
+		SourceHealth map[string]string `json:"sourceHealth"`
 	}
-	if err := json.Unmarshal(info.TeeInfo.State.State, &state); err != nil {
+	if err := json.Unmarshal(raw, &state); err != nil {
 		return nil
 	}
-	return state.State.SourceHealth
+	return state.SourceHealth
 }
 
 // storeObservedAt reads the store's current stamp. Best-effort: it is a

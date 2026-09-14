@@ -28,7 +28,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -41,7 +40,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/pkg/errors"
 )
 
@@ -205,45 +203,28 @@ func buildReport(
 }
 
 func liveState(proxyURL string, m *Machine) {
-	// TeeState.State carries the extension's GET /state body as hex bytes.
-	resp, err := http.Get(proxyURL + "/info")
+	// The extension's State, as tee-node carries it in the attested info.
+	raw, err := fccutils.ReadExtensionState(proxyURL)
 	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return
-	}
-
-	var info struct {
-		TeeInfo struct {
-			State struct {
-				State hexutil.Bytes `json:"state"`
-			} `json:"state"`
-		} `json:"teeInfo"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return
 	}
 
 	var state struct {
-		State struct {
-			Readiness struct {
-				EndpointsHash string `json:"endpointsHash"`
-				AdminsHash    string `json:"adminsHash"`
-				Ready         bool   `json:"ready"`
-			} `json:"readiness"`
-			SourceHealth map[string]string `json:"sourceHealth"`
-		} `json:"state"`
+		Readiness struct {
+			EndpointsHash string `json:"endpointsHash"`
+			AdminsHash    string `json:"adminsHash"`
+			Ready         bool   `json:"ready"`
+		} `json:"readiness"`
+		SourceHealth map[string]string `json:"sourceHealth"`
 	}
-	if err := json.Unmarshal(info.TeeInfo.State.State, &state); err != nil {
+	if err := json.Unmarshal(raw, &state); err != nil {
 		return
 	}
 
-	m.LiveEndpointsHash = state.State.Readiness.EndpointsHash
-	m.LiveAdminsHash = state.State.Readiness.AdminsHash
-	m.LiveReady = state.State.Readiness.Ready
-	m.SourceHealth = state.State.SourceHealth
+	m.LiveEndpointsHash = state.Readiness.EndpointsHash
+	m.LiveAdminsHash = state.Readiness.AdminsHash
+	m.LiveReady = state.Readiness.Ready
+	m.SourceHealth = state.SourceHealth
 }
 
 func teestatus(s uint8) string {

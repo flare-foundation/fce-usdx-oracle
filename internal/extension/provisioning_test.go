@@ -335,19 +335,16 @@ func TestState_ReportsReadiness(t *testing.T) {
 	})
 
 	rr := doStateRequest(t, e)
-	var resp types.StateResponse
-	if err := json.Unmarshal(rr, &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	state := decodeStateBody(t, rr)
 
-	if !resp.State.Readiness.EndpointsSet {
+	if !state.Readiness.EndpointsSet {
 		t.Error("endpointsSet should be reported")
 	}
-	if resp.State.Readiness.Ready {
+	if state.Readiness.Ready {
 		t.Error("ready should be false")
 	}
-	if len(resp.State.Readiness.MissingRefs) != 1 {
-		t.Errorf("missing refs = %v", resp.State.Readiness.MissingRefs)
+	if len(state.Readiness.MissingRefs) != 1 {
+		t.Errorf("missing refs = %v", state.Readiness.MissingRefs)
 	}
 }
 
@@ -369,12 +366,9 @@ func TestState_ReadinessNamesRefsNotValues(t *testing.T) {
 		t.Errorf("state leaks a secret value: %s", body)
 	}
 
-	var resp types.StateResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	state := decodeStateBody(t, body)
 	// Refs must be identifiers, not URLs or values.
-	for _, ref := range resp.State.Readiness.MissingRefs {
+	for _, ref := range state.Readiness.MissingRefs {
 		if strings.Contains(ref, "://") || strings.Contains(ref, " ") {
 			t.Errorf("ref %q does not look like an identifier", ref)
 		}
