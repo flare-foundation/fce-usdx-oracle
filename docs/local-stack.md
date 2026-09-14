@@ -175,7 +175,7 @@ container via Docker Compose.
 
 | Port | Service | Purpose |
 |------|---------|---------|
-| 5501 | TEE config | Set proxy URL, initial owner, extension ID |
+| 5500 | TEE config | Set proxy URL, initial owner, extension ID |
 | chosen per run | Redis | Host-side debug binding for the proxy's queue; `start-services.sh` picks a free port each run, prints it and records it in `deploy/config/extension.env` (`REDIS_BIND` overrides) |
 | 6673 | Proxy internal | TEE polls actions from the proxy queue |
 | 6674 | Proxy external | Clients query results, `/info` endpoint |

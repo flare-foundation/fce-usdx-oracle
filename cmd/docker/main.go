@@ -21,8 +21,9 @@ import (
 // than configurable, for tee-node's own reason for fixing its port: the
 // Confidential Space launch policy enumerates the environment variables an
 // operator may override, this is not one of them, so a deployment could never
-// change it in production anyway. The Dockerfile's EXPOSE names the same port.
-const configPort = 5501
+// change it in production anyway. The value is tee-node's own (settings.ConfigPort),
+// and the Dockerfile's EXPOSE names the same port.
+const configPort = 5500
 
 func main() {
 	// config.SignPort and config.ExtensionPort are set from SIGN_PORT and

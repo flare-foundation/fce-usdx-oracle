@@ -264,7 +264,7 @@ An extension implementation itself only needs to read `EXTENSION_PORT` and `SIGN
 ### Ports
 
 ```dockerfile
-EXPOSE 5501
+EXPOSE 5500
 ```
 
 Only tee-node's configuration port is declared. Confidential Space opens every `EXPOSE`d port in

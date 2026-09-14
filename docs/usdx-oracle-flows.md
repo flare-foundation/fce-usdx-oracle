@@ -30,7 +30,7 @@ ext-proxy (tee-proxy)
   :6664 external → host 6674    PUBLIC: /info, /action/result/<id>, /direct
 
 extension-tee ── one process, built from cmd/docker
-  tee-node       :5501 config, :7701 POST /sign + POST /decrypt
+  tee-node       :5500 config, :7701 POST /sign + POST /decrypt
                  polls the proxy for actions → POSTs them to :7702
                  polls GET :7702/state → folds it into the attested state
   extension      :7702 POST /action, GET /state

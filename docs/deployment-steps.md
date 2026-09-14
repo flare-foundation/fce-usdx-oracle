@@ -186,7 +186,7 @@ docker inspect <your-extension>:v0.1.0 --format '{{range .Config.Env}}{{println 
 docker inspect <your-extension>:v0.1.0 --format '{{index .Config.Labels "tee.launch_policy.allow_env_override"}}'
 # MODE must NOT appear in this list
 docker inspect <your-extension>:v0.1.0 --format '{{json .Config.ExposedPorts}}'
-# {"5501/tcp":{}} — Confidential Space opens every exposed port in the VM firewall;
+# {"5500/tcp":{}} — Confidential Space opens every exposed port in the VM firewall;
 # the sign server and the extension's /action bind loopback and must not be listed
 ```
 

@@ -78,6 +78,6 @@ USER 0:0
 # same launch policy and exposed ports as the production Dockerfile
 LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,CHAIN_ID,GOVERNANCE_SIGNERS,GOVERNANCE_THRESHOLD,SIGN_PORT,EXTENSION_PORT"
 
-EXPOSE 5501
+EXPOSE 5500
 
 CMD ["/app/extension-tee"]
