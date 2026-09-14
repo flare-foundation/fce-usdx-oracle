@@ -1,0 +1,45 @@
+# Docker Compose overlay for any live network: Coston, Coston2, Songbird, Flare.
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.live.yaml up -d
+#   (start-services.sh --chain <chain> does this, with the variables below set
+#   from the chain's row in scripts/lib/chains.sh and .env)
+#
+# Nothing here is chain-specific: the chain id and RPC come from the
+# environment, and the proxy's configuration is the copy start-services.sh
+# renders per run from config/proxy/extension_proxy.live.toml with the chain's
+# addresses, its indexer database and this run's redis (PROXY_CONFIG_FILE, the
+# variable the base file's ext-proxy volume already reads).
+#
+# The proxy reads signing policies from the chain's C-chain indexer, which
+# docker-compose.<chain>-indexer.yaml runs. That stack is started separately and
+# start-services.sh refuses to start against one that is behind the chain, so
+# there is no depends_on across the two files.
+services:
+  ext-proxy:
+    environment:
+      # The live proxy configuration enables [direct] with
+      # api_key_variable = "DIRECT_API_KEY", so the proxy refuses to start
+      # without it rather than exposing an unauthenticated /direct on the
+      # public external port.
+      - DIRECT_API_KEY=${DIRECT_API_KEY:?direct mode is enabled on a live network — set DIRECT_API_KEY in .env (openssl rand -hex 32)}
+      # The proxy's signing key is the machine's; the well-known simulation
+      # default is refused on a live network.
+      - PROXY_PRIVATE_KEY=${PROXY_PRIVATE_KEY:?set PROXY_PRIVATE_KEY in .env — the proxy signs for the machine with it}
+
+  extension-tee:
+    environment:
+      - CHAIN_URL=${CHAIN_URL:?set CHAIN_URL in .env — the chain the node reads and signs for}
+      # The node binds every signature to this chain id; it must match the
+      # proxy's chain_id and the on-chain registry, or signature verification
+      # fails (InvalidTeePublicKeyOrSignature / proxy panic).
+      - CHAIN_ID=${CHAIN_ID:?set CHAIN_ID in .env — 16 Coston, 114 Coston2, 19 Songbird, 14 Flare}
+      # Attestation: simulated on a testnet that accepts TEST_PLATFORM, real on
+      # a mainnet. .env decides; the image itself bakes MODE=0.
+      - MODE=${MODE:-1}
+      - SIMULATED_TEE=${SIMULATED_TEE:-true}
+
+networks:
+  default:
+    name: ${COMPOSE_NETWORK:-fce-usdx-oracle-${CHAIN:-live}}
+    external: false

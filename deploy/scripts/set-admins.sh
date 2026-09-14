@@ -24,9 +24,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/lib/env.sh"
 
 CONFIG="${1:-$PROJECT_DIR/deploy/config/admins/dev-wellknown-keys.json}"
-PORT="${2:-${EXTENSION_PORT:-8080}}"
+PORT="${2:-${EXTENSION_PORT:-7702}}"
 VERSION="${ADMINS_VERSION:-1}"
 [[ "$CONFIG" != /* ]] && CONFIG="$PROJECT_DIR/$CONFIG"
 
@@ -87,7 +88,14 @@ LOG="$(echo "$RESP" | jq -r '.log // "?"')"
 
 echo ""
 echo "Readiness:"
-curl -sS "http://127.0.0.1:$PORT/state" | jq '.state.readiness'
+# Read through the node, as every consumer does: mocknode folds the dev
+# server's GET /state into its /info the way tee-node does.
+INFO_URL="${INFO_URL:-http://127.0.0.1:${SIGN_PORT:-7701}}"
+if STATE="$(read_machine_state "$INFO_URL")"; then
+    jq '.readiness' <<<"$STATE"
+else
+    echo "  (no state readable through the node at $INFO_URL — is mocknode running with EXTENSION_PORT=$PORT?)"
+fi
 
 if [[ "$STATUS" == "1" ]]; then
     echo -e "${GREEN}accepted${NC}"

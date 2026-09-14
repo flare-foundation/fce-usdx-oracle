@@ -30,7 +30,7 @@ usage() {
 use-chain.sh — Activate a chain-specific .env file.
 
 Usage:
-  $SCRIPT_NAME <chain>       Copy .env.<chain> → .env (local, coston, coston2).
+  $SCRIPT_NAME <chain>       Copy .env.<chain> → .env (local, coston, coston2, songbird, flare).
   $SCRIPT_NAME --list        List available .env.<chain> files.
   $SCRIPT_NAME -h | --help   Show this help.
 
@@ -112,6 +112,9 @@ HEX_CASH_SALT_V="$(carry HEX_CASH_SALT)"
 # --- Swap ---
 
 cp "$SRC" "$DST" || die "failed to copy $SRC → $DST"
+# The scripts resolve the chain from this name (scripts/lib/chains.sh); pinned
+# here so a .env.<chain> that predates the variable still names its chain.
+grep -qE '^CHAIN=' "$DST" || printf '\n# The chain this file targets, pinned by use-chain.sh.\nCHAIN=%s\n' "$CHAIN" >> "$DST"
 log "active chain: $CHAIN"
 
 if [[ "$KEEP_HEX" == true ]]; then

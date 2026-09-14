@@ -33,7 +33,8 @@
 #
 #   PROXY_URL          extension proxy base URL
 #   CHAIN_ID           target chain id (Coston2 = 114, Flare = 14)
-#   EXPECTED_CODE_HASH the build you expect, obtained OUT OF BAND
+#   EXPECTED_CODE_HASH the build you expect, obtained OUT OF BAND (a SIMULATED_TEE=true
+#                      machine defaults to tee-node's test constant)
 #   USDXPROV_KEYS      provider admin private keys held HERE, comma-separated
 #                      (USDXPROV_KEY is accepted as the single-key form)
 #   USDXPROV_API_KEY   proxy API key for the direct channel
@@ -133,26 +134,26 @@ envVarFor() {
   esac
 }
 
-# readMachineState pulls the extension's own /state out of the proxy's /info,
-# where it is carried as hex bytes, and leaves it in STATE_JSON.
+# readMachineState pulls the extension's state out of the proxy's /info, where
+# tee-node carries the extension's GET /state on every request (read_machine_state,
+# lib/env.sh), and leaves it in STATE_JSON.
 #
 # It reports failure through its exit status rather than dying, because a
 # subshell is where every caller would run it — and `exit` inside $( ) ends the
 # subshell only, which would turn an unreachable proxy into an empty ref list and
 # a cheerful "nothing to upload".
+source "$REPO_ROOT/deploy/scripts/lib/env.sh"
 STATE_JSON=""
 readMachineState() {
-  local info
   # Cleared first: a failed read must not leave the previous, now stale, state
   # behind for a caller that is about to report on it.
   STATE_JSON=""
-  info="$(curl -fsS "${PROXY_URL%/}/info")" || return 1
-  STATE_JSON="$(printf '%s' "$info" | jq -r '.teeInfo.state.state' | sed 's/^0x//' | xxd -r -p)" || return 1
+  STATE_JSON="$(read_machine_state "$PROXY_URL")" || return 1
   [ -n "$STATE_JSON" ] || return 1
 }
 
 missingRefs() {
-  printf '%s' "$STATE_JSON" | jq -r '.state.readiness.missingSecretRefs[]?' 2>/dev/null || true
+  printf '%s' "$STATE_JSON" | jq -r '.readiness.missingSecretRefs[]?' 2>/dev/null || true
 }
 
 # configuredRefs is every provider secret named in the endpoint configuration —
@@ -169,7 +170,7 @@ configuredRefs() {
 }
 
 liveEndpointsHash() {
-  printf '%s' "$STATE_JSON" | jq -r '.state.readiness.endpointsHash // ""' 2>/dev/null || true
+  printf '%s' "$STATE_JSON" | jq -r '.readiness.endpointsHash // ""' 2>/dev/null || true
 }
 
 echo "=== USDX oracle — upload the RPC provider credentials ==="
@@ -179,8 +180,17 @@ echo "band), at least one provider admin private key, the credential for each"
 echo "ref, and — only if you hold enough keys to submit — the proxy API key."
 echo
 
-ask PROXY_URL          "Extension proxy URL"    "http://localhost:8080"
+ask PROXY_URL          "Extension proxy URL"    "http://localhost:6674"
 ask CHAIN_ID           "Chain id"               "114"
+# A machine run with SIMULATED_TEE=true attests with tee-node's fixed test code
+# hash rather than a build's, so when .env says the machine is simulated and
+# names no hash, that constant is what the check can expect. A real Confidential
+# Space machine has a hash of its own, obtained out of band, and is asked for.
+SIMULATED_CODE_HASH=0x194844cf417dde867073e5ab7199fa4d21fd82b5dbe2bdea8b3d7fc18d10fdc2
+if [ "${SIMULATED_TEE:-}" = true ] && [ -z "${EXPECTED_CODE_HASH:-}" ]; then
+  EXPECTED_CODE_HASH="$SIMULATED_CODE_HASH"
+  echo "expected code hash: tee-node's simulated-machine constant (SIMULATED_TEE=true in .env)"
+fi
 if [ "$VERIFY" = true ]; then
   ask EXPECTED_CODE_HASH "Expected code hash (0x…)"
 fi

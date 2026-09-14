@@ -5,10 +5,6 @@
 !*.example
 
 # Coston/Coston2 proxy configs (contain DB credentials)
-deploy/config/proxy/extension_proxy.coston.toml
-deploy/config/proxy/extension_proxy.coston.docker.toml
-deploy/config/proxy/extension_proxy.coston2.toml
-deploy/config/proxy/extension_proxy.coston2.docker.toml
 deploy/config/extension.env
 # Written by import-upstream-addresses.sh local from the e2e sim dump; changes per sim run.
 deploy/config/local/
@@ -47,3 +43,18 @@ tools/pkg/contracts/*/autogen.go
 tools/pkg/contracts/*/*.abi
 tools/pkg/contracts/*/*.bin
 
+# Rendered per-run configuration: the chain's indexer config (from
+# config/indexer/indexer-config.toml.template) and the proxy's (from
+# config/proxy/extension_proxy.live.toml), both written by the scripts.
+deploy/config/indexer/*/indexer-config.toml
+
+# Stray binaries from `go build ./cmd/<x>` without -o.
+/docker
+/mocknode
+/start-tee
+/devserver
+/usdxprov
+
+# Operator-specific active admin set (addresses only, but per-deployment like .env);
+# the tracked reference is admins/coston.example.json.
+deploy/config/admins/coston.json

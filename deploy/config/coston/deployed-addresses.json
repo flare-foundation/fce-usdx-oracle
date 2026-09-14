@@ -10,29 +10,14 @@
     "address": "0x60A848E5Da796D741e559c170E851FC813061217"
   },
   {
-    "name": "VoterRegistry",
-    "contractName": "VoterRegistry.sol",
-    "address": "0x42F4526BFC6f892DB515a832a52eFc9edFADf6c0"
-  },
-  {
     "name": "FlareSystemsCalculator",
     "contractName": "FlareSystemsCalculator.sol",
     "address": "0x3787dCBD770202F856ED9204c19d6f9022Ff3BF2"
   },
   {
-    "name": "FlareSystemsManager",
-    "contractName": "FlareSystemsManager.sol",
-    "address": "0x85680Dd93755Fe5d0789773fd0896cEE51F9e358"
-  },
-  {
     "name": "RewardManager",
     "contractName": "RewardManager.sol",
     "address": "0x2ade9972E7f27200872D378acF7a1BaD8D696FC5"
-  },
-  {
-    "name": "Relay",
-    "contractName": "Relay.sol",
-    "address": "0x051f214D346Cfd97B107BECb87E2B35D1b4287E9"
   },
   {
     "name": "WNatDelegationFee",
@@ -345,11 +330,6 @@
     "address": "0x543FB437225B349B21Ec17DC75A2F96B67589Cdd"
   },
   {
-    "name": "FlareTeeManager",
-    "contractName": "FlareTeeManager.sol",
-    "address": "0xc4885998f5D792ed88C5Af7a3AaCBe333f017658"
-  },
-  {
     "name": "Fdc2HubImplementation",
     "contractName": "Fdc2Hub.sol",
     "address": "0x5744801e4Eb76f67Ed34eA4bdB78ec6cdf90Fc1C"
@@ -467,6 +447,51 @@
   {
     "name": "TeeOracleFeedStore",
     "contractName": "TeeOracleFeedStore.sol",
-    "address": "0x0000000000000000000000000000000000000000"
+    "address": "0xf909cBd7EE1FeAf464a7fb5DA04c0d88b2C73f15"
+  },
+  {
+    "name": "TeeOracleInstructionsSender",
+    "contractName": "TeeOracleInstructionsSender.sol",
+    "address": "0x0eB1c4cdd2E96e5A27F3b0af0625CEA42bf3daC0"
+  },
+  {
+    "name": "UsdxFeedStore",
+    "contractName": "TeeOracleFeedStore.sol",
+    "address": "0xf909cBd7EE1FeAf464a7fb5DA04c0d88b2C73f15"
+  },
+  {
+    "name": "UsdxTeeExtensionStateVerifier",
+    "contractName": "UsdxTeeExtensionStateVerifier.sol",
+    "address": "0x5E99A61E9d86258C28e451EB513A10214a6EfE44"
+  },
+  {
+    "name": "AddressUpdater",
+    "contractName": "AddressUpdater.sol",
+    "address": "0xb006c0cb0b2b8ae48E5B12883Cd5a13654cc6e20"
+  },
+  {
+    "name": "GovernanceSettings",
+    "contractName": "GovernanceSettings.sol",
+    "address": "0x183fAfF6997C98A812A3B98748Fc80241D08f312"
+  },
+  {
+    "name": "Relay",
+    "contractName": "Relay.sol",
+    "address": "0xEcD0B60Ea5E01e4D0bFd621c8920B40A32389b83"
+  },
+  {
+    "name": "VoterRegistry",
+    "contractName": "VoterRegistry.sol",
+    "address": "0x42F4526BFC6f892DB515a832a52eFc9edFADf6c0"
+  },
+  {
+    "name": "FlareSystemsManager",
+    "contractName": "FlareSystemsManager.sol",
+    "address": "0x85680Dd93755Fe5d0789773fd0896cEE51F9e358"
+  },
+  {
+    "name": "FlareTeeManager",
+    "contractName": "FlareTeeManager.sol",
+    "address": "0xc4885998f5D792ed88C5Af7a3AaCBe333f017658"
   }
 ]

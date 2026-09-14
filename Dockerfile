@@ -75,16 +75,16 @@ COPY --chmod=644 --chown=65532:65532 --from=builder /etc/ssl/certs/ca-certificat
 COPY --chmod=755 --chown=65532:65532 --from=builder /app/extension-tee /app/extension-tee
 
 # MODE=0 is production attestation
-ENV MODE=0 CONFIG_PORT=5501 SIGN_PORT=7701 EXTENSION_PORT=7702
+ENV MODE=0
 
 # match tee-node: run as root (USER 0:0) — the TEE workload itself is the isolation boundary
 USER 0:0
 
 # confidential space launch policy label: allow the operator to override these env vars at workload launch
 # without this, the confidential space VM rejects overrides at attestation time and the values baked here are final
-LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,CONFIG_PORT,SIGN_PORT,EXTENSION_PORT"
+LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,CHAIN_ID,GOVERNANCE_SIGNERS,GOVERNANCE_THRESHOLD,SIGN_PORT,EXTENSION_PORT"
 
 
-EXPOSE 5501
+EXPOSE 5500
 
 CMD ["/app/extension-tee"]

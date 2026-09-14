@@ -32,8 +32,13 @@ ADMINS="${ADMINS:-$PROJECT_DIR/deploy/config/admins/dev-wellknown-keys.json}"
 [[ -f "$ADMINS" ]] || { echo "no such admin set: $ADMINS" >&2; exit 1; }
 
 # High ports so this never collides with the Docker stack or a --local run.
+# Exported: mocknode folds the dev server's state into its /info from
+# EXTENSION_PORT, and the set-* helpers read that /info from SIGN_PORT.
 EXT_PORT="${EXT_PORT:-8099}"
 SIGN_PORT="${SIGN_PORT:-9099}"
+export SIGN_PORT
+source "$SCRIPT_DIR/lib/env.sh"
+NODE_URL="http://127.0.0.1:$SIGN_PORT"
 
 # A stale pair from an aborted run would hold the ports, and a fresh devserver
 # could not bind while the readiness probe below happily answered from the old
@@ -69,7 +74,7 @@ go build -o "$LOG_DIR/mocknode" ./cmd/mocknode
 go build -o "$LOG_DIR/devserver" ./cmd/devserver
 
 section "Starting mocknode (:$SIGN_PORT) and devserver (:$EXT_PORT)"
-SIGN_PORT="$SIGN_PORT" "$LOG_DIR/mocknode" >"$LOG_DIR/mocknode.log" 2>&1 &
+SIGN_PORT="$SIGN_PORT" EXTENSION_PORT="$EXT_PORT" "$LOG_DIR/mocknode" >"$LOG_DIR/mocknode.log" 2>&1 &
 MOCK_PID=$!
 # The extension refuses to start without CHAIN_ID and EXTENSION_ID, the same
 # way the production entrypoint does. The harness has no chain, so the
@@ -81,13 +86,14 @@ DEV_PID=$!
 # them; the pids are tracked by hand above.
 disown "$MOCK_PID" "$DEV_PID" 2>/dev/null || true
 
-# `go run` compiles first, so the port is not up immediately.
+# Up means the dev server's state is readable through the node's /info, the
+# only way the state is read anywhere.
 for _ in $(seq 1 60); do
-    curl -sf -m 2 "http://127.0.0.1:$EXT_PORT/state" >/dev/null 2>&1 && break
+    read_machine_state "$NODE_URL" >/dev/null 2>&1 && break
     sleep 1
 done
-curl -sf -m 2 "http://127.0.0.1:$EXT_PORT/state" >/dev/null 2>&1 || {
-    echo -e "${RED}devserver never came up${NC}" >&2
+read_machine_state "$NODE_URL" >/dev/null 2>&1 || {
+    echo -e "${RED}devserver never came up (its state is not readable through mocknode at $NODE_URL)${NC}" >&2
     cat "$LOG_DIR/devserver.log" >&2
     exit 1
 }
@@ -156,13 +162,13 @@ done
 echo "$RESP" | jq '{status, log}'
 
 section "Observation"
-STATE="$(curl -sS "http://127.0.0.1:$EXT_PORT/state")"
-echo "$STATE" | jq '.state | {lastPrice, lastDecimals, lastObservedAt,
-                              updateCount, failureCount, lastErrorClass,
-                              sourceHealth, readiness}'
+STATE="$(read_machine_state "$NODE_URL")"
+echo "$STATE" | jq '{lastPrice, lastDecimals, lastObservedAt,
+                     updateCount, failureCount, lastErrorClass,
+                     sourceHealth, readiness}'
 
-PRICE="$(echo "$STATE" | jq -r '.state.lastPrice // ""')"
-DEC="$(echo "$STATE" | jq -r '.state.lastDecimals // 8')"
+PRICE="$(echo "$STATE" | jq -r '.lastPrice // ""')"
+DEC="$(echo "$STATE" | jq -r '.lastDecimals // 8')"
 if [[ -n "$PRICE" ]]; then
     python3 -c "print(f'\n  price: \${int('$PRICE')/10**int('$DEC'):.8f}')"
     echo -e "  ${GREEN}observation succeeded${NC}"

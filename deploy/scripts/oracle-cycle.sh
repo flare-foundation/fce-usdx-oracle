@@ -29,6 +29,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 die() { echo -e "${RED}[oracle-cycle] ERROR:${NC} $*" >&2; exit 1; }
 
+source "$SCRIPT_DIR/lib/chains.sh"
 source "$SCRIPT_DIR/lib/env.sh"; load_env
 
 DRY_RUN=false; INTERVAL=""; RECORDS=""; TEE=""
@@ -47,7 +48,8 @@ done
 
 [[ -n "$TEE" ]] || die "-tee is required: at least one TEE machine address"
 
-ADDR_FILE="${ADDRESSES_FILE:-./deploy/config/coston2/deployed-addresses.json}"
+CHAIN="$(resolve_chain "${CHAIN:-}")"
+ADDR_FILE="${ADDRESSES_FILE:-./deploy/config/$CHAIN/deployed-addresses.json}"
 [[ "$ADDR_FILE" != /* ]] && ADDR_FILE="$PROJECT_DIR/$ADDR_FILE"
 [[ -f "$ADDR_FILE" ]] || die "addresses file not found: $ADDR_FILE"
 

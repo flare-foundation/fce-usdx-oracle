@@ -18,10 +18,9 @@ load_env() {
     return 0
 }
 
-# record_stack <docker|host> <proxy-url> [state-url] — what start-services.sh
-# brought up: the proxy the follow-up scripts address and, for host processes,
-# where the extension serves GET /state (the compose stack's listens on its
-# container's loopback and is read from inside that namespace instead).
+# record_stack <docker|host> <proxy-url> — what start-services.sh brought up:
+# the proxy the follow-up scripts address. Everything about the machine,
+# including its state, is read through that proxy.
 record_stack() {
     mkdir -p "$PROJECT_DIR/deploy/config"
     {
@@ -31,6 +30,26 @@ record_stack() {
         echo "# stop-services.sh."
         echo "STACK=$1"
         echo "EXT_PROXY_URL=$2"
-        [[ -n "${3:-}" ]] && echo "EXTENSION_STATE_URL=$3"
     } > "$PROJECT_DIR/deploy/config/stack.env"
+}
+
+# read_machine_state <proxy-or-node-url> — the extension's State as JSON, read
+# out of GET /info. tee-node reads the extension's GET /state on every info
+# request and carries the state bytes, attested, in teeInfo.state.state; the
+# bytes are the JSON encoding of the state. This is the one way the scripts
+# read the state: the extension's own port is loopback-only inside the machine,
+# and mocknode folds the dev server's state in the same way for the harness.
+#
+# Exit status: 0 with the JSON on stdout; 1 when the URL did not answer or
+# carries no state (a tee-node that does not fold it in); 2 when tee-node
+# reported it could not read its extension (StateVersion is the all-ones
+# sentinel), which clears once the extension answers again.
+read_machine_state() {
+    local info ver hex
+    info="$(curl -fsS -m 10 "${1%/}/info" 2>/dev/null)" || return 1
+    ver="$(jq -r '.teeInfo.state.stateVersion // empty' <<<"$info" 2>/dev/null)" || return 1
+    hex="$(jq -r '.teeInfo.state.state // empty' <<<"$info" 2>/dev/null)" || return 1
+    [[ "$ver" == "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ]] && return 2
+    [[ -n "$hex" && "$hex" != "0x" ]] || return 1
+    printf '%s' "${hex#0x}" | xxd -r -p
 }

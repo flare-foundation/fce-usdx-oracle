@@ -24,6 +24,7 @@ die()  { echo -e "${RED}[post-build] ERROR:${NC} $*" >&2; exit 1; }
 
 # --- .env, then the stack start-services.sh recorded ---
 source "$SCRIPT_DIR/lib/env.sh"; load_env
+source "$SCRIPT_DIR/lib/chains.sh"
 
 # Auto-detect proxy port: use Docker port (6674) if ext-proxy container is running,
 # otherwise fall back to the host-process port (6684).
@@ -34,8 +35,12 @@ if [[ -z "${EXT_PROXY_URL:-}" ]]; then
         EXT_PROXY_URL="http://localhost:6684"
     fi
 fi
+# The chain .env names (lib/chains.sh); with none, the simulation. Its RPC and
+# normal (FTDC) proxy are the defaults for what .env leaves unset.
+CHAIN="$(resolve_chain "${CHAIN:-}")"
+NORMAL_PROXY_URL="${NORMAL_PROXY_URL:-$(chain_normal_proxy "$CHAIN" 2>/dev/null || true)}"
 NORMAL_PROXY_URL="${NORMAL_PROXY_URL:-http://localhost:6662}"
-CHAIN_URL="${CHAIN_URL:-http://127.0.0.1:8545}"
+CHAIN_URL="${CHAIN_URL:-$(chain_rpc "$CHAIN" 2>/dev/null || echo http://127.0.0.1:8545)}"
 ADDRESSES_FILE="${ADDRESSES_FILE:-}"
 # Resolve relative paths against PROJECT_DIR (not caller's cwd)
 if [[ -n "$ADDRESSES_FILE" && "$ADDRESSES_FILE" != /* ]]; then
@@ -47,16 +52,8 @@ WAIT_TIMEOUT="${WAIT_TIMEOUT:-120}"
 
 # --- Auto-detect addresses file ---
 if [[ -z "$ADDRESSES_FILE" ]]; then
-    CHAIN="${CHAIN:-}"
-    if [[ -z "$CHAIN" ]]; then
-        [[ "$LOCAL_MODE" == "true" ]] && CHAIN="local" || CHAIN="coston2"
-    fi
-    case "$CHAIN" in
-        local)   candidate="$PROJECT_DIR/deploy/config/local/deployed-addresses.json" ;;
-        coston)  candidate="$PROJECT_DIR/deploy/config/coston/deployed-addresses.json" ;;
-        coston2) candidate="$PROJECT_DIR/deploy/config/coston2/deployed-addresses.json" ;;
-        *)       candidate="" ;;
-    esac
+    candidate=""
+    chain_known "$CHAIN" && candidate="$PROJECT_DIR/deploy/config/$CHAIN/deployed-addresses.json"
     if [[ -n "$candidate" && -f "$candidate" ]]; then
         ADDRESSES_FILE="$(cd "$(dirname "$candidate")" && pwd)/$(basename "$candidate")"
     fi

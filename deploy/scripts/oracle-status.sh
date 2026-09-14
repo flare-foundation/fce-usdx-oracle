@@ -8,7 +8,7 @@
 #      feed adapter: getCurrentFeed() is what a consumer reads, observedAt /
 #      extensionId / instructionsSender is what an operator checks.
 #   2. TeeMachineRegistry  — is the machine still registered at PRODUCTION
-#   3. the extension's GET /state — per-source health and readiness
+#   3. the extension's state, read out of the proxy's /info — per-source health and readiness
 #
 # The store is the upstream TeeOracleFeedStore from flare-smart-contracts-v2;
 # its address lives under "TeeOracleFeedStore" in the deployed-addresses file.
@@ -27,10 +27,13 @@ GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC
 section() { echo -e "\n${CYAN}=== $* ===${NC}"; }
 warn() { echo -e "${YELLOW}$*${NC}"; }
 
+source "$SCRIPT_DIR/lib/chains.sh"
 source "$SCRIPT_DIR/lib/env.sh"; load_env
 
-RPC="${CHAIN_URL:-https://coston2-api.flare.network/ext/C/rpc}"
-ADDR_FILE="${ADDRESSES_FILE:-./deploy/config/coston2/deployed-addresses.json}"
+# The chain .env names (lib/chains.sh); with none, the simulation.
+CHAIN="$(resolve_chain "${CHAIN:-}")"
+RPC="${CHAIN_URL:-$(chain_rpc "$CHAIN")}"
+ADDR_FILE="${ADDRESSES_FILE:-./deploy/config/$CHAIN/deployed-addresses.json}"
 [[ "$ADDR_FILE" != /* ]] && ADDR_FILE="$PROJECT_DIR/$ADDR_FILE"
 
 lookup() { jq -r --arg n "$1" '[.[] | select(.name == $n) | .address][0] // empty' "$ADDR_FILE"; }
@@ -115,33 +118,20 @@ else
     warn "  no FlareTeeManager in $ADDR_FILE"
 fi
 
-section "Extension health — GET /state"
-# The extension listens on loopback only, so its state is read from inside its
-# own network namespace: directly for a host-process stack (the start records
-# the URL in deploy/config/stack.env), and by joining the container's namespace
-# for the compose stack. The proxy's /info is the fallback for a tee-node that
-# folds the extension state into the attested machine info; the current ones
-# publish that field empty.
-STATE_FILTER='.state | {lastPrice, lastObservedAt, updateCount, failureCount, lastErrorClass, sourceHealth, readiness}'
-EXT_CONTAINER="deploy-extension-tee-1"
-if [[ -n "${EXTENSION_STATE_URL:-}" ]]; then
-    curl -sf -m 10 "$EXTENSION_STATE_URL" | jq "$STATE_FILTER" \
-        || warn "  the recorded host extension at $EXTENSION_STATE_URL did not answer"
-elif docker inspect "$EXT_CONTAINER" >/dev/null 2>&1; then
-    # alpine:3.21 is the base the proxy image is built on, so it is already
-    # local, and busybox wget is enough for one GET.
-    docker run --rm --network "container:$EXT_CONTAINER" alpine:3.21 \
-        wget -qO- -T 10 http://127.0.0.1:7702/state 2>/dev/null | jq "$STATE_FILTER" \
-        || warn "  the extension in $EXT_CONTAINER did not answer"
-elif [[ -n "${EXT_PROXY_URL:-}" ]]; then
-    STATE_HEX="$(curl -sf -m 10 "${EXT_PROXY_URL%/}/info" | jq -r '.teeInfo.state.state // empty' 2>/dev/null || true)"
-    if [[ -n "$STATE_HEX" && "$STATE_HEX" != "0x" ]]; then
-        printf '%s' "${STATE_HEX#0x}" | xxd -r -p | jq "$STATE_FILTER" \
-            || warn "  the state the proxy at $EXT_PROXY_URL reports is not the extension's JSON"
-    else
-        warn "  the proxy at $EXT_PROXY_URL publishes no machine state (this tee-node does not fold GET /state into /info)"
-    fi
+section "Extension state — out of the proxy's /info"
+# tee-node reads the extension's GET /state on every info request and carries
+# it, attested, in teeInfo.state.state; the extension's own port is loopback
+# only. read_machine_state (lib/env.sh) does the read and the decoding, for a
+# local stack and a testnet machine alike.
+STATE_FILTER='{lastPrice, lastObservedAt, updateCount, failureCount, lastErrorClass, sourceHealth, readiness}'
+if [[ -z "${EXT_PROXY_URL:-}" ]]; then
+    warn "  no proxy URL (EXT_PROXY_URL) to read the machine's state through"
+elif STATE="$(read_machine_state "$EXT_PROXY_URL")"; then
+    jq "$STATE_FILTER" <<<"$STATE"
 else
-    warn "  no extension to read: neither a recorded host stack, the compose container, nor a proxy URL"
+    case $? in
+        2) warn "  tee-node behind $EXT_PROXY_URL could not read its extension's /state (down, or mid-restart)" ;;
+        *) warn "  the proxy at $EXT_PROXY_URL publishes no machine state (unreachable, or a tee-node that does not fold GET /state into /info)" ;;
+    esac
 fi
 echo ""

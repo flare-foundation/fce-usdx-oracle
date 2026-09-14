@@ -22,7 +22,8 @@
 # simulation; a shorter one is the simulation's own configuration to make.
 #
 # Reads .env (activate .env.local first): CHAIN_URL, ADDRESSES_FILE, EXT_PROXY_URL,
-# LOCAL_GOVERNANCE_KEY. Needs cast, jq, python3, go.
+# LOCAL_GOVERNANCE_KEY, or DEPLOYMENT_PRIVATE_KEY where the deployer is the
+# governance. Needs cast, jq, python3, go.
 #
 # Usage:
 #   ./deploy/scripts/publish-local.sh endpoints [config] [--wait]
@@ -58,6 +59,11 @@ while [[ $# -gt 0 ]]; do
         *) CONFIG="$1"; shift ;;
     esac
 done
+# The default admin set is the simulation's well-known Hardhat keys, whose
+# private keys are public; off the simulation the admin set is named explicitly.
+if [[ "$KIND" == admins && -z "$CONFIG" && "${LOCAL_MODE:-true}" != true ]]; then
+    die "name the admins file (deploy/config/admins/<chain>.json): the default, $DEFAULT_CONFIG, is the simulation's well-known keys"
+fi
 CONFIG="${CONFIG:-$PROJECT_DIR/$DEFAULT_CONFIG}"
 [[ "$CONFIG" != /* ]] && CONFIG="$PROJECT_DIR/$CONFIG"
 [[ -f "$CONFIG" ]] || die "no such config: $CONFIG"
@@ -87,7 +93,10 @@ fi
 for t in cast jq python3 go; do command -v "$t" >/dev/null || die "$t is required"; done
 CHAIN_URL="${CHAIN_URL:-http://127.0.0.1:8545}"
 EXT_PROXY_URL="${EXT_PROXY_URL:-http://localhost:6674}"
-GOV_KEY="${LOCAL_GOVERNANCE_KEY:-}"; [[ -n "$GOV_KEY" ]] || die "LOCAL_GOVERNANCE_KEY is not set — activate .env.local"
+# The sender's governance signs: the simulation's governance key locally, the
+# deployer on a testnet, where deploy-oracle.sh left the contracts deployer-governed.
+GOV_KEY="${LOCAL_GOVERNANCE_KEY:-${DEPLOYMENT_PRIVATE_KEY:-}}"
+[[ -n "$GOV_KEY" ]] || die "neither LOCAL_GOVERNANCE_KEY nor DEPLOYMENT_PRIVATE_KEY is set — activate the chain's .env (use-chain.sh)"
 ADDR_FILE="${ADDRESSES_FILE:-deploy/config/local/deployed-addresses.json}"
 [[ "$ADDR_FILE" != /* ]] && ADDR_FILE="$PROJECT_DIR/$ADDR_FILE"
 [[ -f "$ADDR_FILE" ]] || die "addresses file not found: $ADDR_FILE — run deploy-oracle-local.sh first"
@@ -128,11 +137,12 @@ send_retry() {  # send_retry <key> <cast send args...>
 SENDER_ADDR="$(addr TeeOracleInstructionsSender)"; [[ -n "$SENDER_ADDR" ]] || die "no TeeOracleInstructionsSender in $ADDR_FILE — run deploy-oracle-local.sh first"
 if [[ -z "$EXEC_FILE" && "$(eth_call "$SENDER_ADDR" 'productionMode()')" == *0 ]]; then
     section "Direct publication"
-    # deploy-oracle-local.sh leaves the simulation's sender governed by its
-    # deployer, the key the tools sign with, so the publication executes in the
-    # transaction that submits it: no recording, no timelock, no executor. The
-    # tool confirms delivery over the machine's readiness query; the local proxy
-    # accepts any /direct key (api_key_optional), hence the placeholder.
+    # deploy-oracle.sh leaves the sender governed by its deployer, on the
+    # simulation and on a test deployment alike, and the deployer is the key the
+    # tools sign with, so the publication executes in the transaction that
+    # submits it: no recording, no timelock, no executor. The tool confirms
+    # delivery over the machine's readiness query; the local proxy accepts any
+    # /direct key (api_key_optional), hence the placeholder.
     ( cd "$PROJECT_DIR/tools" && go run "./cmd/$TOOL" -a "$ADDR_FILE" -c "$CHAIN_URL" -p "$EXT_PROXY_URL" -config "$CONFIG" -directApiKey "${DIRECT_API_KEY:-local}" ) \
         || die "$TOOL failed"
     exit 0
@@ -163,7 +173,7 @@ if [[ -z "$EXEC_FILE" ]]; then
     # mode the sender's governance is GovernanceSettings' governance address.
     SENDER_GOV="$(cast abi-decode 'f()(address)' "$(eth_call "$TARGET" 'governance()')" 2>/dev/null || true)"
     [[ -z "$SENDER_GOV" || "$(lower "$SENDER_GOV")" == "$(lower "$GOV_ADDR")" ]] \
-        || die "the sender's governance is $SENDER_GOV, not LOCAL_GOVERNANCE_KEY ($GOV_ADDR)"
+        || die "the sender's governance is $SENDER_GOV, not the key given ($GOV_ADDR; LOCAL_GOVERNANCE_KEY or DEPLOYMENT_PRIVATE_KEY)"
     RECORD_KEY="$GOV_KEY"
     OUT="$(send_retry "$RECORD_KEY" "$TARGET" "$CALLDATA")" || die "recording reverted:\n$OUT"
     REC_TX="$(jq -r .transactionHash <<<"$OUT")"
@@ -215,18 +225,12 @@ OUT="$(send_retry "$GOV_KEY" "$TARGET" 'executeGovernanceCall(bytes)' "$CALLDATA
 log "executed in tx $(jq -r .transactionHash <<<"$OUT") — the instruction is dispatched"
 
 section "Delivery"
-# The proxy's /info carries the extension's GET /state body as hex; the readiness
-# block in it is what the machine says it is running.
+# The proxy's /info carries the extension's state as hex bytes: tee-node reads
+# GET /state on every info request. The readiness block in it is what the
+# machine says it is running.
 DEADLINE=$(( $(date +%s) + 120 ))
 while :; do
-    GOT="$(curl -sf -m 5 "$EXT_PROXY_URL/info" 2>/dev/null | HASH_FIELD="$HASH_FIELD" python3 -c '
-import json, os, sys
-try:
-    info = json.load(sys.stdin)
-    raw = bytes.fromhex(info["teeInfo"]["state"]["state"][2:])
-    print(json.loads(raw)["state"]["readiness"][os.environ["HASH_FIELD"]])
-except Exception:
-    print("")' || true)"
+    GOT="$(read_machine_state "$EXT_PROXY_URL" 2>/dev/null | jq -r --arg f "$HASH_FIELD" '.readiness[$f] // ""' 2>/dev/null || true)"
     if [[ "$(lower "$GOT")" == "$(lower "$EXPECT")" ]]; then
         echo -e "  ${GREEN}the machine reports $HASH_FIELD = $EXPECT${NC}"
         break

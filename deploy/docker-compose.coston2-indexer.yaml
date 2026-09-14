@@ -1,0 +1,36 @@
+# The Coston2 C-chain indexer and its MySQL database: the coston2 counterpart of
+# docker-compose.coston-indexer.yaml, which explains the arrangement. The
+# configuration under config/indexer/coston2/ is rendered by
+# import-upstream-addresses.sh coston2 from the chain's addresses.
+#
+#   docker compose -f deploy/docker-compose.coston2-indexer.yaml up -d
+#   docker compose -f deploy/docker-compose.coston2-indexer.yaml logs -f coston2-indexer
+services:
+  coston2-indexer-db:
+    image: "mysql"
+    environment:
+      MYSQL_ROOT_PASSWORD: "root"
+    volumes:
+      - ./config/indexer/c-chain-init.sql:/docker-entrypoint-initdb.d/db_init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "--silent", "--host", "localhost", "-proot"]
+      timeout: 20s
+      retries: 10
+    ports:
+      # Host side, for looking at the database only; 3317 keeps clear of the
+      # Coston one on 3316 so both chains' indexers can run at once.
+      - "${INDEXER_DB_BIND:-127.0.0.1:3317}:3306"
+
+  coston2-indexer:
+    image: ghcr.io/flare-foundation/flare-system-c-chain-indexer:main
+    volumes:
+      - ./config/indexer/coston2/indexer-config.toml:/app/config.toml:ro
+    restart: unless-stopped
+    depends_on:
+      coston2-indexer-db:
+        condition: service_healthy
+
+networks:
+  default:
+    name: ${COMPOSE_NETWORK:-fce-usdx-oracle-coston2}
+    external: false
