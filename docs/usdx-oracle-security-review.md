@@ -689,6 +689,13 @@ store's own verification keeps correctness; a single bad machine or proxy stops 
 per-update on extension, feed or hash mismatch; submit the remainder if it still meets
 `requiredSignatures`.
 
+**Status.** Fixed after the review. `keeper.Screen` judges every answer on its own before the
+batch is formed — signer among the addressed machines, extension and feed ids, both
+configuration commitments — and drops the failing ones by guard name into the record's
+`dropped` list; `chooseBatch` does the same for a repeated signer or a mismatched
+`observedAt`. `Preflight` keeps the batch-level rules. A round with nothing left is rejected
+under the one guard everything failed, or `NoUsableUpdate`.
+
 ### SR-04 · High · R — `oracle-cycle.sh` always passes `-p`
 
 **Where.** `deploy/scripts/oracle-cycle.sh:62,73`; `tools/cmd/keeper/main.go:148-150`;
@@ -704,6 +711,10 @@ machine simulation this is invisible.
 
 **Fix.** Pass `-p` only when the operator sets an explicit override variable; let the
 keeper's registry-driven URLs stand as the default.
+
+**Status.** Fixed after the review. `oracle-cycle.sh` passes `-p` only when `PROXY_OVERRIDE`
+is set; otherwise the keeper reads each machine's registered url from the registry and
+`EXT_PROXY_URL` is only where results are looked for first.
 
 ### SR-15 · Medium · S — `allow-tee-version` allowlists the code hash the proxy reports
 

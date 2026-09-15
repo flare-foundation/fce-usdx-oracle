@@ -84,9 +84,14 @@ every T:                                  # single-flight — never overlap cycl
         continue
 
     # 3. relay — one submission, one signed update per contributing machine
-    batch = largest group of updates sharing one observedAt, one per signer
-    preflight(batch)                    # feed-level commitments, requiredSignatures, the
-                                        # ratchet, then eth_call submitFeedUpdates(batch)
+    screened = [u for u in updates                        # each answer judged on its own:
+                if signer(u) in teeIds                    # a failing one is dropped and named,
+                and u.extensionId == store.extensionId()  # the rest go on
+                and u.endpointsHash == sender.latestEndpointsHash(feedId)
+                and u.adminsHash == sender.latestAdminsHash(feedId)]
+    batch = largest group of screened sharing one observedAt, one per signer
+    preflight(batch)                    # requiredSignatures, the ratchet, then
+                                        # eth_call submitFeedUpdates(batch)
     submit(store.submitFeedUpdates(batch), deadline = T_submit)
 ```
 
@@ -133,7 +138,7 @@ somewhere other than stdout.
 | `-pollTimeout` | `5m` | How long to wait for the machines' terminal `ActionResult`s. The wait ends early once every addressed machine has answered; a machine that never answers costs the whole timeout, and the cycle goes on with the answers it has. |
 | `-submitTimeout` | `3m` | How long to wait for the `submitFeedUpdates` receipt. |
 | `-directApiKey` | `$DIRECT_API_KEY` | Key for the `GET_READINESS` preflight. Without it every cycle pays the fee unasked. |
-| `-p` | `$EXT_PROXY_URL` | Where the result is looked for first, and the machine the readiness preflight asks. Given explicitly, overrides *every* machine's registered url (right only with one machine); otherwise each machine is reached at its own registered url and this is the fallback when the registry lists none. |
+| `-p` | `$EXT_PROXY_URL` | Where the result is looked for first, and the machine the readiness preflight asks. Given explicitly, overrides *every* machine's registered url (right only with one machine); otherwise each machine is reached at its own registered url and this is the fallback when the registry lists none. `oracle-cycle.sh` passes it only when `PROXY_OVERRIDE` is set. |
 
 `-directApiKey` is **not** required — the preflight is a saving, not a gate, and a cycle without
 it simply requests. The keeper warns at startup when it is missing, because the symptom otherwise
@@ -196,7 +201,9 @@ Consequences the keeper must respect:
   addressed machine has answered or the poll timeout passes, and the record names the first proxy
   to answer.
 - **`teeIds` come from the signatures, not the request.** The recovered signers are the only thing
-  that says which machines actually produced the updates.
+  that says which machines actually produced the updates. An answer whose signature recovers to a
+  machine the cycle did not ask is dropped before submission: a proxy can only offer a signature
+  the store would refuse anyway, and it must not cost the honest answers their round.
 - Every target must already have endpoints AND admins published for the feed, or the request
   reverts `TeeIdNotConfigured` before any fee is spent. `isTeeIdConfigured(feedId, teeId)` is
   the check, and `fleet-status` reads it for the whole fleet.
@@ -278,13 +285,20 @@ did.
 What that means for the keeper:
 
 - **Every update in a batch must carry the same `observedAt`**, or the store reverts
-  `ObservedAtMismatch`. Upstream stamps an observation with the timestamp of the on-chain event
-  that triggered it, so machines answering one request agree by construction. This enclave stamps
-  it from its own pinned Flare block header, so machines can disagree by a block: the keeper groups
-  the decoded updates by `observedAt` and submits the largest group (the newest on a tie), and a
-  machine that stamped a different instant is left out rather than sinking the round.
+  `ObservedAtMismatch`. The enclave signs the timestamp of the on-chain event that requested the
+  update, which is how the store defines the field, so machines answering one request agree by
+  construction. The keeper still groups the decoded updates by `observedAt` and submits the
+  largest group (the newest on a tie): another keeper's request in a different block carries a
+  different stamp, and an answer to it is left out rather than sinking this round.
+- **Every answer is judged on its own before the batch is formed.** A signature that recovers
+  to nobody or to a machine the cycle did not ask, a wrong extension or feed, a configuration
+  commitment behind the feed's latest publication: each such answer is dropped and named in the
+  record's `dropped` list with the guard that would have rejected it, and the rest go on. One
+  machine that missed a configuration push costs itself the round, not the fleet. A round with
+  nothing left is rejected under the one guard everything failed, or `NoUsableUpdate`.
 - **Fewer agreeing machines than `requiredSignatures`** is a named preflight rejection,
-  `NotEnoughSignatures`, before any gas is spent. The record's `teeIds` says who made the batch.
+  `NotEnoughSignatures`, before any gas is spent. The record's `teeIds` says who made the batch
+  and `dropped` who answered but was left out.
 - **The preflight ends with the contract's own dry run.** An `eth_call` of `submitFeedUpdates`
   with the batch enforces every rule a real submission would — signatures and registry status,
   the pause, the spread bound — and a revert is decoded to its guard name, so `SpreadTooBig`
@@ -487,7 +501,7 @@ It is reported, not retried into: the fix is operational.
 | Feed id | `0x20555344582f555344000000000000000000000000` — category 0x20 + "USDX/USD", 21 bytes. Named in the request and inside the signed update; a mismatch with the store reverts. |
 | `TeeOracleInstructionsSender`, `TeeOracleFeedStore` addresses | From `deploy/config/<chain>/deployed-addresses.json`; the keeper resolves the store entry and derives the sender from the store's `instructionsSender()`. |
 | Target machines | The `-tee` list — named explicitly in every request. |
-| Proxy URLs | Read from the registry per machine, for `/action/result/<id>`. `-p` overrides all of them. |
+| Proxy URLs | Read from the registry per machine, for `/action/result/<id>`. `EXT_PROXY_URL` is looked at first and is the fallback when the registry lists none; `-p` (the wrapper's `PROXY_OVERRIDE`) overrides all of them. |
 | Chain RPC | The keeper's own endpoint — a failure here is cause 2, distinct from the extension's supply RPCs. |
 | Hot wallet key | Low-value, monitored, funded. Compromise costs gas, not correctness. |
 | `keeperId` | Stable identifier, so cross-keeper correlation and dedup can tell instances apart. |
@@ -507,13 +521,16 @@ owes it is one **cycle record per tick**, emitted regardless of outcome — impl
 | `resultStatus` (`1` / `0` / `timeout`), `errorClass` | step 2 |
 | `proxy` — the first machine to answer; `teeIds`, `prices`, `observedAt` — who made the batch and what each signed | steps 2–3 |
 | `sourceHealth` | step 2, from proxy `GET /info` |
+| `dropped` — the answers left out of the batch, each with the store guard it would have failed | step 3 |
 | `submitOutcome` (`accepted` / revert name / not attempted) | step 3 |
 | `storeObservedAtAfter` | step 3 |
 
 `teeIds` are recovered from the updates' own signatures, which is the only thing that names the
 machines that actually answered. `prices` lists each contributor's value at its own scale, in the
 same order — the keeper never aggregates them; the store takes the median. Together with `proxy`,
-they are what attribute a failure to one machine rather than to the feed.
+they are what attribute a failure to one machine rather than to the feed. `dropped` completes the
+picture: a machine that answered under a stale configuration, or a signature from a machine the
+cycle never asked, appears there by guard name while the batch went up without it.
 
 Two constraints carried over from the monitoring doc, because they are keeper-side:
 

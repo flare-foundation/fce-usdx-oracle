@@ -1,7 +1,11 @@
 // Preflight checks a batch of decoded feed updates against every store guard
-// before spending gas. The cheap checks duplicate one contract rule each and turn
-// a revert into a named, actionable reason; the last one is the contract's own
-// dry run, an eth_call of submitFeedUpdates, which enforces everything else.
+// before spending gas. Screen judges each answer on its own — its signer, its
+// feed binding, its configuration commitments — so one bad answer is dropped
+// rather than sinking the round; Preflight then judges the batch: the submission
+// policy's count, the observedAt ratchet, and the contract's own dry run, an
+// eth_call of submitFeedUpdates, which enforces everything else. The cheap checks
+// duplicate one contract rule each and turn a revert into a named, actionable
+// reason.
 //
 // The store verifies each TEE signature through Fdc2Verification, so the keeper
 // holds no authority — the worst a wrong call can do is waste gas. Nothing here
@@ -12,6 +16,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclesender"
@@ -78,9 +83,132 @@ func AsRejection(err error) (*Rejection, bool) {
 	return nil, false
 }
 
-// Preflight checks the batch against the store at storeAddr. signers are the
-// machines recovered from each update's signature, in batch order; every update
-// in the batch carries the same observedAt (see chooseBatch).
+// commitments is what every answer must carry to be accepted: the store's
+// extension id and the feed's latest published configuration generation, read
+// once per cycle.
+type commitments struct {
+	extensionID *big.Int
+	endpoints   common.Hash
+	admins      common.Hash
+}
+
+// readCommitments reads them from the store and its sender. A feed with nothing
+// published is a whole-round rejection: no machine could have answered under
+// the right generation.
+func readCommitments(ctx context.Context, s *support.Support, storeAddr common.Address) (commitments, error) {
+	store, err := teeoraclestore.NewIITeeOracleFeedStoreCaller(storeAddr, s.ChainClient)
+	if err != nil {
+		return commitments{}, errors.Errorf("binding the store: %s", err)
+	}
+	opts := &bind.CallOpts{Context: ctx}
+
+	extensionID, err := store.ExtensionId(opts)
+	if err != nil {
+		return commitments{}, errors.Errorf("reading extensionId from %s: %s", storeAddr.Hex(), err)
+	}
+	senderAddr, err := store.InstructionsSender(opts)
+	if err != nil {
+		return commitments{}, errors.Errorf("reading the instructions sender: %s", err)
+	}
+	sender, err := teeoraclesender.NewIITeeOracleInstructionsSenderCaller(senderAddr, s.ChainClient)
+	if err != nil {
+		return commitments{}, errors.Errorf("binding the sender: %s", err)
+	}
+
+	// The configuration hashes are feed-level: one latest published generation,
+	// which every machine's update must carry.
+	latestEndpoints, err := sender.LatestEndpointsHash(opts, feedID)
+	if err != nil {
+		return commitments{}, reject("SenderUnavailable", "reading latestEndpointsHash: %s", err)
+	}
+	if common.Hash(latestEndpoints) == (common.Hash{}) {
+		return commitments{}, reject("NoEndpointsPublished",
+			"no endpoint configuration has been published for feed %#x — run send-endpoints first", feedID)
+	}
+	latestAdmins, err := sender.LatestAdminsHash(opts, feedID)
+	if err != nil {
+		return commitments{}, reject("SenderUnavailable", "reading latestAdminsHash: %s", err)
+	}
+	if common.Hash(latestAdmins) == (common.Hash{}) {
+		return commitments{}, reject("NoAdminsPublished",
+			"no admin set has been published for feed %#x — run send-admins first", feedID)
+	}
+	return commitments{
+		extensionID: extensionID,
+		endpoints:   common.Hash(latestEndpoints),
+		admins:      common.Hash(latestAdmins),
+	}, nil
+}
+
+// Screen judges every answer on its own and returns the ones the store could
+// accept, each with the machine its signature recovers to, and the rest named
+// by the guard that would have rejected them. addressed are the machines this
+// cycle asked: an answer signed by any other key is dropped, so a proxy cannot
+// sink the round with a signature the store would refuse anyway. An empty list
+// lifts that restriction. The store's own verification decides in the end;
+// this only keeps one bad answer from costing the good ones their round.
+func Screen(
+	ctx context.Context, s *support.Support, storeAddr common.Address,
+	addressed []common.Address, updates []feedupdate.Update,
+) ([]signedUpdate, []Dropped, error) {
+	want, err := readCommitments(ctx, s, storeAddr)
+	if err != nil {
+		return nil, nil, err
+	}
+	kept, dropped := screenUpdates(updates, s.ChainID, addressed, want)
+	return kept, dropped, nil
+}
+
+// screenUpdates is the chain-free half of Screen: every answer against the
+// commitments already read, in arrival order.
+func screenUpdates(
+	updates []feedupdate.Update, chainID *big.Int, addressed []common.Address, want commitments,
+) (kept []signedUpdate, dropped []Dropped) {
+	asked := make(map[common.Address]bool, len(addressed))
+	for _, a := range addressed {
+		asked[a] = true
+	}
+	for _, u := range updates {
+		signer, err := u.Signer(chainID)
+		if err != nil {
+			dropped = append(dropped, Dropped{Guard: "BadSignature",
+				Detail: "an answer recovers to no signer: " + err.Error()})
+			continue
+		}
+		drop := func(guard, format string, args ...any) {
+			dropped = append(dropped, Dropped{TeeID: signer.Hex(), Guard: guard, Detail: fmt.Sprintf(format, args...)})
+		}
+		switch {
+		case len(asked) > 0 && !asked[signer]:
+			drop("NotAddressed", "%s answered but this cycle did not ask it", signer.Hex())
+		case u.ExtensionID == nil || u.ExtensionID.Cmp(want.extensionID) != 0:
+			drop("WrongExtensionId", "%s names extension %s, the store accepts %s",
+				signer.Hex(), u.ExtensionID, want.extensionID)
+		case u.FeedID != feedID:
+			// feedId has no getter on the store (it is checked at init and never
+			// read again), so this compares against the keeper's pinned id; a
+			// divergence means a deployment error, not a stale configuration.
+			drop("WrongFeedId", "%s names feed %#x, this keeper serves %#x", signer.Hex(), u.FeedID, feedID)
+		case u.EndpointsHash != want.endpoints:
+			drop("StaleEndpoints", "%s computed its update under endpoints %s but the feed's latest is %s; "+
+				"the machine never applied the published configuration, or a newer one was sent",
+				signer.Hex(), u.EndpointsHash.Hex(), want.endpoints.Hex())
+		case u.AdminsHash != want.admins:
+			drop("StaleAdmins", "%s computed its update under admin set %s but the feed's latest is %s; "+
+				"the machine never applied the published admin set, or a newer one was sent",
+				signer.Hex(), u.AdminsHash.Hex(), want.admins.Hex())
+		default:
+			kept = append(kept, signedUpdate{update: u, signer: signer})
+		}
+	}
+	return kept, dropped
+}
+
+// Preflight checks a screened batch against the store's batch-level rules
+// before spending gas: the submission policy's count, the observedAt ratchet,
+// and the contract's own rehearsal. Per-answer rules are Screen's. signers are
+// the machines Screen recovered, in batch order, and every update carries the
+// same observedAt (see chooseBatch).
 func Preflight(
 	ctx context.Context, s *support.Support, storeAddr common.Address,
 	batch []feedupdate.Update, signers []common.Address,
@@ -94,74 +222,9 @@ func Preflight(
 	}
 	opts := &bind.CallOpts{Context: ctx}
 
-	extensionID, err := store.ExtensionId(opts)
-	if err != nil {
-		return errors.Errorf("reading extensionId from %s: %s", storeAddr.Hex(), err)
-	}
-	for i, u := range batch {
-		if u.ExtensionID == nil || u.ExtensionID.Cmp(extensionID) != 0 {
-			return reject("WrongExtensionId",
-				"%s names extension %s, the store accepts %s",
-				signers[i].Hex(), u.ExtensionID, extensionID)
-		}
-		// feedId has no getter (it is checked at init and never read again), so
-		// a mismatch reverts WrongFeedId on chain rather than here. The keeper's
-		// pinned feedID matches the store's by construction, and a divergence
-		// means a deployment error, not a stale configuration.
-		if u.FeedID != feedID {
-			return reject("WrongFeedId",
-				"%s names feed %#x, this keeper serves %#x", signers[i].Hex(), u.FeedID, feedID)
-		}
-	}
-
-	senderAddr, err := store.InstructionsSender(opts)
-	if err != nil {
-		return errors.Errorf("reading the instructions sender: %s", err)
-	}
-	sender, err := teeoraclesender.NewIITeeOracleInstructionsSenderCaller(senderAddr, s.ChainClient)
-	if err != nil {
-		return errors.Errorf("binding the sender: %s", err)
-	}
-
-	// The configuration hashes are feed-level: one latest published generation,
-	// which every machine's update must carry. A machine still running the
-	// previous one names itself here.
-	latestEndpoints, err := sender.LatestEndpointsHash(opts, feedID)
-	if err != nil {
-		return reject("SenderUnavailable", "reading latestEndpointsHash: %s", err)
-	}
-	if common.Hash(latestEndpoints) == (common.Hash{}) {
-		return reject("NoEndpointsPublished",
-			"no endpoint configuration has been published for feed %#x — run send-endpoints first", feedID)
-	}
-	for i, u := range batch {
-		if u.EndpointsHash != common.Hash(latestEndpoints) {
-			return reject("StaleEndpoints",
-				"%s computed its update under endpoints %s but the feed's latest is %s; "+
-					"the machine never applied the published configuration, or a newer one was sent",
-				signers[i].Hex(), u.EndpointsHash.Hex(), common.Hash(latestEndpoints).Hex())
-		}
-	}
-
-	latestAdmins, err := sender.LatestAdminsHash(opts, feedID)
-	if err != nil {
-		return reject("SenderUnavailable", "reading latestAdminsHash: %s", err)
-	}
-	if common.Hash(latestAdmins) == (common.Hash{}) {
-		return reject("NoAdminsPublished",
-			"no admin set has been published for feed %#x — run send-admins first", feedID)
-	}
-	for i, u := range batch {
-		if u.AdminsHash != common.Hash(latestAdmins) {
-			return reject("StaleAdmins",
-				"%s computed its update under admin set %s but the feed's latest is %s; "+
-					"the machine never applied the published admin set, or a newer one was sent",
-				signers[i].Hex(), u.AdminsHash.Hex(), common.Hash(latestAdmins).Hex())
-		}
-	}
-
 	// The submission policy: how many distinct machines must sign one batch.
-	// Fewer means waiting for the rest is the fix, or asking more machines.
+	// Fewer means waiting for the rest is the fix, or asking more machines; the
+	// record's dropped list says whether some answered and were left out.
 	required, err := store.RequiredSignatures(opts)
 	if err != nil {
 		return errors.Errorf("reading requiredSignatures: %s", err)

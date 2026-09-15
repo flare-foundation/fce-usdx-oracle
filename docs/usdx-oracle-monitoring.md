@@ -211,6 +211,7 @@ the wire — no extension change is required.
 | `errorClass` | `ActionResult.Log` — the closed vocabulary |
 | `sourceHealth` | proxy `GET /info` → `TEEState.state` |
 | `submitOutcome` | `accepted` / revert name / not attempted |
+| `dropped` | keeper — the answers left out of the batch, each with the store guard it would have failed |
 | `storeObservedAtAfter` | `TeeOracleFeedStore.observedAt()` |
 | `keeperId` | keeper |
 

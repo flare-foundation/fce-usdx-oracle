@@ -11,16 +11,20 @@
 # The keeper holds no authority: the store verifies the TEE signature through
 # Fdc2Verification, so the worst a wrong invocation does is waste gas.
 #
-# The keeper names the target machines explicitly now (no more getRandomTeeIds),
-# so -tee is what routes the request. -p pins where the result is polled and
-# where the readiness preflight asks; see docs/usdx-oracle-keeper.md for the
-# fleet-wide form.
+# The keeper names the target machines explicitly, so -tee is what routes the
+# request. Each machine files its result on its own proxy, and the keeper polls
+# every one at the url the machine registered; EXT_PROXY_URL is where it looks
+# first and its fallback when the registry lists none. PROXY_OVERRIDE addresses
+# every machine at one proxy instead — right only with a single machine that is
+# reachable at a different address than it registered, since with two the other
+# machine's result is never collected. See docs/usdx-oracle-keeper.md.
 #
 # Usage:
 #   ./deploy/scripts/oracle-cycle.sh -tee a,b,c                      # one cycle, submit for real
 #   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --dry-run            # preflight only, send nothing
 #   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --loop 10m           # stay up and cycle on a timer
 #   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --loop 10m --records cycles.jsonl
+#   PROXY_OVERRIDE=http://localhost:6674 ./deploy/scripts/oracle-cycle.sh -tee a   # one machine, other address
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -63,11 +67,13 @@ if [[ -z "$STORE" || "$STORE" == "0x0000000000000000000000000000000000000000" ]]
     die "no TeeOracleFeedStore address in $ADDR_FILE — slot it in after the upstream deploy"
 fi
 
-# The proxy every machine is reached through (-p overrides the registered URLs).
-PROXY="${EXT_PROXY_URL:-http://localhost:6674}"
+# Where results are looked for first; the keeper reads each machine's own url
+# from the registry. Exported for the keeper's -p default.
+export EXT_PROXY_URL="${EXT_PROXY_URL:-http://localhost:6674}"
 
 echo -e "${CYAN}store: ${NC} $STORE"
-echo -e "${CYAN}proxy: ${NC} $PROXY"
+echo -e "${CYAN}proxy: ${NC} $EXT_PROXY_URL (first looked at; each machine at its registered url)"
+[[ -n "${PROXY_OVERRIDE:-}" ]] && echo -e "${CYAN}override:${NC} $PROXY_OVERRIDE (every machine addressed there)"
 echo -e "${CYAN}tee:   ${NC} $TEE"
 
 cd "$PROJECT_DIR/tools"
@@ -75,7 +81,10 @@ cd "$PROJECT_DIR/tools"
 BIN_DIR="${TMPDIR:-/tmp}/usdx-oracle-bin"
 mkdir -p "$BIN_DIR"
 
-ARGS=(-a "$ADDR_FILE" -p "$PROXY" -store "$STORE" -tee "$TEE")
+ARGS=(-a "$ADDR_FILE" -store "$STORE" -tee "$TEE")
+# -p given explicitly overrides every machine's registered url, so it is passed
+# only when the operator asked for that.
+[[ -n "${PROXY_OVERRIDE:-}" ]] && ARGS+=(-p "$PROXY_OVERRIDE")
 # The readiness preflight needs the proxy's direct-channel key. The simulation's
 # proxy accepts any (api_key_optional), so a recorded local stack gets a placeholder
 # and the keeper stops warning about paying fees blind.

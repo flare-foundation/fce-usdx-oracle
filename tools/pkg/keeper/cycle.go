@@ -16,7 +16,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -56,7 +55,8 @@ type Config struct {
 	// TeeIDs are the machines to ask. The sender dispatches one instruction per
 	// target and the fee scales with the count, so this is both a routing and a
 	// cost decision — and, since the store wants a threshold of distinct
-	// signatures per submission, a liveness one. Empty is a configuration error
+	// signatures per submission, a liveness one. An answer signed by any other
+	// machine is dropped before submission. Empty is a configuration error
 	// caught before any request.
 	TeeIDs []common.Address
 
@@ -188,28 +188,44 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) ([]feedupdate.
 	return updates, rec, nil
 }
 
-// Relay is the second half of a cycle: pick the updates that can go up together,
-// check them against every store guard and submit them as one batch. Split from
-// Collect so a caller holding several rounds' updates can order the submissions
-// — observedAt must strictly increase.
+// Relay is the second half of a cycle: judge every answer on its own, pick the
+// ones that can go up together, check the batch against the store's rules and
+// submit it. Split from Collect so a caller holding several rounds' updates can
+// order the submissions — observedAt must strictly increase.
+//
+// One bad answer costs its machine the round, not the fleet: an update whose
+// signature recovers to nobody or to a machine this cycle did not ask, or that
+// names the wrong extension or feed or a stale configuration generation, is
+// dropped and named in the record, and the rest are submitted if enough remain.
 func Relay(
 	ctx context.Context, s *support.Support, cfg Config, rec Record, updates []feedupdate.Update,
 ) (Record, error) {
-	batch, signers, err := chooseBatch(updates, s.ChainID)
+	if len(updates) == 0 {
+		return finish(ctx, s, cfg, rec, OutcomeInternal, errors.New("no update to relay"))
+	}
+	members, dropped, err := Screen(ctx, s, cfg.Store, cfg.TeeIDs, updates)
 	if err != nil {
 		if rj, ok := AsRejection(err); ok {
 			rec.SubmitOutcome = rj.Guard
+			return finish(ctx, s, cfg, rec, OutcomeRejected, err)
 		}
-		return finish(ctx, s, cfg, rec, OutcomeRejected, err)
+		return finish(ctx, s, cfg, rec, OutcomeInternal, err)
+	}
+	batch, signers, left := chooseBatch(members)
+	rec.Dropped = append(dropped, left...)
+	for _, d := range rec.Dropped {
+		logger.Warnf("[%s] answer dropped (%s): %s", cfg.KeeperID, d.Guard, d.Detail)
+	}
+	if len(batch) == 0 {
+		rj := reject(droppedGuard(rec.Dropped),
+			"nothing to submit: every one of the %d answer(s) was dropped", len(rec.Dropped))
+		rec.SubmitOutcome = rj.Guard
+		return finish(ctx, s, cfg, rec, OutcomeRejected, rj)
 	}
 	rec.ObservedAt = batch[0].ObservedAt
 	for i, u := range batch {
 		rec.TeeIDs = append(rec.TeeIDs, signers[i].Hex())
 		rec.Prices = append(rec.Prices, u.Price())
-	}
-	if left := len(updates) - len(batch); left > 0 {
-		logger.Warnf("[%s] %d of %d update(s) left out of the batch: a different observedAt, "+
-			"a repeated signer, or no signer at all", cfg.KeeperID, left, len(updates))
 	}
 
 	if err := Preflight(ctx, s, cfg.Store, batch, signers); err != nil {
@@ -243,53 +259,72 @@ func Relay(
 	return finish(ctx, s, cfg, rec, OutcomeAccepted, nil)
 }
 
-// chooseBatch picks the updates that can go up together. The store judges one
-// batch per observedAt and rejects a mixed one (ObservedAtMismatch) or a repeated
-// signer (DuplicateTeeId), so the updates are grouped by observedAt with one per
-// machine, and the largest group is submitted — the newest on a tie, since the
-// ratchet only moves forward. A machine whose observation stamped a different
-// instant is left out rather than sinking the whole submission. Signers are
-// returned alongside, in batch order.
-func chooseBatch(updates []feedupdate.Update, chainID *big.Int) ([]feedupdate.Update, []common.Address, error) {
-	type member struct {
-		update feedupdate.Update
-		signer common.Address
-	}
-	groups := map[uint64][]member{}
-	seen := map[common.Address]bool{}
-	var unsigned []string
+// signedUpdate is a decoded update with the machine its signature recovers to.
+type signedUpdate struct {
+	update feedupdate.Update
+	signer common.Address
+}
 
-	for _, u := range updates {
-		signer, err := u.Signer(chainID)
-		if err != nil {
-			unsigned = append(unsigned, err.Error())
+// chooseBatch picks the screened answers that can go up together. The store
+// judges one batch per observedAt and rejects a repeated signer (DuplicateTeeId)
+// or a mixed batch (ObservedAtMismatch), so one answer per machine is kept and
+// the largest group sharing an observedAt is submitted — the newest on a tie,
+// since the ratchet only moves forward. Every other answer is returned as
+// dropped, named by the guard that would have rejected it, in arrival order.
+// Signers come back alongside the batch, in batch order.
+func chooseBatch(members []signedUpdate) (batch []feedupdate.Update, signers []common.Address, dropped []Dropped) {
+	kept := make([]signedUpdate, 0, len(members))
+	count := map[uint64]int{}
+	seen := map[common.Address]bool{}
+	for _, m := range members {
+		if seen[m.signer] {
+			dropped = append(dropped, Dropped{TeeID: m.signer.Hex(), Guard: "DuplicateTeeId",
+				Detail: m.signer.Hex() + " answered more than once; its first answer stands"})
 			continue
 		}
-		if seen[signer] {
-			continue
-		}
-		seen[signer] = true
-		groups[u.ObservedAt] = append(groups[u.ObservedAt], member{u, signer})
+		seen[m.signer] = true
+		kept = append(kept, m)
+		count[m.update.ObservedAt]++
 	}
-	if len(groups) == 0 {
-		return nil, nil, reject("BadSignature",
-			"no update recovers to a signer: %s", strings.Join(unsigned, "; "))
+	if len(kept) == 0 {
+		return nil, nil, dropped
 	}
 
 	best, found := uint64(0), false
-	for at, g := range groups {
-		if !found || len(g) > len(groups[best]) || (len(g) == len(groups[best]) && at > best) {
+	for at, n := range count {
+		if !found || n > count[best] || (n == count[best] && at > best) {
 			best, found = at, true
 		}
 	}
 
-	batch := make([]feedupdate.Update, 0, len(groups[best]))
-	signers := make([]common.Address, 0, len(groups[best]))
-	for _, m := range groups[best] {
+	for _, m := range kept {
+		if m.update.ObservedAt != best {
+			dropped = append(dropped, Dropped{TeeID: m.signer.Hex(), Guard: "ObservedAtMismatch",
+				Detail: fmt.Sprintf("%s is stamped observedAt=%d, the batch %d",
+					m.signer.Hex(), m.update.ObservedAt, best)})
+			continue
+		}
 		batch = append(batch, m.update)
 		signers = append(signers, m.signer)
 	}
-	return batch, signers, nil
+	return batch, signers, dropped
+}
+
+// droppedGuard names a round with nothing left to submit: the one guard every
+// answer failed, or NoUsableUpdate when they failed different ones.
+func droppedGuard(dropped []Dropped) string {
+	guard := ""
+	for _, d := range dropped {
+		if guard == "" {
+			guard = d.Guard
+		} else if d.Guard != guard {
+			return "NoUsableUpdate"
+		}
+	}
+	if guard == "" {
+		return "NoUsableUpdate"
+	}
+	return guard
 }
 
 // finish stamps the terminal fields every ending shares.

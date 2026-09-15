@@ -112,11 +112,26 @@ type Record struct {
 	// cannot lie, and what separates a lost race from a real failure.
 	StoreObservedAtAfter uint64 `json:"storeObservedAtAfter"`
 
+	// Dropped names the answers that arrived but did not go up, each with the
+	// guard that would have rejected it: a signature recovering to nobody or to
+	// a machine this cycle did not ask, a wrong extension or feed, a stale
+	// configuration commitment, a repeated signer, an observedAt outside the
+	// batch. One bad answer costs its machine the round, not the fleet.
+	Dropped []Dropped `json:"dropped,omitempty"`
+
 	// Non-zero when transactions are broadcast but not mined. A stuck one blocks
 	// every later transaction behind its nonce.
 	PendingNonceGap uint64 `json:"pendingNonceGap,omitempty"`
 
 	// Human-readable. Never parsed; route on Outcome and ErrorClass instead.
+	Detail string `json:"detail,omitempty"`
+}
+
+// Dropped is one answer left out of the submission and the store guard that
+// would have rejected it. TeeID is empty when the signature recovered to nobody.
+type Dropped struct {
+	TeeID  string `json:"teeId,omitempty"`
+	Guard  string `json:"guard"`
 	Detail string `json:"detail,omitempty"`
 }
 
