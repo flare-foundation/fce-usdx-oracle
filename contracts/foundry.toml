@@ -38,23 +38,3 @@ allow_paths = ["../../../../fsp/flare-smart-contracts-v2"]
 # library uses, and fails the build on it although compilation succeeds.
 [lint]
 lint_on_build = false
-
-# CI has no sibling checkout: the contracts job clones flare-smart-contracts-v2
-# under lib/ and selects this profile (FOUNDRY_PROFILE=ci), which is the default
-# one with the remappings pointed there. Kept in step with the list above.
-[profile.ci]
-src = "src"
-test = "test"
-script = "script"
-out = "out"
-libs = ["lib"]
-via_ir = true
-optimizer = true
-optimizer_runs = 200
-evm_version = "cancun"
-remappings = [
-    "flare-smart-contracts-v2/=lib/flare-smart-contracts-v2/contracts/",
-    "@openzeppelin/contracts/=lib/flare-smart-contracts-v2/dependencies/@openzeppelin-contracts-5.7.0/",
-    "@openzeppelin/contracts-upgradeable/=lib/flare-smart-contracts-v2/dependencies/@openzeppelin-contracts-upgradeable-5.7.0/",
-    "@flarenetwork/flare-periphery-contracts/flare/=lib/flare-smart-contracts-v2/dependencies/flare-periphery-0.1.38/src/flare/",
-]

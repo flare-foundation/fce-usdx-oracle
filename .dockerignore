@@ -20,3 +20,10 @@ go.work
 go.work.sum
 # Runtime output of start-services.sh; must not perturb the build context.
 out/
+# What the CI jobs leave in the workspace: the Go module cache under GOPATH
+# (.gitlab-ci.yml, .gocache), the linter's cache, coverage and the epoch dotenv.
+.go/
+.golangci-cache/
+coverage.out
+coverage.xml
+build.env

@@ -1,23 +1,22 @@
 # GitLab CI for the USDX oracle extension, after tee-node's pipeline: the same
 # Go cache, lint and coverage arrangement, extended to what this repository is
 # made of — two Go modules (the extension at the root, the operator tooling in
-# tools/), a Foundry project whose sources come from a checkout of
-# flare-smart-contracts-v2, the operator scripts, and two images.
+# tools/), the operator scripts, and the extension image. The Foundry project is not
+# built here: its sources are upstream's, compiled from a sibling checkout of
+# flare-smart-contracts-v2 that CI has no access to; its wire vectors reach CI
+# as the fixtures the Go conformance test replays.
 #
 # The private image component at the end publishes the extension image the way
-# tee-node's pipeline does; the two kaniko jobs before it only prove that both
-# Dockerfiles build, without pushing.
+# tee-node's pipeline does; the kaniko job before it only proves that the
+# Dockerfile builds, without pushing. The proxy is tee-proxy's own published
+# image, pulled by the compose stack, not built here.
 
 variables:
   # tools/go.mod needs 1.25.8; the minor tag tracks the latest patch.
   GOLANG_VERSION: "1.25"
   GOLINT_VERSION: "v2.7.0"
-  FOUNDRY_IMAGE: "ghcr.io/foundry-rs/foundry:stable"
   COVERAGE_FILE: "coverage.out"
   COBERTURA_FILE: "coverage.xml"
-  # The contracts compile against this ref of flare-smart-contracts-v2, cloned
-  # from the same GitLab group with the job token (contracts job below).
-  UPSTREAM_REF: "tee-oracle-extension"
   FLARE_CI_DISABLE_LGTM: true
   FLARE_CI_DISABLE_TEST_GO: true
   FLARE_CI_DISABLE_LINT_GO: true
@@ -29,7 +28,6 @@ default:
 stages:
   - build
   - test
-  - contracts
   - image
 
 .gocache:
@@ -64,7 +62,7 @@ lint:
   image: golang:${GOLANG_VERSION}
   extends: .gocache
   script:
-    - "! gofmt -l . | grep -q ."
+    - "! gofmt -l $(git ls-files '*.go') | grep -q ."
     - go vet ./...
     - cd tools && go vet ./...
 
@@ -114,35 +112,6 @@ scripts:
     - for f in deploy/scripts/*.sh deploy/scripts/lib/*.sh; do bash -n "$f"; done
     - ./deploy/scripts/check-versions.sh
 
-# ── contracts ─────────────────────────────────────────────────────────────────
-
-# The Foundry project compiles upstream's interfaces and deploy script out of a
-# flare-smart-contracts-v2 checkout. Locally that is the sibling checkout the
-# default profile names; here it is cloned under contracts/lib and the `ci`
-# profile of foundry.toml points the remappings there. The wire-vector tests
-# are what deploy/testdata/wire is regenerated from, so they and the verifier's
-# tests gate.
-contracts:
-  stage: contracts
-  needs: []
-  image:
-    name: ${FOUNDRY_IMAGE}
-    entrypoint: [""]
-  variables:
-    FOUNDRY_PROFILE: "ci"
-    UPSTREAM_DIR: "${CI_PROJECT_DIR}/contracts/lib/flare-smart-contracts-v2"
-  cache:
-    key: upstream-${UPSTREAM_REF}
-    paths:
-      - contracts/lib/flare-smart-contracts-v2/dependencies/
-  script:
-    - cd contracts
-    - git clone --depth 1 --branch "${UPSTREAM_REF}" "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/flarenetwork/FSP/flare-smart-contracts-v2.git" lib/flare-smart-contracts-v2
-    - git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
-    - (cd lib/flare-smart-contracts-v2 && forge soldeer install)
-    - forge build
-    - forge test -vv
-
 # ── images ────────────────────────────────────────────────────────────────────
 
 # The extension image is reproducible from SOURCE_DATE_EPOCH, the commit's
@@ -181,14 +150,6 @@ image-extension:
   variables:
     DOCKERFILE: "Dockerfile"
     BUILD_ARGS: "--build-arg SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
-
-# The pinned tee-proxy image the compose stack runs next to it.
-image-proxy:
-  extends: .kaniko
-  needs: [scripts]
-  variables:
-    DOCKERFILE: "deploy/proxy/Dockerfile"
-    BUILD_ARGS: ""
 
 # Publication of the extension image, as tee-node's pipeline does it.
 include:

@@ -17,7 +17,6 @@ deploy/
 │   ├── coston/, coston2/   upstream contract addresses per network (tracked)
 │   └── local/          the simulation's addresses (generated, git-ignored)
 ├── testdata/           conformance fixtures and ABI wire vectors used by the tests
-├── proxy/Dockerfile    the pinned tee-proxy image
 ├── docker-compose.yaml            extension TEE + proxy + redis
 ├── docker-compose.siblings.yaml   overlay: node built from the sibling tee-node checkout
 ├── config/indexer/coston/          configuration of the Coston chain indexer

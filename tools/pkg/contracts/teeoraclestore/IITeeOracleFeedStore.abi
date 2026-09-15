@@ -1,0 +1,555 @@
+[
+  {
+    "type": "function",
+    "name": "extensionId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "feeDestination",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getSubmissionPolicy",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct ITeeOracleFeedStore.SubmissionPolicy",
+        "components": [
+          {
+            "name": "requiredSignatures",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "maxSpreadBIPS",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "maxSpreadAbsolute",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "instructionsSender",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract ITeeOracleInstructionsSender"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxSpreadAbsolute",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxSpreadBIPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "observedAt",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "requiredSignatures",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "setFeeDestination",
+    "inputs": [
+      {
+        "name": "_feeDestination",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setSubmissionPolicy",
+    "inputs": [
+      {
+        "name": "_submissionPolicy",
+        "type": "tuple",
+        "internalType": "struct ITeeOracleFeedStore.SubmissionPolicy",
+        "components": [
+          {
+            "name": "requiredSignatures",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "maxSpreadBIPS",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "maxSpreadAbsolute",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "submitFeedUpdates",
+    "inputs": [
+      {
+        "name": "_signedFeedUpdates",
+        "type": "tuple[]",
+        "internalType": "struct ITeeOracleFeedStore.SignedFeedUpdate[]",
+        "components": [
+          {
+            "name": "feedUpdate",
+            "type": "tuple",
+            "internalType": "struct ITeeOracleFeedStore.FeedUpdate",
+            "components": [
+              {
+                "name": "extensionId",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "feedId",
+                "type": "bytes21",
+                "internalType": "bytes21"
+              },
+              {
+                "name": "value",
+                "type": "int32",
+                "internalType": "int32"
+              },
+              {
+                "name": "decimals",
+                "type": "int8",
+                "internalType": "int8"
+              },
+              {
+                "name": "observedAt",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "endpointsHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "adminsHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "signature",
+            "type": "tuple",
+            "internalType": "struct Signature",
+            "components": [
+              {
+                "name": "v",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "r",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "s",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "_feedAggregation",
+        "type": "tuple",
+        "internalType": "struct ITeeOracleFeedStore.FeedAggregation",
+        "components": [
+          {
+            "name": "median",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "minValue",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "maxValue",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "decimals",
+            "type": "int8",
+            "internalType": "int8"
+          },
+          {
+            "name": "spread",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "allowedDeviation",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "outlierTeeIds",
+            "type": "address[]",
+            "internalType": "address[]"
+          },
+          {
+            "name": "outlierDeviations",
+            "type": "int256[]",
+            "internalType": "int256[]"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "FeeDestinationSet",
+    "inputs": [
+      {
+        "name": "feeDestination",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "FeedOutliers",
+    "inputs": [
+      {
+        "name": "observedAt",
+        "type": "uint64",
+        "indexed": true,
+        "internalType": "uint64"
+      },
+      {
+        "name": "median",
+        "type": "int256",
+        "indexed": false,
+        "internalType": "int256"
+      },
+      {
+        "name": "decimals",
+        "type": "int8",
+        "indexed": false,
+        "internalType": "int8"
+      },
+      {
+        "name": "teeIds",
+        "type": "address[]",
+        "indexed": false,
+        "internalType": "address[]"
+      },
+      {
+        "name": "deviations",
+        "type": "int256[]",
+        "indexed": false,
+        "internalType": "int256[]"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "FeedStoreInitialised",
+    "inputs": [
+      {
+        "name": "instructionsSender",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "extensionId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "feedId",
+        "type": "bytes21",
+        "indexed": true,
+        "internalType": "bytes21"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "FeedUpdated",
+    "inputs": [
+      {
+        "name": "value",
+        "type": "int32",
+        "indexed": true,
+        "internalType": "int32"
+      },
+      {
+        "name": "decimals",
+        "type": "int8",
+        "indexed": false,
+        "internalType": "int8"
+      },
+      {
+        "name": "observedAt",
+        "type": "uint64",
+        "indexed": true,
+        "internalType": "uint64"
+      },
+      {
+        "name": "teeIds",
+        "type": "address[]",
+        "indexed": false,
+        "internalType": "address[]"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SubmissionPolicySet",
+    "inputs": [
+      {
+        "name": "requiredSignatures",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
+        "name": "maxSpreadBIPS",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "maxSpreadAbsolute",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "DecimalsSpreadTooBig",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DuplicateTeeId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "FeeTooLow",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "FeeTransferFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidFeedCategory",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSubmissionPolicy",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoAdminsPublished",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoEndpointsPublished",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoValuePublished",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotEnoughSignatures",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotNewer",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ObservedAtMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SpreadTooBig",
+    "inputs": [
+      {
+        "name": "lowerNeighbour",
+        "type": "int256",
+        "internalType": "int256"
+      },
+      {
+        "name": "upperNeighbour",
+        "type": "int256",
+        "internalType": "int256"
+      },
+      {
+        "name": "median",
+        "type": "int256",
+        "internalType": "int256"
+      },
+      {
+        "name": "decimals",
+        "type": "int8",
+        "internalType": "int8"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "StaleAdmins",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StaleEndpoints",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TooFarAhead",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TooManySignatures",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ValueOutOfRange",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WrongExtensionId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WrongFeedId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroExtensionId",
+    "inputs": []
+  }
+]

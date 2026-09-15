@@ -14,10 +14,9 @@ Linear recipe to deploy a TEE extension to Flare Coston or Coston2. Run the step
 
 ## 1. Get the extension repo
 
-The default build is **self-contained**: `go.mod` pins `tee-node` and
-`proxy/Dockerfile` pins `tee-proxy`, both fetched from the network at build
-time. You only need this repo — no sibling `tee-node/` or `tee-proxy/`
-checkouts.
+The default build is **self-contained**: `go.mod` pins `tee-node`, fetched at build
+time, and `deploy/docker-compose.yaml` runs tee-proxy's published image at a pinned
+tag. You only need this repo — no sibling `tee-node/` or `tee-proxy/` checkouts.
 
 ```text
 <workspace>/

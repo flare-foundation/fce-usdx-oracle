@@ -6,7 +6,7 @@
 #
 # Exports:
 #   TEE_NODE_VERSION  the tee-node module pin in go.mod, e.g. v0.0.21-0.20260619120252-31fc839ae6d2
-#   TEE_PROXY_VERSION the tee-proxy tag deploy/proxy/Dockerfile builds
+#   TEE_PROXY_VERSION the tag of tee-proxy's published image deploy/docker-compose.yaml runs
 
 # Extract a module's version from a go.mod require line.
 _versions_pin() {
@@ -25,6 +25,7 @@ load_versions() {
         echo "[versions] ERROR: no tee-node require line in $gomod" >&2
         return 1
     fi
-    TEE_PROXY_VERSION="$(grep -E '^ARG TEE_PROXY_VERSION=' "$root/deploy/proxy/Dockerfile" 2>/dev/null | head -1 | cut -d= -f2)"
+    # The tag of tee-proxy's published image the compose stack runs.
+    TEE_PROXY_VERSION="$(grep -oE 'ghcr.io/flare-foundation/tee-proxy:v[0-9][0-9.]*' "$root/deploy/docker-compose.yaml" 2>/dev/null | head -1 | cut -d: -f2)"
     export TEE_NODE_VERSION TEE_PROXY_VERSION
 }

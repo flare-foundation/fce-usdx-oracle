@@ -39,8 +39,9 @@ tools/send-admins
 tools/wire-extension
 
 # Generated contract bindings (produced by deploy/scripts/generate-bindings.sh)
-tools/pkg/contracts/*/autogen.go
-tools/pkg/contracts/*/*.abi
+# The generated bindings under pkg/contracts and tools/pkg/contracts are tracked,
+# like the root module's: a clone builds without forge or the upstream checkout.
+# generate-bindings.sh refreshes them when the interfaces change.
 tools/pkg/contracts/*/*.bin
 
 # Rendered per-run configuration: the chain's indexer config (from
@@ -58,6 +59,3 @@ deploy/config/indexer/*/indexer-config.toml
 # Operator-specific active admin set (addresses only, but per-deployment like .env);
 # the tracked reference is admins/coston.example.json.
 deploy/config/admins/coston.json
-
-# The CI contracts job clones upstream here; locally the sibling checkout is used.
-contracts/lib/flare-smart-contracts-v2/

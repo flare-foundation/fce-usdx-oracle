@@ -100,8 +100,8 @@ handler. Run it before committing a handler change.
 
 The GitLab pipeline (`.gitlab-ci.yml`, after tee-node's) runs on every push: both Go modules build,
 `gofmt` and `go vet` gate, the extension's tests run with coverage and the tooling's without, every
-operator script must parse and `check-versions.sh` must find the dependency pins aligned, the
-Foundry project builds and its wire-vector and verifier tests run against a clone of
-`flare-smart-contracts-v2` at `UPSTREAM_REF` (the `ci` profile in `contracts/foundry.toml`), and
-both Dockerfiles are built with kaniko without pushing. `golangci-lint` with tee-node's linter set
+operator script must parse and `check-versions.sh` must find the dependency pins aligned, and
+the extension image is built with kaniko without pushing. The Foundry project is not built in CI:
+its sources are upstream's, from a sibling checkout CI cannot reach; run `forge test` in
+`contracts/` locally, and its wire vectors reach CI as the fixtures the conformance test replays. `golangci-lint` with tee-node's linter set
 (`.golangci.yml`) reports without gating until its findings are cleared.

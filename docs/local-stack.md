@@ -55,8 +55,9 @@ deployed here — that is upstream's `deploy-tee-oracle.sh` plus governance foll
 ./deploy/scripts/start-services.sh
 ```
 
-Builds the extension image (and the `local/tee-proxy` image from `deploy/proxy/Dockerfile` when
-it is missing), then brings up Docker Compose.
+Builds the extension image, then brings up Docker Compose; the proxy is tee-proxy's published
+image at the tag pinned in `deploy/docker-compose.yaml` (with `USE_LOCAL_SIBLINGS=1`, a build of
+the sibling checkout instead).
 
 > The base compose file joins the external `docker_default` network created by the e2e
 > infrastructure. Start the e2e stack first, or this fails with "network not found".
@@ -222,15 +223,15 @@ Rebuild the extension image after code changes:
 Overrides, in the shell or `.env`:
 
 ```bash
-REGISTRY=registry.gitlab.com/flarenetwork/tee/e2e docker compose up -d
+TEE_PROXY_IMAGE=ghcr.io/flare-foundation/tee-proxy:main docker compose up -d   # another proxy image
 ```
 
 ```bash
 LOG_LEVEL=DEBUG docker compose up -d
 ```
 
-> `start-services.sh` builds the `local/tee-proxy` image automatically if it is missing.
-> To build it by hand: `docker build -f proxy/Dockerfile -t local/tee-proxy proxy/`
+> The proxy image is pulled, not built; `check-versions.sh` keeps its tag aligned with the
+> tee-proxy module the tooling pins.
 
 ---
 

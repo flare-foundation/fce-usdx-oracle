@@ -280,50 +280,28 @@ if [[ "$USE_LOCAL" == "false" ]]; then
     fi
     log "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
 
-    # --- Build tee-proxy image locally if no remote registry is configured ---
-    if [[ -z "${REGISTRY:-}" ]]; then
-        # In siblings mode an existing image is the pinned build, not the sibling,
-        # so it is always rebuilt (Docker's layer cache keeps that cheap).
-        if [[ "$USE_LOCAL_SIBLINGS" == "true" ]] || ! docker image inspect local/tee-proxy >/dev/null 2>&1; then
-            if [[ "$USE_LOCAL_SIBLINGS" == "true" ]]; then
-                # Dev build: use the on-disk sibling tee-proxy checkout. Its Dockerfile
-                # declares no module proxy argument, so the build reads a copy with
-                # GOPROXY declared after the first FROM; the copy is otherwise the
-                # sibling's Dockerfile verbatim, and the checkout is the build context.
-                TEE_PROXY_DIR="$SIBLINGS_ROOT/tee-proxy"
-                [[ -d "$TEE_PROXY_DIR" ]] || die "USE_LOCAL_SIBLINGS set but tee-proxy repo not present at $TEE_PROXY_DIR.\n  Clone it into $SIBLINGS_ROOT/, or unset USE_LOCAL_SIBLINGS to build the pinned proxy."
-                modcache_proxy_start
-                log "Building local/tee-proxy from sibling checkout $TEE_PROXY_DIR (USE_LOCAL_SIBLINGS)..."
-                awk '{ print } /^FROM / && !done { print "ARG GOPROXY=https://proxy.golang.org,direct"; print "ENV GOPROXY=$GOPROXY"; done = 1 }' "$TEE_PROXY_DIR/Dockerfile" \
-                    | docker build --load --build-arg GOPROXY="$GOPROXY_BUILD" -f - -t local/tee-proxy "$TEE_PROXY_DIR" || die "Failed to build tee-proxy image"
-            else
-                # Default: pinned, self-contained build from the in-repo Dockerfile
-                # (clones tee-proxy at the version in proxy/Dockerfile, matching tools/go.mod).
-                PROXY_DOCKERFILE="$PROJECT_DIR/deploy/proxy/Dockerfile"
-                [[ -f "$PROXY_DOCKERFILE" ]] || die "Image local/tee-proxy not found and proxy Dockerfile missing at $PROXY_DOCKERFILE.\n  Set REGISTRY in .env to pull from a remote registry, restore proxy/Dockerfile, or use USE_LOCAL_SIBLINGS=1 to build from a sibling checkout."
-                log "Building local/tee-proxy from $PROXY_DOCKERFILE (pinned, self-cloning)..."
-                docker build --load -f "$PROXY_DOCKERFILE" -t local/tee-proxy "$PROJECT_DIR/deploy/proxy" || die "Failed to build tee-proxy image"
-            fi
-            log "local/tee-proxy image built successfully"
-        else
-            log "local/tee-proxy image already exists (use 'docker rmi local/tee-proxy' to force rebuild)"
-        fi
-    fi
-
-    COMPOSE_FILES=("-f" "$PROJECT_DIR/deploy/docker-compose.yaml")
-
-    # Toggle: swap the pinned self-contained node build for the sibling-based one.
+    # --- The proxy image ---
+    # The compose file names tee-proxy's published image at the pinned tag, so
+    # nothing is built here. In siblings mode the on-disk checkout is built with
+    # its own Dockerfile into local/tee-proxy and named to compose instead; an
+    # existing local/tee-proxy may be an older build, so it is always rebuilt
+    # (Docker's layer cache keeps that cheap). TEE_PROXY_IMAGE in .env overrides
+    # either.
     if [[ "$USE_LOCAL_SIBLINGS" == "true" ]]; then
-        log "USE_LOCAL_SIBLINGS — node built from on-disk tee-node via Dockerfile.siblings"
-        COMPOSE_FILES+=("-f" "$PROJECT_DIR/deploy/docker-compose.siblings.yaml")
+        # The sibling's Dockerfile declares no module proxy argument, so the build
+        # reads a copy with GOPROXY declared after the first FROM; the copy is
+        # otherwise the sibling's Dockerfile verbatim, the checkout the context.
+        TEE_PROXY_DIR="$SIBLINGS_ROOT/tee-proxy"
+        [[ -d "$TEE_PROXY_DIR" ]] || die "USE_LOCAL_SIBLINGS set but tee-proxy repo not present at $TEE_PROXY_DIR.\n  Clone it into $SIBLINGS_ROOT/, or unset USE_LOCAL_SIBLINGS to run the published image."
         modcache_proxy_start
-    fi
-
-    # One overlay for every live chain; what differs is in the environment and in
-    # the proxy configuration rendered below.
-    if [[ "$CHAIN" != local ]]; then
-        log "$CHAIN — attaching docker-compose.live.yaml"
-        COMPOSE_FILES+=("-f" "$PROJECT_DIR/deploy/docker-compose.live.yaml")
+        log "Building local/tee-proxy from sibling checkout $TEE_PROXY_DIR (USE_LOCAL_SIBLINGS)..."
+        awk '{ print } /^FROM / && !done { print "ARG GOPROXY=https://proxy.golang.org,direct"; print "ENV GOPROXY=$GOPROXY"; done = 1 }' "$TEE_PROXY_DIR/Dockerfile" \
+            | docker build --load --build-arg GOPROXY="$GOPROXY_BUILD" -f - -t local/tee-proxy "$TEE_PROXY_DIR" || die "Failed to build tee-proxy image"
+        TEE_PROXY_IMAGE="local/tee-proxy"; export TEE_PROXY_IMAGE
+    elif [[ -n "${TEE_PROXY_IMAGE:-}" ]]; then
+        log "proxy image: $TEE_PROXY_IMAGE (TEE_PROXY_IMAGE)"
+    else
+        log "proxy image: tee-proxy's published one at the pinned tag (docker-compose.yaml)"
     fi
 
     # A container created but never started by an aborted run keeps that run's

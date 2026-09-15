@@ -12,7 +12,10 @@ services:
       - /data
 
   ext-proxy:
-    image: ${REGISTRY:-local}/tee-proxy
+    # tee-proxy's own published image, at the tag tools/go.mod pins (check-versions.sh
+    # compares the two). USE_LOCAL_SIBLINGS=1 has start-services.sh build
+    # local/tee-proxy from the sibling checkout and name it here instead.
+    image: ${TEE_PROXY_IMAGE:-ghcr.io/flare-foundation/tee-proxy:v0.0.24}
     volumes:
       # start-services.sh points this at a copy rendered with the current
       # simulation's contract addresses for --chain local.
