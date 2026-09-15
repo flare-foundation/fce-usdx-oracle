@@ -34,7 +34,10 @@ func TestLoadState_ValidFile(t *testing.T) {
 		CompletedSteps:         "rR",
 		TeeAttestInstructionID: expectedHash,
 	}
-	data, _ := json.MarshalIndent(state, "", "  ")
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatal(err)
 	}

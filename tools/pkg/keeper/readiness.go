@@ -160,7 +160,7 @@ func postDirectAction(
 	if err != nil {
 		return common.Hash{}, errors.Errorf("posting to the proxy: %s", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

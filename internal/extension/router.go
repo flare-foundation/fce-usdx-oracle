@@ -25,7 +25,7 @@ func (e *Extension) processAction(action teetypes.Action) (int, []byte) {
 	case teetypes.Instruction:
 		df, err := processorutils.Parse[instruction.DataFixed](action.Data.Message)
 		if err != nil {
-			return http.StatusBadRequest, []byte(fmt.Sprintf("decoding fixed data: %v", err))
+			return http.StatusBadRequest, fmt.Appendf(nil, "decoding fixed data: %v", err)
 		}
 		if code, body, bad := checkOPType(df.OPType); bad {
 			return code, body
@@ -42,7 +42,7 @@ func (e *Extension) processAction(action teetypes.Action) (int, []byte) {
 	case teetypes.Direct:
 		di, err := processorutils.Parse[teetypes.DirectInstruction](action.Data.Message)
 		if err != nil {
-			return http.StatusBadRequest, []byte(fmt.Sprintf("decoding direct instruction: %v", err))
+			return http.StatusBadRequest, fmt.Appendf(nil, "decoding direct instruction: %v", err)
 		}
 		if code, body, bad := checkOPType(di.OPType); bad {
 			return code, body
@@ -50,8 +50,8 @@ func (e *Extension) processAction(action teetypes.Action) (int, []byte) {
 		return e.processDirect(action, di)
 
 	default:
-		return http.StatusBadRequest, []byte(fmt.Sprintf(
-			"unknown action type %q", action.Data.Type))
+		return http.StatusBadRequest, fmt.Appendf(nil,
+			"unknown action type %q", action.Data.Type)
 	}
 }
 
@@ -68,10 +68,10 @@ func checkOPType(got common.Hash) (int, []byte, bool) {
 	if got == config.OPTypeTeeOracle {
 		return 0, nil, false
 	}
-	return http.StatusNotImplemented, []byte(fmt.Sprintf(
+	return http.StatusNotImplemented, fmt.Appendf(nil,
 		"unsupported op type: received %s, expected %s (%s)",
 		got.Hex(), config.OPTypeTeeOracle.Hex(), config.OpName(config.OPTypeTeeOracle),
-	)), true
+	), true
 }
 
 // processInstruction routes the commands raised on-chain through
@@ -143,7 +143,7 @@ func (e *Extension) processDirect(
 // naming every command this build serves. Public on the same terms as
 // checkOPType, and listed because the reader is diagnosing a mismatch.
 func unsupportedCommand(cmd common.Hash) (int, []byte) {
-	return http.StatusNotImplemented, []byte(fmt.Sprintf(
+	return http.StatusNotImplemented, fmt.Appendf(nil,
 		"unsupported op command: received %s, expected one of [%s (%s), %s (%s), %s (%s), %s (%s), %s (%s)]",
 		cmd.Hex(),
 		config.OPCommandGetFeed.Hex(), config.OpName(config.OPCommandGetFeed),
@@ -151,5 +151,5 @@ func unsupportedCommand(cmd common.Hash) (int, []byte) {
 		config.OPCommandSetEndpoints.Hex(), config.OpName(config.OPCommandSetEndpoints),
 		config.OPCommandSetAdmins.Hex(), config.OpName(config.OPCommandSetAdmins),
 		config.OPCommandSetSecret.Hex(), config.OpName(config.OPCommandSetSecret),
-	))
+	)
 }

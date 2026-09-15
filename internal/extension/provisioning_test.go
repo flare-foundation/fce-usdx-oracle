@@ -85,7 +85,7 @@ func TestSetSecret_DirectEnvelopeDeliversThePayload(t *testing.T) {
 	envelope := []byte("the-signed-envelope")
 	status, body := e.processAction(
 		configAction(config.OPCommandSetSecret, teetypes.Direct, envelope))
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 1 {
 		t.Fatalf("expected success, got %d: %s", result.Status, result.Log)
@@ -106,7 +106,7 @@ func TestGetPrice_RejectedOverDirectChannel(t *testing.T) {
 	action := buildDirectAction(config.OPTypeTeeOracle, config.OPCommandGetFeed,
 		feedRequest(t))
 	status, body := e.processAction(action)
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected rejection, got status %d", result.Status)
@@ -127,7 +127,7 @@ func TestSetEndpoints_RejectedOverDirectChannel(t *testing.T) {
 
 	status, body := e.processAction(
 		configAction(config.OPCommandSetEndpoints, teetypes.Direct, []byte(`{}`)))
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected rejection, got status %d", result.Status)
@@ -149,7 +149,7 @@ func TestSetAdmins_RejectedOverDirectChannel(t *testing.T) {
 
 	status, body := e.processAction(
 		configAction(config.OPCommandSetAdmins, teetypes.Direct, []byte(`{}`)))
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected rejection, got status %d", result.Status)
@@ -170,7 +170,7 @@ func TestSetSecret_RejectedOverInstructionChannel(t *testing.T) {
 
 	status, body := e.processAction(
 		configAction(config.OPCommandSetSecret, teetypes.Instruction, []byte("envelope")))
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected rejection, got status %d", result.Status)
@@ -203,7 +203,7 @@ func TestConfig_AcceptsOverCorrectChannel(t *testing.T) {
 			e := newProvisionedExtension(p)
 
 			status, body := e.processAction(configAction(c.command, c.actionType, []byte(`{"a":1}`)))
-			result := mustResult(t, status, body, http.StatusOK)
+			result := mustResult(t, status, body)
 
 			if result.Status != 1 {
 				t.Fatalf("expected success, got %d: %s", result.Status, result.Log)
@@ -248,7 +248,7 @@ func TestConfig_ReturnsNoDataOnAnyPath(t *testing.T) {
 // Every rejection reason must be identical, or the endpoint becomes an oracle
 // for probing the admin set and the freshness window.
 func TestSetSecret_AllRejectionsLookTheSame(t *testing.T) {
-	var logs []string
+	logs := make([]string, 0, 3)
 	for range 3 {
 		e := newProvisionedExtension(&fakeProvisioner{secretErr: failure.ProvisionRejected})
 		_, body := e.processAction(configAction(config.OPCommandSetSecret, teetypes.Direct, []byte("x")))
@@ -292,7 +292,7 @@ func TestGetPrice_NotConfiguredBeforeProvisioning(t *testing.T) {
 	// A provisioner without an observer is the real unprovisioned state.
 	status, body := e.processAction(
 		configAction(config.OPCommandSetSecret, teetypes.Instruction, []byte("x")))
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 	if result.Status != 0 {
 		t.Error("expected a rejection over the wrong channel")
 	}
@@ -303,7 +303,7 @@ func TestConfig_WithoutProvisionerIsNotConfigured(t *testing.T) {
 
 	status, body := e.processAction(
 		configAction(config.OPCommandSetSecret, teetypes.Direct, []byte("x")))
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected rejection, got %d", result.Status)

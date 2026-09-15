@@ -266,7 +266,7 @@ func getFailingMessage(client *ethclient.Client, hash common.Hash) (string, erro
 // decodeRevertFromError extracts a revert reason from an RPC error's data field.
 func decodeRevertFromError(err error) string {
 	type dataError interface {
-		ErrorData() interface{}
+		ErrorData() any
 	}
 	var de dataError
 	if stderrors.As(err, &de) {
@@ -322,7 +322,7 @@ func fieldMap(addrStruct *Addresses) map[string]*common.Address {
 
 	v := reflect.ValueOf(addrStruct).Elem()
 	t := v.Type()
-	addrType := reflect.TypeOf(common.Address{})
+	addrType := reflect.TypeFor[common.Address]()
 
 	for i := 0; i < v.NumField(); i++ {
 		fv := v.Field(i)
@@ -338,7 +338,11 @@ func fieldMap(addrStruct *Addresses) map[string]*common.Address {
 			key = ft.Name
 		}
 
-		out[key] = fv.Addr().Interface().(*common.Address)
+		addr, ok := fv.Addr().Interface().(*common.Address)
+		if !ok {
+			continue
+		}
+		out[key] = addr
 	}
 
 	return out

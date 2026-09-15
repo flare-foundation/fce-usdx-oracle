@@ -281,8 +281,8 @@ func rehearse(ctx context.Context, s *support.Support, storeAddr common.Address,
 	if data := fccutils.ExtractRevertData(err); len(data) >= 4 {
 		if named := fccutils.MatchCustomError(parsed, hex.EncodeToString(data)); named != "" {
 			guard := named
-			if i := strings.IndexByte(named, '['); i > 0 {
-				guard = named[:i]
+			if before, _, found := strings.Cut(named, "["); found && before != "" {
+				guard = before
 			}
 			return reject(guard, "the store rejects this batch in rehearsal: %s", named)
 		}

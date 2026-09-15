@@ -77,7 +77,7 @@ func main() {
 // the deployer as the sole signer when empty.
 func parseSigners(raw string, fallback common.Address) []common.Address {
 	var signers []common.Address
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		if part = strings.TrimSpace(part); part != "" {
 			signers = append(signers, common.HexToAddress(part))
 		}

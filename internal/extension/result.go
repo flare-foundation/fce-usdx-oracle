@@ -44,7 +44,12 @@ func (e *Extension) result(
 		e.mu.Unlock()
 	}
 
-	b, _ := json.Marshal(buildResult(action, opCommand, o.data, status, err))
+	b, encErr := json.Marshal(buildResult(action, opCommand, o.data, status, err))
+	if encErr != nil {
+		// The envelope is built from this package's own types, so this is a
+		// programming error; answered with a constant, nothing runtime-derived.
+		return http.StatusInternalServerError, []byte("encoding the action result")
+	}
 	return http.StatusOK, b
 }
 

@@ -25,7 +25,7 @@ func nowStamp() string { return time.Now().UTC().Format(time.RFC3339) }
 // newTestSource points a Source at a test server. It bypasses New()'s https
 // requirement, which httptest cannot satisfy without a certificate; every other
 // validation rule still applies.
-func newTestSource(t *testing.T, cfg Config, handler http.HandlerFunc) (Source, *httptest.Server) {
+func newTestSource(t *testing.T, cfg Config, handler http.HandlerFunc) Source {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -45,18 +45,18 @@ func newTestSource(t *testing.T, cfg Config, handler http.HandlerFunc) (Source, 
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	return &hexSource{cfg: cfg, client: client}, srv
+	return &hexSource{cfg: cfg, client: client}
 }
 
 func serve(body string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}
 }
 
 func TestFetch_PublicEndpointShape(t *testing.T) {
-	s, _ := newTestSource(t, Config{RequireCurrency: false},
+	s := newTestSource(t, Config{RequireCurrency: false},
 		serve(fmt.Sprintf(publicBody, nowStamp())))
 
 	got, err := s.Fetch(context.Background())
@@ -69,7 +69,7 @@ func TestFetch_PublicEndpointShape(t *testing.T) {
 }
 
 func TestFetch_PrivateEndpointShape(t *testing.T) {
-	s, _ := newTestSource(t, Config{RequireCurrency: true},
+	s := newTestSource(t, Config{RequireCurrency: true},
 		serve(fmt.Sprintf(privateBody, nowStamp())))
 
 	got, err := s.Fetch(context.Background())
@@ -87,12 +87,12 @@ func TestFetch_PrivateEndpointShape(t *testing.T) {
 func TestFetch_RequiringCurrencyWouldBreakThePublicEndpoint(t *testing.T) {
 	body := fmt.Sprintf(publicBody, nowStamp())
 
-	lenient, _ := newTestSource(t, Config{RequireCurrency: false}, serve(body))
+	lenient := newTestSource(t, Config{RequireCurrency: false}, serve(body))
 	if _, err := lenient.Fetch(context.Background()); err != nil {
 		t.Fatalf("public endpoint must parse without a currency field: %v", err)
 	}
 
-	strict, _ := newTestSource(t, Config{RequireCurrency: true}, serve(body))
+	strict := newTestSource(t, Config{RequireCurrency: true}, serve(body))
 	if _, err := strict.Fetch(context.Background()); !errors.Is(err, failure.BackingCurrency) {
 		t.Fatalf("expected BackingCurrency, got %v", err)
 	}
@@ -110,7 +110,7 @@ func TestFetch_AcceptsBothValueFormatsOnEitherEndpoint(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			body := fmt.Sprintf(
 				`{"metric_name":"m","value":%q,"last_update":%q}`, c.value, nowStamp())
-			s, _ := newTestSource(t, Config{}, serve(body))
+			s := newTestSource(t, Config{}, serve(body))
 			got, err := s.Fetch(context.Background())
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -139,7 +139,7 @@ func TestFetch_RejectsMalformed(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s, _ := newTestSource(t, Config{}, serve(c.body))
+			s := newTestSource(t, Config{}, serve(c.body))
 			_, err := s.Fetch(context.Background())
 			if !errors.Is(err, c.want) {
 				t.Errorf("expected %v, got %v", c.want, err)
@@ -153,7 +153,7 @@ func TestFetch_RejectsMalformed(t *testing.T) {
 func TestFetch_PresentButWrongCurrencyRejectedEvenWhenOptional(t *testing.T) {
 	body := fmt.Sprintf(
 		`{"metric_name":"m","value":"1","currency":"EUR","last_update":%q}`, nowStamp())
-	s, _ := newTestSource(t, Config{RequireCurrency: false}, serve(body))
+	s := newTestSource(t, Config{RequireCurrency: false}, serve(body))
 	if _, err := s.Fetch(context.Background()); !errors.Is(err, failure.BackingCurrency) {
 		t.Errorf("expected BackingCurrency, got %v", err)
 	}
@@ -169,7 +169,7 @@ func TestFetch_OldTimestampAccepted(t *testing.T) {
 	for _, age := range []time.Duration{2 * time.Hour, 7 * time.Hour, 30 * 24 * time.Hour} {
 		t.Run(age.String(), func(t *testing.T) {
 			old := time.Now().UTC().Add(-age).Format(time.RFC3339)
-			s, _ := newTestSource(t, Config{}, serve(fmt.Sprintf(publicBody, old)))
+			s := newTestSource(t, Config{}, serve(fmt.Sprintf(publicBody, old)))
 
 			r, err := s.Fetch(context.Background())
 			if err != nil {
@@ -189,7 +189,7 @@ func TestFetch_OldTimestampAccepted(t *testing.T) {
 // or a broken upstream, so nothing else in the response can be trusted either.
 func TestFetch_FutureTimestampRejected(t *testing.T) {
 	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-	s, _ := newTestSource(t, Config{}, serve(fmt.Sprintf(publicBody, future)))
+	s := newTestSource(t, Config{}, serve(fmt.Sprintf(publicBody, future)))
 
 	if _, err := s.Fetch(context.Background()); !errors.Is(err, failure.BackingTimestamp) {
 		t.Errorf("expected BackingTimestamp, got %v", err)
@@ -209,7 +209,7 @@ func TestFetch_HTTPErrorsClassified(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(http.StatusText(c.code), func(t *testing.T) {
-			s, _ := newTestSource(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
+			s := newTestSource(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(c.code)
 			})
 			if _, err := s.Fetch(context.Background()); !errors.Is(err, c.want) {
@@ -221,11 +221,11 @@ func TestFetch_HTTPErrorsClassified(t *testing.T) {
 
 func TestFetch_SendsAuthHeader(t *testing.T) {
 	var got string
-	s, _ := newTestSource(t,
+	s := newTestSource(t,
 		Config{AuthHeader: "X-API-Key", AuthValue: "secret-value"},
 		func(w http.ResponseWriter, r *http.Request) {
 			got = r.Header.Get("X-API-Key")
-			fmt.Fprint(w, fmt.Sprintf(publicBody, nowStamp()))
+			_, _ = fmt.Fprintf(w, publicBody, nowStamp())
 		})
 
 	if _, err := s.Fetch(context.Background()); err != nil {
@@ -243,7 +243,7 @@ func TestFetch_DoesNotFollowRedirects(t *testing.T) {
 	var leakedTo string
 	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		leakedTo = r.Header.Get("X-API-Key")
-		fmt.Fprint(w, fmt.Sprintf(publicBody, nowStamp()))
+		_, _ = fmt.Fprintf(w, publicBody, nowStamp())
 	}))
 	defer sink.Close()
 
@@ -261,7 +261,10 @@ func TestFetch_DoesNotFollowRedirects(t *testing.T) {
 	}
 	// Swap in the plain-HTTP client so the redirect is actually exercised; the
 	// CheckRedirect policy under test is set by New().
-	hs := s.(*hexSource)
+	hs, ok := s.(*hexSource)
+	if !ok {
+		t.Fatalf("New returned %T, want *hexSource", s)
+	}
 	hs.cfg.URL = src.URL
 	hs.client = &http.Client{Timeout: time.Second, CheckRedirect: hs.client.CheckRedirect}
 
@@ -273,7 +276,7 @@ func TestFetch_DoesNotFollowRedirects(t *testing.T) {
 }
 
 func TestFetch_TimeoutClassified(t *testing.T) {
-	s, _ := newTestSource(t, Config{Timeout: 50 * time.Millisecond},
+	s := newTestSource(t, Config{Timeout: 50 * time.Millisecond},
 		func(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(500 * time.Millisecond)
 		})
@@ -284,7 +287,7 @@ func TestFetch_TimeoutClassified(t *testing.T) {
 }
 
 func TestFetch_RespectsContextCancellation(t *testing.T) {
-	s, _ := newTestSource(t, Config{Timeout: 5 * time.Second},
+	s := newTestSource(t, Config{Timeout: 5 * time.Second},
 		func(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(2 * time.Second)
 		})
@@ -303,12 +306,12 @@ func TestFetch_RespectsContextCancellation(t *testing.T) {
 
 // A body that never ends must not be read without bound.
 func TestFetch_BodyIsSizeCapped(t *testing.T) {
-	s, _ := newTestSource(t, Config{Timeout: 2 * time.Second},
+	s := newTestSource(t, Config{Timeout: 2 * time.Second},
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			chunk := strings.Repeat("a", 4096)
 			for range 100 {
-				fmt.Fprint(w, chunk)
+				_, _ = fmt.Fprint(w, chunk)
 			}
 		})
 
@@ -322,7 +325,7 @@ func TestFetch_BodyIsSizeCapped(t *testing.T) {
 func TestFetch_AllErrorsArePublishable(t *testing.T) {
 	bodies := []string{`not json`, `{"value":""}`, `{"metric_name":"m","value":"x","last_update":"y"}`}
 	for _, b := range bodies {
-		s, _ := newTestSource(t, Config{}, serve(b))
+		s := newTestSource(t, Config{}, serve(b))
 		_, err := s.Fetch(context.Background())
 		if err == nil {
 			continue

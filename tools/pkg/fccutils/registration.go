@@ -172,8 +172,9 @@ func RegisterNode(s *support.Support, teeInfo *types.SignedTeeInfoResponse, host
 		}
 	}
 
-	// All steps completed — delete state file
-	os.Remove(stateFilePath)
+	// Every step completed: the state file has served its purpose. Best effort;
+	// a leftover file only means the next run finds nothing left to resume.
+	_ = os.Remove(stateFilePath)
 	return nil
 }
 

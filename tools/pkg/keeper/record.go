@@ -2,6 +2,7 @@ package keeper
 
 import (
 	"encoding/json"
+	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"io"
 	"time"
 )
@@ -150,5 +151,7 @@ func (e *Emitter) Emit(r Record) {
 		return
 	}
 	r.DurationMS = r.CycleEndedAt.Sub(r.CycleStartedAt).Milliseconds()
-	_ = e.enc.Encode(r)
+	if err := e.enc.Encode(r); err != nil {
+		logger.Warnf("writing the cycle record: %s", err)
+	}
 }

@@ -65,7 +65,7 @@ func readinessProxy(t *testing.T, wouldSign bool) *httptest.Server {
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			_ = json.NewEncoder(w).Encode(teetypes.Action{
+			encodeJSON(t, w, teetypes.Action{
 				Data: teetypes.ActionData{
 					ID:            testReadinessID,
 					Type:          teetypes.Direct,
@@ -74,7 +74,7 @@ func readinessProxy(t *testing.T, wouldSign bool) *httptest.Server {
 			})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(teetypes.ActionResponse{
+		encodeJSON(t, w, teetypes.ActionResponse{
 			Result: teetypes.ActionResult{Status: statusSucceeded, Data: data},
 		})
 	}))

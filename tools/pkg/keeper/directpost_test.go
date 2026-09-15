@@ -36,7 +36,7 @@ func TestPostDirectAction_SendsTheDirectInstructionShape(t *testing.T) {
 		gotPath = r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 
-		_ = json.NewEncoder(w).Encode(teetypes.Action{
+		encodeJSON(t, w, teetypes.Action{
 			Data: teetypes.ActionData{
 				ID:            common.HexToHash("0xabc"),
 				Type:          teetypes.Direct,
@@ -116,7 +116,7 @@ func TestPollResult_SendsTheSubmissionTag(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotTag = r.URL.Query().Get("submissionTag")
-		_ = json.NewEncoder(w).Encode(teetypes.ActionResponse{
+		encodeJSON(t, w, teetypes.ActionResponse{
 			Result: teetypes.ActionResult{Status: statusSucceeded},
 		})
 	}))
@@ -150,5 +150,14 @@ func TestQueryReadiness_RequiresProxyAndKey(t *testing.T) {
 				t.Fatal("expected a configuration error")
 			}
 		})
+	}
+}
+
+// encodeJSON writes v as a test server's response. The fixtures are the
+// package's own types, so a failure is a broken test rather than a case.
+func encodeJSON(t *testing.T, w http.ResponseWriter, v any) {
+	t.Helper()
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Errorf("encoding the response: %v", err)
 	}
 }

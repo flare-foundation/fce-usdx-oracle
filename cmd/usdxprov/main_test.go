@@ -45,7 +45,7 @@ func TestFetchKeyDerivesTeeID(t *testing.T) {
 	if teeID != want {
 		t.Fatalf("teeID = %s, want %s derived from the publicKey", teeID, want)
 	}
-	if pub.X.Cmp(key.PublicKey.X) != 0 || pub.Y.Cmp(key.PublicKey.Y) != 0 {
+	if pub.X.Cmp(key.X) != 0 || pub.Y.Cmp(key.Y) != 0 {
 		t.Fatal("public key round-trip mismatch")
 	}
 }
@@ -295,7 +295,7 @@ func resultServer(t *testing.T, id common.Hash, after int, result teetypes.Actio
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(teetypes.ActionResponse{Result: result})
+		encodeJSON(t, w, teetypes.ActionResponse{Result: result})
 	}))
 	return srv, &polls
 }
@@ -329,5 +329,14 @@ func TestAwaitResultReportsTheMachinesVerdict(t *testing.T) {
 	defer never.Close()
 	if err := awaitResult(never.URL, id, 20*time.Millisecond); err == nil {
 		t.Fatal("a result that never arrives must be reported, not treated as applied")
+	}
+}
+
+// encodeJSON writes v as a test server's response. The fixtures are the
+// package's own types, so a failure is a broken test rather than a case.
+func encodeJSON(t *testing.T, w http.ResponseWriter, v any) {
+	t.Helper()
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Errorf("encoding the response: %v", err)
 	}
 }

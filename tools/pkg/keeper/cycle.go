@@ -154,7 +154,7 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) ([]feedupdate.
 	rec.Proxy = results[0].proxy
 	rec.SourceHealth = sourceHealth(results[0].proxy)
 
-	var updates []feedupdate.Update
+	updates := make([]feedupdate.Update, 0, len(results))
 	for _, r := range results {
 		if r.result.Status != statusSucceeded {
 			// A status-0 result is the extension declining to publish; Log is a
@@ -547,7 +547,7 @@ func fetchResult(
 	if err != nil {
 		return teetypes.ActionResult{}, false, errors.Errorf("querying the proxy: %s", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		// 404 until the TEE has answered — the normal early state, not a fault.

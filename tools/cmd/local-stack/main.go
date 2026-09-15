@@ -334,7 +334,7 @@ func flushRedis(ctx context.Context, addr string) error {
 		addr = "localhost" + addr
 	}
 	client := redis.NewClient(&redis.Options{Addr: addr})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return client.FlushDB(ctx).Err()
@@ -354,7 +354,7 @@ func waitForURL(ctx context.Context, url string, timeout time.Duration) error {
 	for {
 		resp, err := client.Get(url)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
 			}

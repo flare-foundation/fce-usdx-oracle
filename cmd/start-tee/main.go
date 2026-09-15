@@ -60,7 +60,9 @@ func main() {
 	if err != nil {
 		logger.Fatalf("%v", err)
 	}
-	os.Setenv("EXTENSION_ID", extEnv)
+	if err := os.Setenv("EXTENSION_ID", extEnv); err != nil {
+		logger.Fatalf("%v", err)
+	}
 	logger.Infof("extension id %s, chain id %d", config.ExtensionID(), config.ChainID())
 
 	runExtension()
@@ -124,7 +126,7 @@ func setProxyURL(configurationPort, proxyPort int) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
@@ -156,7 +158,9 @@ func setOwnerAddress() common.Address {
 		}
 
 		ownerAddress := crypto.PubkeyToAddress(privKey.PublicKey)
-		os.Setenv("INITIAL_OWNER", ownerAddress.String())
+		if err := os.Setenv("INITIAL_OWNER", ownerAddress.String()); err != nil {
+			logger.Fatalf("%v", err)
+		}
 	}
 
 	return common.HexToAddress(owner)

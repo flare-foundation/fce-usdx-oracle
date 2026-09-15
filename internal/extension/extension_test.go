@@ -95,7 +95,7 @@ func buildTestAction(opType, opCommand common.Hash, originalMessage []byte) teet
 		OPCommand:       opCommand,
 		OriginalMessage: originalMessage,
 	}
-	msg, _ := json.Marshal(df)
+	msg := mustJSON(df)
 
 	return teetypes.Action{
 		Data: teetypes.ActionData{
@@ -123,7 +123,7 @@ func buildDirectAction(opType, opCommand common.Hash, message []byte) teetypes.A
 		OPCommand: opCommand,
 		Message:   message,
 	}
-	raw, _ := json.Marshal(di)
+	raw := mustJSON(di)
 
 	return teetypes.Action{
 		Data: teetypes.ActionData{
@@ -143,12 +143,23 @@ func getFeedAction(t *testing.T) teetypes.Action {
 		feedRequest(t))
 }
 
+// mustJSON encodes a test fixture; the fixtures are this package's own types, so
+// a failure is a broken test rather than a case to report.
+func mustJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
 // mustResult unwraps an ActionResult from a handler body, failing the test if it
-// does not decode or the HTTP status is unexpected.
-func mustResult(t *testing.T, status int, body []byte, wantStatus int) teetypes.ActionResult {
+// does not decode or the HTTP status is not 200: every action, accepted or
+// refused, is answered with a result envelope.
+func mustResult(t *testing.T, status int, body []byte) teetypes.ActionResult {
 	t.Helper()
-	if status != wantStatus {
-		t.Fatalf("expected HTTP status %d, got %d: %s", wantStatus, status, body)
+	if status != http.StatusOK {
+		t.Fatalf("expected HTTP status %d, got %d: %s", http.StatusOK, status, body)
 	}
 	var result teetypes.ActionResult
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -229,7 +240,7 @@ func TestProcessGetFeed_RejectsPayload(t *testing.T) {
 	)
 
 	status, body := e.processAction(action)
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected ActionResult.Status=0 for an unexpected payload, got %d", result.Status)
@@ -288,7 +299,7 @@ func TestProcessGetFeed_RequiresTheRequestEnvelope(t *testing.T) {
 				config.OPTypeTeeOracle, config.OPCommandGetFeed, c.payload)
 
 			status, body := e.processAction(action)
-			result := mustResult(t, status, body, http.StatusOK)
+			result := mustResult(t, status, body)
 
 			if c.accept {
 				if result.Status != 1 {
@@ -381,7 +392,7 @@ func TestState_UpdateCountIncrementsAcrossCalls(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		status, body := e.processAction(getFeedAction(t))
-		result := mustResult(t, status, body, http.StatusOK)
+		result := mustResult(t, status, body)
 		if result.Status != 1 {
 			t.Fatalf("call %d: expected status 1, got %d: %s", i, result.Status, result.Log)
 		}
@@ -556,7 +567,7 @@ func TestProcessGetFeed_UsesObserverResult(t *testing.T) {
 	e.observer = o
 
 	status, body := e.processAction(getFeedAction(t))
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 1 {
 		t.Fatalf("expected status 1, got %d: %s", result.Status, result.Log)
@@ -586,7 +597,7 @@ func TestProcessGetFeed_ObserverFailureFailsClosed(t *testing.T) {
 	e.observer = o
 
 	status, body := e.processAction(getFeedAction(t))
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected status 0, got %d", result.Status)
@@ -613,7 +624,7 @@ func TestProcessGetFeed_ForeignErrorIsNotPublished(t *testing.T) {
 	e.observer = o
 
 	status, body := e.processAction(getFeedAction(t))
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if strings.Contains(string(body), "SECRET") || strings.Contains(string(body), "10.0.0.1") {
 		t.Errorf("a raw error reached the public result: %s", body)
@@ -714,7 +725,7 @@ func TestProcessGetFeed_ForwardsTheRequestingBlockTimestamp(t *testing.T) {
 	e.observer = o
 
 	status, body := e.processAction(getFeedAction(t))
-	mustResult(t, status, body, http.StatusOK)
+	mustResult(t, status, body)
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -732,7 +743,7 @@ func TestProcessGetFeed_ClockRefusalIsPublishable(t *testing.T) {
 	e.observer = o
 
 	status, body := e.processAction(getFeedAction(t))
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected status 0, got %d", result.Status)

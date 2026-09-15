@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,10 +92,8 @@ func (p Policy) FloorFor(role string) (int, bool) {
 // RoleFor maps a ref to the role that governs it. Anything not named as a
 // backing ref falls under the STRONGER providers set, including unknown refs.
 func (p Policy) RoleFor(ref string) string {
-	for _, r := range p.BackingRefs {
-		if r == ref {
-			return RoleBacking
-		}
+	if slices.Contains(p.BackingRefs, ref) {
+		return RoleBacking
 	}
 	return RoleProviders
 }
@@ -407,7 +406,7 @@ func hasThreshold(body []byte, sigs [][]byte, set AdminSet) bool {
 
 	seen := make(map[common.Address]bool, len(sigs))
 	for _, sig := range sigs {
-		signer, ok := recover(digest, sig)
+		signer, ok := recoverSigner(digest, sig)
 		if !ok {
 			continue
 		}
@@ -420,17 +419,12 @@ func hasThreshold(body []byte, sigs [][]byte, set AdminSet) bool {
 }
 
 func isAdmin(admins []common.Address, a common.Address) bool {
-	for _, admin := range admins {
-		if admin == a {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(admins, a)
 }
 
-// recover accepts v as 27/28, the standard produced by personal-sign tooling
-// and hardware wallets.
-func recover(digest []byte, sig []byte) (common.Address, bool) {
+// recoverSigner accepts v as 27/28, the standard produced by personal-sign
+// tooling and hardware wallets.
+func recoverSigner(digest []byte, sig []byte) (common.Address, bool) {
 	if len(sig) != SignatureLength {
 		return common.Address{}, false
 	}

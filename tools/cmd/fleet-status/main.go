@@ -80,7 +80,7 @@ func main() {
 	// The instructions sender is derived from the store's own pointer unless given
 	// explicitly — the store's instructionsSender() is the single source of truth,
 	// the same address the preflight checks.
-	senderAddr := common.Address{}
+	var senderAddr common.Address
 	if *senderF != "" {
 		senderAddr = common.HexToAddress(*senderF)
 	} else {
@@ -101,7 +101,9 @@ func main() {
 
 	if *jsonOut {
 		enc := json.NewEncoder(os.Stdout)
-		_ = enc.Encode(machines)
+		if err := enc.Encode(machines); err != nil {
+			fccutils.FatalWithCause(err)
+		}
 		return
 	}
 

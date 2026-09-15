@@ -2,7 +2,6 @@ package validate
 
 import (
 	"math/big"
-	"os"
 	"strings"
 	"testing"
 
@@ -70,20 +69,15 @@ func TestKeyHasFunds_NilClient(t *testing.T) {
 }
 
 func TestIsUsingDevKey_WhenSet(t *testing.T) {
-	original := os.Getenv("DEPLOYMENT_PRIVATE_KEY")
-	defer os.Setenv("DEPLOYMENT_PRIVATE_KEY", original)
-
-	os.Setenv("DEPLOYMENT_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
+	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
 	if IsUsingDevKey() {
 		t.Error("expected IsUsingDevKey() to return false when DEPLOYMENT_PRIVATE_KEY is set")
 	}
 }
 
 func TestIsUsingDevKey_WhenUnset(t *testing.T) {
-	original := os.Getenv("DEPLOYMENT_PRIVATE_KEY")
-	defer os.Setenv("DEPLOYMENT_PRIVATE_KEY", original)
-
-	os.Unsetenv("DEPLOYMENT_PRIVATE_KEY")
+	// t.Setenv cannot unset; the check treats an empty value as unset.
+	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "")
 	if !IsUsingDevKey() {
 		t.Error("expected IsUsingDevKey() to return true when DEPLOYMENT_PRIVATE_KEY is unset")
 	}

@@ -85,7 +85,7 @@ func extensionState(url string) teetypes.TeeState {
 	if err != nil {
 		return unavailable
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil || res.StatusCode != http.StatusOK {
 		return unavailable
@@ -146,7 +146,9 @@ func signHandler(key *ecdsa.PrivateKey) http.HandlerFunc {
 			http.Error(w, "cannot sign", http.StatusInternalServerError)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(signResponse{Message: req.Message, Signature: sig})
+		if err := json.NewEncoder(w).Encode(signResponse{Message: req.Message, Signature: sig}); err != nil {
+			http.Error(w, "cannot encode the response", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -163,7 +165,9 @@ func decryptHandler(key *ecdsa.PrivateKey) http.HandlerFunc {
 			http.Error(w, "cannot decrypt", http.StatusInternalServerError)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(decryptResponse{DecryptedMessage: plaintext})
+		if err := json.NewEncoder(w).Encode(decryptResponse{DecryptedMessage: plaintext}); err != nil {
+			http.Error(w, "cannot encode the response", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -173,6 +177,8 @@ func infoHandler(key *ecdsa.PrivateKey, addr fmt.Stringer, stateURL string) http
 		resp.TEEInfo.TeeID = addr.String()
 		resp.TEEInfo.PublicKey = teetypes.PubKeyToStruct(&key.PublicKey)
 		resp.TEEInfo.State = extensionState(stateURL)
-		_ = json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			http.Error(w, "cannot encode the response", http.StatusInternalServerError)
+		}
 	}
 }

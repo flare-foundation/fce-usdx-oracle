@@ -190,9 +190,7 @@ func agreedBlock(ctx context.Context, ch ChainSource, health map[string]string) 
 
 	var wg sync.WaitGroup
 	for i, p := range ch.Providers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			// nil is the latest block.
 			h, err := p.Client.HeaderByNumber(ctx, nil)
 			if err != nil {
@@ -204,7 +202,7 @@ func agreedBlock(ctx context.Context, ch ChainSource, health map[string]string) 
 				return
 			}
 			results[i] = result{n: h.Number.Uint64()}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -259,15 +257,13 @@ func agreedBlockTime(
 
 	var wg sync.WaitGroup
 	for i, p := range ch.Providers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			h, err := p.Client.HeaderByNumber(ctx, at)
 			if err != nil || h == nil {
 				return
 			}
 			stamps[i], okAt[i] = h.Time, true
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -364,9 +360,7 @@ func callAll(ctx context.Context, ch ChainSource, selector []byte, at *big.Int) 
 
 	var wg sync.WaitGroup
 	for i, p := range ch.Providers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			// Always an explicit block number: never a tag, never nil.
 			data, err := p.Client.CallContract(ctx, call, at)
 			// A single ABI word. Anything else is a wrong address, a proxy
@@ -375,7 +369,7 @@ func callAll(ctx context.Context, ch ChainSource, selector []byte, at *big.Int) 
 				return
 			}
 			answers[i] = data
-		}()
+		})
 	}
 	wg.Wait()
 

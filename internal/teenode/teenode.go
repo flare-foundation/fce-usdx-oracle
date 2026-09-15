@@ -136,7 +136,7 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 	if err != nil {
 		return failure.SignUnavailable
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return failure.SignRejected

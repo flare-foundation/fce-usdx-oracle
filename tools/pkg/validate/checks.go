@@ -164,7 +164,7 @@ func CheckExtensionEnvFormat(path string) []CheckResult {
 			Message: "file not found: " + path,
 		}}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Parse key=value pairs.
 	vars := make(map[string]string)
@@ -222,7 +222,7 @@ func parseExtensionEnv(path string) (extensionID string, err error) {
 	if err != nil {
 		return "", nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -491,7 +491,7 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 	}
 	conn, err := net.DialTimeout("tcp", "localhost:"+port, 1*time.Second)
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		r.Add(CheckResult{
 			Step:    "services",
 			ID:      "S5",
@@ -546,7 +546,7 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 		resp, err := httpClient.Get(proxyURL + "/info")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			r.Add(CheckResult{
@@ -714,7 +714,7 @@ func RegisterTeeVersionChecks(r *Report, extensionEnvPath string) {
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 		resp, err := httpClient.Get(proxyURL + "/info")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			r.Add(CheckResult{
@@ -784,7 +784,7 @@ func RegisterTeeMachineChecks(r *Report, extensionEnvPath string) {
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 		resp, err := httpClient.Get(normalProxyURL + "/info")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			r.Add(CheckResult{
@@ -820,7 +820,7 @@ func RegisterTeeMachineChecks(r *Report, extensionEnvPath string) {
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 		resp, err := httpClient.Get(extProxyURL + "/info")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			r.Add(CheckResult{
@@ -907,7 +907,7 @@ func RegisterTestChecks(r *Report, extensionEnvPath string) {
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 		resp, err := httpClient.Get(proxyURL + "/info")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			r.Add(CheckResult{

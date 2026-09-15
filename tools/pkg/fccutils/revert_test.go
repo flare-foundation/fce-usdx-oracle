@@ -13,11 +13,11 @@ import (
 // for JSON-RPC errors containing revert data.
 type mockDataError struct {
 	msg  string
-	data interface{}
+	data any
 }
 
-func (e *mockDataError) Error() string          { return e.msg }
-func (e *mockDataError) ErrorData() interface{} { return e.data }
+func (e *mockDataError) Error() string  { return e.msg }
+func (e *mockDataError) ErrorData() any { return e.data }
 
 // makeRevertHex creates a valid ABI-encoded Error(string) revert in hex form.
 func makeRevertHex(msg string) string {

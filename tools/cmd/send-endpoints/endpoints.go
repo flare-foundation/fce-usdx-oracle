@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -288,12 +289,7 @@ func summarise(groups []oraclepayload.Group) string {
 }
 
 func isKnownGroup(name string) bool {
-	for _, c := range knownGroups {
-		if c == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(knownGroups, name)
 }
 
 func sortedKeys(e map[string]groupConfig) []string {

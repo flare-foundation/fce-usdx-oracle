@@ -40,7 +40,9 @@ func main() {
 	if err != nil {
 		logger.Fatalf("%v", err)
 	}
-	os.Setenv("EXTENSION_ID", extEnv)
+	if err := os.Setenv("EXTENSION_ID", extEnv); err != nil {
+		logger.Fatalf("%v", err)
+	}
 	logger.Infof("extension id %s (EXTENSION_ID=%s), chain id %d", config.ExtensionID(), extEnv, config.ChainID())
 
 	// Start tee-node in extension mode.

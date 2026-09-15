@@ -98,7 +98,10 @@ func main() {
 	var prev *sample
 	for {
 		s := poll(ctx, *pf, *apiKeyF, *timeoutF)
-		enc.Encode(s) //nolint:errcheck // the records file is telemetry; a write error must not stop the watch
+		// The records are telemetry: a write error is reported and the watch goes on.
+		if err := enc.Encode(s); err != nil {
+			logger.Warnf("writing the sample: %s", err)
+		}
 		report(prev, s)
 		prev = &s
 		if *onceF {

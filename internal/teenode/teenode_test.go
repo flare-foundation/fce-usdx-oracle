@@ -136,8 +136,14 @@ func TestWireFormatMatchesTeeNode(t *testing.T) {
 		t.Errorf("SignRequest diverged from tee-node:\n ours:   %s\n theirs: %s", ours, theirs)
 	}
 
-	oursResp, _ := json.Marshal(signResponse{Message: []byte("m"), Signature: []byte("s")})
-	theirsResp, _ := json.Marshal(teetypes.SignResponse{Message: []byte("m"), Signature: []byte("s")})
+	oursResp, err := json.Marshal(signResponse{Message: []byte("m"), Signature: []byte("s")})
+	if err != nil {
+		t.Fatalf("marshal ours: %v", err)
+	}
+	theirsResp, err := json.Marshal(teetypes.SignResponse{Message: []byte("m"), Signature: []byte("s")})
+	if err != nil {
+		t.Fatalf("marshal theirs: %v", err)
+	}
 	if string(oursResp) != string(theirsResp) {
 		t.Errorf("SignResponse diverged from tee-node:\n ours:   %s\n theirs: %s", oursResp, theirsResp)
 	}
@@ -235,7 +241,7 @@ func TestClient_Sign(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(signResponse{
+		encodeJSON(t, w, signResponse{
 			Message:   req.Message,
 			Signature: teeNodeSign(t, req.Message, key),
 		})
@@ -270,12 +276,12 @@ func TestClient_SignFailures(t *testing.T) {
 			_, _ = w.Write([]byte("not json"))
 		}, failure.SignRejected},
 		{"short signature", func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(signResponse{Signature: []byte{1, 2, 3}})
+			encodeJSON(t, w, signResponse{Signature: []byte{1, 2, 3}})
 		}, failure.SignRejected},
 		{"invalid recovery id", func(w http.ResponseWriter, r *http.Request) {
 			sig := make([]byte, SignatureLength)
 			sig[64] = 99
-			_ = json.NewEncoder(w).Encode(signResponse{Signature: sig})
+			encodeJSON(t, w, signResponse{Signature: sig})
 		}, failure.SignRejected},
 	}
 	for _, c := range cases {
@@ -303,7 +309,7 @@ func TestClient_Decrypt(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req decryptRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		_ = json.NewEncoder(w).Encode(decryptResponse{DecryptedMessage: []byte("api-key-plaintext")})
+		encodeJSON(t, w, decryptResponse{DecryptedMessage: []byte("api-key-plaintext")})
 	}))
 	defer srv.Close()
 
@@ -336,5 +342,14 @@ func TestClient_ErrorsArePublishable(t *testing.T) {
 	var f failure.Failure
 	if !errors.As(err, &f) {
 		t.Errorf("error %v is not a failure.Failure", err)
+	}
+}
+
+// encodeJSON writes v as a test server's response. The fixtures are the
+// package's own types, so a failure is a broken test rather than a case.
+func encodeJSON(t *testing.T, w http.ResponseWriter, v any) {
+	t.Helper()
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Errorf("encoding the response: %v", err)
 	}
 }

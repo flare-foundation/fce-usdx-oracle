@@ -3,6 +3,7 @@ package extension
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 
 	"fce-usdx-oracle/internal/config"
@@ -24,9 +25,7 @@ func (e *Extension) stateHandler(w http.ResponseWriter, r *http.Request) {
 	// Copy the map: handing the live one to the encoder would race with a
 	// concurrent action updating source health.
 	health := make(map[string]string, len(e.sourceHealth))
-	for k, v := range e.sourceHealth {
-		health[k] = v
-	}
+	maps.Copy(health, e.sourceHealth)
 	state := types.State{
 		LastPrice:      e.lastPrice,
 		LastDecimals:   e.lastDecimals,

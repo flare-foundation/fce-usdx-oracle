@@ -152,10 +152,12 @@ func TestCheckDeployerKeySource_DevKeyLocal(t *testing.T) {
 func TestParseExtensionEnv_Valid(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
+	if err := os.WriteFile(envFile, []byte(
 		"# Auto-generated\n"+
 			"EXTENSION_ID=1\n",
-	), 0644)
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	extID, err := parseExtensionEnv(envFile)
 	if err != nil {
@@ -194,9 +196,11 @@ func TestRegisterServicesChecks_NoConfig(t *testing.T) {
 func TestRegisterServicesChecks_WithValidConfig(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
+	if err := os.WriteFile(envFile, []byte(
 		"EXTENSION_ID=1\n",
-	), 0644)
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	r := &Report{}
 	RegisterServicesChecks(r, envFile)
@@ -284,9 +288,11 @@ func TestRegisterTestChecks_NoConfig(t *testing.T) {
 func TestRegisterTestChecks_WithValidConfig(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
+	if err := os.WriteFile(envFile, []byte(
 		"EXTENSION_ID=1\n",
-	), 0644)
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	r := &Report{}
 	RegisterTestChecks(r, envFile)
@@ -304,9 +310,11 @@ func TestRegisterTestChecks_WithValidConfig(t *testing.T) {
 func TestRegisterTeeVersionChecks_WithConfig(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
+	if err := os.WriteFile(envFile, []byte(
 		"EXTENSION_ID=1\n",
-	), 0644)
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "abc123")
 	r := &Report{}
@@ -335,12 +343,14 @@ func TestRegisterTeeVersionChecks_WithConfig(t *testing.T) {
 func TestParseExtensionEnv_CommentsOnly(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
+	if err := os.WriteFile(envFile, []byte(
 		"# This is a comment\n"+
 			"# Another comment\n"+
 			"\n"+
 			"  \n",
-	), 0644)
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	extID, err := parseExtensionEnv(envFile)
 	if err != nil {
@@ -354,11 +364,13 @@ func TestParseExtensionEnv_CommentsOnly(t *testing.T) {
 func TestParseExtensionEnv_ExtraKeys(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
+	if err := os.WriteFile(envFile, []byte(
 		"EXTENSION_ID=1\n"+
 			"EXTRA_KEY=some_value\n"+
 			"ANOTHER_KEY=another_value\n",
-	), 0644)
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	extID, err := parseExtensionEnv(envFile)
 	if err != nil {
@@ -372,9 +384,11 @@ func TestParseExtensionEnv_ExtraKeys(t *testing.T) {
 func TestParseExtensionEnv_NoEquals(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
+	if err := os.WriteFile(envFile, []byte(
 		"EXTENSION_ID_NO_EQUALS\n",
-	), 0644)
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	extID, err := parseExtensionEnv(envFile)
 	if err != nil {

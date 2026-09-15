@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -168,12 +169,7 @@ func BackingRefs() []string {
 
 // IsBackingRef reports whether ref is governed by the backing role.
 func IsBackingRef(ref string) bool {
-	for _, r := range BackingRefs() {
-		if r == ref {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(BackingRefs(), ref)
 }
 
 // The admin signer-set policy. SET_ADMINS publishes two role-tagged sets, and a

@@ -25,7 +25,7 @@ func DecodeRevertReason(err error) string {
 	// ErrorData() carries the ABI-encoded revert reason even when the message
 	// is just "execution reverted".
 	type dataError interface {
-		ErrorData() interface{}
+		ErrorData() any
 	}
 
 	var de dataError

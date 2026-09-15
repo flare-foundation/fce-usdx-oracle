@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"sync"
 	"time"
 
@@ -240,9 +241,7 @@ func (p *Poller) ReadinessReport(
 	// handing the live reference out would race with the next observation.
 	if p.last.Health != nil {
 		rep.SourceHealth = make(map[string]string, len(p.last.Health))
-		for k, v := range p.last.Health {
-			rep.SourceHealth[k] = v
-		}
+		maps.Copy(rep.SourceHealth, p.last.Health)
 	}
 	p.mu.RUnlock()
 

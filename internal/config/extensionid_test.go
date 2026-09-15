@@ -10,10 +10,14 @@ import (
 // getters are exercised through the same variables.
 func TestMain(m *testing.M) {
 	if os.Getenv("CHAIN_ID") == "" {
-		os.Setenv("CHAIN_ID", "31337")
+		if err := os.Setenv("CHAIN_ID", "31337"); err != nil {
+			panic(err)
+		}
 	}
 	if os.Getenv("EXTENSION_ID") == "" {
-		os.Setenv("EXTENSION_ID", "1")
+		if err := os.Setenv("EXTENSION_ID", "1"); err != nil {
+			panic(err)
+		}
 	}
 	os.Exit(m.Run())
 }

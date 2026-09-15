@@ -3,7 +3,6 @@ package extension
 import (
 	"encoding/json"
 	"errors"
-	"net/http"
 	"testing"
 
 	"fce-usdx-oracle/internal/config"
@@ -40,7 +39,7 @@ func TestGetReadiness_Success(t *testing.T) {
 	e := readinessExtension(o, p)
 
 	status, body := e.processAction(readinessAction())
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 1 {
 		t.Fatalf("expected Status=1, got %d: %s", result.Status, result.Log)
@@ -94,7 +93,7 @@ func TestGetReadiness_RejectsInstructionChannel(t *testing.T) {
 	)
 
 	status, body := e.processAction(action)
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected Status=0 on the instruction channel, got %d", result.Status)
@@ -124,7 +123,7 @@ func TestGetReadiness_RejectsUnexpectedPayload(t *testing.T) {
 			)
 
 			status, body := e.processAction(action)
-			result := mustResult(t, status, body, http.StatusOK)
+			result := mustResult(t, status, body)
 
 			if result.Status != 0 {
 				t.Fatalf("expected Status=0, got %d", result.Status)
@@ -146,7 +145,7 @@ func TestGetReadiness_NoProvisionerReportsNotConfigured(t *testing.T) {
 	e := newTestExtension()
 
 	status, body := e.processAction(readinessAction())
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected Status=0 without a provisioner, got %d", result.Status)
@@ -165,7 +164,7 @@ func TestGetReadiness_SigningFailureStaysVocabulary(t *testing.T) {
 	e := readinessExtension(o, &fakeProvisioner{})
 
 	status, body := e.processAction(readinessAction())
-	result := mustResult(t, status, body, http.StatusOK)
+	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
 		t.Fatalf("expected Status=0, got %d", result.Status)

@@ -28,7 +28,7 @@ func infoServer(t *testing.T, state []byte, version common.Hash) *httptest.Serve
 		if r.URL.Path != "/info" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(payload)
+		encodeJSON(t, w, payload)
 	}))
 }
 
@@ -71,5 +71,14 @@ func TestReadExtensionState(t *testing.T) {
 	defer garbage.Close()
 	if _, err := ReadExtensionState(garbage.URL); err == nil {
 		t.Fatal("bytes that are not JSON must be refused")
+	}
+}
+
+// encodeJSON writes v as a test server's response. The fixtures are the
+// package's own types, so a failure is a broken test rather than a case.
+func encodeJSON(t *testing.T, w http.ResponseWriter, v any) {
+	t.Helper()
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Errorf("encoding the response: %v", err)
 	}
 }

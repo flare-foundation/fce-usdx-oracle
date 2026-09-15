@@ -469,7 +469,7 @@ func fetchResult(url string) (teetypes.ActionResult, bool, error) {
 	if err != nil {
 		return teetypes.ActionResult{}, false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return teetypes.ActionResult{}, false, fmt.Errorf("proxy returned %d", resp.StatusCode)
 	}
@@ -489,7 +489,10 @@ func postDirect(proxyURL, apiKey string, message []byte) (common.Hash, error) {
 		"opCommand": config.OPCommandSetSecret.Hex(),
 		"message":   "0x" + hex.EncodeToString(message),
 	}
-	raw, _ := json.Marshal(payload)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return common.Hash{}, err
+	}
 
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(proxyURL, "/")+"/direct", bytes.NewReader(raw))
 	if err != nil {
@@ -504,7 +507,7 @@ func postDirect(proxyURL, apiKey string, message []byte) (common.Hash, error) {
 	if err != nil {
 		return common.Hash{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -532,7 +535,10 @@ func postAction(actionURL string, message []byte) error {
 		"opCommand": config.OPCommandSetSecret.Hex(),
 		"message":   "0x" + hex.EncodeToString(message),
 	}
-	diRaw, _ := json.Marshal(di)
+	diRaw, err := json.Marshal(di)
+	if err != nil {
+		return err
+	}
 
 	action := map[string]any{
 		"data": map[string]any{
@@ -549,13 +555,16 @@ func postAction(actionURL string, message []byte) error {
 		"additionalActionData":       "0x",
 		"signatures":                 []string{},
 	}
-	raw, _ := json.Marshal(action)
+	raw, err := json.Marshal(action)
+	if err != nil {
+		return err
+	}
 
 	resp, err := http.Post(actionURL, "application/json", bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 
 	var result struct {
@@ -578,7 +587,7 @@ func fetchKey(base string) (*ecdsa.PublicKey, common.Address, error) {
 	if err != nil {
 		return nil, common.Address{}, fmt.Errorf("fetching /info: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// The response carries no teeId field: the machine identity is the address
 	// of the attested publicKey and must be derived from it — the same

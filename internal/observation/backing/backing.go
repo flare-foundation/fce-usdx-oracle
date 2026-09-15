@@ -181,7 +181,7 @@ func (s *hexSource) fetchOnce(ctx context.Context) (Reading, error) {
 		}
 		return Reading{}, failure.BackingUnavailable
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {

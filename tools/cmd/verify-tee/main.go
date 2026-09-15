@@ -79,7 +79,7 @@ func main() {
 	check := func(ok bool, label, detail string) {
 		if ok {
 			if !*quiet {
-				fmt.Fprintf(out, "  ok    %s\n        %s\n", label, detail)
+				_, _ = fmt.Fprintf(out, "  ok    %s\n        %s\n", label, detail)
 			}
 			return
 		}
@@ -88,7 +88,7 @@ func main() {
 	}
 
 	if !*quiet {
-		fmt.Fprintf(out, "Verifying the machine behind %s\n\n", *pf)
+		_, _ = fmt.Fprintf(out, "Verifying the machine behind %s\n\n", *pf)
 	}
 
 	// 1. The attestation itself. GetCodeHashAndPlatform parses the quote and
@@ -135,7 +135,7 @@ func main() {
 		os.Exit(1)
 	}
 	if !*quiet {
-		fmt.Fprintf(out, "  ---   teeId derived from the attested public key: %s\n", teeID.Hex())
+		_, _ = fmt.Fprintf(out, "  ---   teeId derived from the attested public key: %s\n", teeID.Hex())
 	}
 
 	s, err := support.DefaultSupport(*af, *cf)
@@ -157,7 +157,7 @@ func main() {
 		os.Exit(1)
 	}
 	if !*quiet {
-		fmt.Fprintf(out, "  ---   extension id: %s\n", extID.String())
+		_, _ = fmt.Fprintf(out, "  ---   extension id: %s\n", extID.String())
 	}
 
 	// 5. The extension accepts this code hash on this platform. This is the
@@ -173,7 +173,7 @@ func main() {
 		os.Exit(1)
 	}
 	if !*quiet {
-		fmt.Fprintf(out, "\nVerified. teeId %s is running an accepted build.\n", teeID.Hex())
+		_, _ = fmt.Fprintf(out, "\nVerified. teeId %s is running an accepted build.\n", teeID.Hex())
 	}
 
 	// Last, and only on success: the one line stdout carries. Reached only after

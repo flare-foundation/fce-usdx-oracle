@@ -53,9 +53,9 @@ func roleSets(backing, providers AdminSet) map[string]AdminSet {
 // newTestVerifier installs a generated set as the PROVIDERS set through the real
 // SetAdmins path, so tests exercise the same validation SET_ADMINS does. The backing
 // set is a throwaway: both must be installed before the verifier accepts anything.
-func newTestVerifier(t *testing.T, admins []admin, threshold int) *Verifier {
+func newTestVerifier(t *testing.T, admins []admin) *Verifier {
 	t.Helper()
-	return newTestVerifierWith(t, newAdmins(t, 1), 1, admins, threshold)
+	return newTestVerifierWith(t, newAdmins(t, 1), 1, admins, 2)
 }
 
 func newTestVerifierWith(
@@ -130,7 +130,7 @@ func signedMessage(t *testing.T, e Envelope, signers []admin) []byte {
 
 func TestVerify_AcceptsThresholdSignatures(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("ciphertext"))
 	msg := encode(t, e, [][]byte{sign(t, e, admins[0]), sign(t, e, admins[1])})
@@ -149,7 +149,7 @@ func TestVerify_AcceptsThresholdSignatures(t *testing.T) {
 
 func TestVerify_AcceptsMoreThanThreshold(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
 	msg := encode(t, e, [][]byte{
@@ -164,7 +164,7 @@ func TestVerify_AcceptsMoreThanThreshold(t *testing.T) {
 
 func TestVerify_RejectsBelowThreshold(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
 	msg := encode(t, e, [][]byte{sign(t, e, admins[0])})
@@ -178,7 +178,7 @@ func TestVerify_RejectsBelowThreshold(t *testing.T) {
 // able to satisfy the threshold by signing repeatedly.
 func TestVerify_RejectsDuplicateSignerReachingThreshold(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
 	one := sign(t, e, admins[0])
@@ -192,7 +192,7 @@ func TestVerify_RejectsDuplicateSignerReachingThreshold(t *testing.T) {
 func TestVerify_RejectsNonAdminSigner(t *testing.T) {
 	admins := newAdmins(t, 3)
 	stranger := newAdmins(t, 1)[0]
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
 	msg := encode(t, e, [][]byte{sign(t, e, admins[0]), sign(t, e, stranger)})
@@ -204,7 +204,7 @@ func TestVerify_RejectsNonAdminSigner(t *testing.T) {
 
 func TestVerify_RejectsGarbageSignatures(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
 	junk := make([]byte, SignatureLength)
@@ -233,7 +233,7 @@ func TestVerify_RejectsWrongBinding(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			v := newTestVerifier(t, admins, 2)
+			v := newTestVerifier(t, admins)
 			e := testEnvelope([]byte("c"))
 			c.mutate(&e)
 			msg := encode(t, e, [][]byte{sign(t, e, admins[0]), sign(t, e, admins[1])})
@@ -249,7 +249,7 @@ func TestVerify_RejectsWrongBinding(t *testing.T) {
 // smuggled past the admin set.
 func TestVerify_RejectsSwappedPayload(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("real ciphertext"))
 	sigs := [][]byte{sign(t, e, admins[0]), sign(t, e, admins[1])}
@@ -267,7 +267,7 @@ func TestVerify_RejectsSwappedPayload(t *testing.T) {
 
 func TestVerify_RejectsStaleEnvelope(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
 	e.IssuedAt = uint64(time.Now().UTC().Add(-Freshness - time.Minute).Unix())
@@ -280,7 +280,7 @@ func TestVerify_RejectsStaleEnvelope(t *testing.T) {
 
 func TestVerify_RejectsFutureEnvelope(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
 	e.IssuedAt = uint64(time.Now().UTC().Add(time.Hour).Unix())
@@ -294,7 +294,7 @@ func TestVerify_RejectsFutureEnvelope(t *testing.T) {
 // Replaying an accepted envelope must not re-apply it.
 func TestVerify_RejectsReplay(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
 	msg := encode(t, e, [][]byte{sign(t, e, admins[0]), sign(t, e, admins[1])})
@@ -310,7 +310,7 @@ func TestVerify_RejectsReplay(t *testing.T) {
 // Rolling a secret back to an older version must be rejected too.
 func TestVerify_RejectsVersionRollback(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	newer := testEnvelope([]byte("v5"))
 	newer.Version = 5
@@ -330,7 +330,7 @@ func TestVerify_RejectsVersionRollback(t *testing.T) {
 // Versions are tracked per ref, so setting one secret must not block another.
 func TestVerify_VersionsAreIndependentPerRef(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	a := testEnvelope([]byte("a"))
 	a.Ref, a.Version = "alchemy_flare_key", 5
@@ -351,7 +351,7 @@ func TestVerify_VersionsAreIndependentPerRef(t *testing.T) {
 // envelope, or the reverse.
 func TestVerify_RejectsForeignDomain(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
 	sigs := [][]byte{sign(t, e, admins[0]), sign(t, e, admins[1])}
@@ -384,7 +384,7 @@ func TestVerify_AllRejectionsAreIndistinguishable(t *testing.T) {
 		e := testEnvelope([]byte("c"))
 		mutate(&e)
 		var sigs [][]byte
-		for i := 0; i < sigCount; i++ {
+		for i := range sigCount {
 			sigs = append(sigs, sign(t, e, admins[i]))
 		}
 		return encode(t, e, sigs)
@@ -399,7 +399,7 @@ func TestVerify_AllRejectionsAreIndistinguishable(t *testing.T) {
 	}
 
 	for _, msg := range messages {
-		v := newTestVerifier(t, admins, 2)
+		v := newTestVerifier(t, admins)
 		_, err := v.Verify(msg)
 		if err == nil {
 			t.Fatal("expected a rejection")
@@ -415,11 +415,11 @@ func TestVerify_AllRejectionsAreIndistinguishable(t *testing.T) {
 // A hostile caller must not be able to make verification expensive.
 func TestVerify_BoundsSignatureCount(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
-	var sigs [][]byte
-	for i := 0; i < MaxSignatures+10; i++ {
+	sigs := make([][]byte, 0, MaxSignatures+10)
+	for range MaxSignatures + 10 {
 		sigs = append(sigs, sign(t, e, admins[0]))
 	}
 
@@ -442,7 +442,7 @@ func FuzzVerify(f *testing.F) {
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, message []byte) {
-		v := newTestVerifier(t, admins, 2)
+		v := newTestVerifier(t, admins)
 
 		got, err := v.Verify(message)
 		if err == nil {
@@ -624,7 +624,7 @@ func TestVerify_UnknownRefUsesTheProvidersSet(t *testing.T) {
 // bad SET_ENDPOINTS must not take a live feed down.
 func TestSetAdmins_RejectedRotationKeepsTheWorkingSet(t *testing.T) {
 	admins := newAdmins(t, 3)
-	v := newTestVerifier(t, admins, 2)
+	v := newTestVerifier(t, admins)
 
 	if err := v.SetAdmins(roleSets(AdminSet{}, AdminSet{})); err == nil {
 		t.Fatal("want an error installing an empty pair")
@@ -643,7 +643,7 @@ func TestSetAdmins_RejectedRotationKeepsTheWorkingSet(t *testing.T) {
 // not become replayable against the incoming set.
 func TestSetAdmins_RotationDoesNotResetEnvelopeVersions(t *testing.T) {
 	first := newAdmins(t, 3)
-	v := newTestVerifier(t, first, 2)
+	v := newTestVerifier(t, first)
 
 	payload := []byte("ciphertext")
 	env := testEnvelope(payload)
@@ -675,7 +675,7 @@ func TestSetAdmins_RotationDoesNotResetEnvelopeVersions(t *testing.T) {
 // The outgoing admins must lose their authority the moment a new set lands.
 func TestSetAdmins_RotationRevokesThePreviousSet(t *testing.T) {
 	first := newAdmins(t, 3)
-	v := newTestVerifier(t, first, 2)
+	v := newTestVerifier(t, first)
 
 	second := newAdmins(t, 3)
 	if err := v.SetAdmins(roleSets(adminSet(newAdmins(t, 1), 1), adminSet(second, 2))); err != nil {

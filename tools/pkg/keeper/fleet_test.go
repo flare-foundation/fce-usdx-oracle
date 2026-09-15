@@ -2,7 +2,6 @@ package keeper
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -115,7 +114,7 @@ func TestPollResultsFindsTheResultOnAnotherProxy(t *testing.T) {
 	defer empty.Close()
 
 	holder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(teetypes.ActionResponse{
+		encodeJSON(t, w, teetypes.ActionResponse{
 			Result: teetypes.ActionResult{Status: statusSucceeded, Log: "from-the-holder"},
 		})
 	}))
@@ -143,7 +142,7 @@ func TestPollResultsFindsTheResultOnAnotherProxy(t *testing.T) {
 func TestPollResultsReturnsEveryAnswerInProxyOrder(t *testing.T) {
 	serve := func(log string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(teetypes.ActionResponse{
+			encodeJSON(t, w, teetypes.ActionResponse{
 				Result: teetypes.ActionResult{Status: statusSucceeded, Log: log},
 			})
 		}))
@@ -170,7 +169,7 @@ func TestPollResultsReturnsEveryAnswerInProxyOrder(t *testing.T) {
 // is returned, and whether it is enough is the store's threshold to judge.
 func TestPollResultsReturnsAPartialRoundAtTheDeadline(t *testing.T) {
 	answers := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(teetypes.ActionResponse{
+		encodeJSON(t, w, teetypes.ActionResponse{
 			Result: teetypes.ActionResult{Status: statusSucceeded, Log: "only-one"},
 		})
 	}))

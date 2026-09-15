@@ -106,7 +106,7 @@ func main() {
 	// given explicitly — the store's instructionsSender() is the single source
 	// of truth, and the same address the preflight checks. Keeping it optional
 	// lets operations pass only -store.
-	senderAddr := common.Address{}
+	var senderAddr common.Address
 	if *senderF != "" {
 		senderAddr = common.HexToAddress(*senderF)
 	} else {
@@ -214,8 +214,8 @@ func defaultKeeperID() string {
 // parseTeeIDs splits a comma-separated list of hex addresses, trimming
 // spaces and ignoring empty entries.
 func parseTeeIDs(s string) ([]common.Address, error) {
-	var out []common.Address
-	for _, raw := range strings.Split(s, ",") {
+	out := make([]common.Address, 0, strings.Count(s, ",")+1)
+	for raw := range strings.SplitSeq(s, ",") {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			continue

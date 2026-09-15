@@ -1,6 +1,5 @@
-// This file is an EXTERNAL test package: internal/provisioning/envelope declares its own
-// recover(digest, sig), which shadows the builtin, so a panic cannot be
-// asserted from inside the package.
+// This file is an EXTERNAL test package: it exercises the constructor the way a
+// caller does, including the panic it raises on a bad policy.
 package envelope_test
 
 import (

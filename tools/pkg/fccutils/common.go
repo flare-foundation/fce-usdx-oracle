@@ -43,7 +43,7 @@ func GetCodeHashAndPlatform(teeInfo *types.SignedTeeInfoResponse) (common.Hash, 
 		}
 	}
 	if !simulatedTee {
-		codeHash, platform, err = CodeHashAndPlatform(string(teeInfo.TeeInfoResponse.Attestation))
+		codeHash, platform, err = CodeHashAndPlatform(teeInfo.Attestation)
 		if err != nil {
 			return common.Hash{}, common.Hash{}, err
 		}

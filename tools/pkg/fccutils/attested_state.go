@@ -44,7 +44,7 @@ func ReadExtensionState(proxyURL string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, errors.Errorf("querying the proxy: %s", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, errors.Errorf("proxy returned %d", resp.StatusCode)
 	}

@@ -17,6 +17,7 @@ package observation
 import (
 	"context"
 	"errors"
+	"maps"
 	"math/big"
 	"sync"
 	"time"
@@ -279,11 +280,9 @@ func readAllChains(ctx context.Context, src Sources, health map[string]string) (
 
 	var wg sync.WaitGroup
 	for i, ch := range src.Chains {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			readings[i], errs[i] = supply.Read(ctx, ch)
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -294,9 +293,7 @@ func readAllChains(ctx context.Context, src Sources, health map[string]string) (
 		// Reported whether or not the chain read succeeded. Quorum lets a chain
 		// stay "ok" while one of its providers is dead, dissenting or lagging,
 		// and that state is invisible without this.
-		for provider, status := range readings[i].Providers {
-			health[provider] = status
-		}
+		maps.Copy(health, readings[i].Providers)
 
 		if err != nil {
 			health[name] = config.HealthDown
@@ -324,17 +321,13 @@ func readBacking(
 		wg                sync.WaitGroup
 	)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		bonds, bondsErr = src.Bonds.Fetch(ctx)
-	}()
+	})
 	if src.Cash != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			cash, cashErr = src.Cash.Fetch(ctx)
-		}()
+		})
 	}
 	wg.Wait()
 

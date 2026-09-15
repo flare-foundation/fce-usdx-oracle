@@ -21,7 +21,9 @@ func TestNewVerifierRefusesAnUnusablePolicy(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			defer func() {
-				if r := recover(); r == nil || !strings.Contains(r.(string), "floor") {
+				r := recover()
+				msg, _ := r.(string)
+				if r == nil || !strings.Contains(msg, "floor") {
 					t.Fatalf("expected a panic naming the floor, got %v", r)
 				}
 			}()

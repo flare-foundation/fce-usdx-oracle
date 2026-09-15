@@ -60,11 +60,13 @@ func TestPublicationCalldataMatchesSenderABI(t *testing.T) {
 			if len(args) != len(method.Inputs) {
 				t.Fatalf("%d arguments, the ABI declares %d", len(args), len(method.Inputs))
 			}
-			if got := args[0].([21]byte); got != feedID {
+			got, ok := args[0].([21]byte)
+			if !ok || got != feedID {
 				t.Fatalf("feed id %x, want %x", got, feedID)
 			}
-			if got := args[len(args)-1].(common.Address); got != claimBack {
-				t.Fatalf("claim-back %s, want %s", got.Hex(), claimBack.Hex())
+			claim, ok := args[len(args)-1].(common.Address)
+			if !ok || claim != claimBack {
+				t.Fatalf("claim-back %s, want %s", claim.Hex(), claimBack.Hex())
 			}
 			if pub.Version != 7 || pub.PayloadHash == (common.Hash{}) {
 				t.Fatalf("version %d, payload hash %s", pub.Version, pub.PayloadHash.Hex())

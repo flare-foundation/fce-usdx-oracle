@@ -971,7 +971,7 @@ func TestApplySecret_IsSafeUnderConcurrency(t *testing.T) {
 		go func(version uint64) {
 			defer wg.Done()
 			_ = s.ApplySecret(context.Background(),
-				envelopeFor(t, "ankr_flare_key", []byte(fmt.Sprintf("v%d", version)), version))
+				envelopeFor(t, "ankr_flare_key", fmt.Appendf(nil, "v%d", version), version))
 		}(uint64(i))
 	}
 	wg.Wait()
@@ -1004,7 +1004,7 @@ func envelopeFor(t *testing.T, ref string, payload []byte, version uint64) []byt
 	}
 	digest := accounts.TextHash(crypto.Keccak256(body))
 
-	var signatures [][]byte
+	signatures := make([][]byte, 0, 2)
 	for _, keyHex := range []string{
 		"0000000000000000000000000000000000000000000000000000000000000001",
 		"0000000000000000000000000000000000000000000000000000000000000002",
