@@ -104,4 +104,4 @@ operator script must parse and `check-versions.sh` must find the dependency pins
 the extension image is built with kaniko without pushing. The Foundry project is not built in CI:
 its sources are upstream's, from a sibling checkout CI cannot reach; run `forge test` in
 `contracts/` locally, and its wire vectors reach CI as the fixtures the conformance test replays. `golangci-lint` with tee-node's linter set
-(`.golangci.yml`) reports without gating until its findings are cleared.
+(`.golangci.yml`) gates, over both modules.

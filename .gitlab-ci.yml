@@ -25,6 +25,24 @@ default:
   tags:
     - flarenetwork
 
+# One pipeline per push. A branch with an open merge request runs as that merge
+# request's pipeline and not also as a branch pipeline, so the merge request
+# shows every job.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# A job without rules runs only in branch and tag pipelines (GitLab's default of
+# only: [branches, tags]). Every job below extends this, so it also runs in the
+# merge request pipelines the workflow creates.
+.run:
+  rules:
+    - when: on_success
+
 stages:
   - build
   - test
@@ -46,7 +64,7 @@ stages:
 build:
   stage: build
   image: golang:${GOLANG_VERSION}
-  extends: .gocache
+  extends: [.gocache, .run]
   needs: []
   script:
     - go mod download
@@ -60,20 +78,18 @@ lint:
   stage: test
   needs: [build]
   image: golang:${GOLANG_VERSION}
-  extends: .gocache
+  extends: [.gocache, .run]
   script:
     - "! gofmt -l $(git ls-files '*.go') | grep -q ."
     - go vet ./...
     - cd tools && go vet ./...
 
-# tee-node's linter set (.golangci.yml), reported but not yet gating: the
-# findings are cleared module by module before this job loses allow_failure.
+# tee-node's linter set (.golangci.yml), over both modules.
 golangci:
   stage: test
   needs: [build]
   image: golangci/golangci-lint:${GOLINT_VERSION}
-  extends: .gocache
-  allow_failure: true
+  extends: [.gocache, .run]
   script:
     - golangci-lint run --timeout 10m0s ./...
     - cd tools && golangci-lint run --timeout 10m0s ./...
@@ -84,7 +100,7 @@ test:
   stage: test
   image: golang:${GOLANG_VERSION}
   needs: [build]
-  extends: .gocache
+  extends: [.gocache, .run]
   before_script:
     - mkdir -p ${GOPATH}
     - go get github.com/boumenot/gocover-cobertura
@@ -107,6 +123,7 @@ test:
 scripts:
   stage: test
   needs: []
+  extends: .run
   image: golang:${GOLANG_VERSION}
   script:
     - for f in deploy/scripts/*.sh deploy/scripts/lib/*.sh; do bash -n "$f"; done
@@ -120,6 +137,7 @@ scripts:
 epoch:
   stage: build
   needs: []
+  extends: .run
   image: golang:${GOLANG_VERSION}
   script:
     - echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" > build.env
@@ -128,6 +146,7 @@ epoch:
       dotenv: build.env
 
 .kaniko:
+  extends: .run
   stage: image
   image:
     name: registry.gitlab.com/flarenetwork/infra-public/pipeliner/kaniko-executor-stbl:v1.23.2-debug
