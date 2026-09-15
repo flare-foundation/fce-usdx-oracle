@@ -155,7 +155,7 @@ already passed. The batch is judged first — its shape, the spread of its value
 
 | Revert | What it already proves | Meaning | Route |
 | --- | --- | --- | --- |
-| `NotEnoughSignatures`, `TooManySignatures` | nothing | Fewer agreeing machines than `requiredSignatures`, or more than 32 | **page** if sustained — machines down, or disagreeing on `observedAt` (the keeper's record shows who was left out) |
+| `NotEnoughSignatures`, `TooManySignatures` | nothing | Fewer agreeing machines than `requiredSignatures`, or more than 32 | **page** if sustained — machines down, or answers to another keeper's request mixed in (the keeper's record shows who was left out) |
 | `ObservedAtMismatch`, `DecimalsSpreadTooBig` | count in range | The keeper sent a mixed batch | **page** — keeper bug; it groups by `observedAt` before submitting |
 | `SpreadTooBig` | batch well formed | The values bracketing the median disagree by more than the policy's bound | **page** — the machines disagree about the price; compare their `prices` and `sourceHealth` |
 | `NotNewer` | batch agrees on a value | Lost a race, or submitting stale updates | see cause 5 |

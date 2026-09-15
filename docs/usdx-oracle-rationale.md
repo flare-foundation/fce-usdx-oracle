@@ -114,16 +114,18 @@ figure. A frozen feed with an ageing timestamp is the designed failure mode
 (spec §7.15) and consumers are required to check the timestamp; a confidently
 wrong price is not recoverable downstream.
 
-### `observedAt` is wall-clock, not the oldest input
+### `observedAt` is the request's block timestamp, not an input timestamp
 
 The store requires strict monotonicity, and an input timestamp can stall
 indefinitely: `last_update` moves only when a mint or a redemption changes the
 figure, so on a quiet day every observation for hours would share one, and all
-but the first would be rejected as a replay. `observedAt` therefore stamps when
-the inputs were **read**, and that is what `MaxObservationAge` (10 min) and the
-store's `maxAge` (3600s) each bound. There is deliberately no bound on how old
-the reserve figure itself is — see [§ *No freshness bound on the reserve
-figures*](#no-freshness-bound-on-the-reserve-figures) below.
+but the first would be rejected as a replay. The signed `observedAt` is instead
+the block timestamp of the instruction that requested the update, as the store
+defines it (§3). The reading's own time — the home chain's block header when
+the inputs were **read** — is kept on the observation, and `MaxObservationAge`
+(10 min) bounds how far behind the stamp it may lie. There is deliberately no
+bound on how old the reserve figure itself is — see [§ *No freshness bound on
+the reserve figures*](#no-freshness-bound-on-the-reserve-figures) below.
 
 ### No freshness bound on the reserve figures
 
@@ -165,15 +167,21 @@ from here). Measured against live sources on 5 Aug 2026 an observation takes
 extension's answer never reached the chain at all.
 
 So the two halves are separate calls. `internal/observation/poller` runs `Observe` on a
-timer and keeps the latest result; the handler calls `Sign`, which binds that
-result to the requesting instruction id and returns in one signing round trip.
-The instruction id is why signing cannot happen in advance, and the upstream
-latency is why observing cannot happen on demand.
+timer and keeps the latest result; the handler calls `Sign`, which stamps that
+result with the requesting instruction's block timestamp and returns in one
+signing round trip. The request's timestamp is why signing cannot happen in
+advance, and the upstream latency is why observing cannot happen on demand.
 
-What is signed is always the observation's own figures — its price, its
-`observedAt`, its `EndpointsHash`. Nothing is resampled at signing time, because
-a fresh timestamp over stale inputs is exactly the lie the freshness guards exist
-to prevent. Staleness is bounded by the caller instead: `config.MaxObservationAge`.
+What is signed is always the observation's own figures — its price, its scale,
+its `EndpointsHash` and `AdminsHash`. Nothing is resampled at signing time. The
+`observedAt` in the signed update is the block timestamp of the instruction that
+requested it: the store defines the field as the timestamp of the on-chain event
+that triggered the observation, and its batch rule requires every machine's
+update to carry the same value, which only a shared on-chain instant can give.
+The inputs may have been read up to `config.MaxObservationAge` (10 minutes)
+before that stamp — the poller checks the reading's age against the same
+timestamp before signing — and that age is accepted; the reading's own time
+stays on the observation and in the state as `lastObservedAt`.
 
 **Cadence.** `ObservationInterval` is 2 minutes against Hex's ~10 minute refresh
 — deliberately faster than the source. It keeps the supply side current and,
@@ -813,9 +821,9 @@ overruns the interval therefore delays the next tick rather than running beside
 it, and the overrun is logged: a keeper persistently unable to finish inside `T`
 is one whose deadlines no longer fit its cadence.
 
-The poll and submit deadlines are spent out of the store's `maxAge` budget —
-`observedAt` is stamped inside the enclave before signing, so every second the
-keeper spends is one `submitPrice` counts against the report's age.
+The poll and submit deadlines are spent out of the consumer's freshness budget —
+`observedAt` is the request's block timestamp, so every second the keeper spends
+after requesting is one the published value is older by when it lands.
 
 ### The outcome taxonomy
 

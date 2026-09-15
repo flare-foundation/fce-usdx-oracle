@@ -113,13 +113,15 @@ section "Requesting a feed update"
 # decoder checks the length first and names a short word only "unexpected
 # payload". 0x20555344582f555344 = category 0x20 + "USDX/USD".
 FEED_ID="20555344582f555344000000000000000000000000"
+# The timestamp stands in for the block that carried the instruction: it is what
+# the extension signs as observedAt, and the reading's age is checked against it.
 REQ="$(FEED_ID="$FEED_ID" python3 -c "
-import json, os
+import json, os, time
 b32 = lambda s: '0x' + s.encode().ljust(32, b'\x00').hex()
 word = '0x' + bytes.fromhex(os.environ['FEED_ID']).ljust(32, b'\x00').hex()
 df = {
     'instructionId': '0x' + 'c1' * 32, 'teeId': '0x' + '22' * 20,
-    'timestamp': 1785945000, 'rewardEpochId': 0,
+    'timestamp': int(time.time()), 'rewardEpochId': 0,
     'opType': b32('TEE_ORACLE'), 'opCommand': b32('GET_FEED'),
     'cosigners': [], 'cosignersThreshold': 0,
     'originalMessage': word, 'additionalFixedMessage': '0x',

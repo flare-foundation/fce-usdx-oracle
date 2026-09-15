@@ -238,9 +238,11 @@ var Chains = []Chain{
 	{Name: "songbird", Token: "0x4A771Cc1a39FDd8AA08B8EA51F7Fd412e73B3d2B", MaxBlockAge: 2 * time.Minute},
 }
 
-// HomeChain's block header timestamp stamps observedAt — any mined block would do,
-// what matters is that it is in the past. The store requires observedAt <
-// block.timestamp strictly, so a fast enclave clock would revert TooFarAhead.
+// HomeChain's block header timestamp is the reading's own time
+// (Observation.ObservedAt): a mined block's instant, which the host cannot
+// move, rather than the enclave's wall clock. The signed update carries the
+// requesting instruction's block timestamp instead, and MaxObservationAge
+// bounds how far behind that the inputs may have been read.
 const HomeChain = "flare"
 
 // LookupChain returns the pinned policy for a chain name.

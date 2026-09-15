@@ -32,10 +32,10 @@ func (e *Extension) processGetFeed(df *instruction.DataFixed) outcome {
 
 	// df.Timestamp is the block timestamp of the instruction event, cosigned by
 	// the data-provider quorum along with the rest of DataFixed. Always a real
-	// block here — GET_FEED is instruction-only, so this handler has one. The
-	// observer treats it as the clock this machine is checked against; it never
-	// becomes the update's observedAt, which must stay the moment the inputs
-	// were read.
+	// block here — GET_FEED is instruction-only, so this handler has one. It is
+	// the observedAt the update is signed with, as the store defines the field,
+	// and the clock the reading's age is checked against; the reading's own
+	// time is what the state reports as lastObservedAt.
 	obs, err := e.observer.Report(context.Background(), df.Timestamp)
 
 	// Health is reported either way: on failure it is what tells an operator

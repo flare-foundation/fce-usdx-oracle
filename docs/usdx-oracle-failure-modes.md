@@ -152,9 +152,12 @@ while the poller keeps observing. The enclave cannot tell a slow relay from a fa
 does not try — the store covers that side by requiring `observedAt < block.timestamp` strictly
 (`TooFarAhead`), with no skew tolerance since multi-feed support removed the acceptance window.
 
-The requesting timestamp is never published. What gets signed as `observedAt` is still the
-moment the inputs were **read**; using the request time instead would stamp cached figures as
-fresh, which is the one thing the bound exists to prevent.
+The requesting timestamp is what gets signed as `observedAt`. The store defines the field as
+the timestamp of the on-chain event that triggered the observation, and a batch from several
+machines must share it, so every machine answering one request signs the same value. The
+inputs behind it were read at most `MaxObservationAge` earlier — that is what the second
+check enforces — and the reading's own time stays visible as `lastObservedAt` in the state
+and the readiness report.
 
 ### `down` is five different things
 

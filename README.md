@@ -134,11 +134,14 @@ sequenceDiagram
   T-->>K: abi.encode(update, signature)
 ```
 
-Nothing is resampled at signing time, which would put a fresh timestamp on stale inputs. The
-`extensionId` and `feedId` bind the update to one feed served by one extension, and `chainId`
-is signed too, so it can never be replayed onto another feed or another chain; `observedAt` is
-the store's monotonicity key; the two hashes commit the value to the configuration and admin
-set in force *when the inputs were read*.
+Nothing is resampled at signing time: the figures and the two hashes are the observation's own.
+The `extensionId` and `feedId` bind the update to one feed served by one extension, and `chainId`
+is signed too, so it can never be replayed onto another feed or another chain. `observedAt` is
+the block timestamp of the instruction that requested the update, as the store defines it — the
+store's monotonicity key, and the one value every machine answering that request shares, so
+their updates can go up as one batch; the inputs behind it were read at most ten minutes earlier.
+The two hashes commit the value to the configuration and admin set in force *when the inputs were
+read*.
 
 A missing cash figure does not stop the feed — but it can never change the number. Cash is non-negative and the price caps at par, so a bonds-only price that already reaches par *is* the full result. Below par it fails closed rather than publishing a degraded figure.
 

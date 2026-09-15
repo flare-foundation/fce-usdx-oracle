@@ -199,8 +199,12 @@ func observeWith(t *testing.T, src Sources, binding Binding, signer Signer) (Obs
 	if err != nil {
 		return obs, err
 	}
-	return Sign(context.Background(), signer, obs)
+	return Sign(context.Background(), signer, obs, testRequestedAt)
 }
+
+// testRequestedAt is the block timestamp of the instruction that asks for the
+// update: what the update is signed with as observedAt.
+const testRequestedAt uint64 = 1_800_000_000
 
 // --- the single supply pass ---
 
@@ -374,7 +378,7 @@ func TestObserve_SignsTheEncodedBody(t *testing.T) {
 		FeedID:        testFeedID,
 		Value:         got.Value,
 		Decimals:      got.Decimals,
-		ObservedAt:    got.ObservedAt,
+		ObservedAt:    testRequestedAt,
 		EndpointsHash: testEndpointsHash,
 		AdminsHash:    testAdminsHash,
 	}, config.ChainID()); err != nil {
@@ -401,10 +405,68 @@ func TestObserve_SignsTheEncodedBody(t *testing.T) {
 	if r.EndpointsHash != testEndpointsHash {
 		t.Errorf("endpointsHash = %s, want %s", r.EndpointsHash.Hex(), testEndpointsHash.Hex())
 	}
-	if r.ObservedAt != got.ObservedAt {
-		t.Errorf("observedAt in body (%d) differs from the observation (%d); "+
-			"it is the store's monotonicity key and must be signed",
-			r.ObservedAt, got.ObservedAt)
+	// observedAt is the requesting instruction's block timestamp, as the store
+	// defines it — not the reading's own time, which stays on the observation.
+	if r.ObservedAt != testRequestedAt {
+		t.Errorf("observedAt in body = %d, want the request's block timestamp %d",
+			r.ObservedAt, testRequestedAt)
+	}
+}
+
+// The signed observedAt is the requesting instruction's block timestamp: the
+// store's definition of the field, and the one value every machine answering
+// the same request shares, which is what lets their updates form one batch.
+// The reading behind it keeps its own time on the observation.
+func TestSign_StampsTheRequestingBlockTimestamp(t *testing.T) {
+	readAt := time.Unix(int64(testRequestedAt)-53, 0)
+	chain := &fakeChain{supplies: []string{"1000000"}, decimals: 6, blockTime: readAt}
+	bonds := &fakeSource{name: "hex_bonds", amount: "1.0"}
+	src, binding := testConfig(t, chain, bonds, nil)
+
+	obs, err := Observe(context.Background(), src, binding)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if obs.ObservedAt != uint64(readAt.Unix()) {
+		t.Fatalf("reading time = %d, want the block time %d", obs.ObservedAt, readAt.Unix())
+	}
+
+	signed, err := Sign(context.Background(), &fakeSigner{}, obs, testRequestedAt)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	r, _, err := feedupdate.DecodeData(signed.Data)
+	if err != nil {
+		t.Fatalf("DecodeData: %v", err)
+	}
+	if r.ObservedAt != testRequestedAt {
+		t.Errorf("signed observedAt = %d, want the request's block timestamp %d", r.ObservedAt, testRequestedAt)
+	}
+	if signed.ObservedAt != obs.ObservedAt {
+		t.Errorf("signing moved the reading's own time from %d to %d", obs.ObservedAt, signed.ObservedAt)
+	}
+	if r.Value != obs.Value || r.Decimals != obs.Decimals {
+		t.Errorf("signed %d/%d, want the observation's own %d/%d", r.Value, r.Decimals, obs.Value, obs.Decimals)
+	}
+}
+
+// Zero is the store's "never seen" sentinel and marks an instruction without a
+// block timestamp; it is refused by name, before anything reaches the signer.
+func TestSign_RefusesAZeroTimestamp(t *testing.T) {
+	chain := &fakeChain{supplies: []string{"1000000"}, decimals: 6}
+	bonds := &fakeSource{name: "hex_bonds", amount: "1.0"}
+	src, binding := testConfig(t, chain, bonds, nil)
+	obs, err := Observe(context.Background(), src, binding)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+
+	signer := &fakeSigner{}
+	if _, err := Sign(context.Background(), signer, obs, 0); !errors.Is(err, failure.MissingRequestTime) {
+		t.Fatalf("expected failure.MissingRequestTime, got %v", err)
+	}
+	if len(signer.signed) != 0 {
+		t.Errorf("a zero timestamp reached the signer %d times", len(signer.signed))
 	}
 }
 
@@ -622,11 +684,10 @@ func TestSourcesValidate(t *testing.T) {
 
 // --- the observation timestamp ---
 
-// observedAt is the HOME CHAIN'S BLOCK TIME, not the enclave's wall clock. The
-// store requires observedAt < block.timestamp strictly and has no skew
-// tolerance since the acceptance window was removed, so a wall-clock stamp
-// would revert TooFarAhead the moment the enclave clock ran fast. An
-// already-mined block's header satisfies the rule by construction.
+// The reading's own time is the HOME CHAIN'S BLOCK TIME, not the enclave's wall
+// clock: an already-mined block is an instant the host cannot move, so the age
+// bounds measured from it mean something. It is not what the update is signed
+// with — see TestSign_StampsTheRequestingBlockTimestamp.
 func TestObserve_StampsWithTheHomeChainBlockTime(t *testing.T) {
 	// Far enough back that it cannot be confused with time.Now().
 	blockTime := time.Now().Add(-37 * time.Second).Truncate(time.Second)
@@ -642,9 +703,8 @@ func TestObserve_StampsWithTheHomeChainBlockTime(t *testing.T) {
 	if want := uint64(blockTime.Unix()); got.ObservedAt != want {
 		t.Errorf("observedAt = %d, want the block time %d", got.ObservedAt, want)
 	}
-	// The property the store actually enforces.
 	if got.ObservedAt >= uint64(time.Now().Unix()) {
-		t.Error("observedAt is not strictly in the past")
+		t.Error("the reading's time is not strictly in the past")
 	}
 }
 

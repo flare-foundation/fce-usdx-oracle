@@ -97,6 +97,13 @@ type Observation struct {
 	Value    int32
 	Decimals int8
 
+	// ObservedAt is when the inputs were read: the home chain's block header
+	// timestamp at this observation, a clock the host cannot move. It bounds
+	// the reading's age (Age, the poller's two checks) and is what the state
+	// and the readiness report show as lastObservedAt. It is not the observedAt
+	// of the signed update — the store defines that field as the timestamp of
+	// the instruction event that requested the update, and Sign takes it as an
+	// argument.
 	ObservedAt uint64
 
 	// Carried whole so a later Sign commits to what was in force when the inputs
@@ -170,10 +177,10 @@ func Observe(ctx context.Context, src Sources, binding Binding) (Observation, er
 		return Observation{Health: health}, err
 	}
 
-	// observedAt is the home chain's block header timestamp, not wall clock and
-	// not a reserve figure's own stamp. An already-mined block guarantees the
-	// store's requirement that observedAt be strictly below block.timestamp;
-	// MaxObservationAge bounds how old it may be.
+	// The reading's own time is the home chain's block header timestamp, not
+	// wall clock and not a reserve figure's own stamp: a mined block is an
+	// instant the host cannot move, and MaxObservationAge bounds how far behind
+	// the request that is finally signed the inputs may have been read.
 	observedAt, err := homeBlockTime(supplies)
 	if err != nil {
 		return Observation{Health: health}, err
@@ -189,15 +196,28 @@ func Observe(ctx context.Context, src Sources, binding Binding) (Observation, er
 }
 
 // Sign returns the ActionResult payload, abi.encode(FeedUpdate, Signature).
-// Nothing is resampled here: doing so would put a fresh timestamp on inputs
-// that were read earlier.
+//
+// observedAt is the block timestamp of the instruction event that requested
+// the update, cosigned in DataFixed. The store defines FeedUpdate.observedAt as
+// exactly that, and it is what makes the answers of several machines to one
+// request carry one value, which submitFeedUpdates requires of a batch. The
+// figures, the scale and the commitments are the observation's own: nothing is
+// resampled here. The inputs behind them were read at obs.ObservedAt, at most
+// config.MaxObservationAge before the stamp (the poller enforces it against
+// this very timestamp) or after it, when the instruction was delivered late.
 //
 // The payload binds no request identifier, so a signature is not tied to the
 // request that asked for it. Replay protection is the strictly increasing
 // observedAt and the feed binding, both enforced by the store; correlation is
 // the tee-node action id, outside the signature.
-func Sign(ctx context.Context, signer Signer, obs Observation) (Observation, error) {
-	data, err := signPayload(ctx, signer, obs)
+func Sign(ctx context.Context, signer Signer, obs Observation, observedAt uint64) (Observation, error) {
+	// Zero is the store's "never seen" sentinel and marks an instruction
+	// without a block timestamp; refused by name rather than as an encoder
+	// error.
+	if observedAt == 0 {
+		return Observation{Health: obs.Health}, failure.MissingRequestTime
+	}
+	data, err := signPayload(ctx, signer, obs, observedAt)
 	if err != nil {
 		return Observation{Health: obs.Health}, err
 	}
@@ -205,13 +225,13 @@ func Sign(ctx context.Context, signer Signer, obs Observation) (Observation, err
 	return obs, nil
 }
 
-func signPayload(ctx context.Context, signer Signer, obs Observation) ([]byte, error) {
+func signPayload(ctx context.Context, signer Signer, obs Observation, observedAt uint64) ([]byte, error) {
 	update := feedupdate.FeedUpdate{
 		ExtensionID:   obs.Binding.ExtensionID,
 		FeedID:        obs.Binding.FeedID,
 		Value:         obs.Value,
 		Decimals:      obs.Decimals,
-		ObservedAt:    obs.ObservedAt,
+		ObservedAt:    observedAt,
 		EndpointsHash: obs.Binding.EndpointsHash,
 		AdminsHash:    obs.Binding.AdminsHash,
 	}

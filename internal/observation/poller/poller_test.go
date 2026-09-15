@@ -10,6 +10,7 @@ import (
 
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/observation"
+	"fce-usdx-oracle/internal/wire/feedupdate"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -188,9 +189,9 @@ func TestReport_SignsTheCachedObservation(t *testing.T) {
 		t.Fatalf("expected exactly one signing call, got %d", signer.count())
 	}
 
-	// A second report must NOT re-observe: the figures and the timestamp are the
-	// cached ones, so the payload is identical. Signing that resampled would put
-	// a fresh timestamp on stale inputs.
+	// A second report for the same request must NOT re-observe: the figures are
+	// the cached ones and the stamp is the request's, so the payload is
+	// identical.
 	second, err := p.Report(context.Background(), testRequestedAt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -201,6 +202,50 @@ func TestReport_SignsTheCachedObservation(t *testing.T) {
 	}
 	if string(second.Data) != string(got.Data) {
 		t.Error("two reports off one observation differ; nothing request-specific may enter the payload")
+	}
+}
+
+// The update is signed with the requesting block's timestamp — the store's
+// definition of observedAt, and the one value every machine answering the same
+// request shares, which is what lets their updates form one batch. The reading
+// behind it keeps its own time on the observation.
+func TestReport_SignsTheRequestingBlockTimestamp(t *testing.T) {
+	signer := &fakeSigner{}
+	p := stubPoller(t, signer)
+	p.record(observationAt(testRequestedAt-53), nil)
+
+	got, err := p.Report(context.Background(), testRequestedAt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r, _, err := feedupdate.DecodeData(got.Data)
+	if err != nil {
+		t.Fatalf("DecodeData: %v", err)
+	}
+	if r.ObservedAt != testRequestedAt {
+		t.Errorf("signed observedAt = %d, want the request's block timestamp %d", r.ObservedAt, testRequestedAt)
+	}
+	if got.ObservedAt != testRequestedAt-53 {
+		t.Errorf("the reading's own time moved to %d", got.ObservedAt)
+	}
+
+	// A later request off the same reading is a different update: the same
+	// figures under a newer stamp, so the store's ratchet moves with the
+	// requests rather than with the machine's timer.
+	later, err := p.Report(context.Background(), testRequestedAt+60)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r2, _, err := feedupdate.DecodeData(later.Data)
+	if err != nil {
+		t.Fatalf("DecodeData: %v", err)
+	}
+	if r2.ObservedAt != testRequestedAt+60 {
+		t.Errorf("signed observedAt = %d, want %d", r2.ObservedAt, testRequestedAt+60)
+	}
+	if r2.Value != r.Value || r2.Decimals != r.Decimals {
+		t.Errorf("the figures changed between requests off one reading: %d/%d then %d/%d",
+			r.Value, r.Decimals, r2.Value, r2.Decimals)
 	}
 }
 
@@ -382,11 +427,19 @@ func TestReport_LateDeliveryStillSigns(t *testing.T) {
 	// Requested an hour ago, delivered only now.
 	stale := testRequestedAt - uint64(time.Hour.Seconds())
 
-	if _, err := p.Report(context.Background(), stale); err != nil {
+	got, err := p.Report(context.Background(), stale)
+	if err != nil {
 		t.Fatalf("a late-delivered instruction was refused: %v", err)
 	}
 	if signer.count() != 1 {
 		t.Errorf("expected one signing call, got %d", signer.count())
+	}
+	// Signed under the request's stamp even so: the update describes the
+	// instant that was asked about, with a reading taken after it.
+	if r, _, err := feedupdate.DecodeData(got.Data); err != nil {
+		t.Fatalf("DecodeData: %v", err)
+	} else if r.ObservedAt != stale {
+		t.Errorf("signed observedAt = %d, want the request's block timestamp %d", r.ObservedAt, stale)
 	}
 }
 

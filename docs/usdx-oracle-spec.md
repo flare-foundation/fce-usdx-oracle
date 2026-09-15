@@ -28,6 +28,7 @@
 | 2026-08-05 | **A missing cash figure no longer fails the observation outright** | Published only where the missing figure provably cannot change the answer: cash is non-negative and the price caps at par, so a bonds-only price already at par *is* the full result. Everything below par still fails closed, so the availability doc's objection to degradation is untouched. Findings §21. |
 | 2026-08-05 | **GET_FEED carries an ABI-encoded `FeedUpdateRequest`** naming the feed (supersedes the original one-byte `0x01` envelope once one sender began serving several feeds), never an empty message | `sendInstructions` reverts `MessageEmpty()`, so `requestFeedUpdate()` could never dispatch an empty message. The extension requires exactly that encoding and rejects any other shape, preserving the property the empty message was chosen for. Findings §22. |
 | 2026-08-05 | **Observation moved onto a timer; GET_FEED only signs** | tee-node allows an extension 2 s per action (`settings.ProxyTimeout`, a const in its internal package); a complete observation measures 2.0–2.9 s, so every request timed out. `internal/observation/poller` observes every 2 min and `MaxObservationAge` (10 min) bounds the resulting staleness. Findings §23. |
+| 2026-09-15 | **The signed `observedAt` is the requesting instruction's block timestamp** | That is the store's definition of the field (`ITeeOracleFeedStore.FeedUpdate`), and `submitFeedUpdates` requires every update in a batch to carry the same value, which only a shared on-chain instant gives; the reading's own time was signed before, so no two machines on independent timers could ever form a batch. The inputs behind an update are at most `MaxObservationAge` (10 min) older than the stamp, checked against that very timestamp before signing; the reading's time stays on the observation as `lastObservedAt`. |
 
 ---
 
@@ -591,7 +592,7 @@ bindings from them (`./deploy/scripts/generate-bindings.sh`).
   out-of-order delivery; FCC is explicitly "fire and forget" with no ordering
   guarantee) and strictly older than the accepting block (`TooFarAhead` —
   unreachable for an honestly produced update, since `observedAt` is the
-  timestamp of an on-chain event emitted during observation).
+  timestamp of the on-chain instruction event that requested the update).
 
 There is no maximum-age window, no price band and no pause flag on the store:
 acceptance is anchored by the signature, the commitments and monotonicity. The

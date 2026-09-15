@@ -144,7 +144,7 @@ Source: `go-flare-common/pkg/tee/instruction/instruction.go`.
 | --- | --- | --- | --- |
 | `instructionId` | `common.Hash` | 32-byte hex | |
 | `teeId` | `common.Address` | 20-byte hex | |
-| `timestamp` | `uint64` | number | |
+| `timestamp` | `uint64` | number | block timestamp of the instruction event. `GET_FEED` signs it as the update's `observedAt` (the store's definition of the field) and checks the reading's age against it |
 | `rewardEpochId` | `uint32` | number | |
 | `opType` | `common.Hash` | 32-byte hex | bytes32 of the op-type string |
 | `opCommand` | `common.Hash` | 32-byte hex | bytes32 of the op-command string |

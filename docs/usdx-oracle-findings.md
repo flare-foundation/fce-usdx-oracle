@@ -1105,10 +1105,12 @@ no longer signs, and `Observation` carries `EndpointsHash` so a later signature
 commits to the configuration in force *when the inputs were read*, not whatever
 is current when the request arrives.
 
-**What this does not change.** `observedAt` still means when the inputs were
-read; it is simply no longer the instant of the request. Every freshness guard
-that still exists survives it — `checkWindow` across inputs, `MaxObservationAge`
-on the cache, `maxAge` on the store. (The backing bounds referred to here —
+**What this does not change.** Every freshness guard that still exists survives
+it — `checkWindow` across inputs, `MaxObservationAge` on the cache, measured
+both by the machine's clock and by the request's block timestamp. (The signed
+`observedAt` was later made the request's block timestamp itself, as the store
+defines the field — see rationale §3; the reading's own time stays on the
+observation.) (The backing bounds referred to here —
 `BackingMaxAge`, later split into `BondsMaxAge` / `CashMaxAge` — were removed on
 17 Aug 2026 for an unrelated reason: the sources are event-driven, so age
 carries no information about correctness. See
@@ -1208,14 +1210,16 @@ while doubling the supply-side fail-closed surface. `TestObserve_ReadsSupplyOnce
 asserts the call count directly, so a reintroduced bracket fails there rather
 than showing up as a latency regression. See rationale §2.
 
-**`observedAt` is wall-clock completion time, not the oldest input timestamp.**
+**`observedAt` is the request's block timestamp, not the oldest input timestamp.**
 The store requires strict monotonicity, and a reserve `last_update` moves only
 when a mint or redemption changes the figure — so on a quiet day every
 observation for hours would share an input timestamp, and all but the first
-would be rejected as a replay. `observedAt` stamps when the inputs were **read**,
-which is what `MaxObservationAge` and the store's `maxAge` each bound. How old
-the reserve figure itself is, is deliberately unbounded — the sources are
-event-driven, so age is not evidence of anything (rationale §2).
+would be rejected as a replay. The signed `observedAt` is the block timestamp of
+the instruction that requested the update, as the store defines it; the reading's
+own time is kept on the observation, and `MaxObservationAge` bounds how far
+behind the stamp it may lie. How old the reserve figure itself is, is
+deliberately unbounded — the sources are event-driven, so age is not evidence of
+anything (rationale §2).
 
 **Out-of-band prices are rejected, not clamped.** Clamping would publish a number
 the TEE never signed, silently. The signature's entire purpose is that the

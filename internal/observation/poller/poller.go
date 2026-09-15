@@ -6,11 +6,11 @@
 // config.MaxObservationAge.
 //
 // That bound is measured twice, against two different clocks. Latest uses this
-// machine's, which is what catches upstreams that have stopped — but it is also
-// the clock that stamped the observation, so it cannot catch itself being wrong.
-// Report measures the same age again against the requesting instruction's block
-// timestamp, which the data-provider quorum cosigned and the host cannot move.
-// See checkClock.
+// machine's, which is what catches upstreams that have stopped, but a machine
+// whose clock runs slow passes it however old the reading is. Report measures
+// the same age again against the requesting instruction's block timestamp,
+// which the data-provider quorum cosigned and the host cannot move, and that
+// timestamp is what the update is then signed under. See checkClock.
 package poller
 
 import (
@@ -153,9 +153,11 @@ func (p *Poller) Latest() (observation.Observation, error) {
 // not tied to the request that produced it.
 //
 // requestedAt is the block timestamp of the instruction event that asked for
-// the update, taken from the cosigned DataFixed. It is never published — the
-// signed observedAt remains the moment the inputs were read — and serves only
-// as the clock checkClock measures staleness against.
+// the update, taken from the cosigned DataFixed. It is the observedAt the
+// update is signed with — the store defines the field as that event's
+// timestamp, and every machine answering the same request signs the same one —
+// and it is the clock checkClock measures the reading's age against, so the
+// inputs behind a signed update were read at most maxAge before its stamp.
 func (p *Poller) Report(ctx context.Context, requestedAt uint64) (observation.Observation, error) {
 	obs, err := p.Latest()
 	if err != nil {
@@ -174,7 +176,7 @@ func (p *Poller) Report(ctx context.Context, requestedAt uint64) (observation.Ob
 	if obs.Binding.AdminsHash == (common.Hash{}) {
 		return observation.Observation{Health: obs.Health}, failure.NotConfigured
 	}
-	return observation.Sign(ctx, p.signer, obs)
+	return observation.Sign(ctx, p.signer, obs, requestedAt)
 }
 
 // checkClock bounds how far the observation may trail the requesting block.
