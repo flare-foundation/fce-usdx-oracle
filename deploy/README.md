@@ -230,26 +230,30 @@ since their registries accept no simulated machine. Split by side:
 4. **Networking**: public HTTPS to the proxy's external port 6664; TEE → proxy 6663, proxy →
    redis and the indexer database private. They give you back the public proxy URL.
 
-**You run**, with `EXT_PROXY_URL=<that URL>`, `SIMULATED_TEE=false` and the keys filled in by
-hand in `.env.<chain>` (`.env.example` says who holds which):
+**You run**, the same commands as the testnet test, the chain switch carrying what the remote
+machine changes: its URL, its proxy's `/direct` key, real attestation. Given on the call they
+are written into `.env.<chain>`; the deployer key is filled only into a file that has none.
 
 ```bash
-./deploy/scripts/use-chain.sh <chain>
+DEPLOYMENT_PRIVATE_KEY=0x… EXT_PROXY_URL=https://<machine> DIRECT_API_KEY=<its proxy's key> SIMULATED_TEE=false ./deploy/scripts/use-chain.sh <chain>
 ./deploy/scripts/import-upstream-addresses.sh <chain>
 ./deploy/scripts/deploy-oracle.sh --chain <chain>    # testnets only; mainnets: upstream's production deploy, below
 (cd tools && go run ./cmd/wire-extension)
-./deploy/scripts/post-build.sh                       # registers THAT machine: version, governance, register, production
-./deploy/scripts/publish-local.sh admins deploy/config/admins/<chain>.json
-./deploy/scripts/publish-local.sh endpoints <endpoints file>
-EXPECTED_CODE_HASH=<measured hash> ./deploy/scripts/upload-hex-key.sh
-EXPECTED_CODE_HASH=<measured hash> ./deploy/scripts/upload-rpc-keys.sh --refs <ref,…>
+EXPECTED_CODE_HASH=<measured hash> ./deploy/scripts/post-build.sh   # registers THAT machine: allows the build, governance, register, production
+./deploy/scripts/publish-local.sh admins             # the chain's admin set (deploy/config/admins/<chain>.json); a machine holds
+./deploy/scripts/publish-local.sh endpoints          # publications in memory, so every newly registered machine needs both again
+./deploy/scripts/upload-hex-key.sh
+./deploy/scripts/upload-rpc-keys.sh --refs <ref,…>
 ./deploy/scripts/oracle-cycle.sh -tee <TEE_ID> --dry-run
 ```
 
 No `start-services`, `full-setup` or `stop-services`: the machine is not yours to start.
-`EXPECTED_CODE_HASH` is the real measured hash, obtained out of band — rebuild the image from
-the agreed commit and read its hash, then confirm the machine matches with `verify-tee` against
-its URL; never accept the hash from the machine you are verifying. Retirement is on chain only:
+`EXPECTED_CODE_HASH` is the deployed image's id (on Confidential Space the code hash is the
+container image id, `docker image inspect --format '{{.Id}}'`), obtained out of band from whoever
+built and deployed it, or from your own rebuild of the agreed commit. It gates the allowance
+`post-build.sh` grants: without it a real machine is allowed on its own word. The uploads then
+rely on the registry accepting the machine's build, and take `EXPECTED_CODE_HASH` too only when
+you want them pinned to that one build. Never take it from the machine you are verifying. Retirement is on chain only:
 `(cd tools && go run ./cmd/retire-tee -p "$EXT_PROXY_URL")` when the machine is decommissioned.
 
 **On Songbird and Flare** two more things differ. The registries accept only real attestation,

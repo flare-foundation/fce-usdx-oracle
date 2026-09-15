@@ -17,6 +17,9 @@ func main() {
 	cf := flag.String("c", configs.ChainNodeURL, "chain node url")
 	pf := flag.String("p", configs.ExtensionProxyURL, "proxy url")
 	versionF := flag.String("version", "v0.1.0", "version")
+	expectedF := flag.String("code-hash", os.Getenv("EXPECTED_CODE_HASH"),
+		"the code hash to allow, known out of band (the deployed image's id); the machine's own "+
+			"report must match it (default: EXPECTED_CODE_HASH)")
 	flag.Parse()
 
 	testSupport, err := support.DefaultSupport(*af, *cf)
@@ -60,7 +63,19 @@ func main() {
 	logger.Infof("Extension ID: %s", teeInfo.MachineData.ExtensionID.Big().String())
 	logger.Infof("TEE ID:       %s", teeID.Hex())
 	logger.Infof("Version:      %s", *versionF)
-	logger.Warnf("NOTE: Code hash is from proxy /info response — not independently verified against attestation")
+	// The hash allowed here is what the registry will accept for the extension,
+	// so it must be the build the operator means, not whatever the machine says
+	// it runs: given out of band, the machine's report has to match it; without
+	// it, a simulated machine reports tee-node's constant and nothing is learnt,
+	// while a real one is allowed on its own word, which is said out loud.
+	if *expectedF != "" {
+		if !strings.EqualFold(strings.TrimPrefix(*expectedF, "0x"), strings.TrimPrefix(teeInfo.MachineData.CodeHash.Hex(), "0x")) {
+			logger.Fatalf("the machine reports code hash %s, EXPECTED_CODE_HASH is %s — not allowing it", teeInfo.MachineData.CodeHash.Hex(), *expectedF)
+		}
+		logger.Infof("Code hash matches EXPECTED_CODE_HASH")
+	} else if os.Getenv("SIMULATED_TEE") != "true" {
+		logger.Warnf("WARN: allowing the code hash the machine itself reports; set EXPECTED_CODE_HASH to the deployed image's id to pin the build")
+	}
 
 	// Idempotency: skip if this codeHash+platform combo is already registered and active.
 	// Avoids sending a tx that would revert with VersionAlreadyExists() on re-runs.

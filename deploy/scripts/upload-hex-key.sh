@@ -36,8 +36,8 @@
 #
 #   PROXY_URL          extension proxy base URL       (default: EXT_PROXY_URL, the recorded stack's)
 #   CHAIN_ID           target chain id                (default: CHAIN_ID from .env)
-#   EXPECTED_CODE_HASH the build you expect, obtained OUT OF BAND (not asked on the simulation;
-#                      a SIMULATED_TEE=true machine defaults to tee-node's test constant)
+#   EXPECTED_CODE_HASH optional: pins the upload to one build on top of the registry's
+#                      acceptance (a SIMULATED_TEE=true machine defaults to tee-node's test constant)
 #   USDXPROV_KEY       backing admin private key, hex (default on the simulation: the dev backing admin)
 #   USDXPROV_API_KEY   proxy API key for the direct channel (default: DIRECT_API_KEY)
 #   HEX_API_KEY        the Hex API key itself
@@ -116,7 +116,10 @@ export USDXPROV_API_KEY USDXPROV_KEY USDXPROV_VALUE PROXY_URL
 echo "=== USDX oracle — upload the Hex backing credentials ==="
 
 ask PROXY_URL          "Extension proxy URL"    "http://localhost:6674"
-ask CHAIN_ID           "Chain id"               "$(chain_id "$(resolve_chain "")")"
+# The chain id is the active chain's (lib/chains.sh); asked only when .env names
+# no chain at all.
+: "${CHAIN_ID:=$(chain_id "$(resolve_chain "")" 2>/dev/null || true)}"
+ask CHAIN_ID           "Chain id"
 # A machine run with SIMULATED_TEE=true attests with tee-node's fixed test code
 # hash rather than a build's, so when .env says the machine is simulated and
 # names no hash, that constant is what the check can expect. A real Confidential
@@ -126,9 +129,10 @@ if [ "${SIMULATED_TEE:-}" = true ] && [ -z "${EXPECTED_CODE_HASH:-}" ]; then
   EXPECTED_CODE_HASH="$SIMULATED_CODE_HASH"
   echo "expected code hash: tee-node's simulated-machine constant (SIMULATED_TEE=true in .env)"
 fi
-if [ "$VERIFY" = true ] && [ "$LOCAL_SIM" = false ]; then
-  ask EXPECTED_CODE_HASH "Expected code hash (0x…)"
-fi
+# The machine's build is vouched for by the registry: the check below refuses a
+# machine whose code hash the extension has not accepted, and post-build.sh
+# accepts only the hash given to it. EXPECTED_CODE_HASH pins the upload to that
+# exact build on top; it is optional.
 
 ask_secret USDXPROV_KEY     "Backing admin private key (hidden)"
 ask_secret USDXPROV_API_KEY "Proxy API key (hidden)"
@@ -239,10 +243,15 @@ step "3/3  Confirming from the machine's state"
 # before the ref list is taken from it: an empty body and a body naming nothing
 # both yield an empty list, and treating them alike once reported "no longer
 # missing" for a machine that had said nothing at all.
+#
+# The proxy serves the machine info it last collected, not a live read: this
+# repository's proxy configuration refreshes it every 10s, an operator's may
+# refresh it once a minute or less often. The state is therefore polled for up
+# to two and a half minutes before the uploads are called unconfirmed.
 state_json=""
 missing=""
 outstanding=""
-for attempt in 1 2 3 4 5 6; do
+for attempt in $(seq 1 30); do
   state_json="$(read_machine_state "$PROXY_URL" 2>/dev/null || true)"
   [ -n "$state_json" ] || break
   missing="$(printf '%s' "$state_json" | jq -r '.readiness.missingSecretRefs[]?' 2>/dev/null || true)"
@@ -251,7 +260,8 @@ for attempt in 1 2 3 4 5 6; do
     printf '%s\n' "$missing" | grep -qx "$REF" && outstanding="$outstanding $REF"
   done
   [ -n "$outstanding" ] || break
-  [ "$attempt" -lt 6 ] && sleep 2
+  [ "$attempt" -eq 1 ] && echo "  waiting for the proxy to serve a machine state taken after the uploads (it refreshes periodically)..."
+  [ "$attempt" -lt 30 ] && sleep 5
 done
 
 confirmed=false
@@ -261,7 +271,7 @@ if [ -z "$state_json" ]; then
   echo "        Every submit above was applied by the machine itself, which is the"
   echo "        verdict that counts; oracle-status.sh repeats this cross-check later."
 elif [ -n "$outstanding" ]; then
-  die "the machine still reports as missing:$outstanding — although it reported the uploads applied; check its logs"
+  die "the machine still reports as missing:$outstanding after 2.5 minutes — although it reported the uploads applied. The proxy may refresh the machine info rarely: ./deploy/scripts/oracle-status.sh repeats this check; otherwise see the machine's logs"
 else
   for REF in "${REFS[@]}"; do
     echo "  ok    $REF is installed"

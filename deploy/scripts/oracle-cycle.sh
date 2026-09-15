@@ -47,6 +47,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$TEE" ]] || die "-tee is required: at least one TEE machine address"
+# The keeper runs from tools/, so a relative records path is resolved here,
+# against the directory the command was typed in, before that change.
+[[ -n "$RECORDS" && "$RECORDS" != /* ]] && RECORDS="$PWD/$RECORDS"
 
 CHAIN="$(resolve_chain "${CHAIN:-}")"
 ADDR_FILE="${ADDRESSES_FILE:-./deploy/config/$CHAIN/deployed-addresses.json}"

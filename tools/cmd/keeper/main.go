@@ -27,6 +27,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -191,6 +192,9 @@ func main() {
 func openRecords(path string) (*os.File, func(), error) {
 	if path == "" {
 		return os.Stdout, func() {}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, nil, errors.Errorf("creating the directory of %s: %s", path, err)
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {

@@ -233,7 +233,7 @@ Run:
 bash ./deploy/scripts/post-build.sh
 ```
 
-- `allow-tee-version` whitelists the codeHash for your extension.
+- `allow-tee-version` whitelists the codeHash for your extension — the one in `EXPECTED_CODE_HASH`, which the machine's report must match; without it, a real machine is allowed on its own word.
 - `register-tee` pre-registers the TEE, requests attestation, runs the availability check and promotes the machine to production; a machine already in production is left alone.
 
 ## 9. End-to-end test

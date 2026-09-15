@@ -33,8 +33,8 @@
 #
 #   PROXY_URL          extension proxy base URL
 #   CHAIN_ID           target chain id (Coston2 = 114, Flare = 14)
-#   EXPECTED_CODE_HASH the build you expect, obtained OUT OF BAND (a SIMULATED_TEE=true
-#                      machine defaults to tee-node's test constant)
+#   EXPECTED_CODE_HASH optional: pins the upload to one build on top of the registry's
+#                      acceptance (a SIMULATED_TEE=true machine defaults to tee-node's test constant)
 #   USDXPROV_KEYS      provider admin private keys held HERE, comma-separated
 #                      (USDXPROV_KEY is accepted as the single-key form)
 #   USDXPROV_API_KEY   proxy API key for the direct channel
@@ -178,9 +178,9 @@ liveEndpointsHash() {
 
 echo "=== USDX oracle — upload the RPC provider credentials ==="
 echo
-echo "You will need: the proxy URL, the expected code hash (given to you out of"
-echo "band), at least one provider admin private key, the credential for each"
-echo "ref, and — only if you hold enough keys to submit — the proxy API key."
+echo "You will need: the proxy URL, at least one provider admin private key, the"
+echo "credential for each ref, and — only if you hold enough keys to submit — the"
+echo "proxy API key. EXPECTED_CODE_HASH, if set, pins the upload to that build."
 echo
 
 # The machine's proxy and the /direct key default from .env, as in
@@ -189,7 +189,10 @@ echo
 : "${PROXY_URL:=${EXT_PROXY_URL:-}}"
 : "${USDXPROV_API_KEY:=${DIRECT_API_KEY:-}}"
 ask PROXY_URL          "Extension proxy URL"    "http://localhost:6674"
-ask CHAIN_ID           "Chain id"               "$(chain_id "$(resolve_chain "")")"
+# The chain id is the active chain's (lib/chains.sh); asked only when .env names
+# no chain at all.
+: "${CHAIN_ID:=$(chain_id "$(resolve_chain "")" 2>/dev/null || true)}"
+ask CHAIN_ID           "Chain id"
 # A machine run with SIMULATED_TEE=true attests with tee-node's fixed test code
 # hash rather than a build's, so when .env says the machine is simulated and
 # names no hash, that constant is what the check can expect. A real Confidential
@@ -199,9 +202,8 @@ if [ "${SIMULATED_TEE:-}" = true ] && [ -z "${EXPECTED_CODE_HASH:-}" ]; then
   EXPECTED_CODE_HASH="$SIMULATED_CODE_HASH"
   echo "expected code hash: tee-node's simulated-machine constant (SIMULATED_TEE=true in .env)"
 fi
-if [ "$VERIFY" = true ]; then
-  ask EXPECTED_CODE_HASH "Expected code hash (0x…)"
-fi
+# As in upload-hex-key.sh: the registry vouches for the build, EXPECTED_CODE_HASH
+# pins one on top and is optional.
 
 # USDXPROV_KEY is what usdxprov itself reads, so a single-key operator can use
 # the same variable for both scripts.
@@ -247,7 +249,7 @@ if [ "$VERIFY" = true ]; then
   # to this check and a substituted one to an encryption a moment later is
   # refused rather than handed a credential. One id for the whole run: every ref
   # goes to the same machine.
-  ATTESTED_TEE_ID="$("$BIN_DIR/verify-tee" -p "$PROXY_URL" -code-hash "$EXPECTED_CODE_HASH" -print-tee-id)" \
+  ATTESTED_TEE_ID="$("$BIN_DIR/verify-tee" -p "$PROXY_URL" ${EXPECTED_CODE_HASH:+-code-hash "$EXPECTED_CODE_HASH"} -print-tee-id)" \
     || die "verification failed — no credential was sent"
   [ -n "$ATTESTED_TEE_ID" ] \
     || die "verification passed but printed no teeId — no credential was sent"
@@ -416,12 +418,26 @@ echo
 #
 # A read failure here is reported, never fatal — the uploads already happened,
 # and exiting non-zero would say they did not.
+#
+# The proxy serves the machine info it last collected, refreshed periodically
+# (every 10s as this repository configures it, an operator's perhaps once a
+# minute), so the state is polled for up to two and a half minutes until it no
+# longer lists a submitted ref as missing.
 still_missing=""
-if readMachineState; then
+for attempt in $(seq 1 30); do
+  if ! readMachineState; then
+    echo "  ?     cannot re-read ${PROXY_URL%/}/info — the uploads above were not confirmed"
+    break
+  fi
   still_missing="$(missingRefs)"
-else
-  echo "  ?     cannot re-read ${PROXY_URL%/}/info — the uploads above were not confirmed"
-fi
+  pending=false
+  for ref in "${submitted[@]:-}"; do
+    [ -n "$ref" ] && printf '%s\n' "$still_missing" | grep -qx "$ref" && pending=true
+  done
+  [ "$pending" = true ] || break
+  [ "$attempt" -eq 1 ] && echo "  waiting for the proxy to serve a machine state taken after the uploads..."
+  [ "$attempt" -lt 30 ] && sleep 5
+done
 for ref in "${submitted[@]:-}"; do
   [ -n "$ref" ] || continue
   if [ -z "$STATE_JSON" ]; then

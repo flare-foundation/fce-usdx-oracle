@@ -16,8 +16,14 @@
 #       none: INITIAL_OWNER (derived), PROXY_PRIVATE_KEY and DIRECT_API_KEY
 #       (generated), USDXPROV_KEY / USDXPROV_KEYS (the deployer, plus a generated
 #       second provider admin) and deploy/config/admins/<chain>.json with the
-#       matching addresses. A value already in the file is never overwritten, so
+#       matching addresses. Derived values never overwrite what the file has, so
 #       later switches are just `use-chain.sh coston`, and the file stays editable.
+#
+#   EXT_PROXY_URL=https://… DIRECT_API_KEY=… SIMULATED_TEE=false ./deploy/scripts/use-chain.sh coston
+#       Given on the call, these three are written into .env.<chain>, replacing
+#       the file's values: they are what changes when the machine is not the
+#       laptop stack but a remote one, whose proxy has a key of its own. The
+#       deployer key is never replaced from the call.
 #
 #   HEX_API_KEY=… HEX_CASH_URL=… ./deploy/scripts/use-chain.sh local
 #       Also write the Hex backing credentials into .env. They, and the
@@ -48,7 +54,10 @@ Usage:
                              Live chain: create .env.coston when missing and fill in
                              everything the funded key implies (owner, proxy key,
                              DIRECT_API_KEY, provisioning keys, the admin set).
-                             Present values are kept.
+                             Derived values never replace present ones.
+  EXT_PROXY_URL=… DIRECT_API_KEY=… SIMULATED_TEE=false $SCRIPT_NAME coston
+                             Given on the call, these are written (replacing): the
+                             remote machine's URL, its proxy's key, real attestation.
   HEX_API_KEY=… HEX_CASH_URL=… $SCRIPT_NAME <chain>
                              Also write the Hex backing credentials into .env.
                              They (and HEX_CASH_SALT) carry over from the previous
@@ -144,10 +153,38 @@ fill() {  # fill KEY VALUE: set KEY in .env.<chain> unless it already has a valu
     fi
     FILLED="$FILLED $key"
 }
+given() {  # given KEY: a value passed on this command line is written, replacing what the file has
+    local key="$1" value="${!1:-}" quoted escaped
+    [[ -n "$value" ]] || return 0
+    [[ "$(val_in "$SRC" "$key")" == "$value" ]] && return 0
+    quoted="$value"; [[ "$value" =~ [^A-Za-z0-9_./:-] ]] && quoted="\"$value\""
+    escaped="$(printf '%s' "$quoted" | sed 's/[&|\\]/\\&/g')"
+    if grep -qE "^# ?$key=" "$SRC" && ! grep -qE "^$key=" "$SRC"; then
+        sed -i '' -E "s|^# ?$key=.*|$key=$escaped|" "$SRC"
+    elif grep -qE "^$key=" "$SRC"; then
+        sed -i '' -E "s|^$key=.*|$key=$escaped|" "$SRC"
+    else
+        printf '\n%s=%s\n' "$key" "$quoted" >> "$SRC"
+    fi
+    FILLED="$FILLED $key"
+}
 FILLED=""
 if [[ "$LIVE" == true ]]; then
+    # The deployer key is filled only into a file that has none: it owns the
+    # extension, the contracts and the funds, and a file with another key is a
+    # different deployment, which this switch must not quietly replace.
+    HAVE_KEY="$(val_in "$SRC" DEPLOYMENT_PRIVATE_KEY)"
+    if [[ -n "${DEPLOYMENT_PRIVATE_KEY:-}" && -n "$HAVE_KEY" && "0x${DEPLOYMENT_PRIVATE_KEY#0x}" != "0x${HAVE_KEY#0x}" ]]; then
+        die ".env.$CHAIN already holds a different DEPLOYMENT_PRIVATE_KEY; it is not replaced from the command line — edit the file, or move it aside for a new deployment"
+    fi
     fill DEPLOYMENT_PRIVATE_KEY "${DEPLOYMENT_PRIVATE_KEY:-}"
-    fill EXT_PROXY_URL "${EXT_PROXY_URL:-}"
+    # What a machine's placement decides, given on the call: the public URL the
+    # machine is registered under, the /direct key its proxy holds (the laptop
+    # stack's is generated below; a remote proxy's is the operator's), and
+    # whether it attests for real.
+    given EXT_PROXY_URL
+    given DIRECT_API_KEY
+    given SIMULATED_TEE
     DEPLOYER_KEY="$(val_in "$SRC" DEPLOYMENT_PRIVATE_KEY)"
     if [[ -n "$DEPLOYER_KEY" ]]; then
         command -v cast >/dev/null || die "cast (Foundry) is required to derive the owner and generate the keys"
@@ -249,6 +286,7 @@ if [[ "$LIVE" == true ]]; then
     log "  PROXY_PRIVATE_KEY      = $([[ -n "$(get_val PROXY_PRIVATE_KEY)" ]] && echo "<set>" || echo "<unset>")"
     log "  DIRECT_API_KEY         = $([[ -n "$(get_val DIRECT_API_KEY)" ]] && echo "<set>" || echo "<unset>")"
     log "  EXTENSION_ID           = $(v=$(get_val EXTENSION_ID); echo "${v:-<unset>}")"
+    log "  SIMULATED_TEE          = $(v=$(get_val SIMULATED_TEE); echo "${v:-<unset>}")"
 fi
 log "  HEX_API_KEY            = $([[ -n "$(get_val HEX_API_KEY)" ]]   && echo "<set>" || echo "<unset — cash-less>")"
 log "  HEX_CASH_URL           = $([[ -n "$(get_val HEX_CASH_URL)" ]]  && echo "<set>" || echo "<unset — cash-less>")"
