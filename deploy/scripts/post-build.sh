@@ -23,7 +23,9 @@ step() { echo -e "\n${CYAN}=== Step $1: $2 ===${NC}"; }
 die()  { echo -e "${RED}[post-build] ERROR:${NC} $*" >&2; exit 1; }
 
 # --- .env, then the stack start-services.sh recorded ---
+# shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"; load_env
+# shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR/lib/chains.sh"
 
 # The URL registered on chain as the machine's address. On the simulation it is

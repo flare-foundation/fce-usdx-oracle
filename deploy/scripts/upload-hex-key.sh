@@ -279,7 +279,7 @@ else
   confirmed=true
   if [ -n "$missing" ]; then
     echo "  note  still outstanding, for whoever holds those credentials:"
-    printf '        %s\n' $missing
+    for m in $missing; do printf '        %s\n' "$m"; done
   fi
   ready="$(printf '%s' "$state_json" | jq -r '.readiness.ready' 2>/dev/null || true)"
   [ "$ready" = true ] && echo "  ok    the machine reports ready: true"

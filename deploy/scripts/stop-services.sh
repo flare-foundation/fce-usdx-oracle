@@ -51,7 +51,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # .env, then the stack start-services.sh recorded (deploy/config/stack.env).
+# shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR/lib/chains.sh"; load_env
 # Without --local, the recorded stack decides what "stop" means: a host-process
 # stack is stopped as such rather than a compose stack that is not there.

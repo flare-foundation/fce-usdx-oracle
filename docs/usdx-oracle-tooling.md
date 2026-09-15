@@ -335,7 +335,7 @@ sibling layout is resolved as `$PROJECT_DIR/../..`, so the repo has to sit at
 `tee/extension-examples/<repo>` with `tee/tee-node` and `tee/tee-proxy` beside it — both must exist
 even if only one is being changed. And `start-services.sh` writes a `go.work` at the repo root for
 *host* builds which travels into the Docker context and takes precedence over the image's own
-`replace` directive; `Dockerfile.siblings` removes it in-layer for that reason. `.dockerignore`
+`replace` directive; `Dockerfile.siblings.dev` removes it in-layer for that reason. `.dockerignore`
 cannot help, because the siblings build's context root is `tee/`, not the repo.
 
 ## Build and housekeeping

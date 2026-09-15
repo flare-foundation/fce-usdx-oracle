@@ -35,7 +35,7 @@ Server(("0.0.0.0", int(sys.argv[2])), Handler).serve_forever()
 '
 
 modcache_proxy_start() {
-    local dir port i
+    local dir port
     [[ -n "$MODCACHE_PROXY_PID" ]] && return 0
     if ! command -v go >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
         warn "go or python3 not on PATH; builds download modules from the public proxy"
@@ -53,7 +53,7 @@ modcache_proxy_start() {
     # sees as dial timeouts.
     python3 -c "$MODCACHE_PROXY_SERVER" "$dir" "$port" >/dev/null 2>&1 &
     MODCACHE_PROXY_PID=$!
-    for i in $(seq 20); do
+    for _ in $(seq 20); do
         curl -sf -o /dev/null "http://127.0.0.1:$port/" && break
         sleep 0.25
     done

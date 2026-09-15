@@ -78,8 +78,8 @@ GENEOF
         echo "  created $GEN_FILE"
     fi
 
-    ( cd "$PROJECT_DIR/$MODULE" && go generate ./pkg/contracts/$GO_PKG/ )
-    echo "  → ${BINDINGS_DIR#$PROJECT_DIR/}/autogen.go"
+    ( cd "$PROJECT_DIR/$MODULE" && go generate "./pkg/contracts/$GO_PKG/" )
+    echo "  → ${BINDINGS_DIR#"$PROJECT_DIR"/}/autogen.go"
 }
 
 for entry in "${CONTRACTS[@]}"; do

@@ -304,7 +304,7 @@ Every language image must:
 
 Determinism is not equal across languages. Go on distroless is bit-for-bit reproducible across machines. Python wheels and `node_modules` trees embed build-host paths and npm-version-dependent layout, so those images target *same-machine* determinism only. See `REPRODUCIBILITY.md` for the honest per-language caveats.
 
-**tee-node version pinning.** The extension links tee-node as a Go module, so `go.mod` is the single pin; the sibling build (`Dockerfile.siblings`) replaces it with the on-disk checkout for development.
+**tee-node version pinning.** The extension links tee-node as a Go module, so `go.mod` is the single pin; the sibling build (`Dockerfile.siblings.dev`) replaces it with the on-disk checkout for development.
 
 `deploy/scripts/check-versions.sh` fails when the tee-node or go-flare-common pins of the two Go modules, or the tee-proxy pin and the proxy image's build argument, drift apart.
 

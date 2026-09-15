@@ -142,21 +142,20 @@ func TestSaveState_OverwritesExisting(t *testing.T) {
 	}
 }
 
-func TestSaveState_ReadOnlyDir(t *testing.T) {
+// A write failure must surface. The unwritable path is one whose parent is a
+// regular file, which no user can write into — a read-only directory would
+// pass for root, which is what CI runs the tests as.
+func TestSaveState_UnwritablePath(t *testing.T) {
 	dir := t.TempDir()
-	readOnlyDir := filepath.Join(dir, "readonly")
-	if err := os.Mkdir(readOnlyDir, 0555); err != nil {
+	notADir := filepath.Join(dir, "file")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		os.Chmod(readOnlyDir, 0755)
-	})
 
-	path := filepath.Join(readOnlyDir, "register-tee.state")
+	path := filepath.Join(notADir, "register-tee.state")
 	state := &registrationState{CompletedSteps: "r"}
-	err := saveState(path, state)
-	if err == nil {
-		t.Fatal("expected error writing to read-only directory, got nil")
+	if err := saveState(path, state); err == nil {
+		t.Fatal("expected an error writing under a regular file, got nil")
 	}
 }
 

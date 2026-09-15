@@ -37,6 +37,7 @@ ADMINS="${ADMINS:-$PROJECT_DIR/deploy/config/admins/dev-wellknown-keys.json}"
 EXT_PORT="${EXT_PORT:-8099}"
 SIGN_PORT="${SIGN_PORT:-9099}"
 export SIGN_PORT
+# shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"
 NODE_URL="http://127.0.0.1:$SIGN_PORT"
 

@@ -36,6 +36,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRIPT_NAME="$(basename "$0")"
+# shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR/lib/chains.sh"
 
 log() { echo "[use-chain] $*"; }
@@ -262,7 +263,7 @@ if [[ "$LIVE" == true && ! -f "$ADMINS" ]]; then
         SECOND_ADDR="$(cast wallet address --private-key "$SECOND_KEY")"
         jq -n --arg d "$OWNER_ADDR" --arg s "$SECOND_ADDR" \
             '{backing: {threshold: 1, admins: [$d]}, providers: {threshold: 2, admins: [$d, $s]}}' > "$ADMINS"
-        log "wrote ${ADMINS#$PROJECT_DIR/}: backing [$OWNER_ADDR], providers [$OWNER_ADDR, $SECOND_ADDR]"
+        log "wrote ${ADMINS#"$PROJECT_DIR"/}: backing [$OWNER_ADDR], providers [$OWNER_ADDR, $SECOND_ADDR]"
     fi
 elif [[ "$LIVE" == true && -f "$ADMINS" ]]; then
     # An admin set left from another deployer would have the machine refuse this
@@ -270,7 +271,7 @@ elif [[ "$LIVE" == true && -f "$ADMINS" ]]; then
     OWNER_ADDR="$(val_in "$SRC" INITIAL_OWNER | tr '[:upper:]' '[:lower:]')"
     BACKING="$(jq -r '.backing.admins[0] // empty' "$ADMINS" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     if [[ -n "$OWNER_ADDR" && -n "$BACKING" && "$BACKING" != "$OWNER_ADDR" ]]; then
-        log "WARN: ${ADMINS#$PROJECT_DIR/} names $BACKING as backing admin, not this deployer ($OWNER_ADDR); delete the file to have it rewritten, or edit it"
+        log "WARN: ${ADMINS#"$PROJECT_DIR"/} names $BACKING as backing admin, not this deployer ($OWNER_ADDR); delete the file to have it rewritten, or edit it"
     fi
 fi
 

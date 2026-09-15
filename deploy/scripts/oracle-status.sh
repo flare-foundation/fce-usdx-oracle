@@ -27,7 +27,9 @@ GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC
 section() { echo -e "\n${CYAN}=== $* ===${NC}"; }
 warn() { echo -e "${YELLOW}$*${NC}"; }
 
+# shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR/lib/chains.sh"
+# shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"; load_env
 
 # The chain .env names (lib/chains.sh); with none, the simulation.

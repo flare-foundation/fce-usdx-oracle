@@ -1,0 +1,9 @@
+# ShellCheck settings for the operator scripts under deploy/scripts, read by a
+# shellcheck run from the repository root (the CI component's lint-shell job).
+#
+# The scripts source their libraries through $SCRIPT_DIR, a path shellcheck
+# cannot evaluate. Each source line carries a `source=` directive naming the
+# file relative to the script's own directory, and these two settings let
+# shellcheck follow it, so a script is checked together with what it sources.
+external-sources=true
+source-path=SCRIPTDIR

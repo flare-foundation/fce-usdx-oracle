@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # chains.sh — the networks the scripts know, in one place.
 #
 # Sourced by the scripts; not executable on its own. Every per-chain fact the
@@ -14,6 +15,7 @@
 # real Confidential Space machine (deploy/README.md, "A remote machine").
 
 CHAINS="local coston coston2 songbird flare"
+# shellcheck disable=SC2034  # read by the scripts that source this file
 CHAINS_USAGE="local|coston|coston2|songbird|flare"
 
 # chain_row <chain>: sets id, rpc, proxy, upstream, faucet, kind, indexer_port

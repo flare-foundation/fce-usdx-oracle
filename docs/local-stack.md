@@ -203,7 +203,7 @@ sibling `tee-node/` checkout is needed.
 
 To build the node and proxy from on-disk sibling checkouts instead (while developing
 `tee-node`/`tee-proxy`), run `USE_LOCAL_SIBLINGS=1 ./deploy/scripts/start-services.sh`, which
-selects `Dockerfile.siblings` (build context `tee/`) via `deploy/docker-compose.siblings.yaml`.
+selects `Dockerfile.siblings.dev` (build context `tee/`) via `deploy/docker-compose.siblings.yaml`.
 Both sibling images download their Go modules from the host's module cache, which the script
 serves for the duration of the build with the public proxy as fallback
 (`deploy/scripts/lib/modcache-proxy.sh`); the checkouts' dependency graphs run to several hundred

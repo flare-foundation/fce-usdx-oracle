@@ -27,6 +27,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'

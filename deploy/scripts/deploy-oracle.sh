@@ -48,6 +48,7 @@ warn() { echo -e "${YELLOW}[deploy-oracle] WARN:${NC} $*" >&2; }
 die()  { echo -e "${RED}[deploy-oracle] ERROR:${NC} $*" >&2; exit 1; }
 section() { echo -e "\n${CYAN}=== $* ===${NC}"; }
 
+# shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR/lib/chains.sh"
 
 CHAIN="${CHAIN:-}"; REFRESH=false
@@ -70,6 +71,7 @@ chain_is_mainnet "$CHAIN" && die "$CHAIN is a mainnet: these contracts are deplo
     "  A production deployment runs flare-smart-contracts-v2's deployment/scripts/deploy-tee-oracle.sh $CHAIN,\n" \
     "  then ./deploy/scripts/import-upstream-addresses.sh $CHAIN here. See docs/deployment-steps.md."
 
+# shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"; load_env
 
 CHAIN_URL="${CHAIN_URL:-$(chain_rpc "$CHAIN")}"
@@ -111,8 +113,8 @@ GAS_LIMIT="${GAS_LIMIT:-3000000}"
 # lose the nonce it was built with; cast picks the nonce up again on every attempt.
 send_retry() {  # send_retry <key> <cast send args...>
     local key="$1"; shift
-    local attempt out
-    for attempt in 1 2 3 4 5; do
+    local out
+    for _ in 1 2 3 4 5; do
         if out="$(cast send "$@" --rpc-url "$CHAIN_URL" --private-key "$key" --gas-limit "$GAS_LIMIT" --json 2>&1)"; then
             [[ "$(jq -r .status <<<"$out" 2>/dev/null)" == "0x1" ]] || { echo "reverted: $(jq -c '{transactionHash, status}' <<<"$out" 2>/dev/null || echo "$out")"; return 1; }
             echo "$out"; return 0
@@ -132,7 +134,7 @@ if [[ "$CHAIN" == "local" ]]; then
     [[ -n "$GOV_KEY" ]] || die "LOCAL_GOVERNANCE_KEY is not set — activate .env.local"
     sysaddr() { jq -r ".$1 // empty" "$SIM_DUMP"; }
 else
-    [[ -f "$ADDRS" ]] || die "no addresses file at ${ADDRS#$PROJECT_DIR/} — run import-upstream-addresses.sh $CHAIN first"
+    [[ -f "$ADDRS" ]] || die "no addresses file at ${ADDRS#"$PROJECT_DIR"/} — run import-upstream-addresses.sh $CHAIN first"
     # The addresses file mirrors upstream's deploys file, which lists what that
     # repository deployed; contracts that predate it, the AddressUpdater among
     # them, are looked up in the network's FlareContractRegistry, at the same
@@ -223,11 +225,11 @@ if [[ "$REFRESH" == "false" && -n "$SENDER" && "$(cast code "$SENDER" --rpc-url 
         ( cd "$PROJECT_DIR/contracts" && \
             forge script script/DeployStateVerifier.s.sol:DeployStateVerifier \
                 --rpc-url "$CHAIN_URL" --private-key "$DEPLOYER_KEY" --broadcast --non-interactive ) 2>&1 | tee "$VERIFIER_LOG" \
-            || die "verifier deploy failed (log: ${VERIFIER_LOG#$PROJECT_DIR/})"
+            || die "verifier deploy failed (log: ${VERIFIER_LOG#"$PROJECT_DIR"/})"
         VERIFIER_ENTRIES="$(grep -E '^[[:space:]]*DEPLOYED:' "$VERIFIER_LOG" \
             | sed -E 's/^[[:space:]]*DEPLOYED:[[:space:]]*([^,]+),[[:space:]]*([^:]+):[[:space:]]*(0x[0-9a-fA-F]{40}).*/\1|\2|\3/' \
             | jq -Rn '[inputs | split("|") | {name: .[0], contractName: .[1], address: .[2]}]')"
-        [[ "$(jq length <<<"$VERIFIER_ENTRIES")" -gt 0 ]] || die "verifier deploy printed no address (log: ${VERIFIER_LOG#$PROJECT_DIR/})"
+        [[ "$(jq length <<<"$VERIFIER_ENTRIES")" -gt 0 ]] || die "verifier deploy printed no address (log: ${VERIFIER_LOG#"$PROJECT_DIR"/})"
         jq --argjson v "$VERIFIER_ENTRIES" '. + $v' "$DEPLOY_OUT" > "$DEPLOY_OUT.tmp" && mv "$DEPLOY_OUT.tmp" "$DEPLOY_OUT"
         log "verifier at $(jq -r '.[0].address' <<<"$VERIFIER_ENTRIES")"
     fi
@@ -256,14 +258,14 @@ else
         FDC2_VERIFICATION="$FDC2_VERIFICATION" FEE_CALCULATOR="$FEE_CALCULATOR" \
         forge script script/DeployTeeOracle.s.sol:DeployTeeOracle \
             --rpc-url "$CHAIN_URL" --private-key "$DEPLOYER_KEY" --broadcast --slow --non-interactive ) 2>&1 | tee "$FORGE_LOG" \
-        || die "deploy failed (log: ${FORGE_LOG#$PROJECT_DIR/})"
+        || die "deploy failed (log: ${FORGE_LOG#"$PROJECT_DIR"/})"
     # One DEPLOYED line per contract, in upstream's format; they become a deploys
     # file in upstream's shape for the importer.
     grep -E '^[[:space:]]*DEPLOYED:' "$FORGE_LOG" \
         | sed -E 's/^[[:space:]]*DEPLOYED:[[:space:]]*([^,]+),[[:space:]]*([^:]+):[[:space:]]*(0x[0-9a-fA-F]{40}).*/\1|\2|\3/' \
         | jq -Rn '[inputs | split("|") | {name: .[0], contractName: .[1], address: .[2]}]' > "$DEPLOY_OUT"
     SENDER="$(jq -r '[.[] | select(.name=="TeeOracleInstructionsSender") | .address][0] // empty' "$DEPLOY_OUT")"
-    [[ -n "$SENDER" ]] || die "deploy ran but printed no TeeOracleInstructionsSender address (log: ${FORGE_LOG#$PROJECT_DIR/})"
+    [[ -n "$SENDER" ]] || die "deploy ran but printed no TeeOracleInstructionsSender address (log: ${FORGE_LOG#"$PROJECT_DIR"/})"
     log "sender at $SENDER ($(jq length "$DEPLOY_OUT") contracts)"
 fi
 VERIFIER="$(jq -r '[.[] | select(.name=="UsdxTeeExtensionStateVerifier") | .address][0] // empty' "$DEPLOY_OUT")"
@@ -305,7 +307,7 @@ elif [[ "$REGISTER_PUBLIC" == "true" ]]; then
         else
             printf '\n# The extension id the registry minted for this key, recorded by deploy-oracle.sh.\nEXTENSION_ID=%s\n' "$EXTENSION_ID" >> "$envfile"
         fi
-        log "EXTENSION_ID=$EXTENSION_ID recorded in ${envfile#$PROJECT_DIR/}"
+        log "EXTENSION_ID=$EXTENSION_ID recorded in ${envfile#"$PROJECT_DIR"/}"
     done
 else
     log "extension $EXTENSION_ID is reserved to its owner; wire-extension publishes the sender and verifier"

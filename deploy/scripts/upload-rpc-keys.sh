@@ -127,7 +127,7 @@ ask_secret() {
 # variable name, so the caller falls back to prompting by ref instead.
 envVarFor() {
   local name
-  name="$(printf '%s' "$1" | tr 'a-z' 'A-Z' | tr -c 'A-Z0-9_' '_')"
+  name="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9_' '_')"
   case "$name" in
     [A-Z_]*) printf '%s' "$name" ;;
     *) printf '' ;;
@@ -464,7 +464,7 @@ done
 if [ -n "$still_missing" ]; then
   echo
   echo "  still outstanding on this machine:"
-  printf '        %s\n' $still_missing
+  for m in $still_missing; do printf '        %s\n' "$m"; done
   if printf '%s\n' "$still_missing" | grep -qx "$BACKING_REF"; then
     echo "        $BACKING_REF is the backing credential — ./deploy/scripts/upload-hex-key.sh"
   fi

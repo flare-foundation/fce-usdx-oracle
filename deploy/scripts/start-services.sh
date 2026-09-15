@@ -45,10 +45,13 @@ log()  { echo -e "${GREEN}[start-services]${NC} $*"; }
 die()  { echo -e "${RED}[start-services] ERROR:${NC} $*" >&2; exit 1; }
 warn() { echo -e "${YELLOW:-}[start-services] WARN:${NC} $*" >&2; }
 # Sibling image builds fetch their Go modules from the host module cache.
+# shellcheck source=lib/modcache-proxy.sh
 source "$SCRIPT_DIR/lib/modcache-proxy.sh"
 # load_env / record_stack: the proxy URL the follow-up scripts pick up.
+# shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"
 # The chains the scripts know, one row each.
+# shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR/lib/chains.sh"
 
 # check_indexer_sync: the proxy refuses to serve until the chain indexer's
@@ -63,10 +66,10 @@ check_indexer_sync() {
     behind="$(docker compose -f "$file" exec -T "$svc" mysql -uroot -proot db -N \
         -e "select unix_timestamp() - block_timestamp from states where name='last_database_block'" 2>/dev/null | tr -d '[:space:]')"
     if [[ -z "$behind" ]]; then
-        warn "the $svc container is not running or has no indexed block yet — the proxy will wait for the indexer (docker compose -f ${file#$PROJECT_DIR/} up -d)"
+        warn "the $svc container is not running or has no indexed block yet — the proxy will wait for the indexer (docker compose -f ${file#"$PROJECT_DIR"/} up -d)"
         return 0
     fi
-    (( behind <= 60 )) || die "the chain indexer is $behind s behind the chain; the proxy would not serve until it has caught up — follow it with: docker compose -f ${file#$PROJECT_DIR/} logs -f $CHAIN-indexer"
+    (( behind <= 60 )) || die "the chain indexer is $behind s behind the chain; the proxy would not serve until it has caught up — follow it with: docker compose -f ${file#"$PROJECT_DIR"/} logs -f $CHAIN-indexer"
     log "Chain indexer: ${behind}s behind the chain"
 }
 
@@ -86,6 +89,7 @@ done
 # --- Load .env from project root (if present) ---
 if [[ -f "$PROJECT_DIR/.env" ]]; then
     set -a
+    # shellcheck source=/dev/null
     source "$PROJECT_DIR/.env"
     set +a
 fi
@@ -151,11 +155,11 @@ render_live_proxy_config() {
     local mode="$1" src="$PROJECT_DIR/deploy/config/proxy/extension_proxy.live.toml"
     local dst="$PROJECT_DIR/out/proxy/extension_proxy.$CHAIN.$mode.toml"
     local args=() pair key name addr db_host db_port redis
-    [[ -f "$ADDRESSES_FILE_ABS" ]] || die "no addresses file at ${ADDRESSES_FILE_ABS#$PROJECT_DIR/} — run ./deploy/scripts/import-upstream-addresses.sh $CHAIN"
+    [[ -f "$ADDRESSES_FILE_ABS" ]] || die "no addresses file at ${ADDRESSES_FILE_ABS#"$PROJECT_DIR"/} — run ./deploy/scripts/import-upstream-addresses.sh $CHAIN"
     for pair in flare_systems_manager:FlareSystemsManager relay:Relay voter_registry:VoterRegistry; do
         key="${pair%%:*}"; name="${pair##*:}"
         addr="$(jq -r --arg n "$name" '[.[] | select(.name == $n) | .address][0] // empty' "$ADDRESSES_FILE_ABS")"
-        [[ -n "$addr" ]] || die "$name is not in ${ADDRESSES_FILE_ABS#$PROJECT_DIR/} — run ./deploy/scripts/import-upstream-addresses.sh $CHAIN"
+        [[ -n "$addr" ]] || die "$name is not in ${ADDRESSES_FILE_ABS#"$PROJECT_DIR"/} — run ./deploy/scripts/import-upstream-addresses.sh $CHAIN"
         args+=(-e "s#^$key = .*#$key = \"$addr\"#")
     done
     args+=(-e "s#^chain_id = .*#chain_id = $CHAIN_ID#")
@@ -328,7 +332,7 @@ if [[ "$USE_LOCAL" == "false" ]]; then
         check_indexer_sync
         PROXY_CONFIG_FILE="$(render_live_proxy_config docker)" || exit 1
         export PROXY_CONFIG_FILE
-        log "proxy config rendered to ${PROXY_CONFIG_FILE#$PROJECT_DIR/} (addresses from ${ADDRESSES_FILE_ABS#$PROJECT_DIR/})"
+        log "proxy config rendered to ${PROXY_CONFIG_FILE#"$PROJECT_DIR"/} (addresses from ${ADDRESSES_FILE_ABS#"$PROJECT_DIR"/})"
     fi
     UP_FLAGS=()
     [[ "$CHAIN" == "local" ]] && UP_FLAGS=(--force-recreate)
@@ -433,8 +437,8 @@ if [[ "$CHAIN" != "local" ]]; then
         LOCAL_STACK_REDIS="$REDIS_BIND"
     fi
     HOST_TOML="$(render_live_proxy_config host)" || exit 1
-    ARGS+=(-template "${HOST_TOML#$PROJECT_DIR/}")
-    log "proxy config rendered to ${HOST_TOML#$PROJECT_DIR/} (addresses from ${ADDRESSES_FILE_ABS#$PROJECT_DIR/})"
+    ARGS+=(-template "${HOST_TOML#"$PROJECT_DIR"/}")
+    log "proxy config rendered to ${HOST_TOML#"$PROJECT_DIR"/} (addresses from ${ADDRESSES_FILE_ABS#"$PROJECT_DIR"/})"
 fi
 [[ -n "${LOCAL_STACK_REDIS:-}" ]] && ARGS+=(-redis "$LOCAL_STACK_REDIS")
 "$E2E" start local-stack "$PIDFILE" "$LOGFILE" "$BIN_DIR/local-stack" "${ARGS[@]}"
@@ -446,7 +450,7 @@ DEADLINE=$(( $(date +%s) + 420 ))
 until curl -sf -m 3 "$HOST_PROXY_URL/info" >/dev/null 2>&1; do
     if ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
         tail -n 25 "$LOGFILE" >&2
-        die "local-stack exited; its log is above (full log: ${LOGFILE#$PROJECT_DIR/})"
+        die "local-stack exited; its log is above (full log: ${LOGFILE#"$PROJECT_DIR"/})"
     fi
     (( $(date +%s) >= DEADLINE )) && { tail -n 25 "$LOGFILE" >&2; die "the host proxy did not answer on $HOST_PROXY_URL within 420s"; }
     sleep 3
@@ -460,9 +464,9 @@ echo -e "${GREEN} Services started (host processes)${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 sed -n '/Extension stack running/,/^Ctrl-C/p' "$LOGFILE" | grep -vE '^Continue with|^  EXT_PROXY_URL|^  \./deploy|^Ctrl-C|^$' \
-    || echo "  (the runner has not printed its summary yet; see ${LOGFILE#$PROJECT_DIR/})"
+    || echo "  (the runner has not printed its summary yet; see ${LOGFILE#"$PROJECT_DIR"/})"
 echo ""
-echo -e "${CYAN}Processes${NC}   local-stack PID $(cat "$PIDFILE"), log ${LOGFILE#$PROJECT_DIR/} (the TEE's lines tagged)"
+echo -e "${CYAN}Processes${NC}   local-stack PID $(cat "$PIDFILE"), log ${LOGFILE#"$PROJECT_DIR"/} (the TEE's lines tagged)"
 if [[ "$CHAIN" == "local" ]]; then
     echo -e "${CYAN}Proxy${NC}       $HOST_PROXY_URL (recorded in deploy/config/stack.env for the follow-up scripts)"
 else

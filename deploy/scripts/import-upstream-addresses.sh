@@ -40,7 +40,9 @@ UPSTREAM="${2:-$PROJECT_DIR/../../../fsp/flare-smart-contracts-v2}"
 # deploys file is deployment/deploys/scdev.json while ours is deploy/config/local/.
 SCRIPT_DIR_LIB="$(cd "$(dirname "$0")" && pwd)/lib"
 # The chain rows (RPC per network) and .env, for CHAIN_URL and UPSTREAM_DIR.
+# shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR_LIB/chains.sh"
+# shellcheck source=/dev/null
 [[ -f "$PROJECT_DIR/.env" ]] && { set -a; . "$PROJECT_DIR/.env"; set +a; }
 
 UPSTREAM_NETWORK="${UPSTREAM_NETWORK:-$([[ "$NETWORK" == "local" ]] && echo scdev || echo "$NETWORK")}"
@@ -114,7 +116,7 @@ if [[ "$NETWORK" != "local" ]]; then
                 -e "s#__DB_HOST__#$NETWORK-indexer-db#g" \
                 -e "s#__HISTORY_DROP__#${INDEXER_HISTORY_DROP:-604800}#g" \
                 "$TEMPLATE" > "$OUT"
-            echo "Wrote ${OUT#$PROJECT_DIR/} (seven days of history; restart the indexer to pick it up)"
+            echo "Wrote ${OUT#"$PROJECT_DIR"/} (seven days of history; restart the indexer to pick it up)"
         fi
     fi
 fi

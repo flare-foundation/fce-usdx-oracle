@@ -33,7 +33,9 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 die() { echo -e "${RED}[oracle-cycle] ERROR:${NC} $*" >&2; exit 1; }
 
+# shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR/lib/chains.sh"
+# shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"; load_env
 
 DRY_RUN=false; INTERVAL=""; RECORDS=""; TEE=""

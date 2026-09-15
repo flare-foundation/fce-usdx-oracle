@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RED='\033[0;31m'; NC='\033[0m'
 die() { echo -e "${RED}[oracle-watch] ERROR:${NC} $*" >&2; exit 1; }
+# shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"; load_env
 
 INTERVAL=""; RECORDS=""; ONCE=false

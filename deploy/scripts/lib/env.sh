@@ -13,7 +13,9 @@
 # testnets, the environment and .env apply as before.
 
 load_env() {
+    # shellcheck source=/dev/null
     [[ -f "$PROJECT_DIR/.env" ]] && { set -a; source "$PROJECT_DIR/.env"; set +a; }
+    # shellcheck source=/dev/null
     [[ -f "$PROJECT_DIR/deploy/config/stack.env" ]] && { set -a; source "$PROJECT_DIR/deploy/config/stack.env"; set +a; }
     return 0
 }

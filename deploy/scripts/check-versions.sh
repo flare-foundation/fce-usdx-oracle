@@ -22,6 +22,7 @@ warn() { echo -e "${YELLOW}[check-versions] WARN:${NC} $*" >&2; }
 die()  { echo -e "${RED}[check-versions] ERROR:${NC} $*" >&2; exit 1; }
 
 # shellcheck source=lib/versions.sh
+# shellcheck source=lib/versions.sh
 source "$SCRIPT_DIR/lib/versions.sh"
 load_versions "$PROJECT_DIR" || die "could not load versions"
 

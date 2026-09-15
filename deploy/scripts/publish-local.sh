@@ -36,7 +36,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR/lib/chains.sh"
+# shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"; load_env
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -67,7 +69,7 @@ done
 if [[ "$KIND" == admins && -z "$CONFIG" && "${LOCAL_MODE:-true}" != true ]]; then
     CHAIN_NAME="$(resolve_chain "")"
     CHAIN_ADMINS="$PROJECT_DIR/deploy/config/admins/$CHAIN_NAME.json"
-    [[ -f "$CHAIN_ADMINS" ]] || die "no ${CHAIN_ADMINS#$PROJECT_DIR/} — use-chain.sh $CHAIN_NAME writes it from the deployer key, or name your admins file; the default, $DEFAULT_CONFIG, is the simulation's well-known keys"
+    [[ -f "$CHAIN_ADMINS" ]] || die "no ${CHAIN_ADMINS#"$PROJECT_DIR"/} — use-chain.sh $CHAIN_NAME writes it from the deployer key, or name your admins file; the default, $DEFAULT_CONFIG, is the simulation's well-known keys"
     CONFIG="$CHAIN_ADMINS"
 fi
 CONFIG="${CONFIG:-$PROJECT_DIR/$DEFAULT_CONFIG}"
@@ -130,8 +132,8 @@ GAS_LIMIT="${GAS_LIMIT:-3000000}"
 # the nonce it was built with. cast picks the nonce up again on every attempt.
 send_retry() {  # send_retry <key> <cast send args...>
     local key="$1"; shift
-    local attempt out
-    for attempt in 1 2 3 4 5; do
+    local out
+    for _ in 1 2 3 4 5; do
         if out="$(cast send "$@" --rpc-url "$CHAIN_URL" --private-key "$key" --gas-limit "$GAS_LIMIT" --json 2>&1)"; then
             # An explicit gas limit skips estimation, so a revert surfaces only in the receipt.
             [[ "$(jq -r .status <<<"$out" 2>/dev/null)" == "0x1" ]] || { echo "reverted: $(jq -c '{transactionHash, status}' <<<"$out" 2>/dev/null || echo "$out")"; return 1; }
@@ -197,9 +199,9 @@ if [[ -z "$EXEC_FILE" ]]; then
     SAVED="$PROJECT_DIR/out/publications/$KIND-v$VERSION-${EXPECT:2:8}.json"
     mkdir -p "$(dirname "$SAVED")"
     jq --argjson a "$ALLOWED" --arg tx "$REC_TX" '. + {allowedAfter: $a, recordedIn: $tx}' "$WORK/handoff.json" > "$SAVED"
-    log "executable after $(when "$ALLOWED") (timelock ${TIMELOCK}s); hand-off saved to ${SAVED#$PROJECT_DIR/}"
+    log "executable after $(when "$ALLOWED") (timelock ${TIMELOCK}s); hand-off saved to ${SAVED#"$PROJECT_DIR"/}"
     if (( ! WAIT )); then
-        echo -e "\n  Then: $0 $KIND --execute ${SAVED#$PROJECT_DIR/}\n  (or rerun with --wait to poll until then and execute in one go)"
+        echo -e "\n  Then: $0 $KIND --execute ${SAVED#"$PROJECT_DIR"/}\n  (or rerun with --wait to poll until then and execute in one go)"
         exit 0
     fi
 else
