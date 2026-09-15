@@ -19,7 +19,7 @@ func main() {
 	epf := flag.String("ep", "http://localhost:6662", "external proxy url (for FTDC)")
 	instructionF := flag.String("i", "", "instructionID")
 	command := flag.String("command", "rap", "command (rap)")
-	stateFile := flag.String("state", "../config/register-tee.state", "state file for resume support")
+	stateFile := flag.String("state", "../deploy/config/register-tee.state", "state file for resume support")
 	resume := flag.Bool("resume", false, "resume from state file (default: start fresh)")
 
 	flag.Parse()

@@ -42,7 +42,9 @@ func TestReport_PrintJSON(t *testing.T) {
 	r.Add(CheckResult{Step: "register", ID: "R1", Name: "Extension registered", Status: FAIL, Message: "not registered", Fix: "run register cmd"})
 
 	var buf bytes.Buffer
-	r.FprintJSON(&buf)
+	if err := r.FprintJSON(&buf); err != nil {
+		t.Fatal(err)
+	}
 
 	var parsed struct {
 		Results []struct {
@@ -118,10 +120,12 @@ func TestReport_EmptyReport(t *testing.T) {
 
 	// JSON output should be valid with empty results array
 	var buf bytes.Buffer
-	r.FprintJSON(&buf)
+	if err := r.FprintJSON(&buf); err != nil {
+		t.Fatal(err)
+	}
 	var parsed struct {
-		Results []interface{} `json:"results"`
-		Summary string        `json:"summary"`
+		Results []any  `json:"results"`
+		Summary string `json:"summary"`
 	}
 	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
 		t.Fatalf("failed to parse empty report JSON: %v", err)
@@ -164,7 +168,9 @@ func TestReport_FprintJSON_OmitsEmptyFields(t *testing.T) {
 	r.Add(CheckResult{Step: "deploy", ID: "D1", Name: "OK", Status: PASS})
 
 	var buf bytes.Buffer
-	r.FprintJSON(&buf)
+	if err := r.FprintJSON(&buf); err != nil {
+		t.Fatal(err)
+	}
 
 	// The JSON output should NOT contain "fix" or "message" keys for PASS results
 	// because they use omitempty

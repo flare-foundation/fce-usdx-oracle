@@ -1,0 +1,56 @@
+# Extension proxy configuration for a live network, the template start-services.sh
+# renders into out/proxy/extension_proxy.<chain>.<docker|host>.toml before every
+# start. What it fills in: chain_id, the three contract addresses (from the
+# chain's deployed-addresses.json, which import-upstream-addresses.sh refreshes
+# from the network's contract registry), the redis address, the [db] block (the
+# chain's bundled indexer database, or INDEXER_DB_* from .env for an external
+# one) and, for host processes, the port block (tools/cmd/local-stack). Nothing
+# here is edited by hand; the simulation has its own file, extension_proxy.docker.toml.
+redis_port = "redis:6379"
+private_key_variable = "PROXY_PRIVATE_KEY"
+signing_policy_fetch_interval = "20s"
+# At start the proxy waits for the indexer database to be within a minute of
+# the chain, sleeping between checks up to this long (the default is 10m, which
+# on a lagging indexer looks like a proxy that never comes up).
+db_sync_max_sleep_time = "30s"
+
+chain_id = 0
+
+[db]
+host = "indexer-db"
+port = 3306
+database = "db"
+username = "root"
+password = "root"
+log_queries = false
+
+[addresses]
+flare_systems_manager = "0x0000000000000000000000000000000000000000"
+relay = "0x0000000000000000000000000000000000000000"
+voter_registry = "0x0000000000000000000000000000000000000000"
+
+[ports]
+internal = "6663"
+external = "6664"
+
+[info_timing]
+cycle_internal = "10s"
+cycle_queue_response_wait = "2s"
+
+[voting]
+proposal_expiration = "12s"
+max_pending_request = 10000
+
+# POST /direct carries the two commands that have no on-chain counterpart:
+# TEE_ORACLE/SET_SECRET, which deposits a credential into the enclave, and
+# TEE_ORACLE/GET_READINESS, which asks the machine to describe itself. A price
+# is NOT one of them — GET_FEED is an on-chain instruction and the extension
+# refuses it over this endpoint.
+#
+# The key is mandatory on a reachable proxy. /direct is on the PUBLIC external
+# port and SET_SECRET goes through it, so an unauthenticated one is both a way
+# to flood the enclave and the only thing standing in front of credential
+# provisioning.
+[direct]
+enable = true
+api_key_variable = "DIRECT_API_KEY"

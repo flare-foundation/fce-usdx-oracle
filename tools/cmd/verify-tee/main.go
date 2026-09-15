@@ -22,12 +22,23 @@
 // accepts. Both must hold, and neither is under the proxy's control.
 //
 // Exits non-zero on the first failed check, so a shell script can gate on it.
+//
+// # Passing the answer on
+//
+// Gating is necessary but not sufficient. This command and the encryption that
+// follows it are separate processes making separate requests, so a proxy can
+// serve an honest key here and a substituted one to `usdxprov build` a moment
+// later — and build encrypts to whatever it is handed. -print-tee-id writes the
+// ATTESTED teeId to stdout so the caller can pass it to `usdxprov build -tee`,
+// which then refuses any key deriving to a different address. Without that hand-
+// off, verification proves something true about a request nobody encrypted to.
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -51,13 +62,24 @@ func main() {
 		"the code hash you expect this machine to be running (0x…); "+
 			"obtain it out-of-band, never from the machine you are checking")
 	quiet := flag.Bool("quiet", false, "print only failures")
+	printTeeID := flag.Bool("print-tee-id", false,
+		"on success, write ONLY the attested teeId to stdout (all other output goes to "+
+			"stderr) so a script can pass it to `usdxprov build -tee`")
 	flag.Parse()
+
+	// With -print-tee-id stdout carries one address and nothing else, so the human
+	// report moves to stderr rather than being suppressed — the scripted path must
+	// not be the one nobody watches.
+	out := io.Writer(os.Stdout)
+	if *printTeeID {
+		out = os.Stderr
+	}
 
 	failed := false
 	check := func(ok bool, label, detail string) {
 		if ok {
 			if !*quiet {
-				fmt.Printf("  ok    %s\n        %s\n", label, detail)
+				_, _ = fmt.Fprintf(out, "  ok    %s\n        %s\n", label, detail)
 			}
 			return
 		}
@@ -66,7 +88,7 @@ func main() {
 	}
 
 	if !*quiet {
-		fmt.Printf("Verifying the machine behind %s\n\n", *pf)
+		_, _ = fmt.Fprintf(out, "Verifying the machine behind %s\n\n", *pf)
 	}
 
 	// 1. The attestation itself. GetCodeHashAndPlatform parses the quote and
@@ -113,7 +135,7 @@ func main() {
 		os.Exit(1)
 	}
 	if !*quiet {
-		fmt.Printf("  ---   teeId derived from the attested public key: %s\n", teeID.Hex())
+		_, _ = fmt.Fprintf(out, "  ---   teeId derived from the attested public key: %s\n", teeID.Hex())
 	}
 
 	s, err := support.DefaultSupport(*af, *cf)
@@ -135,7 +157,7 @@ func main() {
 		os.Exit(1)
 	}
 	if !*quiet {
-		fmt.Printf("  ---   extension id: %s\n", extID.String())
+		_, _ = fmt.Fprintf(out, "  ---   extension id: %s\n", extID.String())
 	}
 
 	// 5. The extension accepts this code hash on this platform. This is the
@@ -151,7 +173,14 @@ func main() {
 		os.Exit(1)
 	}
 	if !*quiet {
-		fmt.Printf("\nVerified. teeId %s is running an accepted build.\n", teeID.Hex())
+		_, _ = fmt.Fprintf(out, "\nVerified. teeId %s is running an accepted build.\n", teeID.Hex())
+	}
+
+	// Last, and only on success: the one line stdout carries. Reached only after
+	// every check above passed, so a caller capturing it in $( ) either gets an
+	// attested id or a non-zero exit and an empty string.
+	if *printTeeID {
+		fmt.Println(teeID.Hex())
 	}
 }
 

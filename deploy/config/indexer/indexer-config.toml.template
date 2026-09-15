@@ -1,0 +1,95 @@
+# C-chain indexer configuration for the proxy's signing-policy source, the
+# template import-upstream-addresses.sh renders into indexer/<chain>/indexer-config.toml
+# from the chain's deployed-addresses.json (docker-compose.<chain>-indexer.yaml
+# runs it). The addresses come from the network's contract registry through that
+# file, so a redeployed Relay reaches the indexer on the next import rather than
+# leaving it listening to a contract that no longer emits.
+#
+# History: with history_drop set, the indexer begins at the block that many
+# seconds behind the head (start_index only bounds that search from below) and
+# prunes rows older than that as it advances. Seven days covers the signing
+# policies and voter registrations of the recent reward epochs, which the proxy
+# needs to follow a policy rollover.
+[indexer]
+start_index = 0
+stop_index = 0
+# Sized for Flare's public RPCs: they cap eth_getLogs at 30 blocks per request
+# and reject a wider range, which the indexer counts as a request that found no
+# logs, so a larger log_range leaves the logs table empty; and more than about
+# ten parallel requests run into their deadline.
+num_parallel_req = 10
+batch_size = 1000
+log_range = 25
+new_block_check_millis = 1000
+no_new_blocks_delay_warning = 60
+
+# FlareSystemsManager: signNewSigningPolicy
+[[indexer.collect_transactions]]
+contract_address = "__FLARE_SYSTEMS_MANAGER__"
+func_sig = "6b4c7bd6"
+status = true
+
+# VoterRegistry: registerVoter
+[[indexer.collect_transactions]]
+contract_address = "__VOTER_REGISTRY__"
+func_sig = "8f7d0957"
+status = true
+
+# FlareTeeManager (MachinePathManager facet): signMachinePathList, the
+# governance signatures the proxy aggregates into SET_MACHINE_PATH_LIST.
+[[indexer.collect_transactions]]
+contract_address = "__FLARE_TEE_MANAGER__"
+func_sig = "cce3332d"
+status = true
+
+# Relay: SigningPolicyInitialized
+[[indexer.collect_logs]]
+contract_address = "__RELAY__"
+topic = "0x91d0280e969157fc6c5b8f952f237b03d934b18534dafcac839075bbc33522f8"
+
+# VoterRegistry: VoterRegistered
+[[indexer.collect_logs]]
+contract_address = "__VOTER_REGISTRY__"
+topic = "0x824bc2cc10bfe21ead60b8c8a90716eb325b9335aa73eaede799abf38fce062c"
+
+# VoterRegistry: VoterRemoved
+[[indexer.collect_logs]]
+contract_address = "__VOTER_REGISTRY__"
+topic = "0xbfb6cd90b6e2668916d9e034926c84f40bcf94094b0d625ec8eecfdeb2150ae1"
+
+# FlareTeeManager: TeeInstructionsSent
+[[indexer.collect_logs]]
+contract_address = "__FLARE_TEE_MANAGER__"
+topic = "0xf770e69a9fc05b7180797556ec4cedb6108ce2c56ffa76c84aa087efeb5e6963"
+
+# FlareTeeManager: MachinePathsAdded
+[[indexer.collect_logs]]
+contract_address = "__FLARE_TEE_MANAGER__"
+topic = "0xb431778feef3dfa1ab02d748f50bfbac8ad13947791c2d21cd52e808f52562d0"
+
+# FlareTeeManager: MachinePathListSigned
+[[indexer.collect_logs]]
+contract_address = "__FLARE_TEE_MANAGER__"
+topic = "0x81f37ab661bc938e2691a96974841d81d7d97d19a5f2af658db75332f2439d2c"
+
+[logger]
+level = "DEBUG"
+file = "./logger/logs/flare-ftso-indexer.log"
+console = true
+
+[chain]
+node_url = "__NODE_URL__"
+chain_type = 1
+
+# The database service of the chain's indexer compose file. The proxy's [db]
+# block, rendered by start-services.sh, names the same values. The tables are
+# dropped on every start, so a restart re-indexes the history.
+[db]
+host = "__DB_HOST__"
+port = 3306
+database = "db"
+username = "root"
+password = "root"
+log_queries = false
+drop_table_at_start = true
+history_drop = __HISTORY_DROP__

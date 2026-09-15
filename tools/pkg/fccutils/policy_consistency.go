@@ -37,11 +37,9 @@ func outOfSyncError(onchainEpoch, proxyPolicyID uint64) error {
 		ErrPolicyOutOfSync, proxyPolicyID, onchainEpoch, rel)
 }
 
-// CheckFTDCProxyPolicyConsistency compares the on-chain current reward epoch
-// against the signing policy id the FTDC proxy reports.
-//
-// Returns ErrPolicyOutOfSync only on a CONFIRMED mismatch: if either lookup
-// fails it warns and returns nil, so a transient never blocks registration.
+// CheckFTDCProxyPolicyConsistency compares the on-chain reward epoch against the
+// signing policy id the FTDC proxy reports. Returns ErrPolicyOutOfSync only on a
+// CONFIRMED mismatch, so a transient lookup failure never blocks registration.
 func CheckFTDCProxyPolicyConsistency(s *support.Support, ftdcProxyURL string) error {
 	callOpts := &bind.CallOpts{Context: context.Background()}
 	onchain, err := s.FlareSystemManager.GetCurrentRewardEpochId(callOpts)

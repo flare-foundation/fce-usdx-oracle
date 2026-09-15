@@ -1,0 +1,48 @@
+# The Coston C-chain indexer and its MySQL database. The extension proxy reads
+# signing policies, voter registrations and relay finalisations from this
+# database; the configuration under config/indexer/coston/ is the e2e
+# repository's docker/coston with a seven-day history.
+#
+# A file of its own so the indexer runs without the rest of the stack and
+# without any variable set:
+#   docker compose -f deploy/docker-compose.coston-indexer.yaml up -d
+#   docker compose -f deploy/docker-compose.coston-indexer.yaml logs -f coston-indexer
+# start-services.sh --chain coston adds this file to the compose set, so the
+# indexer started this way is the one the proxy later joins (same project
+# `deploy`, same network) rather than a second copy.
+#
+# At start the indexer indexes the chain from seven days back and prunes older
+# rows as it advances; the proxy's policy fetches fail until it has caught up,
+# some minutes on a fresh database. The tables are dropped on every start.
+services:
+  coston-indexer-db:
+    image: "mysql"
+    environment:
+      MYSQL_ROOT_PASSWORD: "root"
+    volumes:
+      - ./config/indexer/c-chain-init.sql:/docker-entrypoint-initdb.d/db_init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "--silent", "--host", "localhost", "-proot"]
+      timeout: 20s
+      retries: 10
+    ports:
+      # For looking at the database from the host only; the proxy and the
+      # indexer reach it over the compose network. 3316 so it does not clash
+      # with the e2e repository's own Coston indexer on 3306.
+      - "${INDEXER_DB_BIND:-127.0.0.1:3316}:3306"
+
+  coston-indexer:
+    image: ghcr.io/flare-foundation/flare-system-c-chain-indexer:main
+    volumes:
+      - ./config/indexer/coston/indexer-config.toml:/app/config.toml:ro
+    restart: unless-stopped
+    depends_on:
+      coston-indexer-db:
+        condition: service_healthy
+
+# The same network the coston overlay gives the stack, so the proxy resolves
+# coston-indexer-db whichever of the two files started it.
+networks:
+  default:
+    name: ${COMPOSE_NETWORK:-fce-usdx-oracle-coston}
+    external: false

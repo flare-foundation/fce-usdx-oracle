@@ -21,10 +21,9 @@ import (
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 )
 
-// diagAvailabilityCheckRevert runs an eth_call against TeeVerification with the same
-// calldata as RequestAvailabilityCheckAttestation, then decodes the revert payload and
-// matches the selector against custom errors from Verification, Fdc2Hub, MachineManager,
-// and ExtensionManager. Purely diagnostic — never returns; logs whatever it can resolve.
+// diagAvailabilityCheckRevert replays RequestAvailabilityCheckAttestation as an
+// eth_call and matches the revert selector against the custom errors of all four
+// contracts. Purely diagnostic: never returns, logs whatever it can resolve.
 func diagAvailabilityCheckRevert(
 	s *support.Support,
 	opts *bind.TransactOpts,
@@ -127,4 +126,79 @@ func ExtractRevertData(err error) []byte {
 		}
 	}
 	return nil
+}
+
+// diagToProductionRevert replays toProduction as an eth_call and decodes the revert.
+// The proof comes from three sources, so "execution reverted" alone cannot tell an
+// unsupported code hash from a stale timestamp. Diagnostic; never returns an error.
+func diagToProductionRevert(s *support.Support, proof *machinemanager.ITeeAvailabilityCheckProof) {
+	mmABI, err := machinemanager.MachineManagerMetaData.GetAbi()
+	if err != nil {
+		logger.Warnf("diag: load MachineManager ABI: %v", err)
+		return
+	}
+	calldata, err := mmABI.Pack("toProduction", *proof)
+	if err != nil {
+		logger.Warnf("diag: pack toProduction calldata: %v", err)
+		return
+	}
+
+	from := crypto.PubkeyToAddress(s.Prv.PublicKey)
+	logger.Infof("diag: eth_call toProduction teeId=%s codeHash=0x%x platform=0x%x status=%v teeTs=%v",
+		proof.RequestBody.TeeId.Hex(), proof.ResponseBody.CodeHash, proof.ResponseBody.Platform,
+		proof.ResponseBody.Status, proof.ResponseBody.TeeTimestamp)
+
+	_, callErr := s.ChainClient.CallContract(context.Background(), ethereum.CallMsg{
+		From: from, To: &s.Addresses.FlareTeeManager, Data: calldata,
+	}, nil)
+	if callErr == nil {
+		logger.Warnf("diag: eth_call toProduction unexpectedly succeeded — revert may be tx-time/gas-related")
+		return
+	}
+	logRevert(callErr)
+}
+
+// logRevert decodes a revert payload against every TEE facet's custom errors.
+func logRevert(callErr error) {
+	revertData := ExtractRevertData(callErr)
+	if len(revertData) < 4 {
+		logger.Warnf("diag: no usable revert data: %v (0x%x)", callErr, revertData)
+		return
+	}
+	selector := revertData[:4]
+
+	if bytes.Equal(selector, []byte{0x08, 0xc3, 0x79, 0xa0}) {
+		if reason, err := abi.UnpackRevert(revertData); err == nil {
+			logger.Errorf("diag: revert reason (string): %q", reason)
+			return
+		}
+	}
+
+	for _, src := range []struct {
+		name string
+		md   *bind.MetaData
+	}{
+		{"Verification", verification.VerificationMetaData},
+		{"Fdc2Hub", fdc2hub.Fdc2HubMetaData},
+		{"MachineManager", machinemanager.MachineManagerMetaData},
+		{"ExtensionManager", extensionmanager.ExtensionManagerMetaData},
+	} {
+		a, err := src.md.GetAbi()
+		if err != nil {
+			continue
+		}
+		for errName, eDef := range a.Errors {
+			if !bytes.Equal(eDef.ID[:4], selector) {
+				continue
+			}
+			args, unpackErr := eDef.Inputs.Unpack(revertData[4:])
+			if unpackErr != nil {
+				logger.Errorf("diag: revert -> %s.%s (arg unpack failed: %v)", src.name, errName, unpackErr)
+			} else {
+				logger.Errorf("diag: revert -> %s.%s(%v)", src.name, errName, args)
+			}
+			return
+		}
+	}
+	logger.Errorf("diag: revert with unknown selector 0x%x; full data: 0x%x", selector, revertData)
 }

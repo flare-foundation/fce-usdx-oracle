@@ -3,11 +3,10 @@ package keeper
 import (
 	"bytes"
 	"encoding/json"
-	"math/big"
 	"testing"
 	"time"
 
-	"fce-usdx-oracle/tools/pkg/pricereport"
+	"fce-usdx-oracle/tools/pkg/feedupdate"
 
 	"github.com/pkg/errors"
 )
@@ -16,10 +15,10 @@ import (
 // If this ever classifies as a failure the on-call gets paged several times an
 // hour for the system working correctly, and the alert gets muted.
 func TestNotNewerIsARaceNotAFailure(t *testing.T) {
-	report := pricereport.Report{Price: big.NewInt(1), ObservedAt: 100}
+	report := feedupdate.Update{ObservedAt: 100}
 
 	rj := &Rejection{Guard: "NotNewer", StoreObservedAt: 120}
-	if got := classifyRejection(rj, report); got != OutcomeRaceLost {
+	if got := classifyRejection(rj, report.ObservedAt); got != OutcomeRaceLost {
 		t.Fatalf("store ahead of us should be a lost race, got %q", got)
 	}
 	if !OutcomeRaceLost.Advanced() {
@@ -30,10 +29,10 @@ func TestNotNewerIsARaceNotAFailure(t *testing.T) {
 // The same guard fires when our own report was stale, which is a latency problem
 // worth seeing. Collapsing the two is what would hide it.
 func TestNotNewerWithStaleReportIsDistinct(t *testing.T) {
-	report := pricereport.Report{Price: big.NewInt(1), ObservedAt: 100}
+	report := feedupdate.Update{ObservedAt: 100}
 
 	rj := &Rejection{Guard: "NotNewer", StoreObservedAt: 80}
-	got := classifyRejection(rj, report)
+	got := classifyRejection(rj, report.ObservedAt)
 	if got != OutcomeStaleSubmission {
 		t.Fatalf("store behind us should be a stale submission, got %q", got)
 	}
@@ -43,11 +42,11 @@ func TestNotNewerWithStaleReportIsDistinct(t *testing.T) {
 }
 
 func TestOtherGuardsAreRejections(t *testing.T) {
-	report := pricereport.Report{Price: big.NewInt(1), ObservedAt: 100}
+	report := feedupdate.Update{ObservedAt: 100}
 
-	for _, guard := range []string{"StaleConfig", "OutOfBounds", "TooOld", "UnknownSigner", "IsPaused"} {
+	for _, guard := range []string{"WrongExtensionId", "WrongFeedId", "StaleEndpoints", "NoEndpointsPublished", "StaleAdmins", "NoAdminsPublished", "BadSignature", "TooFarAhead", "NotEnoughSignatures", "TooManySignatures", "SpreadTooBig"} {
 		rj := &Rejection{Guard: guard}
-		if got := classifyRejection(rj, report); got != OutcomeRejected {
+		if got := classifyRejection(rj, report.ObservedAt); got != OutcomeRejected {
 			t.Errorf("%s: got %q, want %q", guard, got, OutcomeRejected)
 		}
 	}

@@ -13,14 +13,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// stepsNeedingChain are the step values that require a live chain client.
-// services, tee-version, tee-machine, and test only read env vars / hit HTTP endpoints.
-var stepsNeedingChain = map[string]bool{
-	"deploy":   true,
-	"register": true,
-	"all":      true,
-}
-
 func main() {
 	af := flag.String("a", configs.AddressesFile, "file with deployed addresses")
 	cf := flag.String("c", configs.ChainNodeURL, "chain node url")
@@ -79,7 +71,7 @@ func main() {
 	// If --checks is set, filter results to only the requested IDs.
 	if *checksFilter != "" {
 		allowed := make(map[string]bool)
-		for _, id := range strings.Split(*checksFilter, ",") {
+		for id := range strings.SplitSeq(*checksFilter, ",") {
 			if t := strings.TrimSpace(id); t != "" {
 				allowed[t] = true
 			}
@@ -94,7 +86,10 @@ func main() {
 	}
 
 	if *jsonOut {
-		report.PrintJSON()
+		if err := report.PrintJSON(); err != nil {
+			fmt.Fprintf(os.Stderr, "writing the report: %v\n", err)
+			os.Exit(1)
+		}
 	} else {
 		report.Print()
 	}

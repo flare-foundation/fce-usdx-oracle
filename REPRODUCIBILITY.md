@@ -3,40 +3,36 @@
 The image's code hash is what gets registered on-chain, so build determinism is
 a security property rather than a nicety.
 
-## Reproducibility is not equal across languages
+## What is guaranteed
 
 Be precise about what is actually guaranteed. Overclaiming here is worse than
 underclaiming, because the on-chain registration is what depends on it.
 
-| Language | Guarantee | Why |
-| --- | --- | --- |
-| **Go** | **Bit-for-bit across machines** | Static `CGO_ENABLED=0` binary with `-trimpath -buildid=`, on a digest-pinned distroless base. Nothing host-specific survives. |
-| **Python** | **Same-machine only** | pip installs prebuilt manylinux wheels whose contents are fixed, but `.dist-info` metadata and installation layout can vary with the pip/setuptools version present in the base image. |
-| **TypeScript** | **Same-machine only** | `npm ci` reproduces the dependency *tree* from `package-lock.json`, but `node_modules` layout, hoisting and file ordering vary across npm versions. |
+This repository ships a single Go implementation, and the image is
+**bit-for-bit reproducible across machines**: one statically linked binary built
+with `-trimpath -buildid=` on a digest-pinned distroless base, from tee-node's
+own Dockerfile with only the package built, the launch-policy label and the
+command changed. Nothing host-specific survives, so an auditor on different
+hardware can independently reproduce the code hash that gets registered
+on-chain.
 
-For Python and TypeScript, "same-machine" means: rebuilding on the same host
-with the same Docker/pip/npm versions and the same `SOURCE_DATE_EPOCH` yields
-the same digest. It does **not** mean an auditor on different hardware can
-independently reproduce your hash.
-
-If independent third-party verification of the code hash matters for your
-deployment, use the Go path. To tighten Python/TypeScript, pin the runtime base
-images by `sha256` digest (both currently use tag form, marked with a `NOTE:` in
-their Dockerfiles) — this is required before cutting a testnet release.
-
-All three share the same tee-node build: `docker/node-base.Dockerfile` compiles
-it once from a pinned ref on the same digest-pinned golang image, so the
-`server` binary bytes are identical across language images.
-`scripts/check-versions.sh` fails the build if that pin drifts from `go/go.mod`.
+tee-node is not a separate binary: the extension embeds it as the Go module
+`go.mod` pins, and `deploy/scripts/check-versions.sh` fails when the pins of
+the two Go modules and of the proxy image drift apart.
 
 ## How it works
 
 - `SOURCE_DATE_EPOCH` is set to the commit timestamp and passed as a build arg
-  to clamp all timestamps
+  to clamp all timestamps and to select the Debian snapshot below. It is
+  required: a build without it fails, and a zero would ask for a 1970 snapshot
 - Go binary is built with `-trimpath -ldflags="-buildid= -s -w"` and
-  `-buildvcs=false` to strip non-deterministic metadata; `CGO_ENABLED=0`
-  produces a static binary so link-time libc variance cannot leak in
-- Base image digest is pinned in the Dockerfile
+  `-buildvcs=false` to strip non-deterministic metadata; `CGO_ENABLED=1` with
+  `-linkmode=external -extldflags=-static` links go-ethereum's native
+  libsecp256k1 and still produces one static binary, the `netgo,osusergo` tags
+  keep the resolvers pure Go, and the cgo toolchain (`gcc`, `libc6-dev`) comes
+  from the same Debian snapshot as everything else
+- Both base images are pinned by digest in the Dockerfile: the golang builder
+  and `distroless/static-debian12`, whose own trust store the binary uses
 - Debian package versions are pinned via apt's native snapshot support
   (Debian 13+): `Snapshot: true` in the sources file plus
   `apt-get install --snapshot <SOURCE_DATE_EPOCH>` redirects every fetch to
@@ -50,24 +46,24 @@ it once from a pinned ref on the same digest-pinned golang image, so the
 ## Build context
 
 The default build is self-contained: the build context is the repo root
-(`docker-compose.yaml` sets `context: .`, `dockerfile: ${EXTENSION_DOCKERFILE}`,
-resolved from `LANGUAGE`). `go/go.mod` pins
+(`deploy/docker-compose.yaml` sets `context: ..`, `dockerfile: Dockerfile` — the root is the
+Go module). `go.mod` pins
 `github.com/flare-foundation/tee-node` to a released version and fetches it from
 the network (verified against `go.sum`), so the build needs only this repo's own
 sources — no sibling `tee-node/` checkout.
 
-Each language ships a `<lang>/Dockerfile.dockerignore`. BuildKit prefers those
-over the root `.dockerignore`, and each one excludes the *other* language
-directories along with `node_modules/`, `__pycache__/` and `.venv/`. This is not
-only a build-speed concern: anything reachable in the context can perturb layer
-hashes, so a stray local `node_modules` would otherwise undermine determinism.
+.dockerignore admits only the module's own sources — `go.mod`, `go.sum`,
+`cmd/`, `internal/` and `pkg/` — and excludes everything else, in tee-node's
+form. This is not only a build-speed concern: anything reachable in the context
+can perturb layer hashes, so a stray local file would otherwise undermine
+determinism.
 
 > **Developing `tee-node`/`tee-proxy` locally?** Run
-> `USE_LOCAL_SIBLINGS=1 ./scripts/start-services.sh`, which builds from on-disk
-> sibling checkouts via `go/Dockerfile.siblings` (build context `tee/`). That
-> path is Go-only and is for local iteration — it uses whatever is checked out
-> and is **not** reproducible. `start-services.sh` rejects it for other
-> languages, which build tee-node from the pinned ref instead.
+> `USE_LOCAL_SIBLINGS=1 ./deploy/scripts/start-services.sh`, which builds from on-disk
+> sibling checkouts via `Dockerfile.siblings.dev` (build context `tee/`). That
+> path is for local iteration — it uses whatever is checked out and is **not**
+> reproducible; the reproducible build uses the tee-node ref pinned in
+> `go.mod` instead.
 
 ## Verifying a remote image
 
@@ -89,18 +85,19 @@ git clone https://github.com/flare-foundation/extension-examples.git
 ```
 
 Checkout the tag you want to verify, build locally, and compare the image ID
-against the registry image. Run from `extension-examples/extension-scaffold/`:
+against the registry image. Run from `extension-examples/fce-usdx-oracle/`:
 
 ```sh
 TAG=$(git describe --tags --abbrev=0)
 git checkout "$TAG"
 
-docker buildx build --builder moby-buildkit --platform linux/amd64 --no-cache --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) --output "type=docker,rewrite-timestamp=true" -t local/extension-scaffold:verify --load -f Dockerfile .
+docker buildx build --builder moby-buildkit --platform linux/amd64 --no-cache --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) --output "type=docker,rewrite-timestamp=true" -t local/fce-usdx-oracle:verify --load -f Dockerfile .
 
-docker pull --platform linux/amd64 ghcr.io/flare-foundation/extension-scaffold:"$TAG"
+# The image this extension is published at — substitute the real registry path.
+docker pull --platform linux/amd64 "$REGISTRY_IMAGE:$TAG"
 
-docker inspect --format='{{.Id}}' local/extension-scaffold:verify
-docker inspect --format='{{.Id}}' ghcr.io/flare-foundation/extension-scaffold:"$TAG"
+docker inspect --format='{{.Id}}' local/fce-usdx-oracle:verify
+docker inspect --format='{{.Id}}' "$REGISTRY_IMAGE:$TAG"
 ```
 
 Both IDs should be identical.

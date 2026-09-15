@@ -1,8 +1,20 @@
 # Extension Container Contract
 
-**This document is normative.** Any container that satisfies it is a valid FCC extension, regardless of implementation language. The scaffold ships Go, Python and TypeScript implementations; all three are measured against this document, and `scripts/test-conformance.sh` enforces it mechanically.
+**This document is normative.** Any container that satisfies it is a valid FCC extension, regardless of implementation language, and `deploy/scripts/test-conformance.sh` enforces it mechanically against the golden fixtures in `deploy/testdata/conformance/`.
 
 If you are adding a new language, this is the specification you are implementing. Nothing else in the repo needs to change.
+
+> **Scope note for this repository.** The upstream scaffold ships Go, Python and
+> TypeScript implementations and this document is written for all three. **Only Go is
+> checked in here** (`go/`), so passages describing `python/` or `typescript/` files
+> describe the scaffold, not this repo. The scaffold's `SAY_HELLO` / `SAY_GOODBYE`
+> examples are likewise illustrative — this extension's operations all sit under
+> one op type, `TEE_ORACLE/{GET_FEED, GET_READINESS, SET_ENDPOINTS, SET_ADMINS,
+> SET_SECRET}`. Of those, only `GET_FEED`,
+> the `/state` shape and the routing rules are pinned by conformance fixtures;
+> the provisioning commands and `GET_READINESS` are specified in
+> [usdx-oracle-codebase.md](usdx-oracle-codebase.md) §6 and
+> [usdx-oracle-readiness-query.md](usdx-oracle-readiness-query.md).
 
 ---
 
@@ -10,7 +22,7 @@ If you are adding a new language, this is the specification you are implementing
 
 Two shapes are equally valid. The contract is what is observable from *outside* the container; how you get there is your choice.
 
-**Single-process** — the extension embeds tee-node as a library and runs both in one binary. Only available to Go. This is what `go/Dockerfile` builds: `go/cmd/docker/main.go` calls `teeServer.StartServerExtension(configPort, signPort, extensionPort)` in a goroutine alongside the extension's own HTTP server. Produces the smallest, most reproducible image (distroless, static, single binary).
+**Single-process** — the extension embeds tee-node as a library and runs both in one binary. Only available to Go. This is what `Dockerfile` builds: `cmd/docker/main.go` calls `teeServer.StartServerExtension(configPort, signPort, extensionPort)` in a goroutine alongside the extension's own HTTP server. Produces the smallest, most reproducible image (distroless, static, single binary).
 
 **Two-process** — a prebuilt tee-node `./cmd/extension` binary runs beside the extension runtime, joined so that the container dies if either child dies. This is what every non-Go language uses:
 
@@ -46,7 +58,10 @@ received and expected identifiers, which is worth imitating.
 
 ### `GET /state`
 
-No request body. Returns a `StateResponse` (§4.4) with status 200.
+No request body. Returns a `StateResponse` (§4.5) with status 200. tee-node reads it on every
+TEE info request and nothing else does: the port is loopback-only, and every consumer reads the
+state out of the proxy's `/info`. A tee-node that cannot reach the route reports its all-ones
+`StateUnavailableVersion` there instead of failing the info response.
 
 ### Routing rules
 
@@ -129,7 +144,7 @@ Source: `go-flare-common/pkg/tee/instruction/instruction.go`.
 | --- | --- | --- | --- |
 | `instructionId` | `common.Hash` | 32-byte hex | |
 | `teeId` | `common.Address` | 20-byte hex | |
-| `timestamp` | `uint64` | number | |
+| `timestamp` | `uint64` | number | block timestamp of the instruction event. `GET_FEED` signs it as the update's `observedAt` (the store's definition of the field) and checks the reading's age against it |
 | `rewardEpochId` | `uint32` | number | |
 | `opType` | `common.Hash` | 32-byte hex | bytes32 of the op-type string |
 | `opCommand` | `common.Hash` | 32-byte hex | bytes32 of the op-command string |
@@ -140,25 +155,30 @@ Source: `go-flare-common/pkg/tee/instruction/instruction.go`.
 
 `originalMessage` is what a handler receives. Its interpretation is entirely up to the extension — the scaffold's `SAY_HELLO` treats it as UTF-8 JSON, `SAY_GOODBYE` treats it as ABI-encoded `(string,string)`.
 
-**It may not be empty.** `TeeExtensionRegistry.sendInstructions` rejects an empty
-`message` with `MessageEmpty()`, so an operation that needs no input from the
+**It may not be empty.** The instructions facet rejects an empty `message`
+with `MessageEmpty()`, so an operation that needs no input from the
 caller still has to send *something*. Found on Coston2, 5 Aug 2026, when
-`requestPriceUpdate()` — which passed `message: ""` — reverted before any
+the first request path — which passed `message: ""` — reverted before any
 machine saw it (findings §22).
 
-USDX_ORACLE/GET_PRICE therefore carries a **one-byte request envelope**,
-`0x01`, declared as `GET_PRICE_REQUEST_V1` in `contracts/InstructionSender.sol`
-and `config.GetPriceRequestV1` in the extension. Every implementation must
-require **exactly** that byte and fail the action otherwise:
+TEE_ORACLE/GET_FEED therefore carries an **ABI-encoded `FeedUpdateRequest`
+envelope**: the 21-byte feed id in a single 32-byte word
+(`abi.encode(FeedUpdateRequest{feedId})`, the field being static so it encodes
+inline). The envelope names the feed to observe, because one instructions sender
+serves every feed of its extension. The envelope is assembled by
+`TeeOracleInstructionsSender` upstream and decoded by `report.DecodeFeedRequest`
+in the extension. Every implementation must require **exactly** that word — for
+the feed it serves — and fail the action otherwise:
 
 | `originalMessage` | Expected result |
 | --- | --- |
-| `0x01` | status 1, signed price report |
+| the 32-byte `FeedUpdateRequest` for this feed | status 1, signed feed update |
 | `0x` (empty) | status 0, `instruction carries an unexpected payload` |
+| a request for a different feed | status 0, `instruction carries an unexpected payload` |
 | anything else | status 0, `instruction carries an unexpected payload` |
 
 Accepting-and-ignoring is not equivalent: a caller must not be able to come to
-depend on bytes the extension silently drops, and a future envelope version must
+depend on bytes the extension silently drops, and a request for another feed must
 not be mistakable for this one. Conformance fixtures 01 and 03 pin both halves.
 
 ### 4.4 `ActionResult` — response body of `POST /action`
@@ -192,14 +212,14 @@ this naturally; the conformance fixtures compare the resulting hex exactly.
 >
 > The Go declaration is `Version string` (`tee-node/pkg/types/actions.go:57`). Send `"0.1.0"`, not `"0x302e312e30000..."`.
 >
-> This is easy to get wrong because `StateResponse.stateVersion` *is* bytes32 (§4.5) — the two are genuinely asymmetric. The `sign` repo's Python and TypeScript ports both hex-encode `ActionResult.version` and are wrong; do not copy them. `testdata/conformance/` pins the correct encoding.
+> This is easy to get wrong because `StateResponse.stateVersion` *is* bytes32 (§4.5) — the two are genuinely asymmetric. The `sign` repo's Python and TypeScript ports both hex-encode `ActionResult.version` and are wrong; do not copy them. `deploy/testdata/conformance/` pins the correct encoding.
 
 ### 4.5 `StateResponse` — response body of `GET /state`
 
 | Field | Type | JSON | Notes |
 | --- | --- | --- | --- |
 | `stateVersion` | `common.Hash` | **32-byte hex** | bytes32 of the version string — asymmetric with `ActionResult.version` by design |
-| `state` | extension-defined | object | any JSON-serializable snapshot |
+| `state` | `hexutil.Bytes` | **hex string** | the JSON encoding of the extension's `State`. Bytes, not an object: tee-node decodes this body as its own `TeeState`, takes `state` and `stateVersion`, and carries them opaquely into the attested TEE info, which the proxy republishes as `teeInfo.state.state`. `stateVersion` names the schema of those bytes |
 
 ### 4.6 `status` and `log`
 
@@ -229,10 +249,9 @@ An extension registers handlers against `(opType, opCommand)` pairs, both compar
 
 | Variable | Meaning |
 | --- | --- |
-| `MODE` | `1` = simulated attestation (local dev), `0` = production attestation |
-| `CONFIG_PORT` | tee-node configuration endpoint (default `5501`) |
-| `SIGN_PORT` | tee-node signing/crypto endpoint the extension calls (default `7701`) |
-| `EXTENSION_PORT` | port the extension serves `/action` and `/state` on (default `7702`) |
+| `MODE` | `0` = production attestation (the image default), `1` = simulated attestation (the local compose stack sets it); not launch-overridable |
+| `SIGN_PORT` | tee-node signing/crypto endpoint the extension calls (code default `7701`; env only overrides) |
+| `EXTENSION_PORT` | port the extension serves `/action` and `/state` on, loopback only (default `7702`) |
 | `PROXY_URL` | extension proxy the node polls for actions |
 | `CHAIN_ID` | chain the node binds signatures to; must match the proxy and the chain |
 | `LOG_LEVEL` | node log level |
@@ -240,18 +259,24 @@ An extension registers handlers against `(opType, opCommand)` pairs, both compar
 | `GOVERNANCE_SIGNERS` | comma-separated governance signer addresses |
 | `GOVERNANCE_THRESHOLD` | governance threshold |
 
-An extension implementation itself only needs to read `EXTENSION_PORT` and `SIGN_PORT`; the rest are consumed by tee-node. All of them must still be *settable* on the container.
+An extension implementation itself only needs to read `EXTENSION_PORT` and `SIGN_PORT`; the rest are consumed by tee-node. The port pair defaults in code to the image's values, so the image sets neither; all of them must still be *settable* on the container (the launch-policy label lists them).
 
 ### Ports
 
 ```dockerfile
-EXPOSE 5501 7701 7702
+EXPOSE 5500
 ```
+
+Only tee-node's configuration port is declared. Confidential Space opens every `EXPOSE`d port in
+the VM firewall (subject to the operator's VPC rules), so the list is a security boundary, not
+documentation. The sign server (`SIGN_PORT`) and the extension's `/action` and `/state`
+(`EXTENSION_PORT`) bind `127.0.0.1`: tee-node reaches both over localhost inside the process, and
+the instruction channel is authorised by arrival, so neither may be reachable from the network.
 
 ### Launch policy label — required
 
 ```dockerfile
-LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,MODE,CONFIG_PORT,SIGN_PORT,EXTENSION_PORT"
+LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,CHAIN_ID,GOVERNANCE_SIGNERS,GOVERNANCE_THRESHOLD,GOVERNANCE_SAFE,GOVERNANCE_TEE_MANAGER,SIGN_PORT,EXTENSION_PORT"
 ```
 
 Without this label, a GCP Confidential Space VM **rejects operator env overrides at attestation time** and whatever was baked into the image at build time is final. Every language image must carry an identical list — a mismatch produces a deployment that cannot be reconfigured, and the failure appears at attestation rather than at build.
@@ -279,20 +304,16 @@ Every language image must:
 
 Determinism is not equal across languages. Go on distroless is bit-for-bit reproducible across machines. Python wheels and `node_modules` trees embed build-host paths and npm-version-dependent layout, so those images target *same-machine* determinism only. See `REPRODUCIBILITY.md` for the honest per-language caveats.
 
-**tee-node version pinning.** Non-Go images build the tee-node `./cmd/extension` binary from source. The version must match the Go module pin in `go/go.mod`, or the node and the proxy will disagree on signature formats and surface confusing verification failures. That pin is frequently a Go *pseudo-version* (`v0.0.21-0.20260619120252-31fc839ae6d2`), whose last segment is an **abbreviated** commit SHA. Two obvious approaches both fail on it: `git clone --branch <sha>` resolves tags and branches only, and `git fetch --depth 1 origin <sha>` requires a full 40-char SHA plus server-side `uploadpack.allowAnySHA1InWant`, which GitHub rejects with `couldn't find remote ref`. Use a blobless partial clone, which fetches all refs cheaply and lets an abbreviated SHA resolve locally:
+**tee-node version pinning.** The extension links tee-node as a Go module, so `go.mod` is the single pin; the sibling build (`Dockerfile.siblings.dev`) replaces it with the on-disk checkout for development.
 
-```dockerfile
-RUN git clone --filter=blob:none https://github.com/flare-foundation/tee-node.git tee-node && cd tee-node && git checkout "${TEE_NODE_REF}"
-```
-
-`scripts/lib/versions.sh` derives `TEE_NODE_REF` from `go/go.mod`, and `scripts/check-versions.sh` fails the build if the pins drift apart.
+`deploy/scripts/check-versions.sh` fails when the tee-node or go-flare-common pins of the two Go modules, or the tee-proxy pin and the proxy image's build argument, drift apart.
 
 ---
 
 ## 8. Adding a language
 
-1. Create `<language>/` with a `Dockerfile` producing an image that satisfies §2, §4, §6.
-2. Implement the framework layer (`base/`): HTTP server, wire types, bytes32 helpers, dispatch registry, serialization. Reuse `python/base/` or `typescript/src/base/` as a reference.
-3. Implement the example (`app/`): `GREETING`/`SAY_HELLO` and `GREETING`/`SAY_GOODBYE`, behaviourally identical to the other languages — `tools/cmd/run-test` asserts on the exact greeting strings and counters.
-4. Run `./scripts/test-conformance.sh <language>`. No chain, no registration, no proxy required.
-5. Set `LANGUAGE=<language>` in `.env` and run the normal flow. Nothing in `scripts/`, `tools/`, `contracts/` or `docker-compose.yaml` needs to change — language selection resolves by directory convention.
+Only the Go implementation exists, and the deploy scripts build one image from the
+root `Dockerfile`. A port would have to satisfy §2, §4 and §6, pass the conformance
+replay (`go test ./internal/extension/ -run TestConformance` replays the fixtures in
+`deploy/testdata/conformance` against a running extension; no chain, no registration, no
+proxy), and bring its own image build, since nothing in `deploy/` dispatches on a language.

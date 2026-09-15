@@ -1,513 +1,446 @@
+// Package utils drives the on-chain half of the TEE oracle extension: it
+// requests feed updates and publishes configuration through
+// TeeOracleInstructionsSender.
+//
+// Nothing here deploys anything. The sender and the feed stores come from
+// flare-smart-contracts-v2's own deploy script; this repo only ever calls them,
+// through the upstream interfaces compiled via contracts/.
 package utils
 
 import (
 	"context"
 	"math/big"
-	"strings"
-	"time"
 
-	"fce-usdx-oracle/tools/pkg/contracts/usdxoracle"
+	"fce-usdx-oracle/tools/pkg/contracts/teeoraclesender"
 	"fce-usdx-oracle/tools/pkg/fccutils"
+	"fce-usdx-oracle/tools/pkg/oraclepayload"
 	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/pkg/errors"
 )
 
-func DeployInstructionSender(s *support.Support) (common.Address, *usdxoracle.UsdxOracleInstructionSender, error) {
-	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
-	if err != nil {
-		return common.Address{}, nil, errors.Errorf("failed to create transactor: %s", err)
-	}
-
-	// Both registry args are the FlareTeeManager diamond proxy: the diamond
-	// routes ExtensionManager and MachineManager calls to the right facets.
-	address, tx, contract, err := usdxoracle.DeployUsdxOracleInstructionSender(
-		opts, s.ChainClient, s.Addresses.FlareTeeManager, s.Addresses.FlareTeeManager,
-	)
-	if err != nil {
-		return common.Address{}, nil, errors.Errorf("failed to deploy contract: %s", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	receipt, err := bind.WaitMined(ctx, s.ChainClient, tx)
-	if err != nil {
-		return common.Address{}, nil, errors.Errorf("deployment tx not mined within 2 minutes (tx: %s): %s", tx.Hash().Hex(), err)
-	}
-
-	if receipt.Status != types.ReceiptStatusSuccessful {
-		return common.Address{}, nil, errors.New("contract deployment failed")
-	}
-
-	return address, contract, nil
-}
-
-func SetExtensionId(s *support.Support, instructionSenderAddress common.Address) error {
-	sender, err := usdxoracle.NewUsdxOracleInstructionSender(instructionSenderAddress, s.ChainClient)
-	if err != nil {
-		return errors.Errorf("failed to bind contract: %s", err)
-	}
-
-	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
-	if err != nil {
-		return errors.Errorf("failed to create transactor: %s", err)
-	}
-
-	tx, err := sender.SetExtensionId(opts)
-	if err != nil {
-		reason := fccutils.DecodeRevertReason(err)
-		if reason == "" {
-			parsed, _ := usdxoracle.UsdxOracleInstructionSenderMetaData.GetAbi()
-			if parsed != nil {
-				callData, packErr := parsed.Pack("setExtensionId")
-				if packErr == nil {
-					from := crypto.PubkeyToAddress(s.Prv.PublicKey)
-					reason = fccutils.SimulateAndDecodeRevert(
-						s.ChainClient, from, instructionSenderAddress, nil, callData,
-					)
-				}
-			}
-		}
-		if reason != "" {
-			return errors.Errorf("failed to call setExtensionId: %s (revert reason: %s)", err, reason)
-		}
-		return errors.Errorf("failed to call setExtensionId: %s", err)
-	}
-
-	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
-	if err != nil {
-		return errors.Errorf("failed waiting for transaction: %s", err)
-	}
-
-	if receipt.Status != types.ReceiptStatusSuccessful {
-		parsed, _ := usdxoracle.UsdxOracleInstructionSenderMetaData.GetAbi()
-		if parsed != nil {
-			callData, packErr := parsed.Pack("setExtensionId")
-			if packErr == nil {
-				from := crypto.PubkeyToAddress(s.Prv.PublicKey)
-				reason := fccutils.SimulateAndDecodeRevert(
-					s.ChainClient, from, instructionSenderAddress, nil, callData,
-				)
-				if reason != "" {
-					return errors.Errorf("setExtensionId transaction failed (revert reason: %s)", reason)
-				}
-			}
-		}
-		return errors.New("setExtensionId transaction failed")
-	}
-
-	return nil
-}
-
-// priceUpdateFee returns the registry's current fee for one GET_PRICE
-// instruction. Read, never hard-coded: the fee is governance-settable and a
-// stale constant would revert every request with nothing in this repo changed
-// to explain it. The op type and command come from the deployed contract's own
-// constants, so the lookup cannot drift from the instruction actually sent.
-func priceUpdateFee(s *support.Support, senderAddress common.Address) (*big.Int, error) {
-	return instructionFee(s, senderAddress, opGetPrice)
-}
-
-// endpointsFee is the same lookup for SET_ENDPOINTS, charged under a different
-// op type and command.
-func endpointsFee(s *support.Support, senderAddress common.Address) (*big.Int, error) {
-	return instructionFee(s, senderAddress, opSetEndpoints)
-}
-
-func adminsFee(s *support.Support, senderAddress common.Address) (*big.Int, error) {
-	return instructionFee(s, senderAddress, opSetAdmins)
-}
-
-// GetPriceRequest is everything needed to raise a GET_PRICE action off-chain,
-// read from the deployed sender rather than restated here.
+// The operation identifiers, PINNED rather than read off the chain.
 //
-// The direct channel does not touch the sender contract at all, so nothing would
-// stop a hand-written constant here from drifting away from the one
-// requestPriceUpdate() actually emits — and the failure would be a rejected
-// request envelope with no hint that the two channels disagree. Reading them
-// from the same source makes that impossible.
-type GetPriceRequest struct {
-	OPType    common.Hash
-	OPCommand common.Hash
-	Message   []byte
+// They used to be public getters on the sender, so the fee lookup could not
+// drift from what was actually dispatched. Upstream made them file-level
+// `bytes32 constant`s in ITeeOracleInstructionsSender — shared by every deployed
+// instance — so there is nothing left to read and this copy is now load-bearing.
+// It must match internal/config; a mismatch prices the wrong row and the
+// instruction is rejected for an underpaid fee.
+const (
+	OpTypeTeeOracle       = "TEE_ORACLE"
+	OpCommandGetFeed      = "GET_FEED"
+	OpCommandSetEndpoints = "SET_ENDPOINTS"
+	OpCommandSetAdmins    = "SET_ADMINS"
+)
+
+func b32(s string) [32]byte {
+	var out [32]byte
+	copy(out[:], s)
+	return out
 }
 
-// ReadGetPriceRequest fetches the op pair and request envelope for GET_PRICE.
-func ReadGetPriceRequest(s *support.Support, senderAddress common.Address) (GetPriceRequest, error) {
-	caller, err := usdxoracle.NewUsdxOracleInstructionSenderCaller(senderAddress, s.ChainClient)
+func senderABI() (*abi.ABI, error) {
+	parsed, err := teeoraclesender.IITeeOracleInstructionsSenderMetaData.GetAbi()
 	if err != nil {
-		return GetPriceRequest{}, errors.Errorf("binding instruction sender: %s", err)
+		return nil, errors.Errorf("parsing sender ABI: %s", err)
+	}
+	return parsed, nil
+}
+
+// --- fees ---
+
+// FeedUpdateFee is the registry's current fee for one GET_FEED instruction.
+// Read, never hard-coded: it is governance-settable, and the default applies
+// until the TEE_ORACLE rows are set.
+func FeedUpdateFee(s *support.Support, teeIDs int) (*big.Int, error) {
+	return operationFee(s, OpCommandGetFeed, teeIDs)
+}
+
+func operationFee(s *support.Support, command string, teeIDs int) (*big.Int, error) {
+	if teeIDs < 1 {
+		return nil, errors.New("at least one target machine is required")
 	}
 
 	opts := &bind.CallOpts{Context: context.Background()}
-	opType, opCommand, err := opGetPrice(caller, opts)
+	fee, err := s.TeeOperationFees.GetOperationFee(opts, b32(OpTypeTeeOracle), b32(command))
 	if err != nil {
-		return GetPriceRequest{}, err
+		return nil, errors.Errorf("reading operation fee: %s", err)
 	}
-
-	message, err := caller.GETPRICEREQUESTV1(opts)
-	if err != nil {
-		return GetPriceRequest{}, errors.Errorf("reading GET_PRICE_REQUEST_V1: %s", err)
+	if fee == nil || fee.Sign() == 0 {
+		// No row set for this pair yet; the diamond charges the default. Upstream's
+		// deploy script leaves the TEE_ORACLE rows to a governance follow-up, so
+		// this is the normal state on a fresh deployment, not an error.
+		fee, err = s.TeeOperationFees.GetDefaultFee(opts)
+		if err != nil {
+			return nil, errors.Errorf("reading default fee: %s", err)
+		}
 	}
-	if len(message) == 0 {
-		// The registry rejects an empty message with MessageEmpty(), and the
-		// extension requires exactly the pinned envelope. Either way an empty
-		// one cannot succeed, so stop here rather than send it.
-		return GetPriceRequest{}, errors.New("the sender reports an empty GET_PRICE request envelope")
-	}
-
-	return GetPriceRequest{
-		OPType:    common.BytesToHash(opType[:]),
-		OPCommand: common.BytesToHash(opCommand[:]),
-		Message:   message,
-	}, nil
+	return new(big.Int).Mul(fee, big.NewInt(int64(teeIDs))), nil
 }
 
-// opSelector reads one (opType, opCommand) pair off the deployed sender.
-type opSelector func(*usdxoracle.UsdxOracleInstructionSenderCaller, *bind.CallOpts) ([32]byte, [32]byte, error)
+// --- requesting a feed update ---
 
-func opGetPrice(c *usdxoracle.UsdxOracleInstructionSenderCaller, o *bind.CallOpts) ([32]byte, [32]byte, error) {
-	t, err := c.OPTYPEUSDXORACLE(o)
-	if err != nil {
-		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_TYPE_USDX_ORACLE: %s", err)
+// RequestFeedUpdate asks the given machines for a fresh observation of one feed
+// and returns the dispatched instruction id.
+//
+// It is permissionless — the fee is what bounds spam — but every target must
+// already have endpoints AND admins published for the feed, or the call reverts
+// TeeIdNotConfigured. Use IsTeeIdConfigured to check before spending gas.
+func RequestFeedUpdate(
+	s *support.Support, senderAddress common.Address, feedID [21]byte, teeIDs []common.Address,
+) (common.Hash, common.Hash, error) {
+	if len(teeIDs) == 0 {
+		return common.Hash{}, common.Hash{}, errors.New("at least one target machine is required")
 	}
-	cmd, err := c.OPCOMMANDGETPRICE(o)
+
+	sender, err := teeoraclesender.NewIITeeOracleInstructionsSender(senderAddress, s.ChainClient)
 	if err != nil {
-		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_COMMAND_GET_PRICE: %s", err)
+		return common.Hash{}, common.Hash{}, errors.Errorf("binding sender: %s", err)
 	}
-	return t, cmd, nil
+
+	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, errors.Errorf("creating transactor: %s", err)
+	}
+	fee, err := FeedUpdateFee(s, len(teeIDs))
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	opts.Value = fee
+
+	tx, err := sender.RequestFeedUpdate(opts, feedID, teeIDs)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, decorateRevert(s, senderAddress, fee, err, func() []byte {
+			parsed, perr := senderABI()
+			if perr != nil {
+				return nil
+			}
+			data, perr := parsed.Pack("requestFeedUpdate", feedID, teeIDs)
+			if perr != nil {
+				return nil
+			}
+			return data
+		})
+	}
+
+	receipt, err := waitMined(s, tx)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+
+	instructionID, err := feedUpdateInstructionID(s, senderAddress, receipt)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, err
+	}
+	return instructionID, receipt.TxHash, nil
 }
 
-func opSetEndpoints(c *usdxoracle.UsdxOracleInstructionSenderCaller, o *bind.CallOpts) ([32]byte, [32]byte, error) {
-	t, err := c.OPTYPEUSDXCONFIG(o)
+// feedUpdateInstructionID pulls the id out of the receipt. The sender's own
+// FeedUpdateRequested carries it, and so does the diamond's TeeInstructionsSent;
+// the former is preferred because it also proves the feed it was requested for.
+func feedUpdateInstructionID(
+	s *support.Support, senderAddress common.Address, receipt *types.Receipt,
+) (common.Hash, error) {
+	filterer, err := teeoraclesender.NewIITeeOracleInstructionsSenderFilterer(senderAddress, s.ChainClient)
 	if err != nil {
-		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_TYPE_USDX_CONFIG: %s", err)
+		return common.Hash{}, errors.Errorf("binding sender filterer: %s", err)
 	}
-	cmd, err := c.OPCOMMANDSETENDPOINTS(o)
-	if err != nil {
-		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_COMMAND_SET_ENDPOINTS: %s", err)
+
+	for _, l := range receipt.Logs {
+		if l == nil || l.Address != senderAddress {
+			continue
+		}
+		if requested, perr := filterer.ParseFeedUpdateRequested(*l); perr == nil {
+			return requested.InstructionId, nil
+		}
 	}
-	return t, cmd, nil
+	return common.Hash{}, errors.Errorf(
+		"no FeedUpdateRequested event in receipt (%d logs) for tx %s",
+		len(receipt.Logs), receipt.TxHash.Hex())
 }
 
-func opSetAdmins(c *usdxoracle.UsdxOracleInstructionSenderCaller, o *bind.CallOpts) ([32]byte, [32]byte, error) {
-	t, err := c.OPTYPEUSDXCONFIG(o)
-	if err != nil {
-		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_TYPE_USDX_CONFIG: %s", err)
-	}
-	cmd, err := c.OPCOMMANDSETADMINS(o)
-	if err != nil {
-		return [32]byte{}, [32]byte{}, errors.Errorf("reading OP_COMMAND_SET_ADMINS: %s", err)
-	}
-	return t, cmd, nil
+// --- publishing configuration ---
+
+// Publication is one setEndpoints or setAdmins call, ready to send or to hand a
+// governance executor.
+type Publication struct {
+	// Calldata is the exact encoded call. Under the Flare governance timelock the
+	// executor supplies these bytes verbatim and the recorded hash must match
+	// byte for byte, so this is the artefact to store — not a description of it.
+	Calldata []byte
+
+	// Fee is the sender's quote for dispatching to its active machines, filled in
+	// by ResolveFee. In production mode the EXECUTOR attaches it to
+	// executeGovernanceCall; recording the call rejects value.
+	Fee *big.Int
+
+	// PayloadHash is what the sender will record as latestEndpointsHash /
+	// latestAdminsHash, and what every later feed update must carry. Predicted
+	// here so a publisher can verify the machine picked up this exact payload.
+	PayloadHash common.Hash
+
+	Version uint64
+	FeedID  [21]byte
+
+	// TeeIDs are the machines the sender quoted the fee for: the extension's
+	// active set when ResolveFee ran. The call itself names no machines; the
+	// sender dispatches to the active set as it stands when the call executes.
+	TeeIDs []common.Address
 }
 
-func instructionFee(s *support.Support, senderAddress common.Address, sel opSelector) (*big.Int, error) {
-	caller, err := usdxoracle.NewUsdxOracleInstructionSenderCaller(senderAddress, s.ChainClient)
-	if err != nil {
-		return nil, errors.Errorf("binding instruction sender: %s", err)
+// EncodeSetEndpoints builds the governance call that publishes an endpoint
+// configuration for one feed. The sender dispatches it to every machine active
+// on the extension when the call executes; ResolveFee reports which those are.
+//
+// version is the version the sender WILL assign — endpointsVersion(feedId) + 1
+// — and is needed only to predict PayloadHash. The contract assigns the real
+// one; if another publication for this feed lands first, the prediction is stale
+// and the hash will not match.
+//
+// claimBack is the payer of record the sender writes into TeeInstructionsSent
+// for the off-chain reward calculation; the contract rejects the zero address.
+func EncodeSetEndpoints(
+	feedID [21]byte, groups []oraclepayload.Group, claimBack common.Address, version uint64,
+) (*Publication, error) {
+	if claimBack == (common.Address{}) {
+		return nil, errors.New("the claim-back address must be non-zero (the sender reverts ZeroClaimBackAddress)")
 	}
 
-	opts := &bind.CallOpts{Context: context.Background()}
-	opType, opCommand, err := sel(caller, opts)
+	hash, err := oraclepayload.EndpointsHash(version, feedID, groups)
 	if err != nil {
 		return nil, err
 	}
 
-	fee, err := s.TeeOperationFees.GetOperationFee(opts, opType, opCommand)
+	parsed, err := senderABI()
 	if err != nil {
-		return nil, errors.Errorf("reading operation fee: %s", err)
+		return nil, err
 	}
-	if fee != nil && fee.Sign() > 0 {
-		return fee, nil
+	calldata, err := parsed.Pack("setEndpoints", feedID, senderGroups(groups), claimBack)
+	if err != nil {
+		return nil, errors.Errorf("packing setEndpoints: %s", err)
 	}
 
-	def, err := s.TeeOperationFees.GetDefaultFee(opts)
-	if err != nil {
-		return nil, errors.Errorf("reading default fee: %s", err)
-	}
-	return def, nil
+	return &Publication{Calldata: calldata, PayloadHash: hash, Version: version, FeedID: feedID}, nil
 }
 
-// RequestPriceUpdate calls requestPriceUpdate() and returns the instruction ID
-// and transaction hash. It takes no arguments: the observation needs nothing
-// from the caller, and acceptance is settled by the store's registered-machine
-// check rather than by the payload.
-func RequestPriceUpdate(s *support.Support, instructionSenderAddress common.Address) (common.Hash, common.Hash, error) {
-	sender, err := usdxoracle.NewUsdxOracleInstructionSender(instructionSenderAddress, s.ChainClient)
+// EncodeSetAdmins is the same for the role-tagged admin signer sets.
+func EncodeSetAdmins(
+	feedID [21]byte, roles []oraclepayload.Role, claimBack common.Address, version uint64,
+) (*Publication, error) {
+	if claimBack == (common.Address{}) {
+		return nil, errors.New("the claim-back address must be non-zero (the sender reverts ZeroClaimBackAddress)")
+	}
+
+	hash, err := oraclepayload.AdminsHash(version, feedID, roles)
 	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to bind contract: %s", err)
+		return nil, err
 	}
 
-	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
+	parsed, err := senderABI()
 	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to create transactor: %s", err)
+		return nil, err
 	}
-	fee, err := priceUpdateFee(s, instructionSenderAddress)
+	calldata, err := parsed.Pack("setAdmins", feedID, senderRoles(roles), claimBack)
 	if err != nil {
-		return common.Hash{}, common.Hash{}, err
-	}
-	opts.Value = fee
-
-	// simulateRevert re-runs the call with eth_call to recover a revert reason,
-	// which the raw send/receipt path does not surface.
-	simulateRevert := func() string {
-		parsed, abiErr := usdxoracle.UsdxOracleInstructionSenderMetaData.GetAbi()
-		if abiErr != nil || parsed == nil {
-			return ""
-		}
-		callData, packErr := parsed.Pack("requestPriceUpdate")
-		if packErr != nil {
-			return ""
-		}
-		from := crypto.PubkeyToAddress(s.Prv.PublicKey)
-		return fccutils.SimulateAndDecodeRevert(
-			s.ChainClient, from, instructionSenderAddress,
-			fee, callData,
-		)
+		return nil, errors.Errorf("packing setAdmins: %s", err)
 	}
 
-	tx, err := sender.RequestPriceUpdate(opts)
-	if err != nil {
-		reason := fccutils.DecodeRevertReason(err)
-		if reason == "" {
-			reason = simulateRevert()
-		}
-		if reason != "" {
-			return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s (revert reason: %s)", err, reason)
-		}
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s", err)
-	}
-
-	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
-	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed waiting for transaction: %s", err)
-	}
-
-	if receipt.Status != 1 {
-		if reason := simulateRevert(); reason != "" {
-			return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status %d (revert reason: %s)", receipt.Status, reason)
-		}
-		return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status: %d", receipt.Status)
-	}
-
-	// Read the id off our own PriceUpdateRequested event rather than the
-	// registry's, which would couple every caller to the registry's event ABI.
-	// Scanned, not indexed by position: the receipt also holds the registry's
-	// logs and the emit order can change.
-	for _, l := range receipt.Logs {
-		if l == nil {
-			continue
-		}
-		requested, parseErr := sender.ParsePriceUpdateRequested(*l)
-		if parseErr == nil {
-			return requested.InstructionId, receipt.TxHash, nil
-		}
-	}
-
-	return common.Hash{}, common.Hash{}, errors.Errorf(
-		"no PriceUpdateRequested event in receipt (%d logs) for tx %s", len(receipt.Logs), receipt.TxHash.Hex())
+	return &Publication{Calldata: calldata, PayloadHash: hash, Version: version, FeedID: feedID}, nil
 }
 
-// endpointsSetTopic is keccak256("EndpointsSet(address,bytes32)").
-var endpointsSetTopic = crypto.Keccak256Hash([]byte("EndpointsSet(address,bytes32)"))
-
-// adminsSetTopic is keccak256("AdminsSet(address,bytes32)").
-var adminsSetTopic = crypto.Keccak256Hash([]byte("AdminsSet(address,bytes32)"))
-
-// setEndpointsABI is the minimal ABI of setEndpoints: the generated usdxoracle
-// binding predates the provisioning surface and has no SetEndpoints method.
-const setEndpointsABI = `[{"name":"setEndpoints","type":"function","stateMutability":"payable","inputs":[{"name":"teeId","type":"address"},{"name":"config","type":"bytes"}],"outputs":[]}]`
-
-// setAdminsABI is the minimal ABI of setAdmins, on the same terms.
-const setAdminsABI = `[{"name":"setAdmins","type":"function","stateMutability":"payable","inputs":[{"name":"teeId","type":"address"},{"name":"config","type":"bytes"}],"outputs":[]}]`
-
-// SetEndpoints publishes an endpoint configuration through the instruction
-// sender. The config bytes go into calldata and are publicly readable, so
-// credentials must never be part of them.
-func SetEndpoints(s *support.Support, instructionSenderAddress, teeID common.Address, config []byte) (common.Hash, common.Hash, error) {
-	parsed, err := abi.JSON(strings.NewReader(setEndpointsABI))
-	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to parse setEndpoints ABI: %s", err)
-	}
-
-	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
-	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to create transactor: %s", err)
-	}
-	fee, err := endpointsFee(s, instructionSenderAddress)
-	if err != nil {
-		return common.Hash{}, common.Hash{}, err
-	}
-	opts.Value = fee
-
-	simulateRevert := func() string {
-		callData, packErr := parsed.Pack("setEndpoints", teeID, config)
-		if packErr != nil {
-			return ""
-		}
-		from := crypto.PubkeyToAddress(s.Prv.PublicKey)
-		return fccutils.SimulateAndDecodeRevert(
-			s.ChainClient, from, instructionSenderAddress,
-			fee, callData,
-		)
-	}
-
-	sender := bind.NewBoundContract(instructionSenderAddress, parsed, s.ChainClient, s.ChainClient, s.ChainClient)
-	tx, err := sender.Transact(opts, "setEndpoints", teeID, config)
-	if err != nil {
-		reason := fccutils.DecodeRevertReason(err)
-		if reason == "" {
-			reason = simulateRevert()
-		}
-		if reason != "" {
-			return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s (revert reason: %s)", err, reason)
-		}
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s", err)
-	}
-
-	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
-	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed waiting for transaction: %s", err)
-	}
-	if receipt.Status != 1 {
-		if reason := simulateRevert(); reason != "" {
-			return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status %d (revert reason: %s)", receipt.Status, reason)
-		}
-		return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status: %d", receipt.Status)
-	}
-
-	// EndpointsSet proves the exact bytes landed on-chain: its configHash topic
-	// must be the keccak256 of the configuration that was sent.
-	configHash := crypto.Keccak256Hash(config)
-	teeIDTopic := common.BytesToHash(teeID.Bytes())
-	var (
-		instructionID common.Hash
-		endpointsSet  bool
-	)
-	for _, l := range receipt.Logs {
-		if l == nil {
-			continue
-		}
-		if len(l.Topics) == 3 && l.Topics[0] == endpointsSetTopic &&
-			l.Topics[1] == teeIDTopic && l.Topics[2] == configHash {
-			endpointsSet = true
-			continue
-		}
-		if instructionSent, parseErr := s.TeeVerification.ParseTeeInstructionsSent(*l); parseErr == nil {
-			instructionID = instructionSent.InstructionId
-		}
-	}
-	if !endpointsSet {
-		return common.Hash{}, common.Hash{}, errors.Errorf(
-			"no EndpointsSet event for teeId %s with configHash %s in receipt for tx %s",
-			teeID.Hex(), configHash.Hex(), receipt.TxHash.Hex())
-	}
-	if instructionID == (common.Hash{}) {
-		return common.Hash{}, common.Hash{}, errors.Errorf(
-			"no TeeInstructionsSent event in receipt (%d logs) for tx %s", len(receipt.Logs), receipt.TxHash.Hex())
-	}
-
-	return instructionID, receipt.TxHash, nil
-}
-
-// SetAdmins publishes an admin signer set through the instruction sender. The
-// payload is addresses and a threshold — public by construction, and public on
-// purpose: who may provision a machine should be as verifiable as which
-// providers it reads.
+// Send submits a publication directly, for a caller that IS governance.
 //
-// Deliberately a near-copy of SetEndpoints rather than a shared generic. The two
-// differ only in the ABI, the fee selector and the event topic, and folding them
-// together would hide exactly the three things that must not be confused: a
-// mistake there would publish an admin set under the endpoints hash, or charge
-// the wrong fee, and both fail late and confusingly.
-func SetAdmins(s *support.Support, instructionSenderAddress, teeID common.Address, config []byte) (common.Hash, common.Hash, error) {
-	parsed, err := abi.JSON(strings.NewReader(setAdminsABI))
-	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to parse setAdmins ABI: %s", err)
+// That is only the case before switchToProductionMode — upstream's deploy script
+// switches the proxies over, so on any real deployment this reverts and the
+// calldata has to go through the timelock instead. Kept for local and test
+// deployments, where the deployer holds governance and the round trip is noise.
+func (p *Publication) Send(s *support.Support, senderAddress common.Address) (common.Hash, error) {
+	fee := p.Fee
+	if fee == nil {
+		return common.Hash{}, errors.New("publication has no fee; call ResolveFee first")
 	}
 
 	opts, err := bind.NewKeyedTransactorWithChainID(s.Prv, s.ChainID)
 	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to create transactor: %s", err)
-	}
-	fee, err := adminsFee(s, instructionSenderAddress)
-	if err != nil {
-		return common.Hash{}, common.Hash{}, err
+		return common.Hash{}, errors.Errorf("creating transactor: %s", err)
 	}
 	opts.Value = fee
 
-	simulateRevert := func() string {
-		callData, packErr := parsed.Pack("setAdmins", teeID, config)
-		if packErr != nil {
-			return ""
-		}
-		from := crypto.PubkeyToAddress(s.Prv.PublicKey)
-		return fccutils.SimulateAndDecodeRevert(
-			s.ChainClient, from, instructionSenderAddress,
-			fee, callData,
-		)
-	}
-
-	sender := bind.NewBoundContract(instructionSenderAddress, parsed, s.ChainClient, s.ChainClient, s.ChainClient)
-	tx, err := sender.Transact(opts, "setAdmins", teeID, config)
+	contract := bind.NewBoundContract(senderAddress, abi.ABI{}, s.ChainClient, s.ChainClient, s.ChainClient)
+	tx, err := contract.RawTransact(opts, p.Calldata)
 	if err != nil {
-		reason := fccutils.DecodeRevertReason(err)
-		if reason == "" {
-			reason = simulateRevert()
-		}
-		if reason != "" {
-			return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s (revert reason: %s)", err, reason)
-		}
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed to send instruction: %s", err)
+		return common.Hash{}, decorateRevert(s, senderAddress, fee, err, func() []byte { return p.Calldata })
 	}
 
+	receipt, err := waitMined(s, tx)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	return receipt.TxHash, nil
+}
+
+// ResolveFee asks the sender what dispatching this publication costs now, and
+// records the fee together with the machines it would go to. The sender
+// dispatches to the extension's active set as it stands when the call executes,
+// so the quote is a snapshot: a machine registered or paused in between changes
+// the fee, and a short fee reverts inside the diamond, which is retryable.
+//
+// An extension with no active machine is refused here: the sender would record
+// the publication without dispatching it, which is never what these tools mean.
+func (p *Publication) ResolveFee(s *support.Support, senderAddress common.Address, command string) error {
+	caller, err := Sender(s, senderAddress)
+	if err != nil {
+		return err
+	}
+	opts := &bind.CallOpts{Context: context.Background()}
+	var quote struct {
+		TeeIds []common.Address
+		Fee    *big.Int
+	}
+	switch command {
+	case OpCommandSetEndpoints:
+		quote, err = caller.GetEndpointsPublicationFee(opts)
+	case OpCommandSetAdmins:
+		quote, err = caller.GetAdminsPublicationFee(opts)
+	default:
+		return errors.Errorf("%s is not a publication", command)
+	}
+	if err != nil {
+		return errors.Errorf("reading the publication fee: %s", err)
+	}
+	if len(quote.TeeIds) == 0 {
+		return errors.New("the extension has no active machine: the sender would record the publication without dispatching it")
+	}
+	p.Fee = quote.Fee
+	p.TeeIDs = quote.TeeIds
+	return nil
+}
+
+// Handoff is the export form of a Publication for a governance executor.
+//
+// Once the sender is in production mode, setEndpoints / setAdmins are
+// governance-only, and in this deployment Flare governance runs the timelock —
+// so this repo does not execute the call at all. It hands over exactly what the
+// executor needs: target + calldata to pass to executeGovernanceCall, with the
+// fee attached as msg.value AT EXECUTION (recording the timelocked call rejects
+// value). The calldata is the artefact — the recorded hash must match it byte
+// for byte, so hand the file over as written, never a re-typed description.
+type Handoff struct {
+	Command     string   `json:"command"`
+	Target      string   `json:"target"`
+	Calldata    string   `json:"calldata"`
+	ValueWei    string   `json:"valueWei"`
+	PayloadHash string   `json:"payloadHash"`
+	Version     uint64   `json:"predictedVersion"`
+	FeedID      string   `json:"feedId"`
+	TeeIDs      []string `json:"teeIds"`
+	Note        string   `json:"note"`
+}
+
+// Handoff renders the publication for the executor. ResolveFee must have run;
+// TeeIDs and ValueWei are its quote, taken from the active set at that moment.
+func (p *Publication) Handoff(target common.Address, command string) (*Handoff, error) {
+	if p.Fee == nil {
+		return nil, errors.New("publication has no fee; call ResolveFee first")
+	}
+	teeIDs := make([]string, len(p.TeeIDs))
+	for i, id := range p.TeeIDs {
+		teeIDs[i] = id.Hex()
+	}
+	return &Handoff{
+		Command:     command,
+		Target:      target.Hex(),
+		Calldata:    hexutil.Encode(p.Calldata),
+		ValueWei:    p.Fee.String(),
+		PayloadHash: p.PayloadHash.Hex(),
+		Version:     p.Version,
+		FeedID:      hexutil.Encode(p.FeedID[:]),
+		TeeIDs:      teeIDs,
+		Note: "Execute through the Flare governance timelock: executeGovernanceCall with " +
+			"this target and calldata, attaching valueWei as msg.value at execution time " +
+			"(recording the call rejects value). After execution, the sender's " +
+			"latestEndpointsHash/latestAdminsHash for the feed must equal payloadHash.",
+	}, nil
+}
+
+// senderGroups and senderRoles retype the payload structs for the generated
+// binding. abigen emits its own copy of each nested struct into every package
+// that mentions one, so the identical EndpointGroup exists in both
+// teeoraclestructs (where oraclepayload takes it from) and teeoraclesender,
+// as distinct named types Go will not convert between in a slice.
+func senderGroups(in []oraclepayload.Group) []teeoraclesender.ITeeOracleInstructionsSenderEndpointGroup {
+	out := make([]teeoraclesender.ITeeOracleInstructionsSenderEndpointGroup, 0, len(in))
+	for _, g := range in {
+		endpoints := make([]teeoraclesender.ITeeOracleInstructionsSenderEndpoint, 0, len(g.Endpoints))
+		for _, ep := range g.Endpoints {
+			endpoints = append(endpoints, teeoraclesender.ITeeOracleInstructionsSenderEndpoint{
+				Kind: ep.Kind, Url: ep.Url, UrlHash: ep.UrlHash, SecretRef: ep.SecretRef,
+			})
+		}
+		out = append(out, teeoraclesender.ITeeOracleInstructionsSenderEndpointGroup{
+			Group: g.Group, Threshold: g.Threshold, Endpoints: endpoints,
+		})
+	}
+	return out
+}
+
+func senderRoles(in []oraclepayload.Role) []teeoraclesender.ITeeOracleInstructionsSenderAdminRole {
+	out := make([]teeoraclesender.ITeeOracleInstructionsSenderAdminRole, 0, len(in))
+	for _, r := range in {
+		out = append(out, teeoraclesender.ITeeOracleInstructionsSenderAdminRole{
+			Role: r.Role, Threshold: r.Threshold, Admins: r.Admins,
+		})
+	}
+	return out
+}
+
+// --- reading published state ---
+
+// Sender binds the instructions sender for the read-only views.
+func Sender(s *support.Support, senderAddress common.Address) (*teeoraclesender.IITeeOracleInstructionsSenderCaller, error) {
+	caller, err := teeoraclesender.NewIITeeOracleInstructionsSenderCaller(senderAddress, s.ChainClient)
+	if err != nil {
+		return nil, errors.Errorf("binding sender: %s", err)
+	}
+	return caller, nil
+}
+
+// --- shared plumbing ---
+
+func waitMined(s *support.Support, tx *types.Transaction) (*types.Receipt, error) {
 	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
 	if err != nil {
-		return common.Hash{}, common.Hash{}, errors.Errorf("failed waiting for transaction: %s", err)
+		return nil, errors.Errorf("waiting for transaction: %s", err)
 	}
 	if receipt.Status != 1 {
-		if reason := simulateRevert(); reason != "" {
-			return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status %d (revert reason: %s)", receipt.Status, reason)
-		}
-		return common.Hash{}, common.Hash{}, errors.Errorf("transaction failed with status: %d", receipt.Status)
+		return nil, errors.Errorf("transaction %s failed with status %d", tx.Hash().Hex(), receipt.Status)
 	}
+	return receipt, nil
+}
 
-	// AdminsSet proves the exact bytes landed on-chain: its adminsHash topic must
-	// be the keccak256 of the set that was sent.
-	adminsHash := crypto.Keccak256Hash(config)
-	teeIDTopic := common.BytesToHash(teeID.Bytes())
-	var (
-		instructionID common.Hash
-		adminsSet     bool
-	)
-	for _, l := range receipt.Logs {
-		if l == nil {
-			continue
-		}
-		if len(l.Topics) == 3 && l.Topics[0] == adminsSetTopic &&
-			l.Topics[1] == teeIDTopic && l.Topics[2] == adminsHash {
-			adminsSet = true
-			continue
-		}
-		if instructionSent, parseErr := s.TeeVerification.ParseTeeInstructionsSent(*l); parseErr == nil {
-			instructionID = instructionSent.InstructionId
+// decorateRevert turns a bare "execution reverted" into the typed error the
+// contract actually raised. The sender's custom errors (TeeIdNotConfigured,
+// DuplicateGroup, InvalidThreshold, ...) are the whole diagnostic value of a
+// failed publish, and geth drops them unless the call is simulated.
+func decorateRevert(
+	s *support.Support, to common.Address, value *big.Int, cause error, calldata func() []byte,
+) error {
+	reason := fccutils.DecodeRevertReason(cause)
+	if reason == "" {
+		if data := calldata(); data != nil {
+			from := crypto.PubkeyToAddress(s.Prv.PublicKey)
+			reason = fccutils.SimulateAndDecodeRevert(s.ChainClient, from, to, value, data)
 		}
 	}
-	if !adminsSet {
-		return common.Hash{}, common.Hash{}, errors.Errorf(
-			"no AdminsSet event for teeId %s with adminsHash %s in receipt for tx %s",
-			teeID.Hex(), adminsHash.Hex(), receipt.TxHash.Hex())
+	if reason != "" {
+		return errors.Errorf("%s (revert reason: %s)", cause, reason)
 	}
-	if instructionID == (common.Hash{}) {
-		return common.Hash{}, common.Hash{}, errors.Errorf(
-			"no TeeInstructionsSent event in receipt (%d logs) for tx %s", len(receipt.Logs), receipt.TxHash.Hex())
-	}
-
-	return instructionID, receipt.TxHash, nil
+	return errors.Errorf("%s", cause)
 }

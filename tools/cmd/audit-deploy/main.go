@@ -30,7 +30,7 @@ import (
 )
 
 func main() {
-	af := flag.String("a", "./config/coston/deployed-addresses.json", "addresses file")
+	af := flag.String("a", "../deploy/config/coston/deployed-addresses.json", "addresses file")
 	rpcURL := flag.String("rpc", "https://coston-api.flare.network/ext/C/rpc", "rpc url")
 	extID := flag.Int64("ext", -1, "extension id to inspect (e.g. 10)")
 	codeHash := flag.String("codeHash", "", "0x... code hash for addTeeVersion replay")

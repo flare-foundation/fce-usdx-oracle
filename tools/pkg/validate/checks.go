@@ -23,8 +23,9 @@ import (
 )
 
 var (
-	addressRegex     = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
-	extensionIDRegex = regexp.MustCompile(`^0x[0-9a-fA-F]{64}$`)
+	// EXTENSION_ID is the reserved id (a plain integer, e.g. 1) but a
+	// 0x-prefixed hex form is also accepted for backward compatibility.
+	extensionIDRegex = regexp.MustCompile(`^(0x[0-9a-fA-F]+|[0-9]+)$`)
 )
 
 // RegisterDeployChecks adds all Step 1 (Contract Deployment) checks to a Report.
@@ -163,7 +164,7 @@ func CheckExtensionEnvFormat(path string) []CheckResult {
 			Message: "file not found: " + path,
 		}}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Parse key=value pairs.
 	vars := make(map[string]string)
@@ -180,36 +181,7 @@ func CheckExtensionEnvFormat(path string) []CheckResult {
 	}
 
 	var results []CheckResult
-	fix := "Delete config/extension.env and re-run scripts/pre-build.sh"
-
-	// Check INSTRUCTION_SENDER.
-	if val, ok := vars["INSTRUCTION_SENDER"]; !ok {
-		results = append(results, CheckResult{
-			Step:    "deploy",
-			ID:      "D7",
-			Name:    "INSTRUCTION_SENDER in extension.env",
-			Status:  FAIL,
-			Message: "INSTRUCTION_SENDER not found in extension.env",
-			Fix:     fix,
-		})
-	} else if !addressRegex.MatchString(val) {
-		results = append(results, CheckResult{
-			Step:    "deploy",
-			ID:      "D7",
-			Name:    "INSTRUCTION_SENDER in extension.env",
-			Status:  FAIL,
-			Message: fmt.Sprintf("INSTRUCTION_SENDER has invalid format: %q", val),
-			Fix:     fix,
-		})
-	} else {
-		results = append(results, CheckResult{
-			Step:    "deploy",
-			ID:      "D7",
-			Name:    "INSTRUCTION_SENDER in extension.env",
-			Status:  PASS,
-			Message: val,
-		})
-	}
+	fix := "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh"
 
 	// Check EXTENSION_ID.
 	if val, ok := vars["EXTENSION_ID"]; !ok {
@@ -243,14 +215,14 @@ func CheckExtensionEnvFormat(path string) []CheckResult {
 	return results
 }
 
-// parseExtensionEnv reads EXTENSION_ID and INSTRUCTION_SENDER from an extension.env file.
-// Returns empty strings and nil error if file doesn't exist.
-func parseExtensionEnv(path string) (extensionID string, instructionSender string, err error) {
+// parseExtensionEnv reads EXTENSION_ID from an extension.env file.
+// Returns an empty string and nil error if the file doesn't exist.
+func parseExtensionEnv(path string) (extensionID string, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", "", nil
+		return "", nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -262,16 +234,11 @@ func parseExtensionEnv(path string) (extensionID string, instructionSender strin
 		if len(parts) != 2 {
 			continue
 		}
-		key := strings.TrimSpace(parts[0])
-		val := strings.TrimSpace(parts[1])
-		switch key {
-		case "EXTENSION_ID":
-			extensionID = val
-		case "INSTRUCTION_SENDER":
-			instructionSender = val
+		if strings.TrimSpace(parts[0]) == "EXTENSION_ID" {
+			extensionID = strings.TrimSpace(parts[1])
 		}
 	}
-	return extensionID, instructionSender, nil
+	return extensionID, nil
 }
 
 // RegisterRegistrationChecks adds all registration (R1-R7) checks to a Report.
@@ -296,7 +263,7 @@ func RegisterRegistrationChecks(
 	}
 
 	// Parse extension.env.
-	extIDStr, instrSender, err := parseExtensionEnv(extensionEnvPath)
+	extIDStr, err := parseExtensionEnv(extensionEnvPath)
 	if err != nil {
 		r.Add(CheckResult{
 			Step:    "register",
@@ -307,13 +274,13 @@ func RegisterRegistrationChecks(
 		})
 		return
 	}
-	if extIDStr == "" && instrSender == "" {
+	if extIDStr == "" {
 		r.Add(CheckResult{
 			Step:    "register",
 			ID:      "R1-R7",
 			Name:    "registration checks",
 			Status:  SKIP,
-			Message: "config/extension.env not found — run pre-build.sh first",
+			Message: "deploy/config/extension.env not found — run deploy/scripts/full-setup.sh first",
 		})
 		return
 	}
@@ -359,48 +326,14 @@ func RegisterRegistrationChecks(
 			Name:    "EXTENSION_ID format",
 			Status:  FAIL,
 			Message: fmt.Sprintf("malformed EXTENSION_ID: %q", extIDStr),
-			Fix:     "Delete config/extension.env and re-run scripts/pre-build.sh",
+			Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 		})
 		return
 	}
 
-	// Parse extension ID from hex.
-	extensionID := new(big.Int)
-	extensionID.SetString(extIDStr[2:], 16)
-
-	// R2: Check instruction sender matches on-chain.
-	if registry != nil && client != nil && addressRegex.MatchString(instrSender) {
-		onChainSender, err := registry.GetTeeExtensionInstructionsSender(callOpts, extensionID)
-		if err != nil {
-			r.Add(CheckResult{
-				Step:    "register",
-				ID:      "R2",
-				Name:    "instruction sender matches on-chain",
-				Status:  FAIL,
-				Message: fmt.Sprintf("failed to query instruction sender: %v", err),
-			})
-		} else {
-			expectedAddr := common.HexToAddress(instrSender)
-			if onChainSender == expectedAddr {
-				r.Add(CheckResult{
-					Step:    "register",
-					ID:      "R2",
-					Name:    "instruction sender matches on-chain",
-					Status:  PASS,
-					Message: fmt.Sprintf("on-chain sender %s matches extension.env", onChainSender.Hex()),
-				})
-			} else {
-				r.Add(CheckResult{
-					Step:    "register",
-					ID:      "R2",
-					Name:    "instruction sender matches on-chain",
-					Status:  FAIL,
-					Message: fmt.Sprintf("on-chain sender %s != extension.env %s", onChainSender.Hex(), instrSender),
-					Fix:     "Re-register the extension or update extension.env",
-				})
-			}
-		}
-	}
+	// Parse extension ID (the reserved id, or a 0x-prefixed hex form). The
+	// regex check above guarantees this parses.
+	extensionID, _ := new(big.Int).SetString(extIDStr, 0)
 
 	// R3: Check deployer is allowed TEE machine owner.
 	if key != nil && allowlist != nil && client != nil {
@@ -466,39 +399,6 @@ func RegisterRegistrationChecks(
 			})
 		}
 	}
-
-	// R7: Check for duplicate instruction sender across extensions.
-	if counter != nil && counter.Sign() > 0 && addressRegex.MatchString(instrSender) && registry != nil && client != nil {
-		expectedAddr := common.HexToAddress(instrSender)
-		var matchingIDs []string
-		for i := int64(0); i < counter.Int64(); i++ {
-			id := big.NewInt(i)
-			sender, err := registry.GetTeeExtensionInstructionsSender(callOpts, id)
-			if err != nil {
-				continue
-			}
-			if sender == expectedAddr {
-				matchingIDs = append(matchingIDs, id.String())
-			}
-		}
-		if len(matchingIDs) > 1 {
-			r.Add(CheckResult{
-				Step:    "register",
-				ID:      "R7",
-				Name:    "unique instruction sender",
-				Status:  WARN,
-				Message: fmt.Sprintf("INSTRUCTION_SENDER %s is used by multiple extensions: %s", instrSender, strings.Join(matchingIDs, ", ")),
-			})
-		} else {
-			r.Add(CheckResult{
-				Step:    "register",
-				ID:      "R7",
-				Name:    "unique instruction sender",
-				Status:  PASS,
-				Message: "instruction sender is unique across registered extensions",
-			})
-		}
-	}
 }
 
 // checkChainID queries the connected chain for its ID and reports the network name.
@@ -551,10 +451,10 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 			ID:      "S2",
 			Name:    "EXTENSION_ID is set and well-formed",
 			Status:  SKIP,
-			Message: "run pre-build.sh first",
+			Message: "run full-setup.sh first",
 		})
 	} else {
-		extID, _, _ := parseExtensionEnv(extensionEnvPath)
+		extID, _ := parseExtensionEnv(extensionEnvPath)
 		if extID == "" {
 			r.Add(CheckResult{
 				Step:    "services",
@@ -562,7 +462,7 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 				Name:    "EXTENSION_ID is set and well-formed",
 				Status:  FAIL,
 				Message: "EXTENSION_ID is empty or not found in extension.env",
-				Fix:     "Delete config/extension.env and re-run scripts/pre-build.sh",
+				Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 			})
 		} else if !extensionIDRegex.MatchString(extID) {
 			r.Add(CheckResult{
@@ -571,7 +471,7 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 				Name:    "EXTENSION_ID is set and well-formed",
 				Status:  FAIL,
 				Message: fmt.Sprintf("EXTENSION_ID has invalid format: %q", extID),
-				Fix:     "Delete config/extension.env and re-run scripts/pre-build.sh",
+				Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 			})
 		} else {
 			r.Add(CheckResult{
@@ -591,7 +491,7 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 	}
 	conn, err := net.DialTimeout("tcp", "localhost:"+port, 1*time.Second)
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		r.Add(CheckResult{
 			Step:    "services",
 			ID:      "S5",
@@ -628,7 +528,7 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 			ID:      "S7",
 			Name:    "port configuration",
 			Status:  PASS,
-			Message: "using defaults (standalone: 8080/9090, Docker: 7702/7701)",
+			Message: "using the defaults (extension 7702, sign 7701; host stack: 7722/7721)",
 		})
 	}
 
@@ -646,7 +546,7 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 		resp, err := httpClient.Get(proxyURL + "/info")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			r.Add(CheckResult{
@@ -751,7 +651,7 @@ func RegisterTeeVersionChecks(r *Report, extensionEnvPath string) {
 			Message: "no --config provided",
 		})
 	} else {
-		extID, _, err := parseExtensionEnv(extensionEnvPath)
+		extID, err := parseExtensionEnv(extensionEnvPath)
 		if err != nil {
 			r.Add(CheckResult{
 				Step:    "tee-version",
@@ -761,14 +661,14 @@ func RegisterTeeVersionChecks(r *Report, extensionEnvPath string) {
 				Message: fmt.Sprintf("failed to parse extension.env: %v", err),
 			})
 		} else if extID == "" {
-			// parseExtensionEnv returns empty strings and nil error if file doesn't exist
+			// parseExtensionEnv returns an empty string and nil error if the file doesn't exist
 			if _, statErr := os.Stat(extensionEnvPath); os.IsNotExist(statErr) {
 				r.Add(CheckResult{
 					Step:    "tee-version",
 					ID:      "V4",
 					Name:    "EXTENSION_ID valid",
 					Status:  SKIP,
-					Message: "extension.env not found — run pre-build.sh first",
+					Message: "extension.env not found — run full-setup.sh first",
 				})
 			} else {
 				r.Add(CheckResult{
@@ -777,7 +677,7 @@ func RegisterTeeVersionChecks(r *Report, extensionEnvPath string) {
 					Name:    "EXTENSION_ID valid",
 					Status:  FAIL,
 					Message: "EXTENSION_ID not set",
-					Fix:     "Delete config/extension.env and re-run scripts/pre-build.sh",
+					Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 				})
 			}
 		} else if !extensionIDRegex.MatchString(extID) {
@@ -787,7 +687,7 @@ func RegisterTeeVersionChecks(r *Report, extensionEnvPath string) {
 				Name:    "EXTENSION_ID valid",
 				Status:  FAIL,
 				Message: "EXTENSION_ID malformed",
-				Fix:     "Delete config/extension.env and re-run scripts/pre-build.sh",
+				Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 			})
 		} else {
 			r.Add(CheckResult{
@@ -814,7 +714,7 @@ func RegisterTeeVersionChecks(r *Report, extensionEnvPath string) {
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 		resp, err := httpClient.Get(proxyURL + "/info")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			r.Add(CheckResult{
@@ -884,7 +784,7 @@ func RegisterTeeMachineChecks(r *Report, extensionEnvPath string) {
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 		resp, err := httpClient.Get(normalProxyURL + "/info")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			r.Add(CheckResult{
@@ -920,7 +820,7 @@ func RegisterTeeMachineChecks(r *Report, extensionEnvPath string) {
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 		resp, err := httpClient.Get(extProxyURL + "/info")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			r.Add(CheckResult{
@@ -945,50 +845,50 @@ func RegisterTeeMachineChecks(r *Report, extensionEnvPath string) {
 
 // RegisterTestChecks adds testing-readiness checks (E1, E3, E6) to a Report.
 func RegisterTestChecks(r *Report, extensionEnvPath string) {
-	// E1: INSTRUCTION_SENDER valid.
+	// E1: EXTENSION_ID valid.
 	if extensionEnvPath == "" {
 		r.Add(CheckResult{
 			Step:    "test",
 			ID:      "E1",
-			Name:    "INSTRUCTION_SENDER valid",
+			Name:    "EXTENSION_ID valid",
 			Status:  SKIP,
 			Message: "no --config provided",
 		})
 	} else {
-		_, instrSender, _ := parseExtensionEnv(extensionEnvPath)
+		extID, _ := parseExtensionEnv(extensionEnvPath)
 		if _, statErr := os.Stat(extensionEnvPath); os.IsNotExist(statErr) {
 			r.Add(CheckResult{
 				Step:    "test",
 				ID:      "E1",
-				Name:    "INSTRUCTION_SENDER valid",
+				Name:    "EXTENSION_ID valid",
 				Status:  SKIP,
-				Message: "extension.env not found — run pre-build.sh first",
+				Message: "extension.env not found — run full-setup.sh first",
 			})
-		} else if instrSender == "" {
+		} else if extID == "" {
 			r.Add(CheckResult{
 				Step:    "test",
 				ID:      "E1",
-				Name:    "INSTRUCTION_SENDER valid",
+				Name:    "EXTENSION_ID valid",
 				Status:  FAIL,
-				Message: "INSTRUCTION_SENDER not set — run pre-build.sh",
-				Fix:     "Run scripts/pre-build.sh to deploy and register the extension",
+				Message: "EXTENSION_ID not set — run full-setup.sh",
+				Fix:     "Run scripts/full-setup.sh to pin the extension identity",
 			})
-		} else if !addressRegex.MatchString(instrSender) {
+		} else if !extensionIDRegex.MatchString(extID) {
 			r.Add(CheckResult{
 				Step:    "test",
 				ID:      "E1",
-				Name:    "INSTRUCTION_SENDER valid",
+				Name:    "EXTENSION_ID valid",
 				Status:  FAIL,
-				Message: "INSTRUCTION_SENDER malformed",
-				Fix:     "Delete config/extension.env and re-run scripts/pre-build.sh",
+				Message: "EXTENSION_ID malformed",
+				Fix:     "Delete deploy/config/extension.env and re-run deploy/scripts/full-setup.sh",
 			})
 		} else {
 			r.Add(CheckResult{
 				Step:    "test",
 				ID:      "E1",
-				Name:    "INSTRUCTION_SENDER valid",
+				Name:    "EXTENSION_ID valid",
 				Status:  PASS,
-				Message: instrSender,
+				Message: extID,
 			})
 		}
 	}
@@ -1007,7 +907,7 @@ func RegisterTestChecks(r *Report, extensionEnvPath string) {
 		httpClient := &http.Client{Timeout: 5 * time.Second}
 		resp, err := httpClient.Get(proxyURL + "/info")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		if err == nil && resp.StatusCode == http.StatusOK {
 			r.Add(CheckResult{
@@ -1036,16 +936,5 @@ func RegisterTestChecks(r *Report, extensionEnvPath string) {
 		Name:    "OPType/OPCommand alignment info",
 		Status:  PASS,
 		Message: "OPType/OPCommand hashes are validated at runtime — if a 501 error occurs, check the hash values in the error message",
-	})
-}
-
-// RegisterStubChecks adds one SKIP result as a placeholder for unimplemented checks.
-func RegisterStubChecks(r *Report, step, idRange, name string) {
-	r.Add(CheckResult{
-		Step:    step,
-		ID:      idRange,
-		Name:    name,
-		Status:  SKIP,
-		Message: "not yet implemented",
 	})
 }

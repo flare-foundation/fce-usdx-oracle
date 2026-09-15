@@ -1,0 +1,40 @@
+# Foundry project for the on-chain ABI boundary. It contains no contracts of its
+# own: the TEE oracle interfaces are compiled straight out of a sibling checkout
+# of flare-smart-contracts-v2, so the ABI the Go bindings and the wire-vector
+# tests see is whatever that checkout is at.
+#
+#   src/Bindings.sol   the interfaces deploy/scripts/generate-bindings.sh binds
+#   script/            the local-simulation deploy behind deploy/scripts/deploy-oracle-local.sh
+#   test/              the wire-vector tests behind deploy/testdata/wire
+#                      (deploy/scripts/regen-wire-fixtures.sh)
+#
+# `forge install` here after cloning to fetch forge-std into lib/.
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib"]
+# Upstream's compiler settings: the implementations only fit EIP-170's size limit
+# when optimised as upstream builds them.
+via_ir = true
+optimizer = true
+optimizer_runs = 200
+evm_version = "cancun"
+# The interfaces and the deploy script are upstream's sources, compiled from the
+# sibling checkout. The deploy script also pulls in upstream's implementations,
+# which import OpenZeppelin and flare-periphery from upstream's Soldeer
+# dependencies/; the versions here follow upstream's remappings.txt, and
+# deploy/scripts/deploy-oracle-local.sh installs them there when missing.
+remappings = [
+    "flare-smart-contracts-v2/=../../../../fsp/flare-smart-contracts-v2/contracts/",
+    "@openzeppelin/contracts/=../../../../fsp/flare-smart-contracts-v2/dependencies/@openzeppelin-contracts-5.7.0/",
+    "@openzeppelin/contracts-upgradeable/=../../../../fsp/flare-smart-contracts-v2/dependencies/@openzeppelin-contracts-upgradeable-5.7.0/",
+    "@flarenetwork/flare-periphery-contracts/flare/=../../../../fsp/flare-smart-contracts-v2/dependencies/flare-periphery-0.1.38/src/flare/",
+]
+allow_paths = ["../../../../fsp/flare-smart-contracts-v2"]
+
+# forge-lint cannot parse solc's erc7201() builtin that upstream's governance
+# library uses, and fails the build on it although compilation succeeds.
+[lint]
+lint_on_build = false

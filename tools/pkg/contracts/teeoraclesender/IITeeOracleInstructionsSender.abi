@@ -1,0 +1,958 @@
+[
+  {
+    "type": "function",
+    "name": "adminsPublishedAt",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "adminsVersion",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "endpointsPublishedAt",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "endpointsVersion",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "expectedAdminsVersion",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      },
+      {
+        "name": "_teeId",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "expectedEndpointsVersion",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      },
+      {
+        "name": "_teeId",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "extensionId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getAdminsPublicationFee",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "_teeIds",
+        "type": "address[]",
+        "internalType": "address[]"
+      },
+      {
+        "name": "_fee",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getAdminsPushTargets",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "_teeIds",
+        "type": "address[]",
+        "internalType": "address[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getEndpointsPublicationFee",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "_teeIds",
+        "type": "address[]",
+        "internalType": "address[]"
+      },
+      {
+        "name": "_fee",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getEndpointsPushTargets",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "_teeIds",
+        "type": "address[]",
+        "internalType": "address[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getFeedConfig",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct ITeeOracleInstructionsSender.FeedConfig",
+        "components": [
+          {
+            "name": "endpointsHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "adminsHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "endpointsVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "adminsVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "endpointsPublishedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "adminsPublishedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getFeedIds",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes21[]",
+        "internalType": "bytes21[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getMachineVersions",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      },
+      {
+        "name": "_teeId",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct ITeeOracleInstructionsSender.MachineVersions",
+        "components": [
+          {
+            "name": "endpointsVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "adminsVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "isTeeIdConfigured",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      },
+      {
+        "name": "_teeId",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "latestAdminsHash",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "latestEndpointsHash",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pushAdmins",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      },
+      {
+        "name": "_teeIds",
+        "type": "address[]",
+        "internalType": "address[]"
+      },
+      {
+        "name": "_roles",
+        "type": "tuple[]",
+        "internalType": "struct ITeeOracleInstructionsSender.AdminRole[]",
+        "components": [
+          {
+            "name": "role",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "threshold",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "admins",
+            "type": "address[]",
+            "internalType": "address[]"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "_instructionId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "pushEndpoints",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      },
+      {
+        "name": "_teeIds",
+        "type": "address[]",
+        "internalType": "address[]"
+      },
+      {
+        "name": "_groups",
+        "type": "tuple[]",
+        "internalType": "struct ITeeOracleInstructionsSender.EndpointGroup[]",
+        "components": [
+          {
+            "name": "group",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "threshold",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "endpoints",
+            "type": "tuple[]",
+            "internalType": "struct ITeeOracleInstructionsSender.Endpoint[]",
+            "components": [
+              {
+                "name": "kind",
+                "type": "uint8",
+                "internalType": "enum ITeeOracleInstructionsSender.EndpointKind"
+              },
+              {
+                "name": "url",
+                "type": "string",
+                "internalType": "string"
+              },
+              {
+                "name": "urlHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "secretRef",
+                "type": "string",
+                "internalType": "string"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "_instructionId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "requestFeedUpdate",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      },
+      {
+        "name": "_teeIds",
+        "type": "address[]",
+        "internalType": "address[]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "_instructionId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "setAdmins",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      },
+      {
+        "name": "_roles",
+        "type": "tuple[]",
+        "internalType": "struct ITeeOracleInstructionsSender.AdminRole[]",
+        "components": [
+          {
+            "name": "role",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "threshold",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "admins",
+            "type": "address[]",
+            "internalType": "address[]"
+          }
+        ]
+      },
+      {
+        "name": "_claimBackAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "setEndpoints",
+    "inputs": [
+      {
+        "name": "_feedId",
+        "type": "bytes21",
+        "internalType": "bytes21"
+      },
+      {
+        "name": "_groups",
+        "type": "tuple[]",
+        "internalType": "struct ITeeOracleInstructionsSender.EndpointGroup[]",
+        "components": [
+          {
+            "name": "group",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "threshold",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "endpoints",
+            "type": "tuple[]",
+            "internalType": "struct ITeeOracleInstructionsSender.Endpoint[]",
+            "components": [
+              {
+                "name": "kind",
+                "type": "uint8",
+                "internalType": "enum ITeeOracleInstructionsSender.EndpointKind"
+              },
+              {
+                "name": "url",
+                "type": "string",
+                "internalType": "string"
+              },
+              {
+                "name": "urlHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "secretRef",
+                "type": "string",
+                "internalType": "string"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "_claimBackAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "event",
+    "name": "AdminsPublished",
+    "inputs": [
+      {
+        "name": "feedId",
+        "type": "bytes21",
+        "indexed": true,
+        "internalType": "bytes21"
+      },
+      {
+        "name": "version",
+        "type": "uint64",
+        "indexed": true,
+        "internalType": "uint64"
+      },
+      {
+        "name": "adminsHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "roles",
+        "type": "tuple[]",
+        "indexed": false,
+        "internalType": "struct ITeeOracleInstructionsSender.AdminRole[]",
+        "components": [
+          {
+            "name": "role",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "threshold",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "admins",
+            "type": "address[]",
+            "internalType": "address[]"
+          }
+        ]
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "AdminsSet",
+    "inputs": [
+      {
+        "name": "feedId",
+        "type": "bytes21",
+        "indexed": true,
+        "internalType": "bytes21"
+      },
+      {
+        "name": "teeId",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "version",
+        "type": "uint64",
+        "indexed": true,
+        "internalType": "uint64"
+      },
+      {
+        "name": "adminsHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "EndpointsPublished",
+    "inputs": [
+      {
+        "name": "feedId",
+        "type": "bytes21",
+        "indexed": true,
+        "internalType": "bytes21"
+      },
+      {
+        "name": "version",
+        "type": "uint64",
+        "indexed": true,
+        "internalType": "uint64"
+      },
+      {
+        "name": "endpointsHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "groups",
+        "type": "tuple[]",
+        "indexed": false,
+        "internalType": "struct ITeeOracleInstructionsSender.EndpointGroup[]",
+        "components": [
+          {
+            "name": "group",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "threshold",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "endpoints",
+            "type": "tuple[]",
+            "internalType": "struct ITeeOracleInstructionsSender.Endpoint[]",
+            "components": [
+              {
+                "name": "kind",
+                "type": "uint8",
+                "internalType": "enum ITeeOracleInstructionsSender.EndpointKind"
+              },
+              {
+                "name": "url",
+                "type": "string",
+                "internalType": "string"
+              },
+              {
+                "name": "urlHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "secretRef",
+                "type": "string",
+                "internalType": "string"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "EndpointsSet",
+    "inputs": [
+      {
+        "name": "feedId",
+        "type": "bytes21",
+        "indexed": true,
+        "internalType": "bytes21"
+      },
+      {
+        "name": "teeId",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "version",
+        "type": "uint64",
+        "indexed": true,
+        "internalType": "uint64"
+      },
+      {
+        "name": "endpointsHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "FeedUpdateRequested",
+    "inputs": [
+      {
+        "name": "requester",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "feedId",
+        "type": "bytes21",
+        "indexed": true,
+        "internalType": "bytes21"
+      },
+      {
+        "name": "instructionId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "InstructionsSenderInitialised",
+    "inputs": [
+      {
+        "name": "extensionId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "DuplicateAdmin",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DuplicateGroup",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DuplicateRole",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DuplicateTeeId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EmptyGroup",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EmptyRole",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "FeedNotConfigured",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidEndpoint",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidExtensionId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidFeedId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidThreshold",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoAdmins",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoConfigPublished",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoEndpoints",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoGroups",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoRoles",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoTeeIds",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TeeIdNotConfigured",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TeeIdNotInExtension",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ValueNotNeeded",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WrongConfigPayload",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddressUpdater",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAdmin",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroClaimBackAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroTeeId",
+    "inputs": []
+  }
+]

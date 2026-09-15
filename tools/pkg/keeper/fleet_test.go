@@ -2,14 +2,11 @@ package keeper
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"fce-usdx-oracle/tools/pkg/pricereport"
 
 	"github.com/ethereum/go-ethereum/common"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
@@ -60,90 +57,30 @@ func TestMachineListOverrideReplacesEveryURL(t *testing.T) {
 	}
 }
 
-// Rotation has to reach every machine, or the machines it skips fall out of
-// commission the moment their config is re-pushed and nobody notices.
-func TestFleetRotationCoversEveryMachineAndWraps(t *testing.T) {
+// Every cycle has to poll every machine's proxy: each addressed machine files
+// its result on its own.
+func TestCycleConfigPollsTheWholeFleet(t *testing.T) {
+	cfg := LoopConfig{Config: Config{Proxy: "https://configured", DirectAPIKey: "k"}}
 	f := fleet{machines: []Machine{
 		{TeeID: machineA, Proxy: "https://a"},
 		{TeeID: machineB, Proxy: "https://b"},
-		{TeeID: machineC, Proxy: "https://c"},
 	}}
 
-	var got []common.Address
-	for range 7 {
-		m, ok := f.take()
-		if !ok {
-			t.Fatal("take() reported no machine from a non-empty fleet")
-		}
-		got = append(got, m.TeeID)
-	}
-
-	want := []common.Address{machineA, machineB, machineC, machineA, machineB, machineC, machineA}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("turn %d went to %s, want %s", i, got[i].Hex(), want[i].Hex())
-		}
+	c := cfg.cycleConfig(&f)
+	if got := c.pollTargets(); len(got) != 3 {
+		t.Errorf("poll targets = %v, want the configured proxy plus both machines", got)
 	}
 }
 
-func TestEmptyFleetTakesNothing(t *testing.T) {
+// An unreadable registry must not stop the feed: the cycle falls back to the one
+// proxy it was told about by hand.
+func TestCycleConfigFallsBackToTheConfiguredProxy(t *testing.T) {
+	cfg := LoopConfig{Config: Config{Proxy: "https://configured"}}
+
 	var f fleet
-	if _, ok := f.take(); ok {
-		t.Fatal("an empty fleet must report no machine, so the caller falls back to the configured proxy")
-	}
-}
-
-// A direct cycle addresses one named machine; an on-chain cycle addresses none
-// and has to look for its result on every proxy, because the registry chose the
-// machine.
-func TestCycleConfigPicksChannelAndTarget(t *testing.T) {
-	cfg := LoopConfig{
-		Config: Config{Proxy: "https://configured", Direct: true, DirectAPIKey: "k"},
-	}
-	f := fleet{machines: []Machine{
-		{TeeID: machineA, Proxy: "https://a"},
-		{TeeID: machineB, Proxy: "https://b"},
-	}}
-
-	direct := cfg.cycleConfig(&f, false)
-	if !direct.Direct {
-		t.Error("a direct cycle must use the direct channel")
-	}
-	if direct.Proxy != "https://a" || direct.TeeID != machineA {
-		t.Errorf("direct cycle went to %s/%s, want the machine whose turn it is",
-			direct.TeeID.Hex(), direct.Proxy)
-	}
-	if len(direct.ResultProxies) != 0 {
-		t.Errorf("direct cycle fans out to %v — a direct result exists only on the machine it was sent to",
-			direct.ResultProxies)
-	}
-
-	onChain := cfg.cycleConfig(&f, true)
-	if onChain.Direct {
-		t.Error("an on-chain cycle must use the instruction channel")
-	}
-	if onChain.TeeID != (common.Address{}) {
-		t.Errorf("on-chain cycle claims to address %s — the registry picks the machine",
-			onChain.TeeID.Hex())
-	}
-	if got := onChain.pollTargets(); len(got) != 3 {
-		t.Errorf("on-chain poll targets = %v, want the configured proxy plus both machines", got)
-	}
-}
-
-// The rotation must not be consumed by an on-chain cycle: the next direct cycle
-// should continue where the last one left off rather than skip a machine.
-func TestOnChainCycleDoesNotAdvanceTheRotation(t *testing.T) {
-	cfg := LoopConfig{Config: Config{Proxy: "https://configured", Direct: true}}
-	f := fleet{machines: []Machine{
-		{TeeID: machineA, Proxy: "https://a"},
-		{TeeID: machineB, Proxy: "https://b"},
-	}}
-
-	cfg.cycleConfig(&f, true)
-	if got := cfg.cycleConfig(&f, false); got.TeeID != machineA {
-		t.Errorf("next direct cycle went to %s, want %s — the on-chain cycle took a turn",
-			got.TeeID.Hex(), machineA.Hex())
+	got := cfg.cycleConfig(&f).pollTargets()
+	if len(got) != 1 || got[0] != "https://configured" {
+		t.Errorf("poll targets = %v, want just the configured proxy", got)
 	}
 }
 
@@ -165,10 +102,9 @@ func TestPollTargetsDeduplicatesAndKeepsThePrimaryFirst(t *testing.T) {
 	}
 }
 
-// The on-chain fan-out: the instruction was routed to the second machine, so the
-// result exists only there. Polling only the first would expire and report a
-// timeout indistinguishable from a dropped instruction.
-func TestPollResultAnyFindsTheResultOnAnotherProxy(t *testing.T) {
+// Each addressed machine files its result on its own proxy, so a proxy that has
+// nothing must not end the round: the result exists on the other one.
+func TestPollResultsFindsTheResultOnAnotherProxy(t *testing.T) {
 	var emptyHits atomic.Int32
 
 	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -178,66 +114,85 @@ func TestPollResultAnyFindsTheResultOnAnotherProxy(t *testing.T) {
 	defer empty.Close()
 
 	holder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(teetypes.ActionResponse{
+		encodeJSON(t, w, teetypes.ActionResponse{
 			Result: teetypes.ActionResult{Status: statusSucceeded, Log: "from-the-holder"},
 		})
 	}))
 	defer holder.Close()
 
-	res, from, err := PollResultAny(context.Background(),
-		[]string{empty.URL, holder.URL}, common.HexToHash("0x1"), teetypes.Threshold, 5*time.Second)
+	got, err := pollResults(context.Background(),
+		[]string{empty.URL, holder.URL}, 1, common.HexToHash("0x1"), teetypes.Threshold, 5*time.Second)
 	if err != nil {
-		t.Fatalf("PollResultAny: %v", err)
+		t.Fatalf("pollResults: %v", err)
 	}
-	if res.Log != "from-the-holder" {
-		t.Errorf("got result %+v, want the one the second proxy holds", res)
+	if len(got) != 1 || got[0].result.Log != "from-the-holder" {
+		t.Errorf("got %+v, want the one result the second proxy holds", got)
 	}
-	if from != holder.URL {
+	if got[0].proxy != holder.URL {
 		t.Errorf("answered by %q, want %q — the record has to name the machine that produced it",
-			from, holder.URL)
+			got[0].proxy, holder.URL)
 	}
 	if emptyHits.Load() == 0 {
 		t.Error("the first proxy was never asked")
 	}
 }
 
-func TestPollResultAnyWithoutProxiesFailsImmediately(t *testing.T) {
-	_, _, err := PollResultAny(context.Background(), nil,
+// A round is complete when every addressed machine has answered, and the results
+// come back in proxy order so the batch is stable across cycles.
+func TestPollResultsReturnsEveryAnswerInProxyOrder(t *testing.T) {
+	serve := func(log string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			encodeJSON(t, w, teetypes.ActionResponse{
+				Result: teetypes.ActionResult{Status: statusSucceeded, Log: log},
+			})
+		}))
+	}
+	a, b := serve("a"), serve("b")
+	defer a.Close()
+	defer b.Close()
+
+	started := time.Now()
+	got, err := pollResults(context.Background(),
+		[]string{a.URL, b.URL}, 2, common.HexToHash("0x1"), teetypes.Threshold, time.Minute)
+	if err != nil {
+		t.Fatalf("pollResults: %v", err)
+	}
+	if len(got) != 2 || got[0].result.Log != "a" || got[1].result.Log != "b" {
+		t.Errorf("got %+v, want both results in proxy order", got)
+	}
+	if time.Since(started) > 5*time.Second {
+		t.Error("a complete round must not wait for the deadline")
+	}
+}
+
+// A machine that never answers costs the timeout, not the cycle: what did arrive
+// is returned, and whether it is enough is the store's threshold to judge.
+func TestPollResultsReturnsAPartialRoundAtTheDeadline(t *testing.T) {
+	answers := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		encodeJSON(t, w, teetypes.ActionResponse{
+			Result: teetypes.ActionResult{Status: statusSucceeded, Log: "only-one"},
+		})
+	}))
+	defer answers.Close()
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer silent.Close()
+
+	got, err := pollResults(context.Background(),
+		[]string{answers.URL, silent.URL}, 2, common.HexToHash("0x1"), teetypes.Threshold, 1200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("a partial round is not an error: %v", err)
+	}
+	if len(got) != 1 || got[0].result.Log != "only-one" {
+		t.Errorf("got %+v, want the one answer that arrived", got)
+	}
+}
+
+func TestPollResultsWithoutProxiesFailsImmediately(t *testing.T) {
+	_, err := pollResults(context.Background(), nil, 1,
 		common.HexToHash("0x1"), teetypes.Submit, time.Minute)
 	if err == nil {
 		t.Fatal("expected an error rather than a poll that cannot succeed")
-	}
-}
-
-// The property the whole sweep rests on: observedAt must strictly increase, so
-// the oldest report has to go first. Submitting in registry order lands one and
-// rejects the rest as NotNewer, commissioning one machine per pass forever.
-func TestSubmissionOrderIsOldestObservationFirst(t *testing.T) {
-	held := []swept{
-		{machine: Machine{TeeID: machineA}, report: pricereport.Report{ObservedAt: 300}, ok: true},
-		{machine: Machine{TeeID: machineB}, report: pricereport.Report{ObservedAt: 100}, ok: true},
-		{machine: Machine{TeeID: machineC}, report: pricereport.Report{ObservedAt: 200}, ok: true},
-	}
-
-	got := submissionOrder(held)
-	want := []int{1, 2, 0}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("order = %v, want %v (ascending observedAt)", got, want)
-		}
-	}
-}
-
-// A machine that produced no report has nothing to submit. Including it would
-// relay a zero-value report, which is the one thing the keeper must never do.
-func TestSubmissionOrderSkipsMachinesThatCollectedNothing(t *testing.T) {
-	held := []swept{
-		{machine: Machine{TeeID: machineA}, report: pricereport.Report{ObservedAt: 300}, ok: true},
-		{machine: Machine{TeeID: machineB}, ok: false},
-	}
-
-	got := submissionOrder(held)
-	if len(got) != 1 || got[0] != 0 {
-		t.Fatalf("order = %v, want only the machine that produced a report", got)
 	}
 }

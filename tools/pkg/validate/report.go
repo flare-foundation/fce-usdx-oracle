@@ -121,7 +121,7 @@ func statusColor(s Status) string {
 
 // Fprint writes a colored terminal report to w, grouped by Step.
 func (r *Report) Fprint(w io.Writer) {
-	fmt.Fprintf(w, "\n%s=== Deployment Verification Report ===%s\n\n", colorCyan, colorReset)
+	_, _ = fmt.Fprintf(w, "\n%s=== Deployment Verification Report ===%s\n\n", colorCyan, colorReset)
 
 	// Collect unique steps in order of first appearance.
 	var steps []string
@@ -138,28 +138,28 @@ func (r *Report) Fprint(w io.Writer) {
 		if label == "" {
 			label = step
 		}
-		fmt.Fprintf(w, "%s:\n", label)
+		_, _ = fmt.Fprintf(w, "%s:\n", label)
 
 		for _, res := range r.Results {
 			if res.Step != step {
 				continue
 			}
 			color := statusColor(res.Status)
-			fmt.Fprintf(w, "  %s[%s]%s %s  %s\n", color, res.Status, colorReset, res.ID, res.Name)
+			_, _ = fmt.Fprintf(w, "  %s[%s]%s %s  %s\n", color, res.Status, colorReset, res.ID, res.Name)
 
 			if res.Status == FAIL || res.Status == WARN {
 				if res.Message != "" {
-					fmt.Fprintf(w, "         %s\n", res.Message)
+					_, _ = fmt.Fprintf(w, "         %s\n", res.Message)
 				}
 				if res.Fix != "" {
-					fmt.Fprintf(w, "         Fix: %s\n", res.Fix)
+					_, _ = fmt.Fprintf(w, "         Fix: %s\n", res.Fix)
 				}
 			}
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 
-	fmt.Fprintf(w, "%s\n", r.Summary())
+	_, _ = fmt.Fprintf(w, "%s\n", r.Summary())
 }
 
 // Print writes the colored report to stdout.
@@ -184,7 +184,7 @@ type jsonReport struct {
 }
 
 // FprintJSON writes the report as pretty-printed JSON to w.
-func (r *Report) FprintJSON(w io.Writer) {
+func (r *Report) FprintJSON(w io.Writer) error {
 	jr := jsonReport{
 		Results: make([]jsonResult, len(r.Results)),
 		Summary: r.Summary(),
@@ -202,10 +202,10 @@ func (r *Report) FprintJSON(w io.Writer) {
 
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	enc.Encode(jr)
+	return enc.Encode(jr)
 }
 
 // PrintJSON writes the JSON report to stdout.
-func (r *Report) PrintJSON() {
-	r.FprintJSON(os.Stdout)
+func (r *Report) PrintJSON() error {
+	return r.FprintJSON(os.Stdout)
 }

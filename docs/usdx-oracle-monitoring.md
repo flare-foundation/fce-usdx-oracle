@@ -3,10 +3,8 @@
 **Status:** 📋 **PLAN — not built** · **Raised:** 2026-08-04
 
 _Companion docs: the fail-closed decision and its consequences in `usdx-oracle-availability.md`,
-design intent in `usdx-oracle-spec.md`, implementation findings in `usdx-oracle-findings.md`,
-working plan in `usdx-oracle-plan.md`. **The keeper that emits these signals is specified in
-`usdx-oracle-keeper.md`** — this doc is its alerting half. Signal/severity table in
-`usdx-oracle-operations.html` §3._
+design intent in `usdx-oracle-spec.md`, implementation findings in `usdx-oracle-findings.md`. **The keeper that emits these signals is specified in
+`usdx-oracle-keeper.md`** — this doc is its alerting half._
 
 ---
 
@@ -41,7 +39,7 @@ signal that is true whether or not any keeper is alive.
 That signal is the on-chain observation timestamp:
 
 ```
-(price, decimals, timestamp) = UsdxPriceStore.latest()
+timestamp = TeeOracleFeedStore.observedAt()     ← free view; getCurrentFeed() is a paid read
 age = block.timestamp - timestamp
 ```
 
@@ -74,11 +72,11 @@ Ordered by where they occur in one keeper cycle.
 | # | Cause | Detected by | Signal | On its own |
 | --- | --- | --- | --- | --- |
 | **1** | Keeper never fired — process dead, scheduler wedged, container not restarted | External watcher only | Cycle heartbeat absent | **page** — silent but serious |
-| **2** | `requestPriceUpdate()` never landed — wallet empty, fee wrong, gas, RPC down | Keeper tx receipt | Revert or no receipt | warn → page if sustained |
+| **2** | `requestFeedUpdate()` never landed — wallet empty, fee wrong, gas, RPC down, target not configured | Keeper tx receipt | Revert or no receipt | warn → page if sustained |
 | **3** | No `ActionResult` returned — TEE down, proxy down, instruction dropped, machine offline | Keeper poll timeout | Timeout, no result | warn → page if sustained |
 | **4** | Extension failed the observation — a source is down or answered badly | `ActionResult.status == 0` | `failure.Class` in `Log` | route by class (below) |
-| **5** | `submitPrice` reverted `NotNewer` — another keeper won the race | Tx revert reason | `NotNewer()` | **never alerts — normal operation** |
-| **6** | `submitPrice` reverted for any other reason | Tx revert reason | See revert table | varies — several are page |
+| **5** | `submitFeedUpdates` reverted `NotNewer` — another keeper won the race | Tx revert reason | `NotNewer()` | **never alerts — normal operation** |
+| **6** | `submitFeedUpdates` reverted for any other reason | Tx revert reason | See revert table | varies — several are page |
 | **7** | Everything above succeeded and the feed is still stale | On-chain `age` | `age > 2 × T` | **page** — the consumer-facing truth |
 
 Causes 1 and 7 are the two that must exist before the others are worth building. 1 catches the
@@ -88,25 +86,32 @@ keeper dying; 7 catches everything, including causes nobody anticipated.
 
 ## Cause 4 — routing a status-0 result
 
-`ActionResult.Log` carries a constant from the closed vocabulary in `go/internal/failure`, and
+`ActionResult.Log` carries a constant from the closed vocabulary in `internal/failure`, and
 `GET /state` carries the coarser `lastErrorClass`. The class is the alert key.
 
 | Class | Failures | Meaning | Route |
 | --- | --- | --- | --- |
 | `source_unavailable` | `BackingUnavailable`, `BackingTimeout`, `SupplyUnavailable`, `SupplyTimeout` | An upstream is unreachable | warn; page on N consecutive |
 | `supply_quorum_failed` | `SupplyNoQuorum` | Providers disagreed or too few answered | page — should be near-impossible at a fixed block |
-| `source_invalid` | `BackingMalformed`, `BackingStale`, `BackingCurrency` | The source answered and we refused it | **page differently** — a human must read the response |
+| `source_invalid` | `BackingMalformed`, `BackingCurrency`, `BackingTimestamp`, `MissingRequestTime` | The source answered and we refused it | **page differently** — a human must read the response |
+| `clock_skew` | `ClockBehindChain` | This machine's clock disagrees with chain time | page the **host**, not the upstreams — the fix is NTP |
 | `implausible_value` | `BackingImplausible`, `SupplyImplausible`, `PriceImplausible`, `SupplyZero` | A value failed a sanity bound | page — either a real event or a bad bound |
 | `not_configured` | `NotConfigured` | Secrets lost to a restart — memory-only by design | page — needs re-provisioning, not a retry |
 | `sign_failed` | `SignUnavailable`, `SignRejected` | tee-node signing path broken | page |
 | `internal` | `Internal` | Bug | page |
+
+`clock_skew` is the odd one out: nothing upstream is wrong and nothing in the code is wrong, so
+routing it with the source classes sends someone to read a Hex response that is perfectly fine.
+It fires when the requesting instruction's block timestamp says the cached observation has aged
+out while the machine's own clock still says it is fresh — see
+`docs/usdx-oracle-failure-modes.md`. Expect it to arrive on one machine at a time.
 
 `source_unavailable` and `supply_quorum_failed` are reachability. `source_invalid` is a
 different kind of problem — the source answered but said something we refuse to use — and a
 shape change from Hex needs a human reading the payload, not a retry. Route them to different
 places.
 
-**One failure may be one machine.** `getRandomTeeIds` picks one machine per instruction, so a
+**One failure may be one machine.** The keeper names its target machines (`-tee`), so a
 single status-0 does not distinguish "Hex is down" from "one TEE machine has lost its egress
 route". Correlating results across machines does; a single result cannot. Until that
 correlation exists, treat a single status-0 as a warn regardless of class.
@@ -115,7 +120,7 @@ correlation exists, treat a single status-0 as a warn regardless of class.
 
 ## Cause 5 — what must *not* page
 
-`UsdxPriceStore`'s own contract comment is explicit:
+`TeeOracleFeedStore`'s design is explicit on this point:
 
 > _a rejected submission is normal operation, not an error — a slow relayer racing a fast one is
 > expected._
@@ -141,40 +146,38 @@ minutes-old reports".
 
 ---
 
-## Cause 6 — classifying a `submitPrice` revert
+## Cause 6 — classifying a `submitFeedUpdates` revert
 
-The guard order in `submitPrice` is diagnostic: each revert tells you everything that already
-passed. By the time `OutOfBounds` fires, the signature has been verified, the machine confirmed
-registered for this extension, the config hash confirmed current, and the report confirmed
-newer than the stored one.
+The guard order in `submitFeedUpdates` is diagnostic: each revert tells you everything that
+already passed. The batch is judged first — its shape, the spread of its values and the
+`observedAt` ratchet — and only then are the contributors verified one by one, so by the time
+`StaleEndpoints` fires the batch was well formed, in agreement and newer than the store.
 
 | Revert | What it already proves | Meaning | Route |
 | --- | --- | --- | --- |
-| `IsPaused` | nothing | Governance froze the store | expected during an incident; page only if unplanned |
-| `BadSignatureLength`, `BadRecoveryId`, `MalleableSignature` | nothing | Malformed signature | **page** — encoding bug in the relay path |
-| `UnknownSigner` | signature recovered | Machine not registered to our extension, or its status is not `PRODUCTION` | **page** — registry drift, or a machine suspended/paused/banned |
-| `WrongDomain`, `WrongDecimals` | machine is registered | Report layout disagrees with the deployed store | **page** — version mismatch, wrong deploy |
-| `NoConfigPublished` | machine is registered | No `setEndpoints` recorded for this machine | **page** — provisioning incomplete |
-| `StaleConfig` | machine is registered | Machine is running config that is not what `setEndpoints` published | **page** — provisioning drift |
-| `NotNewer` | config is current | Lost a race, or submitting stale reports | see cause 5 |
-| `TooOld` | report is newer | Report aged past `maxAge` before landing | **page** — round-trip latency exceeds the window |
-| `TooFarAhead` | report is newer | `observedAt` is more than `MAX_FUTURE_SKEW` (2 min) ahead of chain time | **page** — TEE clock drift beyond what the window absorbs; check NTP on the machine's host |
-| `OutOfBounds` | *everything else* | A valid, current, fresh, TEE-signed price the store refused | **page — highest priority** |
+| `NotEnoughSignatures`, `TooManySignatures` | nothing | Fewer agreeing machines than `requiredSignatures`, or more than 32 | **page** if sustained — machines down, or answers to another keeper's request mixed in (the keeper's record shows who was left out) |
+| `ObservedAtMismatch`, `DecimalsSpreadTooBig` | count in range | The keeper sent a mixed batch | **page** — keeper bug; it groups by `observedAt` before submitting |
+| `SpreadTooBig` | batch well formed | The values bracketing the median disagree by more than the policy's bound | **page** — the machines disagree about the price; compare their `prices` and `sourceHealth` |
+| `NotNewer` | batch agrees on a value | Lost a race, or submitting stale updates | see cause 5 |
+| `TooFarAhead` | batch newer than the store | `observedAt` is not strictly before `block.timestamp` | **page** — TEE clock ahead of chain time; check NTP on the machine's host |
+| `NoEndpointsPublished`, `NoAdminsPublished` | shape, spread and ratchet pass | No `setEndpoints` / `setAdmins` ever published for the feed | **page** — provisioning incomplete |
+| `ExtensionEmergencyPaused` | commitments published | Governance froze the extension | expected during an incident; page only if unplanned |
+| `ECDSAInvalidSignature` (and friends) | commitments published | Malformed signature | **page** — encoding bug in the relay path |
+| `InvalidTeeMachineExtensionId` | signature recovered | A contributor is not registered to our extension | **page** — registry drift |
+| `TeeMachineNotProduction` | machine is on the extension | A contributor's status is not `PRODUCTION` | **page** — machine suspended/paused/not yet promoted |
+| `DuplicateTeeId` | signer valid | The same machine appears twice in the batch | **page** — keeper bug; it keeps one update per signer |
+| `WrongExtensionId`, `WrongFeedId` | signer valid and distinct | An update names a different extension/feed than this store | **page** — version/wiring mismatch, wrong deploy |
+| `StaleEndpoints` | machine and feed valid | A contributor is running config that is not the feed's latest `setEndpoints` | **page** — provisioning drift; the keeper's preflight names the machine |
+| `StaleAdmins` | endpoints current | A contributor is running an admin set that is not the feed's latest `setAdmins` | **page** — provisioning drift |
 
-### `OutOfBounds` deserves its own paragraph
-
-Every other revert means something is broken in the plumbing. `OutOfBounds` means the plumbing
-worked perfectly and the store rejected the number.
-
-That is either a bound set too tightly, or **a real depeg being suppressed** — the exact event
-this feed exists to detect, arriving and being dropped on the floor. It must page immediately,
-and it must page with the price that was rejected, because that figure is the finding.
-
-Note the interaction with the `Price < 1.00` business alert already on the plan: if `minPrice`
-is set at or near par, a genuine depeg fires `OutOfBounds` *instead of* `Price < 1.00`, and the
-business alert never fires at all. Whoever sets the bounds must set them below the lowest price
-worth publishing, not at the lowest price considered plausible. Worth checking against the
-deviation-guard decision (spec §6.2), which is unresolved and shares an owner.
+The store no longer enforces an `[minPrice, maxPrice]` band or a `maxAge` window —
+`OutOfBounds` and `TooOld` have no on-chain counterpart any more. The price band is now
+enforced **in the enclave before signing**, and staleness is the consumer's check. So the
+"valid, current, fresh, TEE-signed number the store refused" failure has moved: it surfaces as
+a status-0 `ActionResult` (a `failure.Class` from cause 4) rather than as an on-chain revert.
+A real depeg that the enclave's bound suppresses now shows up as a status-0 with an
+`implausible_value` class, not as an `OutOfBounds` revert — route it the same way, and page
+with the value the observation produced, because that figure is the finding.
 
 ---
 
@@ -202,13 +205,14 @@ the wire — no extension change is required.
 | Field | Source |
 | --- | --- |
 | `cycleStartedAt`, `cycleEndedAt` | keeper |
-| `instructionId` | `requestPriceUpdate` receipt |
+| `instructionId` | `requestFeedUpdate` receipt |
 | `requestTxStatus` | receipt |
 | `resultStatus` (`1` / `0` / `timeout`) | `ActionResult.status`, or the poll timing out |
 | `errorClass` | `ActionResult.Log` — the closed vocabulary |
 | `sourceHealth` | proxy `GET /info` → `TEEState.state` |
 | `submitOutcome` | `accepted` / revert name / not attempted |
-| `storeObservedAtAfter` | `UsdxPriceStore.latest()` |
+| `dropped` | keeper — the answers left out of the batch, each with the store guard it would have failed |
+| `storeObservedAtAfter` | `TeeOracleFeedStore.observedAt()` |
 | `keeperId` | keeper |
 
 `storeObservedAtAfter` is what makes a lost race distinguishable from a real failure, and it is
@@ -256,7 +260,7 @@ Phases 1 and 2 are prerequisites for the mainnet milestone. 3–5 can follow.
 | 1 | What is `T`? Freshness thresholds are all expressed as multiples of it. Plan says match the ~10-min source refresh. | Engineering | Phase 1 |
 | 2 | Where does the chain-age watcher run, given it must not share a failure domain with the keepers? | Infra | Phase 1 |
 | 3 | `N` for "N consecutive failures" — and does a retry inside one cycle count as one failure or several? | Engineering | Phase 3 |
-| 4 | Are `minPrice` bounds set below the lowest price worth publishing, or at the lowest plausible one? Determines whether a real depeg pages as `OutOfBounds` or as `Price < 1.00`. | _TBD — same risk owner as spec §6.2_ | Phase 3 |
+| 4 | Where is the enclave's price bound set relative to the lowest price worth publishing? The band moved on-chain→enclave, so a real depeg now pages as a status-0 `implausible_value` class (cause 4) rather than an `OutOfBounds` revert. | _TBD — same risk owner as spec §6.2_ | Phase 3 |
 | 5 | Alert transport and on-call rotation — is there an existing path, or is one being created? | Infra | Phase 5 |
 | 6 | Should `sourceHealth` report per-provider rather than per-chain? `rpc_flare: "ok"` hides one-of-three providers being down — the state worth seeing *before* the second goes and quorum fails. Open since finding 8; the only item here that needs an extension change. | Engineering | Phase 5 |
 

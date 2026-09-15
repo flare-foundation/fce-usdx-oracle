@@ -1,0 +1,67 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    # Host-side binding, for debugging only: the proxy reaches redis over the
+    # compose network. start-services.sh sets REDIS_BIND to a free port on every
+    # run; the default here only matters for a bare `docker compose up`, and it
+    # stays clear of 6379-6382, which the e2e stack's own redis instances hold.
+    ports:
+      - "${REDIS_BIND:-127.0.0.1:6389}:6379"
+    tmpfs:
+      - /data
+
+  ext-proxy:
+    # tee-proxy's own published image, at the tag tools/go.mod pins (check-versions.sh
+    # compares the two). USE_LOCAL_SIBLINGS=1 has start-services.sh build
+    # local/tee-proxy from the sibling checkout and name it here instead.
+    image: ${TEE_PROXY_IMAGE:-ghcr.io/flare-foundation/tee-proxy:v0.0.24}
+    volumes:
+      # start-services.sh points this at a copy rendered with the current
+      # simulation's contract addresses for --chain local.
+      - ${PROXY_CONFIG_FILE:-./config/proxy/extension_proxy.docker.toml}:/app/config/config.toml:ro
+    environment:
+      - PROXY_PRIVATE_KEY=${PROXY_PRIVATE_KEY:-983760a4ebf75b2ac3a93531168a0f225d01e5dc6e3568adbd46233ba1fb4fa4}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${EXT_PROXY_INTERNAL_BIND:-0.0.0.0:6673}:6663"
+      - "${EXT_PROXY_EXTERNAL_BIND:-0.0.0.0:6674}:6664"
+    depends_on:
+      - redis
+
+  extension-tee:
+    build:
+      # The repo root is the Go module and the build context; this file lives in
+      # deploy/, so the context is one level up.
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}
+    env_file:
+      - path: ./config/extension.env
+        required: false
+    environment:
+      # Simulated attestation for the simulation. The image itself bakes MODE=0
+      # (production attestation), so this is set explicitly rather than inherited.
+      - MODE=${MODE:-1}
+      # Chain id the node binds signatures to — must match the proxy's chain_id
+      # and the chain itself. Local e2e Hardhat = 31337; the coston/coston2
+      # overrides set 16/114 for those networks.
+      - CHAIN_ID=${CHAIN_ID:-31337}
+      - INITIAL_OWNER=${INITIAL_OWNER:-0xF4E021377420Afe90c1A7D2b8968904946633a64}
+      # TEE governance the node signs with. Must match what set-governance
+      # registers on-chain (post-build reads the same vars). Defaults to the
+      # deployer (INITIAL_OWNER) as sole signer, threshold 1; override in .env.
+      - GOVERNANCE_SIGNERS=${GOVERNANCE_SIGNERS:-${INITIAL_OWNER:-0xF4E021377420Afe90c1A7D2b8968904946633a64}}
+      - GOVERNANCE_THRESHOLD=${GOVERNANCE_THRESHOLD:-1}
+      - PROXY_URL=http://ext-proxy:6663
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SIMULATED_TEE=${SIMULATED_TEE:-true}
+    depends_on:
+      - ext-proxy
+
+networks:
+  default:
+    name: ${COMPOSE_NETWORK:-docker_default}
+    external: true

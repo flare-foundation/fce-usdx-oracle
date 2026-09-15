@@ -1,7 +1,15 @@
 # USDX oracle — design rationale
 
+> **Migration note (2026-08).** The on-chain half moved to the upstream generic TEE
+> oracle contracts (`TeeOracleInstructionsSender` + `TeeOracleFeedStore`, op type
+> `TEE_ORACLE`, `FeedUpdate` payload). The rationale below for the *enclave* — the
+> price formula, supply quorum, reserve handling, fail-closed behaviour, credential
+> split — still applies. Where it names the old contracts, op types, or store guards
+> (`UsdxPriceStore`, `GET_PRICE`, `minPrice`/`maxAge`), read it against the new model
+> in `usdx-oracle-flows.md`.
+
 Why the code is shaped the way it is. This was originally carried as long
-package-doc comments in `go/internal/*` and `tools/pkg/*`; it was moved here so
+package-doc comments in `internal/*` and `tools/pkg/*`; it was moved here so
 the code stays readable and the reasoning stays available. The code keeps a
 one-line pointer wherever the reasoning is load-bearing.
 
@@ -64,7 +72,7 @@ set and the freshness window.
 
 ---
 
-## 2. One supply read, one reserve read (`internal/oracle`)
+## 2. One supply read, one reserve read (`internal/observation`)
 
 Supply reads and reserve reads are not atomic, and a redemption landing between
 them changes both sides of the ratio. Read reserves first (high) and supply after
@@ -87,8 +95,9 @@ price = min(1, B / S)
 
 Neither side has an internal race worth bracketing. The quorum procedure (§6)
 pins every provider to one agreed block, so a supply figure is not "supply at
-some point during the read" but *supply as of block N*. The reserve figure moves
-on Hex's ~10 minute tick, so it is effectively constant across a 20s observation.
+some point during the read" but *supply as of block N*. Hex republishes a reserve
+figure only within ~10 minutes of an on-chain event, so it is effectively
+constant across a 20s observation.
 A second supply pass therefore changed the answer only when a burn or mint landed
 in the few seconds between two pinned blocks — while doubling the supply-side
 fail-closed surface, since either pass failing failed the whole observation.
@@ -105,18 +114,50 @@ figure. A frozen feed with an ageing timestamp is the designed failure mode
 (spec §7.15) and consumers are required to check the timestamp; a confidently
 wrong price is not recoverable downstream.
 
-### `observedAt` is wall-clock, not the oldest input
+### `observedAt` is the request's block timestamp, not an input timestamp
 
-The store requires strict monotonicity, and an input timestamp can stall: the
-public reserves endpoint ticks on a ~10 minute cadence, so two observations
-minutes apart could share one, and the second would be rejected as a replay.
-Freshness of the underlying data is guarded separately and earlier — a stale
-reserve figure fails the observation outright in `internal/backing` — so a
-published price is never built on data older than `MaxAge`.
+The store requires strict monotonicity, and an input timestamp can stall
+indefinitely: `last_update` moves only when a mint or a redemption changes the
+figure, so on a quiet day every observation for hours would share one, and all
+but the first would be rejected as a replay. The signed `observedAt` is instead
+the block timestamp of the instruction that requested the update, as the store
+defines it (§3). The reading's own time — the home chain's block header when
+the inputs were **read** — is kept on the observation, and `MaxObservationAge`
+(10 min) bounds how far behind the stamp it may lie. There is deliberately no
+bound on how old the reserve figure itself is — see [§ *No freshness bound on
+the reserve figures*](#no-freshness-bound-on-the-reserve-figures) below.
+
+### No freshness bound on the reserve figures
+
+Hex's endpoints are **event-driven**: both republish within about ten minutes of
+an on-chain event — a mint or a redemption — and not otherwise. `last_update` is
+a *change* timestamp, not a heartbeat, so an old stamp usually means nothing
+happened, not that anything is wrong.
+
+The extension used to reject a reading past a wall-clock age, and it was wrong
+twice over. Empirically it rejected good data at a rate set by USDX activity: a
+shared 30-minute bound had `hex_cash` reporting `down` for most of every hour on
+every machine, and widening it to 90 minutes only moved the flapping — observed
+stamps sat ~7 hours apart with the value unchanged. Each time the machine
+fetched a correct figure and then discarded it, which cost the feed its entire
+12.6% cash buffer for most of the day (availability §"Measured again").
+
+It also never covered the direction that matters. If the upstream freezes, `R`
+stops tracking a growing `S` and `min(1, R/S)` prints **below** par — the
+direction that reveals a shortfall rather than hides one. And reserves lost
+*without* an on-chain event never move `last_update` at all, so no bound would
+have caught that either.
+
+What survives is narrower and accurate: `last_update` is still parsed (an
+unparseable one is `BackingMalformed`) and a stamp in the **future** is still
+refused as `BackingTimestamp`, because that means clock skew or a broken
+upstream rather than an aged figure. Staleness is now bounded only where it can
+be measured honestly — on the age of our own observation, and on the age of the
+on-chain feed.
 
 ---
 
-## 3. Observing on a timer, signing on demand (`internal/observe`)
+## 3. Observing on a timer, signing on demand (`internal/observation/poller`)
 
 `Observe` is slow — five upstream sources, two of them multi-provider — and
 tee-node gives an extension **2 seconds** to answer an action
@@ -125,16 +166,22 @@ from here). Measured against live sources on 5 Aug 2026 an observation takes
 2.0–2.9s, so running one inside the request handler timed out every time, and the
 extension's answer never reached the chain at all.
 
-So the two halves are separate calls. `internal/observe` runs `Observe` on a
-timer and keeps the latest result; the handler calls `Sign`, which binds that
-result to the requesting instruction id and returns in one signing round trip.
-The instruction id is why signing cannot happen in advance, and the upstream
-latency is why observing cannot happen on demand.
+So the two halves are separate calls. `internal/observation/poller` runs `Observe` on a
+timer and keeps the latest result; the handler calls `Sign`, which stamps that
+result with the requesting instruction's block timestamp and returns in one
+signing round trip. The request's timestamp is why signing cannot happen in
+advance, and the upstream latency is why observing cannot happen on demand.
 
-What is signed is always the observation's own figures — its price, its
-`observedAt`, its `EndpointsHash`. Nothing is resampled at signing time, because
-a fresh timestamp over stale inputs is exactly the lie the freshness guards exist
-to prevent. Staleness is bounded by the caller instead: `config.MaxObservationAge`.
+What is signed is always the observation's own figures — its price, its scale,
+its `EndpointsHash` and `AdminsHash`. Nothing is resampled at signing time. The
+`observedAt` in the signed update is the block timestamp of the instruction that
+requested it: the store defines the field as the timestamp of the on-chain event
+that triggered the observation, and its batch rule requires every machine's
+update to carry the same value, which only a shared on-chain instant can give.
+The inputs may have been read up to `config.MaxObservationAge` (10 minutes)
+before that stamp — the poller checks the reading's age against the same
+timestamp before signing — and that age is accepted; the reading's own time
+stays on the observation and in the state as `lastObservedAt`.
 
 **Cadence.** `ObservationInterval` is 2 minutes against Hex's ~10 minute refresh
 — deliberately faster than the source. It keeps the supply side current and,
@@ -173,7 +220,7 @@ the same reason: *ready* means "fully provisioned", not "able to answer".
 
 ---
 
-## 5. Exact arithmetic (`internal/price`, `internal/decimal`)
+## 5. Exact arithmetic (`internal/observation/price`, `internal/observation/decimal`)
 
 ### Why not float64
 
@@ -216,7 +263,7 @@ silently turns `1,50` into `150`. A hundredfold overstatement of reserves would
 publish $1.00 straight through a genuine depeg, which is precisely the event this
 oracle exists to detect.
 
-`internal/decimal` therefore validates grouping structure rather than stripping:
+`internal/observation/decimal` therefore validates grouping structure rather than stripping:
 a comma is accepted only where a thousands separator can legally appear, and
 anything else is rejected. Fail closed; never guess what the operator meant.
 
@@ -228,7 +275,7 @@ code hash regardless.
 
 ---
 
-## 6. The supply quorum procedure (`internal/supply`)
+## 6. The supply quorum procedure (`internal/observation/supply`)
 
 Reading `totalSupply()` from a single provider makes that provider able to
 dictate the published price. Reading it from three at `"latest"` does not fix it:
@@ -312,7 +359,7 @@ this sum double-counts and the price is overstated.**
 
 ---
 
-## 7. The signed payload (`internal/report`)
+## 7. The signed payload (`internal/wire/feedupdate`)
 
 ```solidity
 struct PriceReport {
@@ -443,7 +490,7 @@ provisioning envelope.
 
 ---
 
-## 9. Provisioning (`internal/provision`, `internal/runtimecfg`)
+## 9. Provisioning (`internal/provisioning/envelope`, `internal/provisioning/store`)
 
 Three things the extension needs are deliberately not compiled into the image:
 
@@ -467,7 +514,7 @@ key did not already have, and cost a rebuild and re-attestation for every
 rotation.
 
 What the on-chain route adds is a public record. The payload is calldata,
-`expectedAdminsHash` records it per machine, and `UsdxPriceStore` refuses a price
+`latestAdminsHash` records it per feed, and the feed store refuses an update
 whose `adminsHash` is not the published one — so "who could have installed the
 credentials behind this price" is answerable from the chain alone, for any
 historical report. A baked set answered that question only for whoever compared
@@ -549,8 +596,16 @@ memory and blocks replaying an older envelope while the process lives. `issuedAt
 survives restarts, where the version counter resets to zero and would otherwise
 let a captured envelope be replayed indefinitely.
 
-`Freshness` is 15 minutes: long enough to collect M signatures across timezones,
-short enough that a captured envelope expires quickly. The consequence is that
+`Freshness` is one hour: long enough to collect M signatures from separate people
+in separate timezones, short enough that a captured envelope expires quickly. It
+is deliberately the *only* bar left after a restart — the envelope is safe to
+pass around in the clear, so assume it leaks, and this window is exactly how long
+a leaked one can re-provision a machine whose version counter has just reset.
+Widening it further is a real trade, not a free knob; the way to buy more room is
+to make the per-ref version survive restarts, not to raise this. The blast radius
+is bounded meanwhile: only `SET_SECRET` travels this path, so the worst a replay
+achieves is rolling one ref back to a credential that was already provisioned
+once. The consequence is that
 recovering from a restart hours later needs a freshly signed envelope — the safe
 direction, and why the keeper holds ciphertext envelopes to re-submit promptly
 rather than relying on old ones.
@@ -625,7 +680,7 @@ destination is otherwise pinned and therefore not the owner's to choose.
 
 ### Locking
 
-`runtimecfg.Store` holds two locks because they protect different things over
+`store.Store` holds two locks because they protect different things over
 different spans:
 
 - `applyMu` covers a whole `Apply*` call, including the verifier — which keeps
@@ -680,10 +735,14 @@ lives in the pinned block instead.
   2026, the two endpoints return different shapes and the public one omits
   `currency` entirely. A single shared struct that asserts `currency == "USD"`
   would fail closed against it forever.
-- **`ChainID` is an ldflags constant.** It binds provisioning envelopes to one
-  network, so an envelope signed for Coston2 cannot be replayed against mainnet.
-  A constant rather than a config file because it is a pure function of which
-  network the build targets.
+- **`ChainID` and `ExtensionID` are tee-node's.** Both bind every signed artefact
+  (provisioning envelopes, feed updates) to one network and one extension, so an
+  envelope signed for Coston2 cannot be replayed against mainnet. The extension
+  reads them from the same `CHAIN_ID` and `EXTENSION_ID` the node reads, so the
+  two processes in one container cannot disagree, and neither has a default: a
+  process without them stops at startup, because a default that happens to
+  differ from the node's fails silently, with every update signed for the wrong
+  chain and rejected as a stranger's.
 - **`GetPriceRequestV1`.** The observation needs nothing from the caller, so the
   natural payload is none at all — but the registry rejects an empty `message`
   with `MessageEmpty()`, found the first time this path ran on Coston2 (5 Aug
@@ -716,10 +775,10 @@ The next defence logged a banner at startup, which is useless inside a TEE: the
 logs cannot be read from outside, and a feed frozen at $1.00 looks exactly like a
 healthy fully-backed one.
 
-So there is no way left to build a stub by accident. Every production constructor
-panics on a nil observer, and the only stub path is `NewStub`, named at its
-single call site (`scripts/test-conformance.sh`, which exercises the extension
-alone — no tee-node, no chain, no credentials).
+So there is no way left to build a stub at all. The one constructor panics on a
+nil observer, and no stub path exists: the conformance replay
+(`go test ./internal/extension/ -run TestConformance`) exercises the real router
+with a fixed observation — no tee-node, no chain, no credentials.
 
 Redirects are never followed when fetching backing figures: Go strips
 `Authorization` on a cross-host redirect, but it does **not** strip custom
@@ -762,9 +821,9 @@ overruns the interval therefore delays the next tick rather than running beside
 it, and the overrun is logged: a keeper persistently unable to finish inside `T`
 is one whose deadlines no longer fit its cadence.
 
-The poll and submit deadlines are spent out of the store's `maxAge` budget —
-`observedAt` is stamped inside the enclave before signing, so every second the
-keeper spends is one `submitPrice` counts against the report's age.
+The poll and submit deadlines are spent out of the consumer's freshness budget —
+`observedAt` is the request's block timestamp, so every second the keeper spends
+after requesting is one the published value is older by when it lands.
 
 ### The outcome taxonomy
 
@@ -802,7 +861,7 @@ advance.
 
 ### Why `pricereport` lives in `tools/`
 
-The wire layout is declared there rather than imported from `go/internal/report`
+The wire layout is declared there rather than imported from `internal/wire/feedupdate`
 so that `tools/` stays independent of any one implementation: it asserts on the
 *wire contract*, and must run unchanged against the Go, Python and TypeScript
 extensions alike (`docs/extension-contract.md`). It is a second, deliberate
@@ -827,11 +886,12 @@ copy in every command that needs it.
   `GOVERNANCE_SIGNERS` / `GOVERNANCE_THRESHOLD`, and `MachineManager.register`
   only accepts a machine whose signed `governanceHash` matches what was
   registered on-chain.
-- **`EXT_PROXY_URL` defaults to 6674.** The container listens on 6664 and the
-  compose file maps 6674 → 6664, so the two ports are the same proxy reached from
-  different sides. Under `start-services.sh --local` the proxy binds 6664 on the
-  host directly, so a bare `go run` there needs
-  `EXT_PROXY_URL=http://localhost:6664` or `-p`.
+- **The started stack names its proxy.** The compose stack publishes the proxy on 6674
+  and a host-process stack binds 6684 directly, in a block clear of the e2e simulation's own processes; rather than every follow-up script and tool
+  needing to be told which, `start-services.sh` records the URL of the stack it brought up in
+  `deploy/config/stack.env`, read after `.env` and above the environment (the e2e scripts
+  share that shell), so the commands after a start are the same for both. The tools' `-p`
+  flag is the explicit override; on the testnets nothing is recorded and `.env` applies.
 - **`--local` mode is Go-only.** `cmd/start-tee` links the Go extension
   in-process, so it lives in the extension module; `tools/` must stay independent
   of any one language implementation so it can deploy and test all of them.

@@ -1,0 +1,60 @@
+version: "2"
+run:
+  go: "1.25"
+  modules-download-mode: readonly
+linters:
+  default: standard
+  enable:
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - containedctx
+    - copyloopvar
+    - decorder
+    - errchkjson
+    - errname
+    - exhaustive
+    - exptostd
+    - forcetypeassert
+    - misspell
+    - nolintlint
+    - unconvert
+    - whitespace
+
+    - thelper
+    - modernize
+    - unparam
+    - predeclared
+    - prealloc
+
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    nolintlint:
+      require-specific: true
+  exclusions:
+    generated: lax
+    rules:
+      # The extension's public failure vocabulary and the keeper's store-guard
+      # rejections are named after what they mean (failure.NotConfigured, a
+      # Rejection with a guard), not after the error-type idiom.
+      - path: (internal/failure/failure|pkg/keeper/preflight)\.go
+        linters: [errname]
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - autogen\.go$
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - autogen\.go$
+
+issues:
+  max-same-issues: 3

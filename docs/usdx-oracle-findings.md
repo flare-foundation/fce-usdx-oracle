@@ -1,6 +1,15 @@
 # USDX Oracle — Implementation Findings
 
-**Status:** living document · **Last updated:** 2026-08-12
+**Status:** living document · **Last updated:** 2026-08-15
+
+> **Migration note (2026-08).** The on-chain half moved to the upstream generic
+> TEE oracle contracts (`TeeOracleInstructionsSender` + `TeeOracleFeedStore`):
+> the op type is now `TEE_ORACLE`, the price report is a `FeedUpdate` with an
+> `extensionId`/`feedId` binding, and the old `UsdxPriceStore` guards
+> (`minPrice`/`maxPrice`, `maxAge`, `paused`) are gone. Where a finding below
+> names the old contracts, op types, or store guards, read it against the new
+> model in `usdx-oracle-flows.md`. The enclave-side findings — pricing, supply
+> quorum, fail-closed behaviour, credential handling — are unchanged.
 
 Findings discovered while implementing the extension, each with the evidence
 that established it and the test that now pins it. Design intent lives in
@@ -23,8 +32,8 @@ quietly mispublished.
 | 8 | An empty `sourceHealth` map reads as healthy | **Low** | `config.HealthUnknown` |
 | 9 | ~~The TEE machine status enum's numeric values are not published~~ **RESOLVED** | **High** | `REQUIRED_TEE_STATUS = TeeStatus.PRODUCTION` (constant) |
 | 10 | secp256k1 malleability gives one report two valid signatures | **Medium** | `test_RejectsMalleableSignature` |
-| 11 | A `TeeExtensionStateVerifier` is NOT required — the spec is wrong | Info | `register(address(0), …)` in the scaffold |
-| 12 | ~~The production entrypoint lands in stub mode silently~~ **RESOLVED** | **High** | `TestStubMode_CannotBeEnteredAccidentally` |
+| 11 | ~~A `TeeExtensionStateVerifier` is NOT required~~ — required since tee-node reports the state (2026-09) | Info | `UsdxTeeExtensionStateVerifier.t.sol`; was `register(address(0), …)` in the scaffold |
+| 12 | ~~The production entrypoint lands in stub mode silently~~ **RESOLVED** | **High** | `TestNilObserverPanics` |
 | 15 | The contract owner key can set any RPC host and any threshold — accepted | **High** | `TestAnyHostIsAccepted` |
 | 16 | On-chain config recorded what was *sent*, not what a machine *runs* | **High** | `test_RejectsReportFromStaleConfig` |
 | 17 | Full audit of every logging and error surface found no sensitive disclosure | Info | §17 audit + the finding-1 tests |
@@ -32,6 +41,8 @@ quietly mispublished.
 | 19 | Concurrent provisioning bypassed the envelope replay defence entirely | **High** | `TestApplySecret_ConcurrentReplayAdmitsExactlyOne` |
 | 20 | The owner could redirect the Hex API key into a URL of their choosing | **High** | `TestSetEndpoints_RejectsBackingCredentialAsProviderSecret` |
 | 24 | One RPC provider could rewind the observation to an old block | **High** | `TestRead_OneProviderCannotRewindTheObservation` |
+| 25 | Verification proved a key nothing was encrypted to | **High** | `TestBuildRefusesAKeyThatIsNotTheAttestedMachine` |
+| 26 | `SET_SECRET` was the one provisioning command with no size bound | **Medium** | `TestApplySecret_RejectsOversizedMessage` |
 
 ---
 
@@ -124,7 +135,7 @@ Comma-as-decimal-separator is a real convention: much of Europe writes `1,50`
 for one and a half. Stripping turns that into `150`. A hundredfold
 overstatement of reserves publishes $1.00 straight through a genuine depeg.
 
-**Resolution.** `internal/decimal` validates grouping structure rather than
+**Resolution.** `internal/observation/decimal` validates grouping structure rather than
 deleting characters: a comma is accepted only where a thousands separator can
 legally appear (leading group of 1–3 digits, every subsequent group exactly 3).
 `1,50` is rejected. Fail closed; never guess what the operator meant.
@@ -241,7 +252,7 @@ does not make it worth more, and publishing 1.02 would be wrong in a way that
 costs someone money. Both properties are fuzzed as invariants over arbitrary
 inputs (5.2M executions): the result is never negative and never exceeds par.
 
-`internal/price` is kept **pure** — no I/O, no clock, no configuration, no
+`internal/observation/price` is kept **pure** — no I/O, no clock, no configuration, no
 policy — which is what makes that fuzzing meaningful and lets an auditor verify
 the formula by reading alone. Plausibility bounds and the deviation guard live
 in the caller and on-chain respectively; encoding either here would hide a
@@ -371,6 +382,17 @@ health that nothing on-chain consumes.
 this decision should be revisited — but building one now would be unused code in
 an audited codebase.
 
+**Revisited 2026-09-09.** tee-node now reports the extension's `GET /state` in the
+TEE info it attests, and the registry's availability check accepts a non-empty
+state only through a registered verifier (`_validateResponseBody` in upstream's
+`Verification.sol`). So a verifier became required after all, not to consume the
+state but to let machines pass `toProduction` and `confirmAvailability`.
+`contracts/src/UsdxTeeExtensionStateVerifier.sol` is the minimal one: it refuses
+tee-node's "could not read the extension" sentinel and a malformed report
+(version without bytes, or bytes without version), accepts everything else, and
+parses nothing. `wire-extension` publishes it with `setExtensionContracts`.
+Pinned by `contracts/test/UsdxTeeExtensionStateVerifier.t.sol`.
+
 ---
 
 ## 12. The production entrypoint still serves a hard-coded price
@@ -405,34 +427,22 @@ monitoring in WP7 is designed to detect, and precisely the state it cannot see.
 2. **`server.StartExtension` loads the embedded config and refuses to start
    without it.** There is no fallback to stub on error — falling back would
    reintroduce the exact failure, just later.
-3. **A nil observer is now unconstructible.** An interim fix logged a six-line
+3. **A nil observer is unconstructible.** An interim fix logged a six-line
    banner at `ERROR` level, but inside a TEE the logs cannot be read from
-   outside, so a banner is not a defence. The production constructors
-   (`NewWithObserver`, `NewWithProvisioner`) now **panic** on a nil observer,
-   and the only stub path is `extension.NewStub`, called at exactly one site:
-   `./cmd`, the binary used by `test-conformance.sh`, which has no credentials
-   by design. `./cmd/docker` is production and is what `go/Dockerfile` builds.
-   `Extension.StubMode()` remains exposed for health checks.
+   outside, so a banner is not a defence. The one constructor,
+   `extension.NewExtension`, **panics** on a nil observer
+   (`TestNilObserverPanics`), and no stub constructor or stub binary exists.
+   `./cmd/docker` is production and is what `Dockerfile` builds.
 
-**Still true:** the two modes emit different wire formats, so conformance
-fixtures pin the stub's JSON rather than the production ABI payload. Regenerating
-them against the real path needs a running signer, and `observedAt` becomes
-wall-clock — the byte-exact `data` assertions must become structural at that
-point. `TestStubMode_PayloadDiffersFromObserverPayload` keeps the divergence
-visible until then.
+**The conformance fixtures pin the production payload.** The stub binary and its
+JSON wire format are gone. `TestConformance` replays the fixtures against the real
+router with a fixed observation, so the `data` assertions are byte-exact
+`abi.encode(FeedUpdate, Signature)` over that observation with a well-formed
+constant signature (`internal/extension/conformance_test.go`). The earlier caveat
+that the fixtures pinned the stub's format and gave less assurance than their
+green result suggested no longer applies.
 
-**Related: the two modes emit different wire formats.** Stub mode returns JSON
-(`GetPriceResponse`); observer mode returns `abi.encode(body, signature)`. The
-conformance fixtures were generated in stub mode, so **they pin the stub's format
-and not the production payload** — conformance currently gives less assurance
-than its green result suggests.
-`TestStubMode_PayloadDiffersFromObserverPayload` asserts the divergence rather
-than letting it be discovered later. Resolving finding 12 means regenerating the
-fixtures against the real path, at which point `observedAt` becomes wall-clock
-and the byte-exact `data` assertions must become structural.
-
-**Remaining:** regenerate conformance fixtures against the real payload → E2E on
-Coston2.
+**Remaining:** E2E on Coston2.
 
 ---
 
@@ -461,7 +471,7 @@ registering a *machine* does. The scaffold's lifecycle already separates them:
 between the two. One build pass, no CREATE2, no provisional image. The earlier
 two-phase-build proposal solved a problem that does not exist.
 
-`scripts/extension-setup.sh` deploys both contracts; `deploy-store` records the
+`deploy/scripts/extension-setup.sh` deploys both contracts; `deploy-store` records the
 addresses in the deployed-addresses file. It skips deployment if one is already
 recorded there, since redeploying resets the stored price and the `observedAt`
 high-water mark — `FORCE_REDEPLOY_STORE=1` overrides.
@@ -499,8 +509,8 @@ attestation meaningless:
   dictate the price. It was later removed so providers can be rotated without a
   rebuild, and the resulting owner-key trust is accepted explicitly in §15.
 - ~~**The admin signer set**~~ — *superseded*. It was baked at this point as the
-  root of trust for provisioning. It is now published per machine by
-  `SET_ADMINS`, owner-only, recorded in `expectedAdminsHash` and enforced by the
+  root of trust for provisioning. It is now published by
+  `SET_ADMINS`, owner-only, recorded per feed in `latestAdminsHash` and enforced by the
   store against the signed report. Baking it bought nothing the owner key did
   not already have (see §15) and cost a rebuild per rotation; publishing it makes
   "who could provision this machine" answerable from the chain. See
@@ -521,7 +531,7 @@ permanent public storage. The handler checks `action.Data.Type` — which the
 scaffold's dispatch ignored completely.
 
 **A published admin set is enforced end to end.** `setAdmins` records
-`expectedAdminsHash`, the extension commits to `adminsHash` inside the signed
+`latestAdminsHash`, the extension commits to `adminsHash` inside the signed
 body, and the store rejects any mismatch with `StaleAdmins`. Rotating admins
 therefore withdraws a machine's commissioning until it lands a price under the
 new set — the same self-announcing behaviour republishing endpoints already had.
@@ -547,8 +557,10 @@ which. `TestVerify_AllRejectionsAreIndistinguishable` holds that line.
 
 **`version` and `issuedAt` are complementary, not redundant.** `version` is
 in-memory and blocks rolling a secret back while the process lives. `issuedAt`
-(15 minutes) survives restarts, where the version counter resets to zero and
-would otherwise let a captured envelope be replayed indefinitely.
+(one hour) survives restarts, where the version counter resets to zero and
+would otherwise let a captured envelope be replayed indefinitely. That window is
+the whole of the post-restart defence, so it is sized by that risk and not by
+signing convenience.
 
 **Distinct signers.** One compromised key signing M times must not satisfy an
 M-of-N threshold; recovered addresses are deduplicated.
@@ -587,7 +599,7 @@ by the owner-only `SET_ADMINS` instruction, and a verifier starts with none —
 `TestVerify_RejectsBeforeAnyAdminSetIsInstalled` holds that line. A machine that
 has not been told who its admins are cannot be provisioned at all, so there is no
 longer a guessable default to be wrong about. The same addresses survive as an
-explicitly named test fixture, `testdata/admins/dev-wellknown-keys.json`, which
+explicitly named test fixture, `deploy/config/admins/dev-wellknown-keys.json`, which
 is inert unless someone deliberately publishes it to a machine.
 
 `TestAdminSetIsNotPlaceholder` is gone with the constant it guarded.
@@ -720,9 +732,9 @@ it leaks.
 **Scope and verdict, surface by surface.**
 
 - *Internal logging.* The runtime extension imports `logger` in exactly three
-  files: `extension.go`, `config_handler.go`, `utils.go`. The packages that
+  files: `extension.go`, `provisioning.go`, `utils.go`. The packages that
   actually touch secrets and reserve figures — `backing`, `supply`, `price`,
-  `decimal`, `report`, `provision`, `runtimecfg`, `teenode` — import no logger
+  `observation/decimal`, `wire/feedupdate`, `provisioning/envelope`, `provisioning/store`, `teenode` — import no logger
   at all, so the sensitive values have no log path to reach. What the three
   files log is: action IDs, statuses, the vocabulary `Log`, port numbers, the
   stub-mode banner, `SET_ENDPOINTS` validation detail (chain names, thresholds
@@ -769,8 +781,8 @@ it leaks.
    stdin/env mode would close it.
 
 One inaccuracy was found and corrected during the audit: the `SET_ENDPOINTS`
-rejection comment in `config_handler.go` claimed the error detail names hosts;
-the `runtimecfg` errors actually carry chain names, thresholds and secret ref
+rejection comment in `provisioning.go` claimed the error detail names hosts;
+the `provisioning/store` errors actually carry chain names, thresholds and secret ref
 names. No host ever appears, which is the safer direction.
 
 ---
@@ -846,7 +858,7 @@ invocations, so the caller already holds a lock."
 
 **No such lock existed.** `/action` is an ordinary `net/http` handler, so
 tee-node delivering two direct actions at once runs two `ApplySecret`
-goroutines. `runtimecfg.Store` took `s.mu` only around the `s.secrets` write,
+goroutines. `store.Store` took `s.mu` only around the `s.secrets` write,
 well after `Verify` had already read and written the version map.
 
 Two consequences, and the second is the serious one:
@@ -870,7 +882,7 @@ Two consequences, and the second is the serious one:
   but within that window the defence was bypassable by firing concurrently
   rather than sequentially.
 
-**Resolution.** `runtimecfg.Store` gained a dedicated `applyMu`, held across the
+**Resolution.** `store.Store` gained a dedicated `applyMu`, held across the
 whole of `ApplyEndpoints` and `ApplySecret`, so the verifier is never entered
 concurrently.
 
@@ -1085,7 +1097,7 @@ supply rounds across three chains, two Hex fetches, and a signing round trip,
 with `HTTPTimeout` alone at 5s per upstream attempt. Inside the container it was
 worse. There is no configuration of the synchronous design that fits.
 
-**Resolution: observe on a timer, sign on demand.** `internal/observe` runs
+**Resolution: observe on a timer, sign on demand.** `internal/observation/poller` runs
 `oracle.Observe` every `ObservationInterval` (2 min) and keeps the latest
 result; `GET_PRICE` calls `oracle.Sign`, which binds that observation to the
 requesting instruction id — one signing round trip, milliseconds. `oracle.Observe`
@@ -1093,10 +1105,16 @@ no longer signs, and `Observation` carries `EndpointsHash` so a later signature
 commits to the configuration in force *when the inputs were read*, not whatever
 is current when the request arrives.
 
-**What this does not change.** `observedAt` still means when the inputs were
-read; it is simply no longer the instant of the request. Every existing
-freshness guard survives — `BackingMaxAge` in package backing, `checkWindow`
-across inputs, `maxAge` on the store.
+**What this does not change.** Every freshness guard that still exists survives
+it — `checkWindow` across inputs, `MaxObservationAge` on the cache, measured
+both by the machine's clock and by the request's block timestamp. (The signed
+`observedAt` was later made the request's block timestamp itself, as the store
+defines the field — see rationale §3; the reading's own time stays on the
+observation.) (The backing bounds referred to here —
+`BackingMaxAge`, later split into `BondsMaxAge` / `CashMaxAge` — were removed on
+17 Aug 2026 for an unrelated reason: the sources are event-driven, so age
+carries no information about correctness. See
+[usdx-oracle-failure-modes.md](usdx-oracle-failure-modes.md).)
 
 **What it adds.** A cache introduces a staleness mode the request-time design did
 not have, so `MaxObservationAge` (10 min) bounds it: past that, GET_PRICE
@@ -1166,7 +1184,7 @@ cosigners are ever added — e.g. requiring FDC data providers to vouch for a
 price-update request before it executes — the change lands in
 `InstructionSender` and in those two payloads; the extension and the price
 store are untouched, since cosigning gates *delivery/execution*, not the signed
-report. The conformance fixtures (`testdata/conformance/gen_fixtures.py`) pin
+report. The conformance fixtures (then generated by `gen_fixtures.py`, since replaced by `TestConformance`) pin
 the empty list and would need regenerating.
 
 **`GET_PRICE` takes no payload.** The observation needs nothing from the
@@ -1192,13 +1210,16 @@ while doubling the supply-side fail-closed surface. `TestObserve_ReadsSupplyOnce
 asserts the call count directly, so a reintroduced bracket fails there rather
 than showing up as a latency regression. See rationale §2.
 
-**`observedAt` is wall-clock completion time, not the oldest input timestamp.**
-The store requires strict monotonicity, and the public reserves endpoint ticks
-only every ~10 minutes — two observations minutes apart could share an input
-timestamp, and the second would be rejected as a replay. Data freshness is
-guarded earlier and separately: a stale reserve figure fails the observation
-outright in package `backing`, so a published price is never built on data older
-than `MaxAge`.
+**`observedAt` is the request's block timestamp, not the oldest input timestamp.**
+The store requires strict monotonicity, and a reserve `last_update` moves only
+when a mint or redemption changes the figure — so on a quiet day every
+observation for hours would share an input timestamp, and all but the first
+would be rejected as a replay. The signed `observedAt` is the block timestamp of
+the instruction that requested the update, as the store defines it; the reading's
+own time is kept on the observation, and `MaxObservationAge` bounds how far
+behind the stamp it may lie. How old the reserve figure itself is, is
+deliberately unbounded — the sources are event-driven, so age is not evidence of
+anything (rationale §2).
 
 **Out-of-band prices are rejected, not clamped.** Clamping would publish a number
 the TEE never signed, silently. The signature's entire purpose is that the
@@ -1215,7 +1236,7 @@ every consumer. A pause freezes the value; it does not blind the feed.
 - **~~The §3.0 blocker stands~~ — resolved 3 Aug 2026.** `current_reserves_amount`
   is the bank-provider balance of the reserve account; the observed supply-tracking
   is 1:1 treasury operation, not derivation from chain data, and the figure can fall
-  below supply on any outflow with no matching burn. `internal/backing` stays an
+  below supply on any outflow with no matching burn. `internal/observation/backing` stays an
   interface for source-swap containment. `TestCompute` still encodes the observed
   figures as a par case — correct under 1:1 operations. Written confirmation from
   Hex remains as ordinary diligence.
@@ -1225,20 +1246,21 @@ every consumer. A pause freezes the value; it does not blind the feed.
   much detail internal logging may carry.
 - **Feed name and category byte** — to be agreed with Flare before registration.
 - **`sourceHealth` granularity** — per-chain vs per-provider, finding 8.
-- **`agreedBlock` takes the minimum head with no agreement on the head itself**
-  (found 5 Aug 2026, unresolved). Quorum protects the supply *value*, not the
-  *block selection*, so one provider reporting an old head drags every other
-  provider to that block — and the honest ones then agree on a stale figure.
-  Not caught downstream: every freshness check is wall-clock, never block time.
-  Fixing it means either quorum-protecting the head or bounding its spread
-  against the median, both needing a per-chain number, and neither helping
-  Songbird at quorum 1. Full write-up pending the tuning decision.
-- **Two `coston2.json` fixtures with different schemas** (found 5 Aug 2026).
-  `go/testdata/endpoints/` holds the pre-pinning full-config format, which the
-  current decoder rejects; the repo-root one is correct. Publishing the wrong
-  one sets `expectedConfigHash` on-chain while the extension keeps its old
-  config, halting the feed on `StaleConfig` until a correct payload is sent.
-  `send-endpoints` should decode against the real schema before spending gas.
+- **~~`agreedBlock` takes the minimum head with no agreement on the head
+  itself~~ — resolved 12 Aug 2026, see finding 24.** `agreedBlock` now takes the
+  Quorum-th HIGHEST head, so Quorum-1 liars cannot move the block selection, and
+  `MaxBlockAge` bounds the chosen block against its own header timestamp for the
+  cases the selection rule cannot reach. The note below about Songbird at quorum
+  1 still stands and is the live gap: neither change helps a chain configured
+  with a single provider, because nothing cross-checks a value only one source
+  reported. Fixing that is a configuration change, not a code one.
+- **~~Two `coston2.json` fixtures with different schemas~~ — resolved.** The
+  stale `go/testdata/endpoints/` tree is gone; `deploy/config/endpoints/` at the repo
+  root is the only copy, and it is in the schema the current decoder accepts.
+  The underlying hazard is unchanged and worth keeping in mind: publishing a
+  payload the extension will reject sets `expectedConfigHash` on-chain while the
+  machine keeps its old config, halting the feed on `StaleConfig` until a
+  correct one is sent. `send-endpoints -dry-run` decodes before spending gas.
 
 ---
 
@@ -1316,3 +1338,89 @@ while Ethereum's head is routinely 12s or more behind wall-clock. Most of the
 budget would go on ordinary block age and healthy observations would flap.
 `Reading.BlockTime` is exposed for anything that wants it; `MaxBlockAge` bounds
 the quantity directly instead.
+
+---
+
+## 25. Verification proved a key that nothing was encrypted to
+
+**Severity: High. Found 2026-08-15 during an audit of the provisioning flow.
+Resolved the same day.**
+
+`verify-tee` is built around the right insight, and its header comment states it
+well: reading a code hash out of a proxy's own `/info` proves nothing, because
+the same untrusted source supplied both halves. What breaks the circularity is
+that the `teeId` is **derived** from the attested public key, and the chain
+records which `teeId`s are registered, at what status, and which code hashes
+their extension accepts. Substitute the key and the derived `teeId` stops
+matching a registered machine.
+
+That argument is sound. It just did not reach the encryption.
+
+`verify-tee` and `usdxprov build` are **separate processes making separate
+requests**. The upload scripts ran the first, and then the second re-fetched
+`/info` on its own and encrypted the credential to whatever public key came
+back — with no attestation parsing, no signature check, and nothing carried over
+from the verification that had just passed. An endpoint that served an honest
+key to the gate and a substituted one a moment later received the plaintext.
+
+**The `-tee` flag made it worse rather than better.** It was documented as
+"override the teeId from `/info`", and it did exactly that: it replaced the
+envelope's `TeeID` field while leaving the encryption pointed at the served key.
+So passing the *correct* machine id produced a credential encrypted to the
+attacker and an envelope naming the honest machine. The target would fail to
+decrypt, the upload would look like an ordinary rejection, and nothing anywhere
+would record where the plaintext actually went.
+
+### Resolution
+
+`-tee` is now an **assertion, never an override**. `build` derives the address
+from the key it was served and refuses outright if it differs, before any
+encryption happens — so no ciphertext is produced for a substituted key and no
+envelope reaches disk.
+
+`verify-tee` grew `-print-tee-id`, which writes the attested `teeId` to stdout
+and moves the human report to stderr. Both upload scripts capture it and pass it
+to every `build`. The human report is moved rather than suppressed on purpose:
+suppressing it would make the scripted path the one nobody watches.
+
+Nothing was using `-tee` before this change, so tightening it broke no caller.
+The `--no-verify` paths pass no `-tee` at all and say plainly that the
+encryption is unpinned — they exist for a mocknode, which has no attestation to
+pin to.
+
+**What this does not fix.** A credential is still encrypted to a key fetched
+over whatever transport the operator names, and the scripts still default
+`PROXY_URL` to `http://localhost:8080`. Verification now travels with the
+request, which is the load-bearing half; TLS to a real proxy is the other, and
+is a deployment property rather than a code one.
+
+---
+
+## 26. `SET_SECRET` was the one provisioning command with no size bound
+
+**Severity: Medium. Found 2026-08-15 during the same audit. Resolved the same
+day.**
+
+`ApplyEndpoints` and `ApplyAdmins` both open with a length check against
+`maxPayloadBytes`. `ApplySecret` did not, and it is the one that needs it most:
+the other two arrive over the instruction channel behind the sender's
+owner-only check, while `SET_SECRET` is direct-only and reachable by anyone who
+can deliver a direct action.
+
+The work it hands off grows with the input — ABI-decoding the envelope, then
+forwarding the ciphertext to tee-node's `/decrypt` — and neither `Verify` nor
+`Decrypt` bounded it either. `Verify` caps the signature *count*
+(`maxSignatures`) and rejects an empty payload, but never asked how large one
+was. A real envelope is a few hundred bytes.
+
+The bound is checked **before `applyMu` is taken**, so an oversized message
+cannot hold the provisioning lock while it is being rejected — which would have
+turned a size problem into a liveness one against every other provisioning call.
+
+`TestApplySecret_RejectsOversizedMessage` uses a **fully valid** envelope that
+is merely too large: correct domain, chain, machine, version, freshness and
+signatures. Garbage of the same length proves nothing, since it fails ABI
+decoding whether or not the bound exists — only a message that would otherwise
+be accepted can tell the two builds apart. The test also re-uses version 1
+afterwards, pinning that a rejection this early does not burn the version
+number.

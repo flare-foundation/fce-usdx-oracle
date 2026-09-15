@@ -10,8 +10,7 @@ func TestCheckExtensionEnvFormat_Valid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "extension.env")
 	content := `# This is a comment
-INSTRUCTION_SENDER=0x1234567890abcdef1234567890abcdef12345678
-EXTENSION_ID=0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+EXTENSION_ID=1
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -25,11 +24,11 @@ EXTENSION_ID=0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
 		}
 	}
 
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 
-	// Both should be PASS.
+	// It should be PASS.
 	for _, res := range results {
 		if res.Status != PASS {
 			t.Errorf("expected PASS for %s, got %s: %s", res.Name, res.Status, res.Message)
@@ -46,8 +45,7 @@ EXTENSION_ID=0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
 func TestCheckExtensionEnvFormat_Malformed(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "extension.env")
-	content := `INSTRUCTION_SENDER=not-an-address
-EXTENSION_ID=0xTOOSHORT
+	content := `EXTENSION_ID=not-a-number
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -55,8 +53,8 @@ EXTENSION_ID=0xTOOSHORT
 
 	results := CheckExtensionEnvFormat(path)
 
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 
 	failCount := 0
@@ -66,8 +64,8 @@ EXTENSION_ID=0xTOOSHORT
 		}
 	}
 
-	if failCount != 2 {
-		t.Errorf("expected 2 FAILs, got %d", failCount)
+	if failCount != 1 {
+		t.Errorf("expected 1 FAIL, got %d", failCount)
 	}
 }
 
@@ -154,31 +152,29 @@ func TestCheckDeployerKeySource_DevKeyLocal(t *testing.T) {
 func TestParseExtensionEnv_Valid(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
+	if err := os.WriteFile(envFile, []byte(
 		"# Auto-generated\n"+
-			"EXTENSION_ID=0x00000000000000000000000000000000000000000000000000000000000000db\n"+
-			"INSTRUCTION_SENDER=0x32F967bE8F35F73274Bd3d4130073547361A0d75\n",
-	), 0644)
+			"EXTENSION_ID=1\n",
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
-	extID, instrSender, err := parseExtensionEnv(envFile)
+	extID, err := parseExtensionEnv(envFile)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if extID != "0x00000000000000000000000000000000000000000000000000000000000000db" {
+	if extID != "1" {
 		t.Fatalf("unexpected EXTENSION_ID: %s", extID)
-	}
-	if instrSender != "0x32F967bE8F35F73274Bd3d4130073547361A0d75" {
-		t.Fatalf("unexpected INSTRUCTION_SENDER: %s", instrSender)
 	}
 }
 
 func TestParseExtensionEnv_Missing(t *testing.T) {
-	extID, instrSender, err := parseExtensionEnv("/nonexistent/extension.env")
+	extID, err := parseExtensionEnv("/nonexistent/extension.env")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if extID != "" || instrSender != "" {
-		t.Fatalf("expected empty strings for missing file, got %q and %q", extID, instrSender)
+	if extID != "" {
+		t.Fatalf("expected empty EXTENSION_ID for missing file, got %q", extID)
 	}
 }
 
@@ -200,10 +196,11 @@ func TestRegisterServicesChecks_NoConfig(t *testing.T) {
 func TestRegisterServicesChecks_WithValidConfig(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
-		"EXTENSION_ID=0x00000000000000000000000000000000000000000000000000000000000000db\n"+
-			"INSTRUCTION_SENDER=0x32F967bE8F35F73274Bd3d4130073547361A0d75\n",
-	), 0644)
+	if err := os.WriteFile(envFile, []byte(
+		"EXTENSION_ID=1\n",
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	r := &Report{}
 	RegisterServicesChecks(r, envFile)
@@ -291,10 +288,11 @@ func TestRegisterTestChecks_NoConfig(t *testing.T) {
 func TestRegisterTestChecks_WithValidConfig(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
-		"EXTENSION_ID=0x00000000000000000000000000000000000000000000000000000000000000db\n"+
-			"INSTRUCTION_SENDER=0x32F967bE8F35F73274Bd3d4130073547361A0d75\n",
-	), 0644)
+	if err := os.WriteFile(envFile, []byte(
+		"EXTENSION_ID=1\n",
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	r := &Report{}
 	RegisterTestChecks(r, envFile)
@@ -305,17 +303,18 @@ func TestRegisterTestChecks_WithValidConfig(t *testing.T) {
 		}
 	}
 	if !foundE1 {
-		t.Fatal("expected E1 PASS for valid INSTRUCTION_SENDER")
+		t.Fatal("expected E1 PASS for valid EXTENSION_ID")
 	}
 }
 
 func TestRegisterTeeVersionChecks_WithConfig(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
-		"EXTENSION_ID=0x00000000000000000000000000000000000000000000000000000000000000db\n"+
-			"INSTRUCTION_SENDER=0x32F967bE8F35F73274Bd3d4130073547361A0d75\n",
-	), 0644)
+	if err := os.WriteFile(envFile, []byte(
+		"EXTENSION_ID=1\n",
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "abc123")
 	r := &Report{}
@@ -344,72 +343,67 @@ func TestRegisterTeeVersionChecks_WithConfig(t *testing.T) {
 func TestParseExtensionEnv_CommentsOnly(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
+	if err := os.WriteFile(envFile, []byte(
 		"# This is a comment\n"+
 			"# Another comment\n"+
 			"\n"+
 			"  \n",
-	), 0644)
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
-	extID, instrSender, err := parseExtensionEnv(envFile)
+	extID, err := parseExtensionEnv(envFile)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if extID != "" {
 		t.Errorf("expected empty EXTENSION_ID, got %q", extID)
 	}
-	if instrSender != "" {
-		t.Errorf("expected empty INSTRUCTION_SENDER, got %q", instrSender)
-	}
 }
 
 func TestParseExtensionEnv_ExtraKeys(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
-		"EXTENSION_ID=0x00000000000000000000000000000000000000000000000000000000000000db\n"+
-			"INSTRUCTION_SENDER=0x32F967bE8F35F73274Bd3d4130073547361A0d75\n"+
+	if err := os.WriteFile(envFile, []byte(
+		"EXTENSION_ID=1\n"+
 			"EXTRA_KEY=some_value\n"+
 			"ANOTHER_KEY=another_value\n",
-	), 0644)
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
-	extID, instrSender, err := parseExtensionEnv(envFile)
+	extID, err := parseExtensionEnv(envFile)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if extID != "0x00000000000000000000000000000000000000000000000000000000000000db" {
+	if extID != "1" {
 		t.Fatalf("unexpected EXTENSION_ID: %s", extID)
-	}
-	if instrSender != "0x32F967bE8F35F73274Bd3d4130073547361A0d75" {
-		t.Fatalf("unexpected INSTRUCTION_SENDER: %s", instrSender)
 	}
 }
 
 func TestParseExtensionEnv_NoEquals(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "extension.env")
-	os.WriteFile(envFile, []byte(
-		"EXTENSION_ID_NO_EQUALS\n"+
-			"INSTRUCTION_SENDER=0x32F967bE8F35F73274Bd3d4130073547361A0d75\n",
-	), 0644)
+	if err := os.WriteFile(envFile, []byte(
+		"EXTENSION_ID_NO_EQUALS\n",
+	), 0644); err != nil {
+		t.Fatal(err)
+	}
 
-	extID, instrSender, err := parseExtensionEnv(envFile)
+	extID, err := parseExtensionEnv(envFile)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if extID != "" {
 		t.Errorf("expected empty EXTENSION_ID for line without equals, got %q", extID)
 	}
-	if instrSender != "0x32F967bE8F35F73274Bd3d4130073547361A0d75" {
-		t.Errorf("unexpected INSTRUCTION_SENDER: %s", instrSender)
-	}
 }
 
-func TestCheckExtensionEnvFormat_LowercaseHex(t *testing.T) {
+func TestCheckExtensionEnvFormat_HexForm(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "extension.env")
-	content := `INSTRUCTION_SENDER=0xabcdef1234567890abcdef1234567890abcdef12
-EXTENSION_ID=0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
+	// The 0x-prefixed hex form is still accepted for backward compatibility.
+	content := `EXTENSION_ID=0x0000000000000000000000000000000000000000000000000000000000000001
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -418,35 +412,15 @@ EXTENSION_ID=0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
 	results := CheckExtensionEnvFormat(path)
 	for _, res := range results {
 		if res.Status == FAIL {
-			t.Errorf("unexpected FAIL for lowercase hex: %s — %s", res.Name, res.Message)
+			t.Errorf("unexpected FAIL for 0x-hex extension id: %s — %s", res.Name, res.Message)
 		}
 	}
 }
 
-func TestCheckExtensionEnvFormat_MixedCaseChecksum(t *testing.T) {
+func TestCheckExtensionEnvFormat_EmptyValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "extension.env")
-	// EIP-55 checksum address format
-	content := `INSTRUCTION_SENDER=0x32F967bE8F35F73274Bd3d4130073547361A0d75
-EXTENSION_ID=0x00000000000000000000000000000000000000000000000000000000000000Db
-`
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	results := CheckExtensionEnvFormat(path)
-	for _, res := range results {
-		if res.Status == FAIL {
-			t.Errorf("unexpected FAIL for mixed-case (EIP-55) address: %s — %s", res.Name, res.Message)
-		}
-	}
-}
-
-func TestCheckExtensionEnvFormat_EmptyValues(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "extension.env")
-	content := `INSTRUCTION_SENDER=
-EXTENSION_ID=
+	content := `EXTENSION_ID=
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -459,30 +433,7 @@ EXTENSION_ID=
 			failCount++
 		}
 	}
-	if failCount != 2 {
-		t.Errorf("expected 2 FAILs for empty values, got %d", failCount)
-	}
-}
-
-func TestCheckExtensionEnvFormat_NoPrefix(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "extension.env")
-	// Missing 0x prefix
-	content := `INSTRUCTION_SENDER=1234567890abcdef1234567890abcdef12345678
-EXTENSION_ID=1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
-`
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	results := CheckExtensionEnvFormat(path)
-	failCount := 0
-	for _, res := range results {
-		if res.Status == FAIL {
-			failCount++
-		}
-	}
-	if failCount != 2 {
-		t.Errorf("expected 2 FAILs for missing 0x prefix, got %d", failCount)
+	if failCount != 1 {
+		t.Errorf("expected 1 FAIL for empty value, got %d", failCount)
 	}
 }

@@ -5,10 +5,10 @@ import (
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
+	"fce-usdx-oracle/tools/pkg/support"
 	"math/big"
 	"os"
 	"strings"
-	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -56,6 +56,10 @@ func saveState(path string, state *registrationState) error {
 	return nil
 }
 
+// teeStatusProduction is the registry's TeeStatus value for a machine that has
+// passed its availability check; the feed store accepts signatures from no other.
+const teeStatusProduction = 2
+
 func RegisterNode(s *support.Support, teeInfo *types.SignedTeeInfoResponse, hostURL, ftdcTeeURL string, ftdcTee common.Address, command, instructionIDstring, stateFilePath string) error {
 	teeID, proxyID, err := TeeProxyId(teeInfo)
 	if err != nil {
@@ -81,6 +85,12 @@ func RegisterNode(s *support.Support, teeInfo *types.SignedTeeInfoResponse, host
 			callOpts := &bind.CallOpts{Context: context.Background()}
 			machineInfo, machineErr := s.TeeMachineRegistry.GetTeeMachine(callOpts, teeID)
 			if machineErr == nil && machineInfo.TeeId != (common.Address{}) {
+				// A machine already in production has nothing left to do; ToProduction
+				// would revert InvalidTeeStatus. post-build.sh re-runs land here.
+				if status, statusErr := s.TeeMachineRegistry.GetTeeMachineStatus(callOpts, teeID); statusErr == nil && status == teeStatusProduction {
+					logger.Infof("TEE machine %s is already in production; nothing to register", teeID.Hex())
+					return nil
+				}
 				// Already registered (e.g. a re-run): skip pre-registration, but
 				// request a FRESH attestation — the original challenge is one-shot
 				// and an expired one reverts with ChallengeExpired.
@@ -162,8 +172,9 @@ func RegisterNode(s *support.Support, teeInfo *types.SignedTeeInfoResponse, host
 		}
 	}
 
-	// All steps completed — delete state file
-	os.Remove(stateFilePath)
+	// Every step completed: the state file has served its purpose. Best effort;
+	// a leftover file only means the next run finds nothing left to resume.
+	_ = os.Remove(stateFilePath)
 	return nil
 }
 
@@ -366,6 +377,7 @@ func ToProduction(s *support.Support, toProductionProof *machinemanager.ITeeAvai
 
 	tx, err := s.TeeMachineRegistry.ToProduction(opts, *toProductionProof)
 	if err != nil {
+		diagToProductionRevert(s, toProductionProof)
 		return errors.Errorf("%s", err)
 	}
 	_, err = support.CheckTx(tx, s.ChainClient)

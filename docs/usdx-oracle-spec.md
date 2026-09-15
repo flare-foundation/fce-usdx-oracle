@@ -22,12 +22,13 @@
 | 2026-07-31 | **On-chain payload carries the price only**, not the supply/backing components | Reserve figures may be commercially sensitive to Hex. See §4.1 — this constrains `GET /state` as well, which is *not* private. |
 | 2026-07-31 | Deviation-guard policy (§6.2) deferred — **needs a named risk owner** | Trades depeg-detection latency against manipulation resistance; not an engineering call. |
 | 2026-07-31 | **`getCurrentFeed()` never reverts on staleness** — returns the last price with an ageing timestamp | `FtsoV2` forwards the call, so a revert becomes a liveness outage for every downstream consumer at once. See WP4. |
-| 2026-07-31 | **`calculateFee()` returns 0** | Unlike the sFLR/stXRP feeds we have no underlying FTSO read to pay for. |
+| 2026-07-31 | ~~**`calculateFee()` returns 0**~~ — **superseded** by the upstream store, which resolves fees through the central `FeeCalculator` (per-feed override → category fee → default fee, governance-settable; free while the rows are unset) | Unlike the sFLR/stXRP feeds we have no underlying FTSO read to pay for — the original case for free reads. |
 | 2026-08-03 | **§3.0 premise resolved** — `current_reserves_amount` is the bank-provider balance of the reserve account | Provenance from the team. The observed supply-tracking is 1:1 treasury operation, not derivation from chain data; the figure falls below supply on any unmirrored outflow. Written confirmation from Hex remains as diligence. |
 | 2026-08-05 | **Round half-up instead of truncating** (§3.5) | Hex quotes reserves to the cent; truncation turned a $0.004 quantisation artifact into a permanent sub-par print. Half a ULP is $0.127 at current supply — 12× the worst-case quantisation, 5e-9 of the float — so the concealable shortfall stays bounded and no material depeg is affected. Findings §21. |
 | 2026-08-05 | **A missing cash figure no longer fails the observation outright** | Published only where the missing figure provably cannot change the answer: cash is non-negative and the price caps at par, so a bonds-only price already at par *is* the full result. Everything below par still fails closed, so the availability doc's objection to degradation is untouched. Findings §21. |
-| 2026-08-05 | **GET_PRICE carries a one-byte request envelope**, `0x01`, not an empty message | `sendInstructions` reverts `MessageEmpty()`, so `requestPriceUpdate()` could never dispatch. The extension requires exactly that byte, preserving the property the empty message was chosen for. Findings §22. |
-| 2026-08-05 | **Observation moved onto a timer; GET_PRICE only signs** | tee-node allows an extension 2 s per action (`settings.ProxyTimeout`, a const in its internal package); a complete observation measures 2.0–2.9 s, so every request timed out. `internal/observe` observes every 2 min and `MaxObservationAge` (10 min) bounds the resulting staleness. Findings §23. |
+| 2026-08-05 | **GET_FEED carries an ABI-encoded `FeedUpdateRequest`** naming the feed (supersedes the original one-byte `0x01` envelope once one sender began serving several feeds), never an empty message | `sendInstructions` reverts `MessageEmpty()`, so `requestFeedUpdate()` could never dispatch an empty message. The extension requires exactly that encoding and rejects any other shape, preserving the property the empty message was chosen for. Findings §22. |
+| 2026-08-05 | **Observation moved onto a timer; GET_FEED only signs** | tee-node allows an extension 2 s per action (`settings.ProxyTimeout`, a const in its internal package); a complete observation measures 2.0–2.9 s, so every request timed out. `internal/observation/poller` observes every 2 min and `MaxObservationAge` (10 min) bounds the resulting staleness. Findings §23. |
+| 2026-09-15 | **The signed `observedAt` is the requesting instruction's block timestamp** | That is the store's definition of the field (`ITeeOracleFeedStore.FeedUpdate`), and `submitFeedUpdates` requires every update in a batch to carry the same value, which only a shared on-chain instant gives; the reading's own time was signed before, so no two machines on independent timers could ever form a batch. The inputs behind an update are at most `MaxObservationAge` (10 min) older than the stamp, checked against that very timestamp before signing; the reading's time stays on the observation as `lastObservedAt`. |
 
 ---
 
@@ -244,9 +245,10 @@ Taking category `0x20` and name `"USDX/USD"`:
 feedId = 0x20555344582f555344000000000000000000000000
 ```
 
-**OPEN:** confirm the category byte and the exact feed name with Flare — the name
-is what integrators will hard-code, so it should be agreed before registration,
-not after.
+**Resolved:** category `0x20`, name `"USDX/USD"` — the feed id
+`0x20555344582f555344000000000000000000000000` is pinned in the upstream
+deployment's chain-config and as a build fact in `internal/config`. The store's
+initializer reverts `InvalidFeedCategory` outside the custom range `[0x20, 0x40)`.
 
 ---
 
@@ -255,20 +257,22 @@ not after.
 ```
                  ┌──────────────────────── keeper / relayer (off-chain) ────────────────────────┐
                  │                                                                              │
-                 │  (1) requestPriceUpdate()                    (4) submitPrice(result, sigs)   │
+                 │  (1) requestFeedUpdate(feedId, teeIds)       (4) submitFeedUpdates(signed[])  │
                  ▼                                                                              ▼
    ┌─────────────────────────────┐                                       ┌──────────────────────────────┐
-   │ UsdxInstructionSender.sol   │                                       │ UsdxPriceStore.sol           │
-   │  → TeeExtensionRegistry     │                                       │  verify TEE sig + registry   │
-   │    .sendInstructions()      │                                       │  monotonic ts, sanity bounds │
+   │ TeeOracleInstructionsSender │                                       │ TeeOracleFeedStore           │
+   │  → TeeMachineRegistry       │                                       │  verify TEE sig + registry   │
+   │    .sendInstructions()      │                                       │  monotonic ts + commitments  │
+   │  (upstream, flare-smart-    │                                       │  implements IICustomFeed     │
+   │   contracts-v2)             │                                       │  (upstream)                  │
    └──────────────┬──────────────┘                                       └──────────────┬───────────────┘
-                  │ TeeInstructionsSent event                                           │
+                  │ instruction event                                                   │
                   ▼                                                                     ▼
-        relay client (data providers)                                    ┌──────────────────────────────┐
-                  │ cosigned instruction                                 │ UsdxCustomFeed.sol           │
-                  ▼                                                      │  IICustomFeed → FtsoV2       │
-   ┌──────────────────────────────────────────────┐                      └──────────────────────────────┘
-   │ TEE proxy  ──►  TEE machine (Confidential Space)                     
+        relay client (data providers)                                            FtsoV2 registration
+                  │ cosigned instruction                                         (addCustomFeeds)
+                  ▼
+   ┌──────────────────────────────────────────────┐
+   │ TEE proxy  ──►  TEE machine (Confidential Space)
    │                  ├── tee-node   (attestation, keys, /sign, /decrypt)
    │                  └── usdx-oracle extension  (POST /action, GET /state)
    │                        ├─► RPC ×3 providers × 3 chains  → totalSupply
@@ -282,17 +286,19 @@ not after.
 
 Flow:
 
-1. Keeper calls `requestPriceUpdate()` on our InstructionSender (payable — the
-   registry charges a per-instruction fee).
+1. Keeper calls `requestFeedUpdate(feedId, teeIds)` on the TeeOracleInstructionsSender
+   (payable — the registry charges a per-instruction fee, scaling with the target
+   count). Both contracts are upstream from flare-smart-contracts-v2; nothing is
+   deployed locally, and the extension id is the reserved 1.
 2. Registry emits an instruction event; data providers' relay clients cosign and
-   deliver it to the selected TEE machine(s).
-3. Extension fetches all inputs, computes the price, and returns an
-   `ActionResult` whose `data` is the ABI-encoded price payload **plus a TEE
-   signature** obtained from `POST /sign` on `$SIGN_PORT`. This makes the result
-   self-contained and independently verifiable on-chain.
+   deliver it to the named TEE machine(s).
+3. Extension signs its latest cached observation and returns an `ActionResult`
+   whose `data` is the ABI-encoded feed update **plus a TEE signature** obtained
+   from `POST /sign` on `$SIGN_PORT`. This makes the result self-contained and
+   independently verifiable on-chain.
 4. Keeper reads the result from the proxy (`/action/result/<actionId>`) and
-   submits it to `UsdxPriceStore`, which verifies the signature against
-   `TeeMachineRegistry` before accepting.
+   submits it to the `TeeOracleFeedStore`, which verifies the signature through
+   `Fdc2Verification` against the TEE machine registry before accepting.
 
 **No cosigners:** both instructions are sent with an empty `cosigners` list and
 `cosignersThreshold` 0, so a machine executes on delivery without waiting for
@@ -316,7 +322,7 @@ components confidential, they can go in **neither** the on-chain payload **nor**
 
 | Surface | Visibility | May carry reserve components? |
 | --- | --- | --- |
-| `ActionResult.data` → `UsdxPriceStore` | public, on-chain, permanent | no (decided) |
+| `ActionResult.data` → `TeeOracleFeedStore` | public, on-chain, permanent | no (decided) |
 | `GET /state` → `TEEState.state` → proxy `/info` | public, attested | **no** — same exposure |
 | Extension logs | **OPEN** — see below | probably, if egress is controlled |
 
@@ -364,7 +370,7 @@ Each row is a candidate ticket. Owner/estimate to be filled in.
 | 1.2 | Get TEE egress IPs whitelisted by Hex (see WP6.4) | | blocked on 1.1 |
 | 1.3 | Client for public `current_reserves_amount` | | |
 | 1.4 | Client for private `current_cash_reserves_amount` (auth header) | | |
-| 1.5 | Response validation: schema, `currency == USD`, `last_update` freshness, value parseable as decimal, non-negative, within plausible bounds | | |
+| 1.5 | Response validation: schema, `currency == USD`, `last_update` parseable and not in the future (**no** age bound — the sources are event-driven), value parseable as decimal, non-negative, within plausible bounds | | |
 | 1.6 | Timeouts, bounded retries, no unbounded response body | | |
 | 1.7 | Agree an SLA / uptime expectation with Hex; what happens on their maintenance windows | | |
 
@@ -427,6 +433,26 @@ two different serializers? Handle both formats on both endpoints regardless.
 | 2.6 | Exclusion-list handling (`balanceOf` on excluded addresses) | | |
 | 2.7 | Per-provider timeout, retry, and failover behaviour | | |
 
+> **⚠ Superseded — this subsection records the design-time proposal, not what ships.**
+> Two parts of it were replaced after implementation and are wrong as written below:
+>
+> - **Head selection is the Quorum-th *highest*, not the minimum.** A single provider
+>   answering "what block are you at?" with a two-week-old number dragged the minimum
+>   back with it, and every honest provider then corroborated the stale supply at that
+>   block perfectly — quorum passed and the enclave signed a stale figure. Rewinding to
+>   when supply was lower *overstates* the price. See findings §24 and the package
+>   comment in `internal/observation/supply/supply.go`.
+> - **There is no finality margin.** `FinalityMargin` — a depth below the head — was
+>   dropped in Aug 2026 after measurement showed it bought no availability. The
+>   freshness of the *chosen* block is bounded instead, by the per-chain
+>   `MaxBlockAge` (2 min Flare/Songbird, 3 min Ethereum) measured against the block's
+>   own header timestamp, which is the only check that still works at Quorum 1. The
+>   pinned block's timestamp is itself agreed by Quorum providers, so a liar cannot
+>   pair an ancient block number with a fresh stamp.
+>
+> The rest — explicit block numbers never tags, ≥2-of-3 *identical* results, reading
+> `decimals()` at the same block, the state-retention constraint — is what ships.
+
 **Quorum rule — proposal.** For each chain, query all 3 providers for
 `totalSupply()` **at an explicit block number** (not `latest`, which differs per
 provider). Procedure: ask each provider for its head, take the *minimum* head
@@ -462,7 +488,7 @@ at 30 blocks, which looks like a blocker until you notice we don't use it.
 
 ### 2.8 Endpoint inventory
 
-Full surveyed table lives in `usdx-oracle-plan.md`. The operationally important
+The operationally important
 result: **Songbird has exactly one working public RPC**
 (`songbird-api.flare.network`), so the 3-provider rule cannot be met there with
 free endpoints. Flare has four, Ethereum five usable. Production should assume
@@ -474,7 +500,7 @@ time of the survey.
 
 | # | Task | Owner | Status |
 | --- | --- | --- | --- |
-| 3.1 | Define op type / commands (`USDX_ORACLE` / `GET_PRICE`) and `bytes32` constants | | |
+| 3.1 | Define op type / commands (`TEE_ORACLE` / `GET_FEED`) and `bytes32` constants | | |
 | 3.2 | Decimal arithmetic for the ratio — big.Rat or shopspring/decimal, no floats | | |
 | 3.3 | Orchestration: parallel fetch of 3 chains + 2 APIs, with a global deadline | | |
 | 3.4 | Consistency window enforcement (see §6.1) | | |
@@ -483,27 +509,37 @@ time of the survey.
 | 3.7 | Error taxonomy → `ActionResult.status` / `log` (fail closed, never publish a guessed price) | | |
 | 3.8 | Structured logging that never logs secrets, full API responses, or reserve figures (§4.1) | | |
 
-Result payload (`ActionResult.data`) — **decided**. Canonical definition lives in
-`usdx-oracle-extension.html` §6; summarised here:
+Result payload (`ActionResult.data`) — **decided**. Canonical definition in the
+upstream `userInterfaces/tee/ITeeOracleFeedStore.sol` (flare-smart-contracts-v2):
 
 ```solidity
-struct PriceReport {
-    bytes32 domain;         // keccak256("USDX_ORACLE_PRICE_V1")
-    uint256 price;          // round(price · 10^decimals), half-up
+struct FeedUpdate {
+    uint256 extensionId;    // the RESERVED id 1
+    bytes21 feedId;         // 0x20 + "USDX/USD" (category byte + name, §3.6)
+    int32   value;          // round(price · 10^decimals), half-up
     int8    decimals;       // 8
-    uint64  observedAt;     // store's monotonicity key — must be signed
-    bytes32 instructionId;
+    uint64  observedAt;     // store's monotonicity key — timestamp of an emitted
+                            // on-chain event, always strictly in the past
+    bytes32 endpointsHash;  // endpoint configuration the machine was running
+    bytes32 adminsHash;     // admin signer sets the machine was running
 }
 
-body = abi.encode(report)
-data = abi.encode(body, signature)   // carry body as raw bytes, never re-encode
+// domain is the bytes32 prefix TEE_ORACLE_FEED — the ASCII string right-padded
+// with zeros, NOT a keccak; chainId is inside the signed payload
+messageHash = keccak256(abi.encode(TEE_ORACLE_FEED, chainId, keccak256(abi.encode(update))))
+data        = abi.encode(update, signature)
 ```
 
-The payload carries **no target binding** (no chain id, store address or feed
-id): where a report is accepted is settled by the store's registered-machine
-check rather than by the payload. A genuinely-signed report can therefore be
-submitted to any deployment wired to the same extension registration, though
-nobody can forge a price. Decided pre-launch; see the findings doc.
+Every field is static, so the encoding is canonical — exactly one valid byte
+string per set of values — which is why the store may re-encode from calldata
+and relayers may decode and re-submit freely.
+
+The payload carries **full target binding**: `extensionId` and `feedId` bind
+the update to one feed served by one extension, and `chainId` covers cross-chain
+replay. This closes the pre-launch gap recorded in findings §18, where a
+genuinely-signed report could be submitted to any deployment wired to the same
+extension registration. The residual gap is narrower: a second store registered
+for the *same* feed under the same extension would still accept the update.
 
 Price only. Supply and backing components are excluded as possibly sensitive to
 Hex — and for the same reason excluded from `GET /state`, which is public (§4.1).
@@ -514,7 +550,9 @@ for a possible lagged-disclosure remedy.
 `crypto.Sign(accounts.TextHash(crypto.Keccak256(message)), key)`, so:
 
 - **EIP-191 prefixing is applied by tee-node.** The store must recover against
-  `toEthSignedMessageHash(keccak256(body))`, not the bare hash.
+  `toEthSignedMessageHash(messageHash)` — the 96-byte `abi.encode(prefix,
+  chainId, dataHash)` is handed to the signer as the message preimage, not the
+  32-byte hash.
 - **`v` is returned as 0/1**, while `ecrecover` and OpenZeppelin's `ECDSA.recover`
   need 27/28. Decide which side adds 27, and test that exactly one does.
 - Request/response are **base64**, not hex (Go `[]byte` marshalling).
@@ -525,42 +563,45 @@ and is explicitly not for external use.
 
 ### WP4 — Contracts
 
+**Superseded in shape, not in substance:** nothing here is deployed by this repo
+any more. The sender and the store are upstream (flare-smart-contracts-v2); this
+repo compiles their interfaces out of a sibling checkout (`contracts/`) and generates Go
+bindings from them (`./deploy/scripts/generate-bindings.sh`).
+
 | # | Task | Owner | Status |
 | --- | --- | --- | --- |
-| 4.1 | `UsdxInstructionSender.sol` — from scaffold, one `requestPriceUpdate()` | | |
-| 4.2 | Access control on who may request an update (keeper allowlist vs open) | | |
-| 4.3 | `TeeExtensionStateVerifier` — required by `register()`; scaffold has none | | |
-| 4.4 | `UsdxPriceStore.sol` — signature verification, replay/ordering guards, sanity bounds, pause | | |
-| 4.5 | `UsdxCustomFeed.sol` implementing `IICustomFeed` — see below | | |
-| 4.6 | Agree category byte + feed name with Flare | | |
-| 4.7 | Feed registration via governance `addCustomFeeds` — **has a lead time, start early** | | |
-| 4.8 | `go generate ./...` / `./scripts/generate-bindings.sh` after contract edits | | |
-| 4.9 | Foundry tests incl. fuzz on the store's guards and the feed's staleness behaviour | | |
+| 4.1 | `TeeOracleInstructionsSender` (upstream) — `requestFeedUpdate(feedId, teeIds)`, `setEndpoints`, `setAdmins`; the feed's latest configuration hashes live here | | |
+| 4.2 | Access control: requests are open (the fee bounds spam); configuration is governance-only (`onlyGovernance`) | | |
+| 4.3 | `TeeOracleFeedStore` (upstream) — threshold batches (`submitFeedUpdates`, `requiredSignatures`, median with a spread bound), TEE signature verification via `Fdc2Verification`, replay/ordering guards, configuration commitments; implements `IICustomFeed` itself | | |
+| 4.4 | Agree category byte + feed name with Flare | | |
+| 4.5 | Feed registration via governance `addCustomFeeds` — **has a lead time, start early** | | |
+| 4.6 | Re-run `./deploy/scripts/generate-bindings.sh` when upstream changes | | |
+| 4.7 | Foundry wire-vector tests (`contracts/test/*.t.sol`) — pin the Solidity ABI encoding the Go codecs assert against | | |
 
-`UsdxPriceStore` acceptance rules — proposal:
+`TeeOracleFeedStore` acceptance rules — as shipped upstream:
 
-- signature recovers to a `teeId` that is **registered and active** for our
-  extension ID in `TeeMachineRegistry`;
-- `observedAt > lastObservedAt` (rejects replays *and* out-of-order delivery —
-  FCC is explicitly "fire and forget" with no ordering guarantee);
-- `observedAt` within `[now - maxAge, now + MAX_FUTURE_SKEW]`, where
-  `MAX_FUTURE_SKEW` is a fixed 2 minutes. The forward window absorbs ordinary
-  clock drift between the TEE and the chain so a slightly-early report can be
-  submitted immediately rather than held. It is bounded because `observedAt` is
-  a one-way ratchet with no reset: an accepted future timestamp blocks honest
-  reports until chain time catches up, so the window is also the worst-case
-  feed freeze — keep it far below `maxAge`. Consumers are unaffected: `latest()`
-  clamps the published timestamp to chain time, so `block.timestamp - timestamp`
-  is always safe even while `observedAt` is briefly ahead;
-- `price` within `[minPrice, maxPrice]` governance bounds (e.g. `[0.5, 1.0]`) —
-  a value outside the band is rejected, not clamped, and raises an alert;
-- optional deviation guard: reject a move larger than `maxDeviationBps` from the
-  stored price **unless** it is the K-th consecutive such observation. See §6.2 —
-  this is a genuine tension and needs a decision.
-- governance `pause()` that freezes the feed at its last value.
+- the TEE signature verifies through `Fdc2Verification.verifyTeeSignature` —
+  the signer is a registered **PRODUCTION** machine on the store's extension,
+  and submissions are rejected while the extension is emergency paused;
+- the update names the store's own `extensionId` and `feedId` (`WrongExtensionId`
+  / `WrongFeedId` otherwise);
+- the update carries the `endpointsHash` and `adminsHash` currently published
+  for that machine on the sender (`StaleEndpoints` / `StaleAdmins`;
+  `NoEndpointsPublished` / `NoAdminsPublished` if never published);
+- `observedAt` strictly greater than stored (`NotNewer` — rejects replays *and*
+  out-of-order delivery; FCC is explicitly "fire and forget" with no ordering
+  guarantee) and strictly older than the accepting block (`TooFarAhead` —
+  unreachable for an honestly produced update, since `observedAt` is the
+  timestamp of the on-chain instruction event that requested the update).
 
-Anyone may submit a valid signed result; the keeper is a liveness convenience,
-not a trusted party. This is deliberate.
+There is no maximum-age window, no price band and no pause flag on the store:
+acceptance is anchored by the signature, the commitments and monotonicity. The
+optional deviation guard (§6.2) is therefore still open, and would have to live
+elsewhere — the keeper's preflight, or the monitoring layer.
+
+Anyone may submit a valid signed update; the keeper holds no authority and is a
+liveness convenience, not a trusted party. Colliding submissions are harmless —
+exactly one wins per cycle. This is deliberate.
 
 #### `IICustomFeed` — verified against `flare-smart-contracts-v2`
 
@@ -591,11 +632,14 @@ cares that the ID is in range and the contract implements the interface), but it
 means we cannot copy either example wholesale. The nearest thing to a template is
 their structure, not their logic.
 
-**3. `calculateFee()` should return 0.** The shipped examples defer to
+**3. Reading is a paid read.** The shipped examples defer to
 `FeeCalculator.calculateFeeByIds([referenceFeedId])` because their consumers are
-effectively paying for the underlying feed read. We have no underlying read to
-pay for. **Proposal: return 0** — free reads. Revisit only if there's a reason to
-meter access.
+effectively paying for the underlying feed read. The upstream store defers to the
+central `FeeCalculator` the same way — per-feed override → category fee → default
+fee, all governance-settable there. FtsoV2 forwards exactly that fee, and
+`getCurrentFeed` forwards it to the governance-set `feeDestination`; nothing
+accumulates on the store. While the fee rows are unset, reads are free — but the
+meter exists, unlike in the original design.
 
 **4. Reverting is a consumer-facing failure.** `FtsoV2.getFeedById` forwards the
 call, so if `getCurrentFeed()` reverts, the consumer's call reverts. This makes
@@ -606,33 +650,35 @@ the staleness decision from §7.15 concrete and load-bearing:
 > own freshness policy. Reverting would turn a stale-data problem into a liveness
 > outage for every downstream protocol at once.
 
-The same applies to the governance pause: pausing must freeze the value, not make
-the feed throw.
+The same applies to stopping the feed: the store has no pause flag, and the
+extension-level emergency pause freezes the value by refusing new submissions,
+not by making the feed throw.
 
 **Registration is a governance action.** `FtsoV2.addCustomFeeds(IICustomFeed[])`
 is `onlyGovernance` and reverts with `"invalid feed category"` outside 32–63 or
 `"feed already exists"` on a duplicate ID. This is a Flare governance proposal
 with whatever timelock that carries — treat it as a scheduling dependency, not a
-deploy step, and start it well before we need the feed live.
+deploy step, and start it well before we need the feed live. The store registers
+directly — it implements the interface itself, so there is no separate adapter
+contract to register.
 
-**We can upgrade the feed contract without changing the ID.**
-`replaceCustomFeeds(IICustomFeed[])` repoints an existing feed ID at a new
-contract address. Useful: integrators hard-code the feed ID, so a bug fix in
-`UsdxCustomFeed` doesn't force them to re-integrate. Worth keeping the feed
-contract thin (a read adapter over `UsdxPriceStore`) so that most changes land in
-the store or the extension rather than requiring a governance action.
+**The feed ID outlives any one deployment.** `replaceCustomFeeds(IICustomFeed[])`
+repoints an existing feed ID at a new contract address. Useful: integrators
+hard-code the feed ID, so an upstream store revision doesn't force them to
+re-integrate — the governance action repoints the ID rather than the other way
+round.
 
 ### WP5 — Keeper / relayer
 
-_Implementation spec: `usdx-oracle-keeper.md`. It corrects two lines of the cycle sketch that
-were not implementable against the deployed contracts — `requestPriceUpdate()` returns `void`
-rather than the instruction ID, and `ActionResult` has no `signature` field._
+_Implementation spec: `usdx-oracle-keeper.md` — including how the original cycle sketch was
+corrected against the deployed contracts (the request returns and emits its instruction id;
+`ActionResult` has no `signature` field, so `data` is decoded into the signed update)._
 
 | # | Task | Owner | Status |
 | --- | --- | --- | --- |
-| 5.1 | Scheduler: trigger `requestPriceUpdate()` every `T` | | |
+| 5.1 | Scheduler: trigger `requestFeedUpdate(feedId, teeIds)` every `T` | | |
 | 5.2 | Poll TEE proxy for the result; handle timeouts and missing results | | |
-| 5.3 | Submit result + signatures to `UsdxPriceStore` | | |
+| 5.3 | Submit the machines' signed updates to the `TeeOracleFeedStore` as one batch (`submitFeedUpdates`) | | |
 | 5.4 | Gas management, nonce handling, resubmission on stuck tx | | |
 | 5.5 | Hot-wallet funding + low-balance alerting | | |
 | 5.6 | Run ≥ 2 independent keeper instances (idempotent submissions) | | |
@@ -641,7 +687,7 @@ rather than the instruction ID, and `ActionResult` has no `signature` field._
 **OPEN:** update cadence `T`. A stablecoin backing ratio moves slowly, but a
 depeg needs fast detection. Straw man: **every 5 minutes**, plus an immediate
 update if the computed price deviates from the stored one by more than X bps.
-Cost per update = registry instruction fee + gas × 2 transactions.
+Cost per update = instruction fee × target-machine count + gas × 2 transactions.
 
 ### WP6 — Secrets, attestation, infrastructure
 
@@ -666,7 +712,7 @@ them, not a self-service action. Decide the machine count now.
 | --- | --- | --- | --- |
 | 7.1 | Feed freshness alert (no update in > 2×T) | Podlogar | |
 | 7.2 | Price deviation alert (price < 1 at all; price < threshold) | Podlogar | |
-| 7.3 | Hex API health + `last_update` staleness | Podlogar | |
+| 7.3 | Hex API health — reachability only; `last_update` age is **not** an alert signal (§6.1) | Podlogar | |
 | 7.4 | Per-RPC-provider health and disagreement rate | Podlogar | |
 | 7.5 | TEE machine liveness / attestation status | Podlogar | |
 | 7.6 | Keeper wallet balance, failed-tx rate | Podlogar | |
@@ -683,8 +729,8 @@ someone, and there should be an agreed comms path to Hex when it fires.
 | 8.1 | Unit tests for the formula: over/under-collateralised, `S == 0`, rounding, extreme values | | |
 | 8.2 | Mock Hex API server (incl. malformed, stale, slow, 5xx responses) | | |
 | 8.3 | Mock/forked RPC for supply reads, incl. provider disagreement | | |
-| 8.4 | Conformance suite (`./scripts/test-conformance.sh`) with USDX fixtures | | |
-| 8.5 | Foundry tests for the store and feed contracts | | |
+| 8.4 | Conformance replay (`go test ./internal/extension/ -run TestConformance`) with USDX fixtures | | |
+| 8.5 | Foundry wire-vector tests pinning the upstream interfaces' ABI encoding | | |
 | 8.6 | E2E on Coston2: instruction → TEE → result → store → feed read | | |
 | 8.7 | Shadow run: compute prices for N days without publishing, compare against expectation | | |
 | 8.8 | Failure drills: Hex API down, one RPC down, two RPCs down, TEE down | | |
@@ -743,7 +789,12 @@ Mitigations, in rough order of preference:
    an explicit `as_of` timestamp (the private one already has `last_update`), and
    ideally both figures from one atomic query. Then require
    `|as_of − block_time| < threshold`. **Worth asking for; the cheapest real fix.**
-4. Reject the update if `last_update` is older than `maxReserveAge`.
+4. ~~Reject the update if `last_update` is older than `maxReserveAge`.~~
+   **Withdrawn 17 Aug 2026.** Hex republishes on an on-chain event, not on a
+   schedule, so `last_update` is a change timestamp and an old one usually means
+   nothing happened. Any such bound flaps at a rate set by USDX activity — a
+   30-minute one had `hex_cash` `down` most of every hour. Removed rather than
+   widened; see rationale §2 and availability "Answered, 17 Aug 2026".
 
 **This is not hypothetical.** Observed on Flare: supply fell 45.1M → 20.6M over
 240 days, and a **single 1,000,000 USDX burn landed at 07:10:58Z on 31 Jul 2026** —
@@ -752,11 +803,16 @@ the naive ratio by ~4.8%, which is far larger than any plausible deviation
 threshold. Mitigation 2 (conservative double-read) was judged worth its cost at
 the time; see the note above for why it was later withdrawn.
 
-**Partially answered:** the public endpoint refreshes on a ~10-minute tick
-(`last_update` advanced 12:17:21 → 12:27:21 → 12:37:21 with an unchanged value).
-So sub-10-minute consistency windows are theatre against that source, and we
-should lean on mitigations 2 and 4. **Still OPEN:** whether `last_update` jumps
-immediately on a redemption or only on the next scheduled tick.
+**Answered, 17 Aug 2026.** The early reading of a "~10-minute tick"
+(`last_update` advancing 12:17:21 → 12:27:21 → 12:37:21 with an unchanged value)
+was a misread of a busy hour. Hex confirms both endpoints are **event-driven**:
+they republish within about ten minutes of an on-chain event — a mint or a
+redemption — and not otherwise. So sub-10-minute consistency windows are still
+theatre against these sources, but mitigation 4 is out too: there is no schedule
+to bound against, and later measurement found stamps ~7 hours apart with the
+value unchanged and nothing wrong. Mitigation 1 is the operative one, and the
+residual ~10-minute event latency fails safe — reserves trailing a mint
+understate `R/S`, and the price is capped at par.
 
 ### 6.2 Depeg detection vs manipulation resistance
 
@@ -787,8 +843,9 @@ which someone must consciously accept.
 
 - Replay and out-of-order delivery — handled by strict `observedAt` monotonicity
   (FCC gives no ordering guarantee by design).
-- Griefing via spam `requestPriceUpdate()` — each call costs the registry fee, so
-  it is self-limiting, but consider an allowlist or a minimum interval.
+- Griefing via spam `requestFeedUpdate()` — each call costs the instruction fee
+  (scaling with the number of target machines), so it is self-limiting; the
+  request is permissionless by design.
 - Feed consumers reading a stale price — `getCurrentFeed()` returns a timestamp;
   document loudly that consumers **must** check it.
 
@@ -810,8 +867,11 @@ For Hex:
 4. Auth scheme and rate limits for the private endpoint? Response shape of the
    public one?
 5. How many IPs can we whitelist, and what is the lead time to add one?
-6. How frequently are the reserve figures recomputed? Does `last_update` move on
-   every redemption?
+6. ~~How frequently are the reserve figures recomputed? Does `last_update` move on
+   every redemption?~~ **Answered 17 Aug 2026:** not on a frequency at all. Both
+   endpoints republish within ~10 minutes of an on-chain event — a mint or a
+   redemption — and not otherwise. `last_update` is a change timestamp, which is
+   why the extension no longer bounds its age (§6.1 mitigation 4).
 7. Are the raw reserve components confidential? We have assumed **yes** and
    excluded them from both the on-chain payload and `/state` (§4.1). If they are
    in fact publishable, we would rather include them — it makes the feed
@@ -820,9 +880,10 @@ For Hex:
 
 For Flare / internal:
 
-9. Feed **name** and the specific category byte within `0x20`–`0x3F` (§3.6).
-   Encoding and valid range are now verified; only the values are open. Decimals
-   (proposed 8) are entirely our call — the interface constrains nothing.
+9. ~~Feed **name** and the specific category byte within `0x20`–`0x3F` (§3.6).~~
+   **Resolved:** category `0x20`, name `"USDX/USD"`, pinned upstream and in the
+   build. Decimals are 8 — the interface constrains nothing, and the store keeps
+   whatever scale the enclave signs.
 10. Update cadence `T` and the fee/gas budget that implies.
 11. How many TEE machines serve this extension? (Drives the IP-whitelist count in
     WP6.4 — Hex has to whitelist one static egress IP per machine.)
@@ -844,7 +905,7 @@ Resolved (see decisions log at the top): submission path, on-chain payload shape
 | --- | --- | --- | --- |
 | M0 | Access secured | API key issued, IPs whitelisted, USDX addresses confirmed | Hex |
 | M1 | Local prototype | Extension computes a price locally against mocks + real APIs; unit + conformance tests green | M0 |
-| M2 | Contracts on Coston2 | Sender, store, feed deployed; Foundry tests green | M1 |
+| M2 | Contracts on Coston2 | Upstream sender and store deployed (flare-smart-contracts-v2), addresses slotted into `deploy/config/<chain>/deployed-addresses.json`; Foundry tests green | M1 |
 | M3 | E2E on Coston2 | Instruction → TEE → signed result → store → `getCurrentFeed()` returns a price | M2 |
 | M4 | Hardening | Monitoring live, runbook written, failure drills passed, security review done | M3 |
 | M5 | Mainnet | Feed registered with governance, keepers running, consumers notified | M4 |
@@ -853,15 +914,15 @@ Resolved (see decisions log at the top): submission path, on-chain payload shape
 
 ## 9. Appendix — repo layout
 
-Built on the FCE extension scaffold in this repo. Relevant references:
+Relevant references:
 
 - `docs/extension-contract.md` — normative container contract (`POST /action`,
   `GET /state`, wire format, reproducibility rules)
-- `docs/instruction-sender.md` — how the on-chain entry point works
 - `docs/deployment-steps.md` — Confidential Space deployment
 - `docs/testing.md` — unit / conformance / e2e layers
-- `go/internal/extension/extension.go` — handler dispatch to replace with USDX logic
-- `contracts/InstructionSender.sol` — starting point for `UsdxInstructionSender`
+- `internal/extension/extension.go` — handler dispatch
+- `userInterfaces/tee/ITeeOracleInstructionsSender.sol` / `ITeeOracleFeedStore.sol` in
+  flare-smart-contracts-v2 — the upstream on-chain interfaces the extension's payloads must match
 
 The tee-node signing API available to the extension on `$SIGN_PORT`:
 

@@ -1,19 +1,15 @@
-.git
-.gitignore
-.env
-.env.*
-*.md
-docs/
-testing/
-.superpowers/
-.claude/
-cache/
-out/
-config/
-contracts/
-scripts/
-proxy/
-foundry.toml
-docker-compose*.yaml
-Dockerfile*
-.dockerignore
+# The build context is the repo root, which is the Go module. Everything is
+# excluded except the module's own sources, in tee-node's form: anything else
+# reachable in the context would perturb layer hashes and undermine
+# reproducibility. The sibling development build (Dockerfile.siblings.dev) has its
+# own context one level above the repositories and is not filtered by this file.
+
+# ignore everything
+*
+
+# include source and build files
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!pkg/

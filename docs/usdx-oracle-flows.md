@@ -29,18 +29,18 @@ ext-proxy (tee-proxy)
   :6663 internal → host 6673    TEE machines poll here for work
   :6664 external → host 6674    PUBLIC: /info, /action/result/<id>, /direct
 
-extension-tee ── one process, built from go/cmd/docker
-  tee-node       :5501 config, :9090 POST /sign + POST /decrypt
-                 polls the proxy for actions → POSTs them to :8080
-                 polls GET :8080/state → folds it into the attested state
-  extension      :8080 POST /action, GET /state
+extension-tee ── one process, built from cmd/docker
+  tee-node       :5500 config, :7701 POST /sign + POST /decrypt
+                 polls the proxy for actions → POSTs them to :7702
+                 polls GET :7702/state → folds it into the attested state
+  extension      :7702 POST /action, GET /state
   poller         background goroutine, observes every 2 minutes
 
 redis            the proxy's action queue
 ```
 
 `pkg/server/server.go:35` wires it: `teenode.Client` → `provision.Verifier` →
-`runtimecfg.Store` → `observe.Poller` → `extension.Extension`.
+`store.Store` → `observe.Poller` → `extension.Extension`.
 
 ---
 
@@ -50,23 +50,26 @@ redis            the proxy's action queue
 
 | Entrypoint | For | Notes |
 | --- | --- | --- |
-| `go/cmd/docker` | **production** | what `Dockerfile` builds |
-| `go/cmd` | conformance only | stub: unsigned $1.00, no sources |
-| `go/cmd/devserver` | local dev | real provisioning + observation, no chain |
-| `go/cmd/mocknode` | local dev | fake tee-node `/sign` `/decrypt` `/info` |
-| `go/cmd/start-tee` | `start-services.sh --local` | no Docker |
-| `go/cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
-| `tools/cmd/keeper` | ops | the relay timer |
+| `cmd/docker` | **production** | what `Dockerfile` builds |
+| `cmd/` | `docker` in production; `devserver` + `mocknode` locally | no stub build exists; conformance is `TestConformance` in `internal/extension` |
+| `cmd/devserver` | local dev | real provisioning + observation, no chain |
+| `cmd/mocknode` | local dev | fake tee-node `/sign` `/decrypt` `/info` |
+| `cmd/start-tee` | `start-services.sh --local` | no Docker |
+| `cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
+| `tools/cmd/keeper` | ops | the relay timer (`-tee` names the target machines) |
+| `tools/cmd/send-endpoints` | ops | publish `SET_ENDPOINTS` to the extension's active machines (`-feedId`, `-config`) |
+| `tools/cmd/send-admins` | ops | publish `SET_ADMINS` to the fleet |
+| `tools/cmd/fleet-status` | ops | reconcile on-chain vs live config per machine |
 | `tools/cmd/verify-tee` | ops | gate before a credential: is this proxy fronting an accepted enclave? |
-| `tools/cmd/*` | deploy & one-shot ops | deploy, register, verify, submit-price… |
+| `tools/cmd/*` | one-shot ops | register-tee, set-governance, allow-tee-version… (the contracts themselves deploy upstream) |
 
 ### Scripts
 
 | Script | For |
 | --- | --- |
-| `scripts/upload-hex-key.sh` | install `hex_api_key` — backing set, ≥1 signature |
-| `scripts/upload-rpc-keys.sh` | install the RPC credentials — providers set, ≥2 signatures |
-| `scripts/oracle-*.sh` | observe, cycle, status — the operator commands |
+| `deploy/scripts/upload-hex-key.sh` | install `hex_api_key` — backing set, ≥1 signature |
+| `deploy/scripts/upload-rpc-keys.sh` | install the RPC credentials — providers set, ≥2 signatures |
+| `deploy/scripts/oracle-*.sh` | observe, cycle, status — the operator commands |
 
 ### HTTP — exactly two ways into the extension
 
@@ -77,94 +80,128 @@ GET  /state     internal/extension/extension.go:138  polled by tee-node → ends
 
 ### On-chain
 
+The sender and store are upstream's generic TEE oracle contracts
+(`TeeOracleInstructionsSender` + `TeeOracleFeedStore`); this repo deploys
+nothing.
+
 ```
-InstructionSender.requestPriceUpdate()          payable, ANYONE
-InstructionSender.setEndpoints(teeId, config)   payable, owner only
-UsdxPriceStore.submitPrice(body, signature)     ANYONE
-UsdxCustomFeed.getCurrentFeed()                 FtsoV2 / consumers
+TeeOracleInstructionsSender.requestFeedUpdate(feedId, teeIds)        payable, ANYONE
+TeeOracleInstructionsSender.setEndpoints(feedId, teeIds, groups, cb) payable, governance
+TeeOracleInstructionsSender.setAdmins(feedId, teeIds, roles, cb)     payable, governance
+TeeOracleFeedStore.submitFeedUpdates(SignedFeedUpdate[])            ANYONE
+TeeOracleFeedStore.getCurrentFeed()                                  FtsoV2 / consumers (payable)
 ```
 
 ---
 
 ## The action router
 
-Everything entering the extension goes through one dispatch:
+Everything entering the extension goes through one dispatch. Every command now
+sits under a single op type, `TEE_ORACLE`:
 
 ```
 POST /action
-  └─ processAction                        extension.go:174
-       ├─ USDX_ORACLE / GET_PRICE     → processGetPrice        [Flow D]
-       ├─ USDX_CONFIG / SET_ENDPOINTS → ApplyEndpoints         [Flow A]
+  └─ processAction                        extension.go
+       ├─ TEE_ORACLE / GET_FEED       → processGetFeed         [Flow D]
        │     requires action type = instruction
-       ├─ USDX_CONFIG / SET_ADMINS    → ApplyAdmins            [Flow A2]
+       ├─ TEE_ORACLE / GET_READINESS  → processGetReadiness
+       │     requires action type = direct
+       ├─ TEE_ORACLE / SET_ENDPOINTS  → ApplyEndpoints         [Flow A]
        │     requires action type = instruction
-       ├─ USDX_CONFIG / SET_SECRET    → ApplySecret            [Flow B]
+       ├─ TEE_ORACLE / SET_ADMINS     → ApplyAdmins            [Flow A2]
+       │     requires action type = instruction
+       ├─ TEE_ORACLE / SET_SECRET     → ApplySecret            [Flow B]
        │     requires action type = direct
        └─ anything else               → HTTP 501
 ```
 
-The channel check matters: `SET_ENDPOINTS` or `SET_ADMINS` over `direct` would
-skip the on-chain owner check, and `SET_SECRET` over `instruction` would put a
-credential ciphertext in permanent public storage.
+With one op type for everything, the per-command **action-type guard is the only
+fence** between a permissionless read and a governance-published write — there is
+no longer a second, coarser op-type fence. The channel check matters:
+`SET_ENDPOINTS` or `SET_ADMINS` over `direct` would skip the on-chain governance
+check, and `SET_SECRET` over `instruction` would put a credential ciphertext in
+permanent public storage.
 
 ---
 
 ## Flow A — SET_ENDPOINTS (which sources we read)
 
 ```
-owner → InstructionSender.setEndpoints(teeId, cfg)
-          expectedConfigHash[teeId] = keccak256(cfg)   ← recorded before dispatch
-          registry.sendInstructions(...)
+governance → TeeOracleInstructionsSender.setEndpoints(feedId, teeIds, groups, cb)
+          version = ++endpointsVersion                ← contract-assigned, one per publication
+          message = abi.encode(Endpoints{version, feedId, groups})
+          latestEndpointsHash[feedId] = keccak256(message)   ← per feed, recorded before dispatch
+          endpointsVersion[feedId]    = version               (isTeeIdConfigured tracks which
+                                                               machines were sent it)
+          flareTeeManager.sendInstructions(...)
              ↓  cosigned → proxy → tee-node → POST /action
-        runtimecfg.ApplyEndpoints                      runtimecfg.go:176
-          JSON decode, unknown fields rejected
+        store.ApplyEndpoints
+          ABI decode into Endpoints{version, feedId, groups}
+          the feedId must name THIS machine's feed, else rejected
           validate():
-            · chain name must be a pinned chain
-            · 1 ≤ threshold ≤ provider count
+            · group tag must be a known group (a pinned chain, or hex_cash)
+            · 1 ≤ threshold ≤ endpoint count
             · "hex_api_key" may NOT be a provider secret
             · https only; {secret} may not appear in scheme or host
-            · EVERY pinned chain must be present
+            · EVERY pinned chain group must be present
+            · hex_cash must be exactly one PRIVATE endpoint under hex_cash_url
+            · version strictly greater than the last applied
           endpointsHash = keccak256(payload)           ← hashed as received
 ```
 
-That hash goes into every signed report, and the store compares it against
-`expectedConfigHash[teeId]`. Without it, on-chain config would record what was
-*sent*, never what a machine is *running*.
+Groups are the unit now — a tagged (`bytes32`) list of endpoints, each endpoint
+PUBLIC (`url`) or PRIVATE (a salted `urlHash` commitment plus a `secretRef` that
+delivers the URL off-chain). The chain RPC groups are public; the restricted
+`hex_cash` reserve endpoint is private, so its URL never lands in calldata.
+
+That hash goes into every signed update, and the store compares it against
+`latestEndpointsHash[feedId]`. Without it, on-chain config would record
+what was *sent*, never what a machine is *running*.
 
 ---
 
 ## Flow A2 — SET_ADMINS (who may provision this machine)
 
 ```
-owner → InstructionSender.setAdmins(teeId, cfg)
-          expectedAdminsHash[teeId] = keccak256(cfg)  ← recorded before dispatch
-          registry.sendInstructions(...)
+governance → TeeOracleInstructionsSender.setAdmins(feedId, teeIds, roles, cb)
+          version = ++adminsVersion                   ← contract-assigned, one per publication
+          message = abi.encode(Admins{version, feedId, roles})
+          latestAdminsHash[feedId] = keccak256(message)      ← per feed, recorded before dispatch
+          adminsVersion[feedId]    = version                  (isTeeIdConfigured tracks which
+                                                               machines were sent it)
+          flareTeeManager.sendInstructions(...)
              ↓  cosigned → proxy → tee-node → POST /action
-        runtimecfg.ApplyAdmins
-          JSON decode, unknown fields rejected
-          validateAdmins():
+        store.ApplyAdmins
+          ABI decode into Admins{version, feedId, roles}
+          the feedId must name THIS machine's feed, else rejected
+          convertAdmins():
             · version non-zero AND strictly greater than the last applied
-            · backing:   1 ≤ threshold ≤ admin count ≤ 32
-            · providers: 2 ≤ threshold ≤ admin count ≤ 32
-            · every entry parsable, non-zero and distinct within its set
-          verifier.SetAdmins(backing, providers)      ← both, or neither
+            · role tags are "backing" and "providers"; both required; unknown rejected
+            · backing:   1 ≤ threshold ≤ min(admin count, 16), count ≤ 32
+            · providers: 2 ≤ threshold ≤ min(admin count, 16), count ≤ 32
+              (16 is the signature cap Verify enforces: a higher threshold
+               installs cleanly and can then never be met)
+            · every entry parsable, non-zero and distinct within its role
+          verifier.SetAdmins(roles)                   ← all roles, or none
           adminsHash = keccak256(payload)             ← hashed as received
 ```
 
-The payload carries TWO signer sets and the envelope's ref picks one:
+The operator no longer picks the version — the contract assigns it, so a
+publication cannot be replayed at a stale one. The payload carries role-TAGGED
+signer sets and the envelope's ref picks one:
 
 ```
 ref == hex_api_key   → backing set     (1-of-N allowed)
 everything else      → providers set   (2-of-N minimum)
 ```
 
-The mapping is pinned in the build, never read from the payload — otherwise the
-weaker set could claim the stronger set's credentials. Signers from the other set
-do not count toward a threshold, and an unrecognised ref falls under the
-*stronger* set.
+The ref→role mapping is pinned in the build, never read from the payload —
+otherwise the weaker set could claim the stronger set's credentials. Signers from
+the other set do not count toward a threshold, and an unrecognised ref falls under
+the *stronger* set.
 
-Same enforcement as Flow A: the hash goes into every signed report and the store
-compares it against `expectedAdminsHash[teeId]`.
+Same enforcement as Flow A: the hash goes into every signed update and the store
+compares it against `latestAdminsHash[feedId]`.
 
 The verifier starts with **no** admin sets and rejects every envelope until both
 are installed, so Flow A2 must precede Flow B — on first provisioning and again
@@ -180,8 +217,8 @@ Run twice, by different parties, because the ref decides which admin set
 authorises the envelope and the two sets are held by different people:
 
 ```
-scripts/upload-hex-key.sh    hex_api_key      backing set,   ≥1 signature
-scripts/upload-rpc-keys.sh   every other ref  providers set, ≥2 signatures
+deploy/scripts/upload-hex-key.sh    hex_api_key      backing set,   ≥1 signature
+deploy/scripts/upload-rpc-keys.sh   every other ref  providers set, ≥2 signatures
 ```
 
 Both gate on `tools/cmd/verify-tee` before anything is encrypted, and take every
@@ -197,19 +234,20 @@ admin laptop
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, hash)
   usdxprov sign     admin #1   (refuses a duplicate signer)
   usdxprov sign     admin #2   (providers set only; backing can be 1-of-N)
-  usdxprov submit   POST proxy/direct     ← must be within 15 min of issuedAt
+  usdxprov submit   POST proxy/direct     ← must be within envelope.Freshness
+                                            (1 hour) of issuedAt
      ↓  tee-node polls the direct queue → POST /action (type = direct)
 enclave
-  runtimecfg.ApplySecret                          runtimecfg.go:211
+  store.ApplySecret                          store.go:211
     applyMu held for the whole call               ← the replay defence needs this
     teenode.TeeID()  signs a fixed probe, recovers its own address
-    provision.Verify()                            provision.go:209
+    envelope.Verify()                            envelope.go:209
        admin sets must be installed at all — else rejected outright
        set = backing if ref == hex_api_key else providers
        chainId · teeId · payload hash · freshness · version > last
        · ≥ set.threshold DISTINCT signatures FROM THAT SET
        every failure returns the SAME error — no probing oracle
-    node.Decrypt()   POST localhost:9090/decrypt  ← in-enclave
+    node.Decrypt()   POST localhost:7701/decrypt  ← in-enclave
     reject a value containing  space \t \r \n / ? # &
     secrets[ref] = value                          ← memory only, lost on restart
 ```
@@ -221,24 +259,29 @@ enclave
 Runs whether or not anyone asks for a price. Nothing else touches the network.
 
 ```
-observe.Poller.Run — every 2 minutes                observe.go:114
+poller.Poller.Run — every 2 minutes                poller.go:114
   │
-  ├─ runtimecfg.Resolve()                           runtimecfg.go:305
+  ├─ store.Open()
   │     re-run every tick, never cached
   │     builds RPC clients, bonds source, cash source (nil if no secret)
   │     provider names are positional ("rpc_flare_1") so nothing an operator
   │     writes reaches the public /state
   │
-  └─ oracle.Observe — 20s deadline                  oracle.go:179
+  └─ observation.Observe — 20s deadline                  observation.go:104
         S   supply, all chains concurrently
               ask every provider for its head → take the Quorum-th HIGHEST
               refuse it if older than MaxBlockAge → query all at that EXACT block
-              require N IDENTICAL results (never a median)
+              require N IDENTICAL results (never a median) and a UNIQUE
+                winner — a tie fails closed rather than letting the provider
+                order decide the supply figure
               amount = raw / 10^decimals, exact
         B   backing, both endpoints concurrently
               bonds failing is fatal; cash failing is not
               no redirects · unknown JSON fields rejected
-              comma grouping validated, not stripped · last_update ≤ 30 min
+              comma grouping validated, not stripped
+              NO bound on how old last_update is — both endpoints republish on
+                an on-chain event, not on a schedule, so an old stamp means
+                nothing changed. A FUTURE stamp is still refused.
         checkWindow(30s) across all read timestamps
         price = min(1, B/S) × 10⁸, rounded half-up
               no cash? publish only if the answer provably cannot depend on it
@@ -249,34 +292,45 @@ observe.Poller.Run — every 2 minutes                observe.go:114
                and ages out after 10 minutes
 ```
 
-**One pass per side:** each supply figure is pinned to one agreed block and the
-reserve figure moves on Hex's ~10 minute tick, so neither side has an internal
-race worth bracketing. `checkWindow` bounds the skew between the two. The earlier
+**One pass per side:** each supply figure is pinned to one agreed block, and a
+reserve figure changes only within ~10 minutes of an on-chain event, so neither
+side has an internal race worth bracketing. `checkWindow` bounds the skew between the two. The earlier
 double-read (S₁ … B … S₂, taking the larger supply) was dropped for this reason —
 see rationale §2.
 
 ---
 
-## Flow D — GET_PRICE (must finish in 2 seconds)
+## Flow D — GET_FEED (must finish in 2 seconds)
 
 ```
-anyone → InstructionSender.requestPriceUpdate()
-           picks ONE random registered TEE machine
-           message = 0x01 (fixed request envelope)
+anyone → TeeOracleInstructionsSender.requestFeedUpdate(feedId, teeIds)
+           dispatches one instruction to EACH named machine (targets are
+           explicit now — the sender no longer picks at random); every target
+           must already have endpoints AND admins published for the feed
+           message = abi.encode(FeedUpdateRequest{feedId})   ← one 32-byte word
      ↓  proxy → tee-node → POST /action
-  processGetPrice                                   extension.go:225
-    require message == exactly 0x01
-    poller.Report(instructionID)                    observe.go:200
+  processGetFeed                                    extension.go
+    DecodeFeedRequest(message) — must be exactly the ABI envelope, and the
+    feedId must be the one this machine serves; else rejected
+    poller.Report()                                 poller.go
       Latest()  — fails closed if the observation is older than 10 min
-      oracle.Sign()
-        body = abi(DOMAIN, price, decimals, observedAt, instructionId,
-                   endpointsHash, adminsHash)
-        POST localhost:9090/sign  — tee-node applies EIP-191; wire is base64
-        normalise v from 0/1 → 27/28
-        data = abi(body, signature)
+      observation.Sign()
+        update = FeedUpdate{extensionId, feedId, value, decimals, observedAt,
+                            endpointsHash, adminsHash}
+        dataHash    = keccak256(abi.encode(update))
+        messageHash = keccak256(abi.encode(TEE_ORACLE_FEED, chainId, dataHash))
+        POST localhost:7701/sign over messageHash's PREIMAGE — tee-node applies
+        EIP-191; wire is base64; normalise v from 0/1 → 27/28
+        data = abi.encode(update, Signature{v, r, s})
     ActionResult{status: 1, data}
      ↓  tee-node → proxy → served at /action/result/<id>
 ```
+
+The signed payload is a `FeedUpdate`, not the old `PriceReport`: it names the
+`extensionId` and `feedId` (cross-feed replay protection), carries `value` as an
+`int32` with per-update `decimals`, and drops both the versioned domain and the
+`instructionId` — the chain id now lives inside a `SignedPayload` prefix instead
+of a domain string.
 
 **Why the split from Flow C:** an observation measures 2.0–2.9s and tee-node
 allows an extension 2 seconds per action. Observing inside the handler timed out
@@ -287,18 +341,24 @@ on every request. A request now costs one signing round trip.
 ## Flow E — the keeper relay
 
 ```
-tools/cmd/keeper → RunCycle, sequential, never overlapping     cycle.go:109
-  at start    sweep the fleet: one direct request per machine, submitted
-              oldest observation first, so every machine lands one price
+tools/cmd/keeper → RunCycle, sequential, never overlapping     cycle.go
   0. check for stuck transactions (a nonce gap blocks everything behind it)
-  1. TRIGGER   POST proxy/direct → action id, next machine in the rotation;
-               every 2h instead: requestPriceUpdate() → instructionId
+     ask every machine over GET_READINESS whether it would sign at all;
+     all refusing → request_skipped, no fee spent
+  1. TRIGGER   requestFeedUpdate(feedId, teeIds) → instructionId
+                 the keeper names the target machines (-tee); the fee is
+                 operationFee × len(teeIds)
   2. COLLECT   GET proxy/action/result/<id>, backoff 1s → 16s
-                 on-chain: asked of every machine's proxy, one of them has it
+                 asked of every named machine's proxy — each holds its own —
+                 until all have answered or the poll timeout passes
                  404 = pending, not an error
-                 status 0 → STOP, record the error class, invent nothing
-  3. RELAY     decode → preflight (simulate, map the revert to a named guard)
-                 → submitPrice(body, signature)   ← body relayed byte for byte
+                 status 0 → that machine is skipped, its error class recorded,
+                 nothing invented
+  3. RELAY     decode each FeedUpdate → keep one per signer, the largest group
+                 agreeing on observedAt → preflight (feed-level commitments,
+                 requiredSignatures, the ratchet, then an eth_call rehearsal that
+                 names the failing guard) → submitFeedUpdates(SignedFeedUpdate[])
+                 ← every update relayed as decoded, signature split into {v, r, s}
                  → wait for the receipt; a timeout is not chased, the next
                    cycle supersedes it
 ```
@@ -310,38 +370,55 @@ invocation does is waste gas.
 
 ## Flow F — on-chain acceptance
 
-`UsdxPriceStore.submitPrice`, in execution order:
+`TeeOracleFeedStore.submitFeedUpdates(SignedFeedUpdate[])`, in execution order:
 
 ```
- 1  not paused
- 2  signature: 65 bytes · v ∈ {27,28} · low-s · EIP-191 digest · ecrecover
- 3  signer is registered to THIS extension AND status = PRODUCTION
- 4  decode the body
- 5  domain matches
- 6  decimals match
- 7  configSource.expectedConfigHash(teeId) is published AND matches   ← closes Flow A
- 8  observedAt strictly greater than stored     ← replay + out-of-order in one rule
- 9  not more than 2 minutes in the future
-10  not older than maxAge
-11  price within [minPrice, maxPrice]           ← rejected, never clamped
+ 1  batch shape: count ≥ requiredSignatures and ≤ 32          (NotEnoughSignatures / TooManySignatures)
+    one common observedAt across the batch                     (ObservedAtMismatch)
+    the contributors' decimals within one spread               (DecimalsSpreadTooBig)
+ 2  the two values bracketing the median lie within the bound  (SpreadTooBig)
+    — maxSpreadBIPS of |median| plus maxSpreadAbsolute, governance-set
+ 3  observedAt strictly greater than stored                    ← replay + out-of-order (NotNewer)
+    observedAt < block.timestamp                               ← never in the future (TooFarAhead)
+    checked once: the whole batch shares one stamp
+ 4  sender.latestEndpointsHash(feedId) and latestAdminsHash(feedId) are published
+                                                               (NoEndpointsPublished / NoAdminsPublished)
+ 5  per contributor, in submission order:
+    verifyTeeSignature(extensionId, sig, messageHash)          ← Fdc2Verification: on THIS extension,
+                                                                 PRODUCTION, extension not paused
+    signer not seen earlier in the batch                       (DuplicateTeeId)
+    update.extensionId == the store's                          (WrongExtensionId)
+    update.feedId == the store's                               (WrongFeedId)
+    update.endpointsHash == latestEndpointsHash                ← closes Flow A (StaleEndpoints)
+    update.adminsHash == latestAdminsHash                      ← closes Flow A2 (StaleAdmins)
     ────────────────────────────────────────
-    store price, observedAt, instructionId · emit PriceUpdated
+    store the median at the finest int32 scale it fits, and observedAt
+    emit FeedUpdated(value, decimals, observedAt, teeIds[])
+    emit FeedOutliers naming the machines whose value lay beyond the bound
 ```
+
+Gone from the old store: `paused`/`invalidated`, the `[minPrice, maxPrice]` band,
+and the `maxAge`/`maxFutureSkew` acceptance window. The only time rules left are
+the strictly-increasing ratchet and "never in the future" — the price band is now
+enforced in the enclave before signing, and staleness is the consumer's check.
 
 ---
 
 ## Flow G — consumer read
 
 ```
-FtsoV2 → UsdxCustomFeed.getCurrentFeed() → UsdxPriceStore.latest()
-           never reverts
-           invalidated → (price, decimals, 0)      ← 0 means "treat as empty"
-           otherwise   → (price, decimals, min(observedAt, block.timestamp))
+FtsoV2 → TeeOracleFeedStore.getCurrentFeed()      payable
+           reverts NoValuePublished before the first accepted update
+           otherwise → (value int256, decimals, observedAt clamped to block.timestamp)
+           the read fee resolves through FeeCalculator and the whole msg.value is
+           forwarded to the governance-set feeDestination
 ```
 
-`paused` and `invalidated` are different on purpose: pause stops **writes** and
-lets the timestamp age; invalidate withdraws the **value** without zeroing the
-price, since a zero price reads as worthless rather than absent.
+The store implements `IICustomFeed` itself and registers with FtsoV2 directly —
+there is no separate `UsdxCustomFeed` adapter any more. It keeps no per-machine
+bookkeeping: one global `observedAt`, one latest value. The old `paused` /
+`invalidated` split is gone; withdrawal of a bad value is now the extension-level
+emergency pause (which blocks submissions, not reads).
 
 ---
 
@@ -350,7 +427,7 @@ price, since a zero price reads as worthless rather than absent.
 ```
 any fault → failure.Failure (closed vocabulary, compile-time constant text)
    ├─ recorded by the poller
-   ├─ next GET_PRICE → ActionResult{status: 0, log: "error: <constant text>"}
+   ├─ next GET_FEED → ActionResult{status: 0, log: "error: <constant text>"}
    │     → proxy /action/result/<id> → the keeper records it as an error class
    └─ GET /state → tee-node → attested → proxy /info      ← WORLD READABLE
 ```
@@ -366,11 +443,11 @@ either public surface. That is a compile error, not a review item.
 | Can move the price | Constrained by |
 | --- | --- |
 | the attested code | registered code hash, reproducible build |
-| **sender owner key** | sets RPC hosts and quorum with **no allowlist** — accepted trade (finding 15) |
+| **Flare governance (timelocked)** | `setEndpoints`/`setAdmins` set RPC hosts, quorum and admin sets with **no allowlist** — accepted trade (finding 15); the `hex_cash` URL is a PRIVATE commitment, and `hex_bonds` is pinned in the build |
 | **admin set (2-of-3)** | holds the Hex credential; cannot redirect it into a provider URL |
 | Hex Trust | sole reserve source, no redundancy |
 | keeper | nothing — worst case is wasted gas |
-| store governance | pause · invalidate · bounds · repoint extension |
+| store governance | `setFeeDestination` · extension-level emergency pause (blocks submissions, not reads) |
 
 ---
 
@@ -378,11 +455,11 @@ either public surface. That is a compile error, not a review item.
 
 | Question | Command |
 | --- | --- |
-| Do the real sources yield a sane price? | `./scripts/oracle-observe.sh` |
-| Does the wire contract hold? | `./scripts/test-conformance.sh` |
-| Does provisioning work? | `./scripts/set-endpoints.sh` then `usdxprov` |
-| Does the whole chain work? | `./scripts/oracle-cycle.sh` |
-| What is it publishing right now? | `./scripts/oracle-status.sh` |
+| Do the real sources yield a sane price? | `./deploy/scripts/oracle-observe.sh` |
+| Does the wire contract hold? | `go test ./internal/extension/ -run TestConformance` |
+| Does provisioning work? | `./deploy/scripts/set-config.sh endpoints` then `usdxprov` |
+| Does the whole chain work? | `./deploy/scripts/oracle-cycle.sh` |
+| What is it publishing right now? | `./deploy/scripts/oracle-status.sh` |
 
 ---
 
@@ -391,18 +468,29 @@ either public surface. That is a compile error, not a review item.
 1. **The admin set must be published before a live feed.** Nothing is baked any
    more: a machine starts with no admins and refuses every `SET_SECRET` until
    `SET_ADMINS` installs one. The pre-production requirement is that the set
-   published is a real one — `testdata/admins/dev-wellknown-keys.json` names
+   published is a real one — `deploy/config/admins/dev-wellknown-keys.json` names
    private keys 1, 2 and 3 and is for local and testnet work only.
-2. **`Poller.Stats()` is dead code.** `/state` counters and `sourceHealth` are
-   written only on the GET_PRICE path, so a machine nobody queries reports an
-   empty health map while its poller fails every 2 minutes.
+2. **`/state` describes requests served, not the engine.** Its counters and
+   `sourceHealth` are written only on the GET_FEED path, so a machine nobody
+   queries reports an empty health map while its poller fails every 2 minutes.
+   `GET_READINESS` is the surface that reports the poller itself — use it, or
+   alert on on-chain feed *age*. (`Poller.Stats()` remains unused outside tests;
+   `ReadinessReport` reads the counters directly.)
 3. **`checkWindow` measures retrieval time, not data age.** The 30s window bounds
-   when we *fetched*; the reserve figure itself may be up to 30 minutes old.
-   Worth confirming against spec §6.1.
-4. **No target binding in the report** (finding 18, accepted) — a genuinely
-   signed report is replayable into any other store registered under the same
-   extension.
-5. **Global `observedAt` ratchet** across all machines: one enclave with a fast
-   clock suppresses the others until chain time catches up.
+   when we *fetched*; the reserve figure itself carries **no** freshness bound —
+   both Hex endpoints republish on an on-chain event, not a schedule, so an old
+   stamp means nothing changed (see `config.BondsSource`). Note the 20s
+   observation deadline is already tighter than the 30s window, so the window
+   cannot fire in production; the deadline is the real bound on read skew.
+4. **Feed binding in the update** — the old report had no target binding and was
+   replayable into any store under the same extension. The `FeedUpdate` now names
+   its `extensionId` and `feedId`, and the store rejects a mismatch
+   (`WrongExtensionId`/`WrongFeedId`), so an update can no longer be replayed
+   onto another feed the same extension serves.
+5. **Per-feed `observedAt` ratchet** across all machines serving that feed: one
+   enclave with a fast clock suppresses the others until chain time catches up.
+   The store additionally requires `observedAt < block.timestamp` strictly, so a
+   machine whose clock runs fast reverts `TooFarAhead` rather than advancing the
+   ratchet.
 6. **Rounding reversed 5 Aug.** `price` rounds half-up, not down; the bound that
    truncation bought is now held by `TestCompute_RoundingCannotHideAMaterialShortfall`.
