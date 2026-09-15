@@ -219,6 +219,7 @@ since their registries accept no simulated machine. Split by side:
    | `INITIAL_OWNER` | your deployer's address |
    | `PROXY_URL` | `http://<proxy host>:6663` |
    | `GOVERNANCE_SIGNERS`, `GOVERNANCE_THRESHOLD` | omit for the owner alone, threshold 1 |
+   | `GOVERNANCE_SAFE`, `GOVERNANCE_TEE_MANAGER` | only for Safe-backed governance (tee-node's `.env.template`); omit otherwise |
 
 2. **The tee-proxy container**, with the configuration this repository renders
    (`start-services.sh` writes `out/proxy/extension_proxy.<chain>.docker.toml`; hand it over

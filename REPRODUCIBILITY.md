@@ -8,24 +8,31 @@ a security property rather than a nicety.
 Be precise about what is actually guaranteed. Overclaiming here is worse than
 underclaiming, because the on-chain registration is what depends on it.
 
-This repository ships a single Go implementation, and the Go image is
-**bit-for-bit reproducible across machines**: a static `CGO_ENABLED=0` binary
-built with `-trimpath -buildid=`, on a digest-pinned distroless base. Nothing
-host-specific survives, so an auditor on different hardware can independently
-reproduce the code hash that gets registered on-chain.
+This repository ships a single Go implementation, and the image is
+**bit-for-bit reproducible across machines**: one statically linked binary built
+with `-trimpath -buildid=` on a digest-pinned distroless base, from tee-node's
+own Dockerfile with only the package built, the launch-policy label and the
+command changed. Nothing host-specific survives, so an auditor on different
+hardware can independently reproduce the code hash that gets registered
+on-chain.
 
-The tee-node server binary is compiled once from a pinned ref on the same
-digest-pinned golang image, and
-`deploy/scripts/check-versions.sh` fails the build if that pin drifts from `go.mod`.
+tee-node is not a separate binary: the extension embeds it as the Go module
+`go.mod` pins, and `deploy/scripts/check-versions.sh` fails when the pins of
+the two Go modules and of the proxy image drift apart.
 
 ## How it works
 
 - `SOURCE_DATE_EPOCH` is set to the commit timestamp and passed as a build arg
-  to clamp all timestamps
+  to clamp all timestamps and to select the Debian snapshot below. It is
+  required: a build without it fails, and a zero would ask for a 1970 snapshot
 - Go binary is built with `-trimpath -ldflags="-buildid= -s -w"` and
-  `-buildvcs=false` to strip non-deterministic metadata; `CGO_ENABLED=0`
-  produces a static binary so link-time libc variance cannot leak in
-- Base image digest is pinned in the Dockerfile
+  `-buildvcs=false` to strip non-deterministic metadata; `CGO_ENABLED=1` with
+  `-linkmode=external -extldflags=-static` links go-ethereum's native
+  libsecp256k1 and still produces one static binary, the `netgo,osusergo` tags
+  keep the resolvers pure Go, and the cgo toolchain (`gcc`, `libc6-dev`) comes
+  from the same Debian snapshot as everything else
+- Both base images are pinned by digest in the Dockerfile: the golang builder
+  and `distroless/static-debian12`, whose own trust store the binary uses
 - Debian package versions are pinned via apt's native snapshot support
   (Debian 13+): `Snapshot: true` in the sources file plus
   `apt-get install --snapshot <SOURCE_DATE_EPOCH>` redirects every fetch to
@@ -45,15 +52,15 @@ Go module). `go.mod` pins
 the network (verified against `go.sum`), so the build needs only this repo's own
 sources — no sibling `tee-node/` checkout.
 
-`Dockerfile.dockerignore` is preferred by BuildKit over the root
-`.dockerignore`, and it excludes everything that is not the module's own sources
-(`deploy/`, `contracts/`, `docs/`, `tools/`). This is not only a build-speed concern:
-anything reachable in the context can perturb layer hashes, so a stray local
-`node_modules` would otherwise undermine determinism.
+.dockerignore admits only the module's own sources — `go.mod`, `go.sum`,
+`cmd/`, `internal/` and `pkg/` — and excludes everything else, in tee-node's
+form. This is not only a build-speed concern: anything reachable in the context
+can perturb layer hashes, so a stray local file would otherwise undermine
+determinism.
 
 > **Developing `tee-node`/`tee-proxy` locally?** Run
 > `USE_LOCAL_SIBLINGS=1 ./deploy/scripts/start-services.sh`, which builds from on-disk
-> sibling checkouts via `Dockerfile.siblings` (build context `tee/`). That
+> sibling checkouts via `Dockerfile.siblings.dev` (build context `tee/`). That
 > path is for local iteration — it uses whatever is checked out and is **not**
 > reproducible; the reproducible build uses the tee-node ref pinned in
 > `go.mod` instead.

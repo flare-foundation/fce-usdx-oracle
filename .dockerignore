@@ -1,29 +1,15 @@
-# Build context is the repo root, which is the Go module. Everything that is not
-# the module's own sources is excluded: anything in the context can perturb layer
-# hashes and undermine reproducibility.
-.git
-.gitignore
-.env
-.env.*
-*.md
-docs/
-testing/
-.superpowers/
-.claude/
-results/
-contracts/
-deploy/
-tools/
-Dockerfile*
-.dockerignore
-go.work
-go.work.sum
-# Runtime output of start-services.sh; must not perturb the build context.
-out/
-# What the CI jobs leave in the workspace: the Go module cache under GOPATH
-# (.gitlab-ci.yml, .gocache), the linter's cache, coverage and the epoch dotenv.
-.go/
-.golangci-cache/
-coverage.out
-coverage.xml
-build.env
+# The build context is the repo root, which is the Go module. Everything is
+# excluded except the module's own sources, in tee-node's form: anything else
+# reachable in the context would perturb layer hashes and undermine
+# reproducibility. The sibling development build (Dockerfile.siblings.dev) has its
+# own context one level above the repositories and is not filtered by this file.
+
+# ignore everything
+*
+
+# include source and build files
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!pkg/

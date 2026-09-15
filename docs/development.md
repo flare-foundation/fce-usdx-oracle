@@ -1,7 +1,7 @@
 # Developing the extension
 
 The repository root is the Go module. It embeds tee-node as a **library**, so the image runs a
-single static binary on a distroless base: ~22 MB, and bit-for-bit reproducible across machines
+single static binary on a distroless base, bit-for-bit reproducible across machines
 (see [../REPRODUCIBILITY.md](../REPRODUCIBILITY.md)).
 
 ## Layout

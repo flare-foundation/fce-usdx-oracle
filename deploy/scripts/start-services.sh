@@ -269,14 +269,13 @@ fi
 if [[ "$USE_LOCAL" == "false" ]]; then
     log "Starting services with Docker Compose..."
 
-    # Dockerfile expects SOURCE_DATE_EPOCH for reproducible builds — see REPRODUCIBILITY.md.
-    # Without it, `touch -h -d @${SOURCE_DATE_EPOCH}` in the builder stage fails with "invalid date format '@'".
+    # The Dockerfile needs SOURCE_DATE_EPOCH, the commit timestamp: it selects the
+    # Debian snapshot the builder installs from and clamps every mtime, so a build
+    # without one fails and a zero would ask for a 1970 snapshot (REPRODUCIBILITY.md).
     if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
-        if SOURCE_DATE_EPOCH=$(git -C "$PROJECT_DIR" log -1 --format=%ct 2>/dev/null) && [[ -n "$SOURCE_DATE_EPOCH" ]]; then
-            export SOURCE_DATE_EPOCH
-        else
-            export SOURCE_DATE_EPOCH=0
-        fi
+        SOURCE_DATE_EPOCH=$(git -C "$PROJECT_DIR" log -1 --format=%ct 2>/dev/null) && [[ -n "$SOURCE_DATE_EPOCH" ]] \
+            || die "SOURCE_DATE_EPOCH is not set and this is not a git checkout: export the commit timestamp of the sources being built"
+        export SOURCE_DATE_EPOCH
     fi
     log "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
 

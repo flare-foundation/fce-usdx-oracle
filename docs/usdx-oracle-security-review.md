@@ -873,6 +873,12 @@ keeper and publishers use depends on whatever commit that checkout is at.
 the code hash); pin the proxy build to a commit and digested bases; commit the generated
 bindings or record the upstream commit they were generated from.
 
+**Status.** Fixed in part after the review. The Dockerfile is now tee-node's, with
+`distroless/static-debian12` pinned by digest and the same cgo static build; the proxy is
+tee-proxy's published image at the tag `tools/go.mod` pins, so there is no proxy build to pin;
+the generated bindings are tracked. The builder stays at Go 1.25.1, the pin tee-node builds
+with.
+
 ### SR-36 · Low · S — deployment key on a command line
 
 `deploy/scripts/oracle-status.sh:59` runs `cast wallet address --private-key "$KEY"` to
