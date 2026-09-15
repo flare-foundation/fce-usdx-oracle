@@ -271,6 +271,7 @@ The keeper preflights the store's guards before spending gas, so a rejection arr
 
 | Tool | Answers |
 | --- | --- |
+| `oracle-watch` | Polls one machine's `/info` state and its signed readiness report on a timer, records every sample and prints the changes: source health, last error class, ready, would-sign, failed observations. The between-cycles view the keeper's records cannot give. |
 | `fleet-status` | "Which machines are configured for the feed, and are they all running the same thing?" Registry status, `isTeeIdConfigured`, the sender's expected endpoints/admins hashes vs each machine's live state — for every machine at once. `-store`/`-feedId`, `-json`. |
 | `oracle-status.sh` | What the oracle publishes right now: the feed, the store, the registry, and the machine's `/state`. Reads only. |
 | `oracle-observe.sh` | Runs the real observation against live sources with no chain, Docker or TEE. The highest-value local check: if this is wrong, everything downstream is. |
