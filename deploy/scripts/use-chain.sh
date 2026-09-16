@@ -47,7 +47,10 @@ usage() {
 use-chain.sh — Activate a chain-specific .env file.
 
 Usage:
-  $SCRIPT_NAME <chain>       Copy .env.<chain> → .env (local, coston, coston2, songbird, flare).
+  $SCRIPT_NAME <chain>       Copy .env.<chain> → .env (local, coston, coston_local, coston2,
+                             songbird, flare). On Coston, "coston" is the official USDX
+                             deployment under extension 1 and "coston_local" a test
+                             deployment of our own on the same chain.
   $SCRIPT_NAME --list        List available .env.<chain> files.
   $SCRIPT_NAME -h | --help   Show this help.
 

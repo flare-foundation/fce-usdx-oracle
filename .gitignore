@@ -56,6 +56,7 @@ deploy/config/indexer/*/indexer-config.toml
 /devserver
 /usdxprov
 
-# Operator-specific active admin set (addresses only, but per-deployment like .env);
-# the tracked reference is admins/coston.example.json.
+# Operator-specific active admin sets (addresses only, but per-deployment like
+# .env); the tracked reference is admins/coston.example.json.
 deploy/config/admins/coston.json
+deploy/config/admins/coston_local.json

@@ -94,8 +94,8 @@ registered forever.
 
 | Tool | What it does |
 | --- | --- |
-| `use-chain.sh <chain>` | Copies `.env.<chain>` → `.env`, which every script auto-loads. Run it first, and again whenever you edit the chain's env. |
-| `import-upstream-addresses.sh <chain>` | Copies the sender + feed store addresses from a flare-smart-contracts-v2 deploy into `deploy/config/<chain>/deployed-addresses.json`. Re-run after every upstream deploy. |
+| `use-chain.sh <chain>` | Copies `.env.<chain>` → `.env`, which every script auto-loads. Run it first, and again whenever you edit the chain's env. Coston has two rows: `coston` is the official USDX deployment under extension 1, `coston_local` a test deployment of our own on the same chain. |
+| `import-upstream-addresses.sh <chain>` | Copies the sender + feed store addresses from a flare-smart-contracts-v2 deploy into `deploy/config/<chain>/deployed-addresses.json`, and refreshes the chain's system contracts and its indexer configuration. Re-run after every upstream deploy. On a chain this repository deploys itself, the oracle entries come from that deploy instead and are left out here. |
 | `full-setup.sh` | Pins the extension identity (`EXTENSION_ID=1`, reserved), starts the stack, runs post-build — in one command. |
 | `start-services.sh` | Builds the extension image and brings up the compose stack (extension-tee, proxy, redis). `--local` runs the host-process variant instead. |
 | `post-build.sh` | Whitelists the image's code hash (`allow-tee-version`), sets TEE governance (`set-governance`) and registers the machine (`register-tee`). |

@@ -45,7 +45,9 @@ source "$SCRIPT_DIR_LIB/chains.sh"
 # shellcheck source=/dev/null
 [[ -f "$PROJECT_DIR/.env" ]] && { set -a; . "$PROJECT_DIR/.env"; set +a; }
 
-UPSTREAM_NETWORK="${UPSTREAM_NETWORK:-$([[ "$NETWORK" == "local" ]] && echo scdev || echo "$NETWORK")}"
+# The upstream deploys file is named after the CHAIN, which is not the row name:
+# the simulation's is scdev.json, and coston_local reads coston's.
+UPSTREAM_NETWORK="${UPSTREAM_NETWORK:-$(chain_upstream "$NETWORK" 2>/dev/null || echo "$NETWORK")}"
 # DEPLOYS_SRC names a deploys file of the same shape written elsewhere, as
 # deploy-oracle.sh --chain local does for its own deploy.
 SRC="${DEPLOYS_SRC:-$UPSTREAM/deployment/deploys/$UPSTREAM_NETWORK.json}"
@@ -92,13 +94,14 @@ if [[ "$NETWORK" != "local" ]]; then
     fi
 
     # The chain's C-chain indexer reads the same contracts, so its configuration
-    # is rendered from the addresses just refreshed (docker-compose.<network>-indexer.yaml
+    # is rendered from the addresses just refreshed (docker-compose.<chain>-indexer.yaml
     # mounts it). Rendered rather than tracked: a redeployed Relay then reaches
     # the indexer on the next import, instead of leaving it listening to a
     # contract that no longer emits.
-    if [[ -f "$PROJECT_DIR/deploy/docker-compose.$NETWORK-indexer.yaml" ]]; then
+    INDEXER_CHAIN="$(chain_indexer "$NETWORK" 2>/dev/null || echo "$NETWORK")"
+    if [[ -n "$INDEXER_CHAIN" && -f "$PROJECT_DIR/deploy/docker-compose.$INDEXER_CHAIN-indexer.yaml" ]]; then
         TEMPLATE="$PROJECT_DIR/deploy/config/indexer/indexer-config.toml.template"
-        OUT="$PROJECT_DIR/deploy/config/indexer/$NETWORK/indexer-config.toml"
+        OUT="$PROJECT_DIR/deploy/config/indexer/$INDEXER_CHAIN/indexer-config.toml"
         mkdir -p "$(dirname "$OUT")"
         addr_of() { jq -r --arg n "$1" '[.[] | select(.name == $n) | .address][0] // empty' "$DEST"; }
         MISSING=""
@@ -113,7 +116,7 @@ if [[ "$NETWORK" != "local" ]]; then
                 -e "s#__FLARE_TEE_MANAGER__#$(addr_of FlareTeeManager)#g" \
                 -e "s#__RELAY__#$(addr_of Relay)#g" \
                 -e "s#__NODE_URL__#${RPC:-$(chain_rpc "$NETWORK")}#g" \
-                -e "s#__DB_HOST__#$NETWORK-indexer-db#g" \
+                -e "s#__DB_HOST__#$INDEXER_CHAIN-indexer-db#g" \
                 -e "s#__HISTORY_DROP__#${INDEXER_HISTORY_DROP:-604800}#g" \
                 "$TEMPLATE" > "$OUT"
             echo "Wrote ${OUT#"$PROJECT_DIR"/} (seven days of history; restart the indexer to pick it up)"
@@ -121,10 +124,20 @@ if [[ "$NETWORK" != "local" ]]; then
     fi
 fi
 
-python3 - "$SRC" "$DEST" <<'PYEOF'
+# Whether the oracle contracts in the deploys file are this chain's. For a chain
+# we deploy ourselves, upstream's file describes the CHAIN, whose official
+# contracts belong to the other row: coston_local reads coston.json, which
+# carries the extension-1 deployment. Its own entries arrive through DEPLOYS_SRC,
+# which deploy-oracle.sh sets to its deploy output.
+TAKE_ORACLE=true
+if [[ -z "${DEPLOYS_SRC:-}" ]] && chain_deploys_own_oracle "$NETWORK" 2>/dev/null; then
+    TAKE_ORACLE=false
+fi
+
+python3 - "$SRC" "$DEST" "$TAKE_ORACLE" <<'PYEOF'
 import json, sys
 
-src_path, dest_path = sys.argv[1], sys.argv[2]
+src_path, dest_path, take_oracle = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
 
 with open(src_path) as f:
     src = json.load(f)
@@ -149,6 +162,13 @@ sender = next((e for e in src
                if e.get("name") == "TeeOracleInstructionsSender" and not is_impl(e)), None)
 stores = [e for e in src
           if contract(e) == "TeeOracleFeedStore" and not is_impl(e)]
+
+if not take_oracle:
+    # The oracle contracts of a chain we deploy ourselves come from that deploy,
+    # not from upstream's file for the same chain.
+    print(f"NOTE: oracle entries in {src_path} left out — they are the chain's own "
+          f"deployment, not this one's; deploy/scripts/deploy-oracle.sh writes ours")
+    sys.exit(0)
 
 if sender is None or not stores:
     # Nothing to import. That is an error only when the destination has no

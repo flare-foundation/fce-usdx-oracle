@@ -65,10 +65,15 @@ WANT_CHAIN_ID="$(chain_id "$CHAIN")"
 # These contracts stay governed by their deployer, which is what makes the test
 # flow one key and no timelock. A production deployment is upstream's script,
 # which ends in switchToProductionMode; that is one-way, so the choice is made
-# here and a mainnet is refused rather than quietly given a test deployment.
-chain_is_mainnet "$CHAIN" && die "$CHAIN is a mainnet: these contracts are deployed governed by their deployer, which is a test deployment.\n" \
-    "  A production deployment runs flare-smart-contracts-v2's deployment/scripts/deploy-tee-oracle.sh $CHAIN,\n" \
-    "  then ./deploy/scripts/import-upstream-addresses.sh $CHAIN here. See docs/deployment-steps.md."
+# here: a chain that runs upstream's contracts is refused rather than quietly
+# given a test deployment beside them.
+if ! chain_deploys_own_oracle "$CHAIN"; then
+    ALT=""
+    [[ "$CHAIN" == coston ]] && ALT="\n  For a test deployment of our own on the same chain, use --chain coston_local."
+    die "$CHAIN runs the oracle contracts deployed by flare-smart-contracts-v2, which this script must not deploy beside.\n" \
+        "  Its deployment/scripts/deploy-tee-oracle.sh $CHAIN makes them, Flare governance finishes them, and\n" \
+        "  ./deploy/scripts/import-upstream-addresses.sh $CHAIN brings the addresses here. See docs/deployment-steps.md.$ALT"
+fi
 
 # shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"; load_env

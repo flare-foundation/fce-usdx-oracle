@@ -447,17 +447,17 @@
   {
     "name": "TeeOracleFeedStore",
     "contractName": "TeeOracleFeedStore.sol",
-    "address": "0x13C3E07d1B372882c88ab8ADFAd9dcE8AA5420A1"
+    "address": "0x3aAEa2CACD84461536A8e7D43ee4687b057Ed78D"
   },
   {
     "name": "TeeOracleInstructionsSender",
     "contractName": "TeeOracleInstructionsSender.sol",
-    "address": "0xc75E26eA824d5515017028a139cBE091e75b2EDC"
+    "address": "0x79F9bBFD6D0729E251A40BdB7538CdaD8884A7b0"
   },
   {
     "name": "UsdxFeedStore",
     "contractName": "TeeOracleFeedStore.sol",
-    "address": "0x13C3E07d1B372882c88ab8ADFAd9dcE8AA5420A1"
+    "address": "0x3aAEa2CACD84461536A8e7D43ee4687b057Ed78D"
   },
   {
     "name": "AddressUpdater",

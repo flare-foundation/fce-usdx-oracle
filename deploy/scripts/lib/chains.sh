@@ -13,35 +13,58 @@
 # listed so the scripts address them; their registries carry no FlareTeeManager
 # yet, and as mainnets they accept no simulated machine, so a stack there is a
 # real Confidential Space machine (deploy/README.md, "A remote machine").
+#
+# `oracle` says where the TEE oracle contracts come from, which decides whether
+# this repository may deploy them:
+#
+#   own       a deployer-governed deployment of our own, made by deploy-oracle.sh
+#             for a test: publications execute at once and one key runs the flow.
+#   upstream  the real deployment, made by flare-smart-contracts-v2 and finished
+#             by Flare governance. deploy-oracle.sh refuses these, and the
+#             addresses arrive through import-upstream-addresses.sh.
+#
+# Coston therefore has two rows: `coston` addresses the official USDX deployment
+# under the reserved extension 1, and `coston_local` a test deployment of our own
+# on the same chain. They share the chain and its indexer, and differ in the
+# addresses file, the admin set and the .env they carry (deploy/README.md).
 
-CHAINS="local coston coston2 songbird flare"
+CHAINS="local coston coston_local coston2 songbird flare"
 # shellcheck disable=SC2034  # read by the scripts that source this file
-CHAINS_USAGE="local|coston|coston2|songbird|flare"
+CHAINS_USAGE="local|coston|coston_local|coston2|songbird|flare"
 
-# chain_row <chain>: sets id, rpc, proxy, upstream, faucet, kind, indexer_port
-# in the caller's scope; returns 1 for an unknown chain.
+# chain_row <chain>: sets id, rpc, proxy, upstream, faucet, kind, indexer,
+# indexer_port and oracle in the caller's scope; returns 1 for an unknown chain.
+# `indexer` names the chain whose indexer files serve this one, since two rows
+# on the same chain share one indexer.
 chain_row() {
     case "$1" in
-        local)    id=31337; rpc=http://127.0.0.1:8545;                          proxy=http://localhost:6662;                     upstream=scdev;    faucet=;                                    kind=simulation; indexer_port= ;;
-        coston)   id=16;    rpc=https://coston-api.flare.network/ext/C/rpc;    proxy=https://tee-proxy-coston-1.flare.rocks;    upstream=coston;   faucet=https://faucet.flare.network/coston;  kind=testnet;    indexer_port=3316 ;;
-        coston2)  id=114;   rpc=https://coston2-api.flare.network/ext/C/rpc;   proxy=https://tee-proxy-coston2-1.flare.rocks;   upstream=coston2;  faucet=https://faucet.flare.network/coston2; kind=testnet;    indexer_port=3317 ;;
-        songbird) id=19;    rpc=https://songbird-api.flare.network/ext/C/rpc;  proxy=https://tee-proxy-songbird-1.flare.rocks;  upstream=songbird; faucet=;                                    kind=mainnet;    indexer_port= ;;
-        flare)    id=14;    rpc=https://flare-api.flare.network/ext/C/rpc;     proxy=;                                          upstream=flare;    faucet=;                                    kind=mainnet;    indexer_port= ;;
+        local)        id=31337; rpc=http://127.0.0.1:8545;                          proxy=http://localhost:6662;                     upstream=scdev;    faucet=;                                    kind=simulation; indexer=;        indexer_port= ;    oracle=own ;;
+        coston)       id=16;    rpc=https://coston-api.flare.network/ext/C/rpc;    proxy=https://tee-proxy-coston-1.flare.rocks;    upstream=coston;   faucet=https://faucet.flare.network/coston;  kind=testnet;    indexer=coston;  indexer_port=3316; oracle=upstream ;;
+        coston_local) id=16;    rpc=https://coston-api.flare.network/ext/C/rpc;    proxy=https://tee-proxy-coston-1.flare.rocks;    upstream=coston;   faucet=https://faucet.flare.network/coston;  kind=testnet;    indexer=coston;  indexer_port=3316; oracle=own ;;
+        coston2)      id=114;   rpc=https://coston2-api.flare.network/ext/C/rpc;   proxy=https://tee-proxy-coston2-1.flare.rocks;   upstream=coston2;  faucet=https://faucet.flare.network/coston2; kind=testnet;    indexer=coston2; indexer_port=3317; oracle=own ;;
+        songbird)     id=19;    rpc=https://songbird-api.flare.network/ext/C/rpc;  proxy=https://tee-proxy-songbird-1.flare.rocks;  upstream=songbird; faucet=;                                    kind=mainnet;    indexer=;        indexer_port= ;    oracle=upstream ;;
+        flare)        id=14;    rpc=https://flare-api.flare.network/ext/C/rpc;     proxy=;                                          upstream=flare;    faucet=;                                    kind=mainnet;    indexer=;        indexer_port= ;    oracle=upstream ;;
         *) return 1 ;;
     esac
 }
 
-chain_known()        { local id rpc proxy upstream faucet kind indexer_port; chain_row "$1"; }
-chain_id()           { local id rpc proxy upstream faucet kind indexer_port; chain_row "$1" && echo "$id"; }
-chain_rpc()          { local id rpc proxy upstream faucet kind indexer_port; chain_row "$1" && echo "$rpc"; }
-chain_normal_proxy() { local id rpc proxy upstream faucet kind indexer_port; chain_row "$1" && echo "$proxy"; }
-chain_upstream()     { local id rpc proxy upstream faucet kind indexer_port; chain_row "$1" && echo "$upstream"; }
-chain_faucet()       { local id rpc proxy upstream faucet kind indexer_port; chain_row "$1" && echo "$faucet"; }
-chain_kind()         { local id rpc proxy upstream faucet kind indexer_port; chain_row "$1" && echo "$kind"; }
-chain_indexer_port() { local id rpc proxy upstream faucet kind indexer_port; chain_row "$1" && echo "$indexer_port"; }
+chain_known()        { local id rpc proxy upstream faucet kind indexer indexer_port oracle; chain_row "$1"; }
+chain_id()           { local id rpc proxy upstream faucet kind indexer indexer_port oracle; chain_row "$1" && echo "$id"; }
+chain_rpc()          { local id rpc proxy upstream faucet kind indexer indexer_port oracle; chain_row "$1" && echo "$rpc"; }
+chain_normal_proxy() { local id rpc proxy upstream faucet kind indexer indexer_port oracle; chain_row "$1" && echo "$proxy"; }
+chain_upstream()     { local id rpc proxy upstream faucet kind indexer indexer_port oracle; chain_row "$1" && echo "$upstream"; }
+chain_faucet()       { local id rpc proxy upstream faucet kind indexer indexer_port oracle; chain_row "$1" && echo "$faucet"; }
+chain_kind()         { local id rpc proxy upstream faucet kind indexer indexer_port oracle; chain_row "$1" && echo "$kind"; }
+chain_indexer()      { local id rpc proxy upstream faucet kind indexer indexer_port oracle; chain_row "$1" && echo "$indexer"; }
+chain_indexer_port() { local id rpc proxy upstream faucet kind indexer indexer_port oracle; chain_row "$1" && echo "$indexer_port"; }
+chain_oracle()       { local id rpc proxy upstream faucet kind indexer indexer_port oracle; chain_row "$1" && echo "$oracle"; }
 chain_is_mainnet()   { [[ "$(chain_kind "$1" 2>/dev/null)" == mainnet ]]; }
+# True when this repository deploys the oracle contracts for the chain itself.
+chain_deploys_own_oracle() { [[ "$(chain_oracle "$1" 2>/dev/null)" == own ]]; }
 
-# chain_from_id <chain id>: the chain with that id, or nothing.
+# chain_from_id <chain id>: the chain with that id, or nothing. Coston's two rows
+# share an id, so this answers with the official one; a test deployment is named
+# by FLARE_CHAIN, which use-chain.sh writes into .env and resolve_chain prefers.
 chain_from_id() {
     local c
     for c in $CHAINS; do [[ "$(chain_id "$c")" == "$1" ]] && { echo "$c"; return 0; }; done

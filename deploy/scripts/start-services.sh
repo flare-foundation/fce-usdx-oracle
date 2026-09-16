@@ -61,7 +61,8 @@ source "$SCRIPT_DIR/lib/chains.sh"
 # lag is read from it and a start against a lagging one is refused with the
 # reason; an external indexer is not checked.
 check_indexer_sync() {
-    local file="$PROJECT_DIR/deploy/docker-compose.$CHAIN-indexer.yaml" svc="$CHAIN-indexer-db" behind
+    local ic; ic="$(chain_indexer "$CHAIN")"
+    local file="$PROJECT_DIR/deploy/docker-compose.$ic-indexer.yaml" svc="$ic-indexer-db" behind
     [[ -f "$file" ]] || return 0
     behind="$(docker compose -f "$file" exec -T "$svc" mysql -uroot -proot db -N \
         -e "select unix_timestamp() - block_timestamp from states where name='last_database_block'" 2>/dev/null | tr -d '[:space:]')"
@@ -69,7 +70,7 @@ check_indexer_sync() {
         warn "the $svc container is not running or has no indexed block yet — the proxy will wait for the indexer (docker compose -f ${file#"$PROJECT_DIR"/} up -d)"
         return 0
     fi
-    (( behind <= 60 )) || die "the chain indexer is $behind s behind the chain; the proxy would not serve until it has caught up — follow it with: docker compose -f ${file#"$PROJECT_DIR"/} logs -f $CHAIN-indexer"
+    (( behind <= 60 )) || die "the chain indexer is $behind s behind the chain; the proxy would not serve until it has caught up — follow it with: docker compose -f ${file#"$PROJECT_DIR"/} logs -f $ic-indexer"
     log "Chain indexer: ${behind}s behind the chain"
 }
 
@@ -168,7 +169,7 @@ render_live_proxy_config() {
     if [[ -n "${INDEXER_DB_HOST:-}" ]]; then
         db_host="$INDEXER_DB_HOST"; db_port="${INDEXER_DB_PORT:-3306}"
     elif [[ "$mode" == docker ]]; then
-        db_host="$CHAIN-indexer-db"; db_port=3306
+        db_host="$(chain_indexer "$CHAIN")-indexer-db"; db_port=3306
     else
         db_host=127.0.0.1; db_port="$(chain_indexer_port "$CHAIN")"
         [[ -n "$db_port" ]] || die "no indexer database for $CHAIN — set INDEXER_DB_HOST/INDEXER_DB_PORT in .env to name one"
@@ -445,7 +446,8 @@ if [[ "$CHAIN" != "local" ]]; then
         # containers of the same project instead of reporting them as orphans.
         log "Starting the compose redis on $REDIS_BIND for the host proxy..."
         REDIS_FILES=(-f "$PROJECT_DIR/deploy/docker-compose.yaml")
-        [[ -f "$PROJECT_DIR/deploy/docker-compose.$CHAIN-indexer.yaml" ]] && REDIS_FILES+=(-f "$PROJECT_DIR/deploy/docker-compose.$CHAIN-indexer.yaml")
+        INDEXER_COMPOSE="$PROJECT_DIR/deploy/docker-compose.$(chain_indexer "$CHAIN")-indexer.yaml"
+        [[ -f "$INDEXER_COMPOSE" ]] && REDIS_FILES+=(-f "$INDEXER_COMPOSE")
         REDIS_OUT="$(SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}" docker compose "${REDIS_FILES[@]}" up -d redis 2>&1)" \
             || die "starting redis failed:\n$REDIS_OUT"
         for _ in $(seq 30); do (echo > "/dev/tcp/${REDIS_BIND%:*}/${REDIS_BIND##*:}") >/dev/null 2>&1 && break; sleep 1; done

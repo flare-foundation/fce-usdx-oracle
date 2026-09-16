@@ -55,7 +55,9 @@ The derived address becomes your `INITIAL_OWNER`. Fund it from the target chain'
 
 ## 3. Create `.env.<chain>`
 
-Copy `.env.example` to `.env.coston` or `.env.coston2`. Fill in:
+Copy `.env.example` to `.env.coston` or `.env.coston2`. On Coston, `coston` is the official
+USDX deployment under the reserved extension 1, which this page describes; `coston_local` is a
+test deployment of our own on the same chain (deploy/README, "Testing on a testnet"). Fill in:
 
 ```bash
 FLARE_CHAIN=coston2                                                   # or coston
