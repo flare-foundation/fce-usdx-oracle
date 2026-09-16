@@ -16,7 +16,7 @@ cmd/
 internal/
 ├── config/         pinned facts: op hashes, chains, endpoints, timing bounds, health keys
 ├── failure/        the closed public error vocabulary
-├── extension/      the HTTP surface: http.go, router.go, result.go, one file per command
+├── extension/      the HTTP surface: extension.go, router.go, result.go, one file per command
 ├── observation/    Sources, Binding, Observe, Sign — one observation start to finish
 │   ├── poller/     the timer, the cache and the staleness bound
 │   ├── supply/     totalSupply over N RPC providers, pinned to one block, Quorum-agreed

@@ -74,8 +74,8 @@ redis            the proxy's action queue
 ### HTTP — exactly two ways into the extension
 
 ```
-POST /action    internal/extension/utils.go:16       every instruction & direct action
-GET  /state     internal/extension/extension.go:138  polled by tee-node → ends up public
+POST /action    internal/extension/extension.go:77   every instruction & direct action
+GET  /state     internal/extension/extension.go:76   polled by tee-node → the empty state
 ```
 
 ### On-chain
