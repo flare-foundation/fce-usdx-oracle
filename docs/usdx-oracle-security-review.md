@@ -2,6 +2,9 @@
 
 **Status:** review report · **Date:** 2026-09-08 · **Reviewed at:** commit `5a17d7e` (branch `tilen/improvements`)
 
+> A second review, asked from the attacker's side and recording the status of every finding
+> below, is [usdx-oracle-security-review-2.md](usdx-oracle-security-review-2.md) (2026-09-15).
+
 A full read-through of the component for exploitable weaknesses and for robustness
 (availability, fail-closed behaviour, operability) problems. Every finding below was
 verified against the code at the commit named above; where a claim rests on something
@@ -202,7 +205,7 @@ bind makes it redundant.
 
 ### SR-06 · Low · R — no request body limit and no server timeouts
 
-**Where.** `internal/extension/http.go:56`, `internal/extension/extension.go:97`.
+**Where.** `internal/extension/extension.go` (`actionHandler`, `NewExtension`).
 
 ```go
 err := json.NewDecoder(r.Body).Decode(&action)
@@ -233,6 +236,9 @@ halves state the same bound.
 confirmed in its source, and the loopback bind removes every caller but tee-node.
 
 ### SR-20 · Low · R — direct-channel refusals poison the `/state` counters
+
+**Status.** Moot since 2026-09-16: `GET /state` carries the empty state and the extension
+keeps no counters. See review II, T-26.
 
 **Where.** `internal/extension/result.go:38-44`; contradicts `internal/extension/readiness.go:14-16`.
 
