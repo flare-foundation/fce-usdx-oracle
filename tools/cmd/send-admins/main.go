@@ -53,7 +53,7 @@ func main() {
 		"TeeOracleInstructionsSender address (default: the TeeOracleInstructionsSender "+
 			"entry in the addresses file)")
 	configF := flag.String("config", "", "admin set JSON file")
-	feedIDF := flag.String("feedId", "0x20555344582f555344000000000000000000000000",
+	feedIDF := flag.String("feedId", "0x21555344582f555344000000000000000000000000",
 		"feed id (bytes21 hex); defaults to USDX/USD")
 	claimBackF := flag.String("claimBack", "",
 		"payer of record for the dispatched instruction, written on-chain for the reward "+

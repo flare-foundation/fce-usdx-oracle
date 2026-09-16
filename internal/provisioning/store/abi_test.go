@@ -27,8 +27,8 @@ const (
 	vectorSalt       = "0xa05e334153147e75f3f416139b5109d1179cb56fef6a4ecb4c4cbc92a7c37b70"
 	vectorCommitment = "0x78ccb727d3a566d9f8dc3f5bb3cf1dbbe283b46b5c3533cbcf3ccb75d62692f8"
 
-	vectorEndpointsHash = "0xd241e7c63ba9ab995063996a7cfc5854eacf1fe94af785f18e5ef98795a2614c"
-	vectorAdminsHash    = "0xab4e61f34281cf851bf9e996732f647e2f13d69dd3e49bcc99964fa2051ec9da"
+	vectorEndpointsHash = "0xf3a4b77228fd9d882bc1ae24eeb91e5d91f1d75e7303217b67345ad3d4bf33d1"
+	vectorAdminsHash    = "0x551849ebed418d7f8b59c1a79491483c2ca13036c8da355beaef774dffd00ecc"
 
 	vectorCashURL = "https://api.htdigitalassets.com/alm-stablecoin-db/restricted/metrics/current_cash_reserves_amount"
 )

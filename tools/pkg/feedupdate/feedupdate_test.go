@@ -16,7 +16,7 @@ import (
 // Solidity's output rather than to each other.
 const (
 	vectorChainID = 114
-	vectorDigest  = "0x66612a9ecc7d37e6331f8728af9b34881d55efdb3d76f8b73e56d4ae0cf195f2"
+	vectorDigest  = "0x69cab05978fc8e14b84a1ef06c4fbffc91604cb27aee63cea454ad3c7974ed7c"
 	vectorPrefix  = "0x5445455f4f5241434c455f464545440000000000000000000000000000000000"
 
 	updateFile   = "../../../deploy/testdata/wire/feed-update.abi.hex"
@@ -38,7 +38,7 @@ func mustFixture(t *testing.T, path string) []byte {
 
 func vectorUpdate() Update {
 	var feedID [21]byte
-	copy(feedID[:], common.FromHex("0x20555344582f555344000000000000000000000000"))
+	copy(feedID[:], common.FromHex("0x21555344582f555344000000000000000000000000"))
 	return Update{
 		ExtensionID:   big.NewInt(66281),
 		FeedID:        feedID,
@@ -177,7 +177,7 @@ func TestPriceRendersAtItsOwnScale(t *testing.T) {
 	if got := u.Price(); got != "0.99950000" {
 		t.Errorf("price = %q, want 0.99950000", got)
 	}
-	if got := u.FeedName(); got != "32:USDX/USD" {
-		t.Errorf("feed name = %q, want 32:USDX/USD", got)
+	if got := u.FeedName(); got != "33:USDX/USD" {
+		t.Errorf("feed name = %q, want 33:USDX/USD", got)
 	}
 }

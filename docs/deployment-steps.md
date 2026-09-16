@@ -94,7 +94,7 @@ extension with a fixed id:
 | Fact | Value | Where it's pinned |
 | ---- | ----- | ----------------- |
 | Extension id | `1` (reserved) | `internal/config` + upstream `teeOracleExtensionId` |
-| Feed id (USDX/USD) | `0x20555344582f555344…` (category `0x20` + `USDX/USD`) | `internal/config` |
+| Feed id (USDX/USD) | `0x21555344582f555344…` (category `0x21` + `USDX/USD`) | `internal/config` |
 
 So there is no `pre-build.sh` and no locally-minted `EXTENSION_ID`. The on-chain
 side is run from the contracts repo and finished by governance:

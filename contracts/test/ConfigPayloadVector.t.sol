@@ -20,9 +20,9 @@ import {
  * whole reason these fixtures exist.
  */
 contract ConfigPayloadVectorTest is Test {
-    // The USDX feed: custom category 0x20 followed by "USDX/USD", zero-padded to
+    // The USDX feed: custom category 0x21 followed by "USDX/USD", zero-padded to
     // 20 bytes. Same id as the feed-update vector.
-    bytes21 constant FEED_ID = bytes21(hex"20555344582f555344000000000000000000000000");
+    bytes21 constant FEED_ID = bytes21(hex"21555344582f555344000000000000000000000000");
 
     string constant CASH_URL =
         "https://api.htdigitalassets.com/alm-stablecoin-db/restricted/metrics/current_cash_reserves_amount";

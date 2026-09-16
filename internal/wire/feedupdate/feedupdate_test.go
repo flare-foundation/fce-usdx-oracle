@@ -23,13 +23,13 @@ import (
 const (
 	vectorChainID     = uint64(114)
 	vectorPrefix      = "0x5445455f4f5241434c455f464545440000000000000000000000000000000000"
-	vectorDataHash    = "0x94af4017f9a19345b7c295f07502dca8746bc840ed1fc0d614effe7bbab9fc41"
-	vectorMessageHash = "0x45a9a51f2897e6b7d5504fd233158a2a883f744921248b386758b944d3e87f85"
-	vectorDigest      = "0x66612a9ecc7d37e6331f8728af9b34881d55efdb3d76f8b73e56d4ae0cf195f2"
+	vectorDataHash    = "0xf48aab70dbb631b9ea2be9c4753c5ad05e7311d80aabbaa97e5b20ef6bc9d291"
+	vectorMessageHash = "0x5a0846ec06d9b489340652a499c042a1e6e4ad543b05df69a116f567cbac4217"
+	vectorDigest      = "0x69cab05978fc8e14b84a1ef06c4fbffc91604cb27aee63cea454ad3c7974ed7c"
 )
 
 func vectorFeedID() [21]byte {
-	raw, err := hex.DecodeString("20555344582f555344000000000000000000000000")
+	raw, err := hex.DecodeString("21555344582f555344000000000000000000000000")
 	if err != nil {
 		panic(err)
 	}

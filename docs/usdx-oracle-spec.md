@@ -30,6 +30,7 @@
 | 2026-08-05 | **Observation moved onto a timer; GET_FEED only signs** | tee-node allows an extension 2 s per action (`settings.ProxyTimeout`, a const in its internal package); a complete observation measures 2.0–2.9 s, so every request timed out. `internal/observation/poller` observes every 2 min and `MaxObservationAge` (10 min) bounds the resulting staleness. Findings §23. |
 | 2026-09-15 | **The signed `observedAt` is the requesting instruction's block timestamp** | That is the store's definition of the field (`ITeeOracleFeedStore.FeedUpdate`), and `submitFeedUpdates` requires every update in a batch to carry the same value, which only a shared on-chain instant gives; the reading's own time was signed before, so no two machines on independent timers could ever form a batch. The inputs behind an update are at most `MaxObservationAge` (10 min) older than the stamp, checked against that very timestamp before signing; the reading's time stays on the observation as `lastObservedAt`. |
 | 2026-09-16 | **`GET /state` carries the empty state** | The signed `GET_READINESS` report is the machine's one account of itself. The state was a second, unsigned copy of its fields, written by the `GET_FEED` handler and therefore up to a keeper cycle behind, with counters any holder of the direct-channel key could move (security review II, T-26). tee-node relays the empty state as such and the registry accepts it. |
+| 2026-09-16 | **Feed id moves to category `0x21`** | The official Coston deployment registers USDX/USD as `0x21555344582f555344…`. The id is a build fact: it is signed into every update and checked by the store, so the wire vectors and conformance fixtures move with it. |
 
 ---
 
@@ -234,21 +235,20 @@ function _isCustomFeedId(bytes21 _feedId) internal pure returns (bool) {
 
 So any byte in `0x20`–`0x3F` is valid; the specific value is our choice, subject
 only to the resulting full ID not colliding with an already-registered feed.
-(An earlier draft of this doc named `0x21` — that happens to be inside the valid
-range, but it was a guess, not a requirement.)
-
-Taking category `0x20` and name `"USDX/USD"`:
+Taking category `0x21` and name `"USDX/USD"`:
 
 ```
-0x20  555344582f555344  000000000000000000000000
+0x21  555344582f555344  000000000000000000000000
  └cat  └ "USDX/USD"       └ 12 zero bytes of padding
 
-feedId = 0x20555344582f555344000000000000000000000000
+feedId = 0x21555344582f555344000000000000000000000000
 ```
 
-**Resolved:** category `0x20`, name `"USDX/USD"` — the feed id
-`0x20555344582f555344000000000000000000000000` is pinned in the upstream
-deployment's chain-config and as a build fact in `internal/config`. The store's
+**Resolved:** category `0x21`, name `"USDX/USD"` — the feed id
+`0x21555344582f555344000000000000000000000000` is pinned in the upstream
+deployment's chain-config and as a build fact in `internal/config`. The Coston
+deployment of 2026-09 registers it under that category; an earlier draft used
+`0x20`, which is equally inside the valid range. The store's
 initializer reverts `InvalidFeedCategory` outside the custom range `[0x20, 0x40)`.
 
 ---
@@ -521,7 +521,7 @@ upstream `userInterfaces/tee/ITeeOracleFeedStore.sol` (flare-smart-contracts-v2)
 ```solidity
 struct FeedUpdate {
     uint256 extensionId;    // the RESERVED id 1
-    bytes21 feedId;         // 0x20 + "USDX/USD" (category byte + name, §3.6)
+    bytes21 feedId;         // 0x21 + "USDX/USD" (category byte + name, §3.6)
     int32   value;          // round(price · 10^decimals), half-up
     int8    decimals;       // 8
     uint64  observedAt;     // store's monotonicity key — timestamp of an emitted
@@ -887,7 +887,7 @@ For Hex:
 For Flare / internal:
 
 9. ~~Feed **name** and the specific category byte within `0x20`–`0x3F` (§3.6).~~
-   **Resolved:** category `0x20`, name `"USDX/USD"`, pinned upstream and in the
+   **Resolved:** category `0x21`, name `"USDX/USD"`, pinned upstream and in the
    build. Decimals are 8 — the interface constrains nothing, and the store keeps
    whatever scale the enclave signs.
 10. Update cadence `T` and the fee/gas budget that implies.

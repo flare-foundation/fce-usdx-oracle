@@ -184,7 +184,7 @@ Then ask for a feed update. `originalMessage` is the ABI-encoded `FeedUpdateRequ
 21-byte feed id in a single 32-byte word; a wrong envelope is rejected (findings §22):
 
 ```bash
-python3 -c "import json;b32=lambda s:'0x'+s.encode().ljust(32,b'\x00').hex();df={'instructionId':'0x'+'c1'*32,'teeId':'0x'+'22'*20,'timestamp':1785945000,'rewardEpochId':0,'opType':b32('TEE_ORACLE'),'opCommand':b32('GET_FEED'),'cosigners':[],'cosignersThreshold':0,'originalMessage':'0x20555344582f5553440000000000000000000000000000000000000000000000','additionalFixedMessage':'0x'};print(json.dumps({'data':{'id':'0x'+'c1'*32,'type':'instruction','submissionTag':'submit','message':'0x'+json.dumps(df).encode().hex()},'additionalVariableMessages':[],'timestamps':[],'additionalActionData':'0x','signatures':[]}))" > /tmp/getfeed.json
+python3 -c "import json;b32=lambda s:'0x'+s.encode().ljust(32,b'\x00').hex();df={'instructionId':'0x'+'c1'*32,'teeId':'0x'+'22'*20,'timestamp':1785945000,'rewardEpochId':0,'opType':b32('TEE_ORACLE'),'opCommand':b32('GET_FEED'),'cosigners':[],'cosignersThreshold':0,'originalMessage':'0x21555344582f5553440000000000000000000000000000000000000000000000','additionalFixedMessage':'0x'};print(json.dumps({'data':{'id':'0x'+'c1'*32,'type':'instruction','submissionTag':'submit','message':'0x'+json.dumps(df).encode().hex()},'additionalVariableMessages':[],'timestamps':[],'additionalActionData':'0x','signatures':[]}))" > /tmp/getfeed.json
 ```
 
 ```bash

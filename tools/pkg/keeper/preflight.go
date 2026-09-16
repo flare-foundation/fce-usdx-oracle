@@ -40,7 +40,7 @@ import (
 //
 // It mirrors internal/config.FeedID; the two cannot share a definition because
 // tools/ is a separate module and internal/ is not importable from here.
-var feedID = mustFeedID("0x20555344582f555344000000000000000000000000")
+var feedID = mustFeedID("0x21555344582f555344000000000000000000000000")
 
 // maxBatch is the store's ceiling on signatures per submission.
 const maxBatch = 32

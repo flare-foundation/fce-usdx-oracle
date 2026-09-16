@@ -305,8 +305,8 @@ var (
 
 	FeedID = mustFeedID()
 
-	// Custom-feed category 0x20, then "USDX/USD" zero-padded to twenty bytes.
-	feedIDHex = "0x20555344582f555344000000000000000000000000"
+	// Custom-feed category 0x21, then "USDX/USD" zero-padded to twenty bytes.
+	feedIDHex = "0x21555344582f555344000000000000000000000000"
 )
 
 func extensionIDFrom(env string) (*big.Int, error) {

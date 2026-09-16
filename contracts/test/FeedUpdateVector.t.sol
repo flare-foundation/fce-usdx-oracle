@@ -41,7 +41,7 @@ contract FeedUpdateVectorTest is Test {
     function _vector() internal pure returns (ITeeOracleFeedStore.FeedUpdate memory) {
         return ITeeOracleFeedStore.FeedUpdate({
             extensionId: 66281,
-            feedId: bytes21(hex"20555344582f555344000000000000000000000000"),
+            feedId: bytes21(hex"21555344582f555344000000000000000000000000"),
             value: int32(99950000),
             decimals: int8(8),
             observedAt: uint64(1787230941),

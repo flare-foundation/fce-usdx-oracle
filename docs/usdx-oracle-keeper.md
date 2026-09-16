@@ -497,7 +497,7 @@ It is reported, not retried into: the fix is operational.
 | `T` | Cycle interval. Match the ~10-minute Hex refresh; polling faster costs a fee and gas per cycle and buys nothing. **Open** — spec WP5. |
 | `T_request`, `T_poll`, `T_submit` | Per-step deadlines. Liveness bounds, not acceptance bounds — see the deadline budget above. |
 | Instruction fee | Read from `OperationFees` (`TEE_ORACLE`, `GET_FEED`), not hard-coded; scales with the target count. See step 1. |
-| Feed id | `0x20555344582f555344000000000000000000000000` — category 0x20 + "USDX/USD", 21 bytes. Named in the request and inside the signed update; a mismatch with the store reverts. |
+| Feed id | `0x21555344582f555344000000000000000000000000` — category 0x21 + "USDX/USD", 21 bytes. Named in the request and inside the signed update; a mismatch with the store reverts. |
 | `TeeOracleInstructionsSender`, `TeeOracleFeedStore` addresses | From `deploy/config/<chain>/deployed-addresses.json`; the keeper resolves the store entry and derives the sender from the store's `instructionsSender()`. |
 | Target machines | The `-tee` list — named explicitly in every request. |
 | Proxy URLs | Read from the registry per machine, for `/action/result/<id>`. `EXT_PROXY_URL` is looked at first and is the fallback when the registry lists none; `-p` (the wrapper's `PROXY_OVERRIDE`) overrides all of them. |
