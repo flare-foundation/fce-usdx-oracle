@@ -8,7 +8,9 @@ import (
 	"flag"
 	"os"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
+	"github.com/pkg/errors"
 )
 
 func main() {
@@ -36,11 +38,37 @@ func main() {
 		fccutils.FatalWithCause(err)
 	}
 
+	// The registry takes a registration only from the machine's own initial
+	// owner, and the same address takes the machine to production, so this is
+	// the machine owner's key rather than the deployment key. They are one key
+	// on a test deployment and separate ones wherever the extension owner is not
+	// an allowed machine owner, which is the usual arrangement.
+	keySource := "DEPLOYMENT_PRIVATE_KEY (default)"
+	if key, keyErr := fccutils.OverrideKey("MACHINE_OWNER_KEY"); keyErr != nil {
+		fccutils.FatalWithCause(keyErr)
+	} else if key != nil {
+		testSupport.Prv = key
+		keySource = "MACHINE_OWNER_KEY"
+	}
+	sender := crypto.PubkeyToAddress(testSupport.Prv.PublicKey)
+
 	// get teeID from proxy
 	teeInfo, err := fccutils.TeeInfo(*pf)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
+
+	// Checked here rather than left to the chain: the registry answers a
+	// mismatch with OnlyOwner, which says nothing about which of the two
+	// addresses is wrong, and the machine's owner is fixed in its launch
+	// environment where it cannot be corrected from here.
+	if owner := teeInfo.MachineData.InitialOwner; owner != sender {
+		fccutils.FatalWithCause(errors.Errorf(
+			"this key is %s but the machine reports %s as its initial owner, and only that "+
+				"address may register it — set MACHINE_OWNER_KEY to its key, or launch the "+
+				"machine with INITIAL_OWNER=%s", sender.Hex(), owner.Hex(), sender.Hex()))
+	}
+	logger.Infof("Using key: %s (machine owner: %s)", keySource, sender.Hex())
 
 	teeID, _, err := fccutils.TeeProxyId(teeInfo)
 	if err != nil {

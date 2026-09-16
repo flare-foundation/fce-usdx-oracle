@@ -247,6 +247,7 @@ DEPLOYMENT_PRIVATE_KEY=0x… EXT_PROXY_URL=https://<machine> DIRECT_API_KEY=<its
 ./deploy/scripts/import-upstream-addresses.sh coston   # the official sender and UsdxFeedStore, from upstream's deploys file
 (cd tools && go run ./cmd/wire-extension)              # owner wiring; publishes the sender the addresses file names, so check it first
 EXPECTED_CODE_HASH=<measured hash> ./deploy/scripts/post-build.sh   # registers THAT machine: allows the build, governance, register, production
+#   a second machine, without editing .env: post-build.sh --proxy https://<machine 2>
 ./deploy/scripts/publish-local.sh admins             # the chain's admin set (deploy/config/admins/<chain>.json); a machine holds
 ./deploy/scripts/publish-local.sh endpoints          # publications in memory, so every newly registered machine needs both again
 ./deploy/scripts/upload-hex-key.sh
@@ -265,8 +266,11 @@ you want them pinned to that one build. Never take it from the machine you are v
 `(cd tools && go run ./cmd/retire-tee -p "$EXT_PROXY_URL")` when the machine is decommissioned.
 
 **On Coston** the store takes a batch only from **two** distinct production machines, carrying
-the same observed timestamp and prices within 1%, so the flow above is run once per machine and
-the keeper is given both machine ids. A machine's extension is fixed when it registers, so a
+the same observed timestamp and prices within 1%, so the flow above is run once per machine, the
+second with `--proxy`, and the keeper is given both machine ids. The machines' `INITIAL_OWNER`
+must be an address the extension owner has allowed as a machine owner, and the registry takes the
+registration only from that address itself: put its key in `MACHINE_OWNER_KEY` when it is not the
+deployer, which is the usual case, since the extension owner is typically not a machine owner. A machine's extension is fixed when it registers, so a
 machine registered for a test extension cannot be moved to extension 1: retire it and register
 it again, or use a fresh one.
 

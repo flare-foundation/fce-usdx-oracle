@@ -74,6 +74,13 @@ func main() {
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
+	// Pausing is the machine owner's, like registration: the deployment key by
+	// default, the machine owner's key where the two differ.
+	if key, keyErr := fccutils.OverrideKey("MACHINE_OWNER_KEY"); keyErr != nil {
+		fccutils.FatalWithCause(keyErr)
+	} else if key != nil {
+		s.Prv = key
+	}
 	owner := crypto.PubkeyToAddress(s.Prv.PublicKey)
 
 	var targets []common.Address

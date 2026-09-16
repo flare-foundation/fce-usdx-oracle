@@ -98,7 +98,7 @@ registered forever.
 | `import-upstream-addresses.sh <chain>` | Copies the sender + feed store addresses from a flare-smart-contracts-v2 deploy into `deploy/config/<chain>/deployed-addresses.json`, and refreshes the chain's system contracts and its indexer configuration. Re-run after every upstream deploy. On a chain this repository deploys itself, the oracle entries come from that deploy instead and are left out here. |
 | `full-setup.sh` | Pins the extension identity (`EXTENSION_ID=1`, reserved), starts the stack, runs post-build — in one command. |
 | `start-services.sh` | Builds the extension image and brings up the compose stack (extension-tee, proxy, redis). `--local` runs the host-process variant instead. |
-| `post-build.sh` | Whitelists the image's code hash (`allow-tee-version`), sets TEE governance (`set-governance`) and registers the machine (`register-tee`). |
+| `post-build.sh` | `--proxy <url>` addresses one machine of a fleet. Whitelists the image's code hash (`allow-tee-version`), sets TEE governance (`set-governance`) and registers the machine (`register-tee`). |
 | `stop-services.sh` | Retires the stack's machine on chain (`retire-tee -p`), then tears the stack down; `--keep-registered` skips the retirement. |
 
 For a production deployment the oracle contracts (`TeeOracleInstructionsSender` +
@@ -119,7 +119,7 @@ allowlist, EVM key type) once governance has run `registerReserved`.
 | `wire-extension` | Wires a RESERVED extension after governance runs `registerReserved`: `setExtensionContracts` (the sender — required before `register-tee`'s availability check), machine-owner allowlist, EVM key type. Idempotent. | `-extensionId`, `-sender` |
 | `set-governance` | Publishes the TEE governance signer set + threshold from `GOVERNANCE_SIGNERS` / `GOVERNANCE_THRESHOLD`. **Must match what the TEE node was launched with**, or `register-tee` fails `InvalidGovernanceHash`. | |
 | `allow-tee-version` | Whitelists a code hash + platform for the extension, read from the proxy's `/info`. Idempotent — skips if already active. | `-version` |
-| `register-tee` | Registers the machine and takes it to `PRODUCTION`, in four resumable steps. | `-command`, `-state`, `-resume` |
+| `register-tee` | Registers the machine and takes it to `PRODUCTION`, in four resumable steps. Signs as the machine's initial owner, which the registry requires as the sender: `MACHINE_OWNER_KEY`, or the deployment key where they are one. It refuses before sending when the key is not the owner the machine reports. | `-command`, `-state`, `-resume` |
 | `retire-tee` | Pauses a machine in the registry, the one-way retirement: `-p <proxy>` the machine behind a proxy (its id read from the attested `/info`), `-tee <id>` by id, `-stale` every active machine whose URL does not answer as itself — the leftovers of stopped stacks. Owner-only; idempotent on a paused machine. | `-p`, `-tee`, `-stale`, `-dry-run` |
 
 `register-tee -command` is a string of step letters, run in order:
@@ -295,7 +295,8 @@ anything before the first line that is exactly `[`.
 | --- | --- |
 | `SIMULATED_TEE=true` | expected code hash and platform are the simulated constants rather than parsed from an attestation token |
 | `SIMULATED_CODE_HASH` | overrides that expected hash, for addressing a fleet running two builds mid-upgrade. Validated as exactly 32 bytes, and **ignored unless `SIMULATED_TEE=true`** — under real attestation the hash comes from the token and must not be overridable |
-| `EXTENSION_OWNER_KEY` | signs `addTeeVersion` as someone other than the deployer |
+| `EXTENSION_OWNER_KEY` | signs the extension owner's calls as someone other than the deployer: `addTeeVersion`, the wiring, the governance set |
+| `MACHINE_OWNER_KEY` | signs the machine owner's calls: registration, the move to production, and pausing. The registry requires the machine's own initial owner as the sender, so this is needed wherever that address is not the deployer |
 | `DIRECT_API_KEY` | the direct channel gate: what `fleet-status`, `send-endpoints`, `send-admins`, `oracle-watch`, `readiness` and the scripts ask a machine with (`GET_READINESS`) |
 
 ### When a transaction just says `execution reverted`

@@ -3,6 +3,15 @@
 #
 # Run this AFTER Docker Compose brings up the extension TEE + proxy + Redis.
 #
+# Usage:
+#   ./deploy/scripts/post-build.sh                      # the machine .env names
+#   ./deploy/scripts/post-build.sh --proxy https://…    # that machine instead
+#
+# --proxy addresses one machine of a fleet without editing .env, which the
+# environment alone cannot do: .env is loaded over the caller's environment, so
+# an exported EXT_PROXY_URL would be overwritten by it. Everything else — the
+# chain, the addresses, the keys — is the same for every machine.
+#
 # Inputs (env vars):
 #   EXT_PROXY_URL       — extension proxy URL (auto-detected: :6674 for Docker, :6684 for local)
 #   NORMAL_PROXY_URL    — normal/FTDC proxy URL (default: http://localhost:6662)
@@ -12,6 +21,9 @@
 #   LOCAL_MODE          — skip attestation (default: true)
 #   WAIT_TIMEOUT        — service wait timeout in seconds (default: 120)
 #   EXTENSION_OWNER_KEY — private key override for AddTeeVersion (optional)
+#   MACHINE_OWNER_KEY   — private key of the machine's initial owner, which the
+#                         registry requires as the sender of the registration
+#                         (optional; the deployment key where they are one key)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,9 +34,26 @@ log()  { echo -e "${GREEN}[post-build]${NC} $*"; }
 step() { echo -e "\n${CYAN}=== Step $1: $2 ===${NC}"; }
 die()  { echo -e "${RED}[post-build] ERROR:${NC} $*" >&2; exit 1; }
 
+PROXY_ARG=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --proxy) [[ $# -ge 2 ]] || die "--proxy needs a URL"; PROXY_ARG="$2"; shift 2 ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        *) die "unknown argument: $1 (usage: $0 [--proxy <url>])" ;;
+    esac
+done
+
 # --- .env, then the stack start-services.sh recorded ---
 # shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"; load_env
+# Given on the call, the machine is that one: after load_env, so it outranks
+# .env and the recorded stack rather than being overwritten by them.
+if [[ -n "$PROXY_ARG" ]]; then
+    EXT_PROXY_URL="${PROXY_ARG%/}"
+    # The registered address follows it: EXT_PROXY_HOST_URL is the other
+    # machine's when .env names one, and it is what goes on chain.
+    EXT_PROXY_HOST_URL="$EXT_PROXY_URL"
+fi
 # shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR/lib/chains.sh"
 
