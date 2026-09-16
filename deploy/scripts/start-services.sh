@@ -307,6 +307,21 @@ if [[ "$USE_LOCAL" == "false" ]]; then
         log "proxy image: tee-proxy's published one at the pinned tag (docker-compose.yaml)"
     fi
 
+    # The compose set: the base file, the sibling overlay when the node is built
+    # from the on-disk tee-node, and one live overlay for every chain that is not
+    # the simulation (what differs between live chains is in the environment and
+    # in the proxy configuration rendered below). stop-services.sh assembles the
+    # same set.
+    COMPOSE_FILES=("-f" "$PROJECT_DIR/deploy/docker-compose.yaml")
+    if [[ "$USE_LOCAL_SIBLINGS" == "true" ]]; then
+        log "USE_LOCAL_SIBLINGS — node built from on-disk tee-node via Dockerfile.siblings.dev"
+        COMPOSE_FILES+=("-f" "$PROJECT_DIR/deploy/docker-compose.siblings.yaml")
+    fi
+    if [[ "$CHAIN" != local ]]; then
+        log "$CHAIN — attaching docker-compose.live.yaml"
+        COMPOSE_FILES+=("-f" "$PROJECT_DIR/deploy/docker-compose.live.yaml")
+    fi
+
     # A container created but never started by an aborted run keeps that run's
     # port binding and network id; starting it fails on either. Nothing lives in
     # such a container, so it is removed rather than diagnosed.
