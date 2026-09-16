@@ -460,11 +460,6 @@
     "address": "0x13C3E07d1B372882c88ab8ADFAd9dcE8AA5420A1"
   },
   {
-    "name": "UsdxTeeExtensionStateVerifier",
-    "contractName": "UsdxTeeExtensionStateVerifier.sol",
-    "address": "0xAfA188cDBc47D04FEE9C42f7ee6Aa668c85E9c5c"
-  },
-  {
     "name": "AddressUpdater",
     "contractName": "AddressUpdater.sol",
     "address": "0xb006c0cb0b2b8ae48E5B12883Cd5a13654cc6e20"

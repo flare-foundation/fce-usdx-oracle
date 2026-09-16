@@ -46,7 +46,7 @@ The relay is what delivers cosigned instructions to *this* extension's proxy too
 ```bash
 ./deploy/scripts/use-chain.sh local            # .env.local → .env (Hardhat test keys only)
 ./deploy/scripts/deploy-oracle.sh --chain local        # oracle contracts on the sim, extension 1 reserved, addresses imported
-(cd tools && go run ./cmd/wire-extension)      # owner wiring: sender + state verifier, allowed machine owners, key types
+(cd tools && go run ./cmd/wire-extension)      # owner wiring: instructions sender, allowed machine owners, key types
 ./deploy/scripts/full-setup.sh --chain local   # extension + proxy in Docker, version, governance, machine registered
 ./deploy/scripts/publish-local.sh endpoints    # SET_ENDPOINTS, executed at once: the local sender is deployer-governed
 ./deploy/scripts/publish-local.sh admins       # SET_ADMINS, dev-only well-known keys

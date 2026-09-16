@@ -49,7 +49,7 @@ troubleshooting table, is [docs/local-e2e.md](../docs/local-e2e.md).
 #   with a private Hex token (see "Private Hex credentials" below):
 #   HEX_API_KEY=<token> HEX_CASH_URL=https://… ./deploy/scripts/use-chain.sh local
 ./deploy/scripts/deploy-oracle.sh --chain local             # oracle contracts on the sim, extension 1 reserved
-(cd tools && go run ./cmd/wire-extension)           # owner wiring: sender + state verifier, allowed machine owners, key types
+(cd tools && go run ./cmd/wire-extension)           # owner wiring: instructions sender, allowed machine owners, key types
 
 # Start the extension TEE and its proxy, and register the machine. Two ways,
 # use one or the other; the commands after them are the same:
@@ -165,7 +165,7 @@ DEPLOYMENT_PRIVATE_KEY=0x… EXT_PROXY_URL=https://<name>.ngrok-free.app ./deplo
 docker compose -f deploy/docker-compose.coston-indexer.yaml up -d   # the chain's indexer; ~20 min to "Up to date" on a fresh database
 ngrok http 6674 --url=https://<name>.ngrok-free.app     # in another terminal, left running (6684 for b)
 ./deploy/scripts/deploy-oracle.sh --chain coston        # oracle contracts on the testnet; extension checked or registered, its id recorded
-(cd tools && go run ./cmd/wire-extension)               # owner wiring: sender + state verifier, allowed machine owners, key types
+(cd tools && go run ./cmd/wire-extension)               # owner wiring: instructions sender, allowed machine owners, key types
 
 USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup.sh --chain coston        # a) in Docker: compose stack, proxy on 6674
 USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh --chain coston   # b) as host processes: proxy on 6684 (--attach as on the simulation)
@@ -275,7 +275,7 @@ indexer enforces a ten-day minimum), or name an indexer of your own in `.env` (`
 | Script | Purpose |
 | --- | --- |
 | `use-chain.sh <chain>` | Activate `.env.<chain>` as `.env`. On a live chain it creates the file from the template when missing and fills in what `DEPLOYMENT_PRIVATE_KEY` (given on the call or in the file) implies: owner, proxy key, `DIRECT_API_KEY`, provisioning keys, the chain's admin set; present values are kept. Hex credentials given on the call, or present in the `.env` being replaced, are carried; `--no-hex` drops them. |
-| `deploy-oracle.sh --chain c [--refresh]` | Deploy the oracle contracts deployer-governed and the extension's state verifier, make the extension ours (the simulation reserves it; on a testnet it checks the reservation, or registers a public id for an allowlisted key and records it in `.env` and `.env.<chain>`), import addresses. Refuses mainnets: there the production deploy is upstream's. |
+| `deploy-oracle.sh --chain c [--refresh]` | Deploy the oracle contracts deployer-governed, make the extension ours (the simulation reserves it; on a testnet it checks the reservation, or registers a public id for an allowlisted key and records it in `.env` and `.env.<chain>`), import addresses. Refuses mainnets: there the production deploy is upstream's. |
 | `import-upstream-addresses.sh <network> [upstream]` | Merge upstream's deployed addresses into `config/<network>/deployed-addresses.json`; for `local` it seeds the file from the sim dump. On a live chain it also refreshes the system contracts from the network's `FlareContractRegistry` (the authority — Flare redeploys contracts) and renders the chain's indexer configuration from them. |
 | `full-setup.sh [--chain c] [--local]` | Start the stack (`start-services.sh`), then `post-build.sh`. `--local` runs the extension TEE and proxy as host processes. |
 | `full-setup-host.sh [--chain c] [--attach]` | `full-setup.sh --chain c --local` (default `local`); on a live chain the host proxy's redis is the base compose file's and the tunnel forwards to 6684. `--attach` then follows the stack's log in the terminal, Ctrl-C stopping the stack. |

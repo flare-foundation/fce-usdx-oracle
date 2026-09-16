@@ -6,9 +6,9 @@
 // idempotent:
 //
 //  1. setExtensionContracts(extensionId, verifier, sender) — register-tee's
-//     availability check dispatches through this sender and passes the
-//     machine's attested state through this verifier, so run this BEFORE
-//     post-build.sh.
+//     availability check dispatches through this sender, so run this BEFORE
+//     post-build.sh. The verifier is set to the zero address, which is what the
+//     registry needs for an extension whose state is empty.
 //  2. AddAllowedTeeMachineOwners(extensionId, [owner])
 //  3. addSupportedKeyTypes(extensionId, [EVM])
 //
@@ -41,10 +41,6 @@ func main() {
 	senderF := flag.String("sender", "",
 		"TeeOracleInstructionsSender address (default: the TeeOracleInstructionsSender "+
 			"entry in the addresses file)")
-	verifierF := flag.String("stateVerifier", "",
-		"UsdxTeeExtensionStateVerifier address (default: the UsdxTeeExtensionStateVerifier "+
-			"entry in the addresses file); the registry passes every machine's attested state "+
-			"through it, so without one no machine reaches production")
 	flag.Parse()
 
 	extensionID, ok := new(big.Int).SetString(*extensionIDF, 0)
@@ -57,13 +53,6 @@ func main() {
 		fccutils.FatalWithCause(errors.Errorf("resolving the instructions sender: %s — run "+
 			"scripts/import-upstream-addresses.sh after the upstream deploy, or pass -sender", err))
 	}
-	verifierAddr, err := configs.ResolveContract(*verifierF, *af, "UsdxTeeExtensionStateVerifier")
-	if err != nil {
-		fccutils.FatalWithCause(errors.Errorf("resolving the state verifier: %s — deploy it "+
-			"(deploy-oracle-local.sh on the simulation; contracts/script/DeployStateVerifier.s.sol "+
-			"elsewhere) and add its address to the addresses file, or pass -stateVerifier", err))
-	}
-
 	testSupport, err := support.DefaultSupport(*af, *cf)
 	if err != nil {
 		fccutils.FatalWithCause(err)
@@ -86,9 +75,8 @@ func main() {
 	logger.Infof("Using key: %s (owner: %s)", keySource, crypto.PubkeyToAddress(privKey.PublicKey).Hex())
 	logger.Infof("Extension id:        %s", extensionID.String())
 	logger.Infof("Instructions sender: %s", senderAddr.Hex())
-	logger.Infof("State verifier:      %s", verifierAddr.Hex())
 
-	if err := fccutils.WireReservedExtension(testSupport, privKey, extensionID, senderAddr, verifierAddr); err != nil {
+	if err := fccutils.WireReservedExtension(testSupport, privKey, extensionID, senderAddr); err != nil {
 		fccutils.FatalWithCause(err)
 	}
 

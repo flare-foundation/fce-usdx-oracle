@@ -333,11 +333,13 @@ the pin moves.
 
 A consequence surfaced on the first live run: the registry's availability check accepts a
 non-empty state only through a registered `TeeExtensionStateVerifier`, so with the fold-in
-`toProduction` reverted with `InvalidResponseData()`. `contracts/src/UsdxTeeExtensionStateVerifier.sol`
-is the minimal verifier (refuses tee-node's unavailable sentinel and a malformed report,
-parses nothing), the local deploy and `DeployStateVerifier.s.sol` deploy it, and
-`wire-extension` publishes it with `setExtensionContracts`. On a live network it must be set
-before tee-node is upgraded, or production machines fail their periodic `confirmAvailability`.
+`toProduction` reverted with `InvalidResponseData()`. A minimal verifier was written and
+published with `setExtensionContracts` to get past it.
+
+**Status, 2026-09-16.** Moot, and the verifier is removed. The extension answers `GET /state`
+with the empty state (see review II, T-26), which the availability check accepts with no
+verifier registered while still refusing tee-node's unavailable sentinel. `wire-extension`
+publishes the zero address.
 
 ### SR-49 · Info — `ActionResult.Version` differs from tee-node's
 

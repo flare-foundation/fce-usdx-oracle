@@ -9,8 +9,7 @@
 # publications execute at once and one key runs the whole flow. That makes this
 # the deploy for the simulation and for a test deployment on a testnet; a
 # production deployment is upstream's own script plus governance, and nothing
-# here. The extension's state verifier, this repository's one contract, is
-# deployed alongside.
+# here.
 #
 # The deployer is the key the tools sign with (DEPLOYMENT_PRIVATE_KEY). The
 # extension it deploys for is EXTENSION_ID, and how that id becomes ours depends
@@ -216,23 +215,7 @@ if [[ "$REFRESH" == "false" && -n "$SENDER" && "$(cast code "$SENDER" --rpc-url 
 fi
 if [[ "$REFRESH" == "false" && -n "$SENDER" && "$(cast code "$SENDER" --rpc-url "$CHAIN_URL")" != "0x" ]]; then
     log "TeeOracleInstructionsSender already on chain at $SENDER — keeping it (pass --refresh to redeploy)"
-    jq '[.[] | select(.name | test("TeeOracle|FeedStore|StateVerifier"))]' "$ADDRS" > "$DEPLOY_OUT"
-    # A file from before the state verifier existed has no entry for it. It is
-    # independent of the oracle contracts, so it is deployed on its own.
-    if [[ -z "$(jq -r '[.[] | select(.name=="UsdxTeeExtensionStateVerifier") | .address][0] // empty' "$DEPLOY_OUT")" ]]; then
-        log "no UsdxTeeExtensionStateVerifier yet — deploying it"
-        VERIFIER_LOG="$PROJECT_DIR/out/deploy-state-verifier.$CHAIN.forge.log"
-        ( cd "$PROJECT_DIR/contracts" && \
-            forge script script/DeployStateVerifier.s.sol:DeployStateVerifier \
-                --rpc-url "$CHAIN_URL" --private-key "$DEPLOYER_KEY" --broadcast --non-interactive ) 2>&1 | tee "$VERIFIER_LOG" \
-            || die "verifier deploy failed (log: ${VERIFIER_LOG#"$PROJECT_DIR"/})"
-        VERIFIER_ENTRIES="$(grep -E '^[[:space:]]*DEPLOYED:' "$VERIFIER_LOG" \
-            | sed -E 's/^[[:space:]]*DEPLOYED:[[:space:]]*([^,]+),[[:space:]]*([^:]+):[[:space:]]*(0x[0-9a-fA-F]{40}).*/\1|\2|\3/' \
-            | jq -Rn '[inputs | split("|") | {name: .[0], contractName: .[1], address: .[2]}]')"
-        [[ "$(jq length <<<"$VERIFIER_ENTRIES")" -gt 0 ]] || die "verifier deploy printed no address (log: ${VERIFIER_LOG#"$PROJECT_DIR"/})"
-        jq --argjson v "$VERIFIER_ENTRIES" '. + $v' "$DEPLOY_OUT" > "$DEPLOY_OUT.tmp" && mv "$DEPLOY_OUT.tmp" "$DEPLOY_OUT"
-        log "verifier at $(jq -r '.[0].address' <<<"$VERIFIER_ENTRIES")"
-    fi
+    jq '[.[] | select(.name | test("TeeOracle|FeedStore"))]' "$ADDRS" > "$DEPLOY_OUT"
 else
     [[ "$(cast code "$GS_ADDR" --rpc-url "$CHAIN_URL")" != "0x" ]] || die "no GovernanceSettings code at $GS_ADDR — not a Flare network?"
     # The contracts are upstream's sources; their OpenZeppelin and flare-periphery
@@ -268,8 +251,6 @@ else
     [[ -n "$SENDER" ]] || die "deploy ran but printed no TeeOracleInstructionsSender address (log: ${FORGE_LOG#"$PROJECT_DIR"/})"
     log "sender at $SENDER ($(jq length "$DEPLOY_OUT") contracts)"
 fi
-VERIFIER="$(jq -r '[.[] | select(.name=="UsdxTeeExtensionStateVerifier") | .address][0] // empty' "$DEPLOY_OUT")"
-
 # --- Making the extension ours ---
 section "Extension ownership"
 if [[ "$CHAIN" == "local" ]]; then
@@ -289,13 +270,16 @@ if [[ "$CHAIN" == "local" ]]; then
         die "registerReserved would revert: $CALL_ERR"
     fi
 elif [[ "$REGISTER_PUBLIC" == "true" ]]; then
-    [[ -n "$VERIFIER" ]] || die "no state verifier address to register with"
-    send_retry "$DEPLOYER_KEY" "$FTM" 'register(address,address)' "$VERIFIER" "$SENDER" >/dev/null \
+    # No state verifier: the extension answers GET /state with the empty state,
+    # which the registry accepts on its own, refusing tee-node's "could not read
+    # the extension" sentinel as a verifier would.
+    send_retry "$DEPLOYER_KEY" "$FTM" 'register(address,address)' \
+        0x0000000000000000000000000000000000000000 "$SENDER" >/dev/null \
         || die "register(verifier, sender) failed"
     MINTED_OWNER="$(word_addr "$(eth_call "$DEPLOYER_ADDR" "$FTM" 'getExtensionOwner(uint256)' "$EXTENSION_ID")")"
     [[ "$(tr '[:upper:]' '[:lower:]' <<<"$MINTED_OWNER")" == "$(tr '[:upper:]' '[:lower:]' <<<"$DEPLOYER_ADDR")" ]] \
         || die "the registry minted a different id than predicted ($EXTENSION_ID is owned by $MINTED_OWNER); the sender was deployed for $EXTENSION_ID — redeploy with --refresh"
-    log "extension $EXTENSION_ID registered to $DEPLOYER_ADDR with sender $SENDER and verifier $VERIFIER"
+    log "extension $EXTENSION_ID registered to $DEPLOYER_ADDR with sender $SENDER and no state verifier"
     # The stack and every tool read the id from .env; a public id is not the
     # default 1, so it is recorded there, and in the chain's own file, which
     # use-chain.sh copies over .env on every chain switch and full-setup.sh
@@ -310,7 +294,7 @@ elif [[ "$REGISTER_PUBLIC" == "true" ]]; then
         log "EXTENSION_ID=$EXTENSION_ID recorded in ${envfile#"$PROJECT_DIR"/}"
     done
 else
-    log "extension $EXTENSION_ID is reserved to its owner; wire-extension publishes the sender and verifier"
+    log "extension $EXTENSION_ID is reserved to its owner; wire-extension publishes the sender"
 fi
 
 section "Addresses → deploy/config/$CHAIN"

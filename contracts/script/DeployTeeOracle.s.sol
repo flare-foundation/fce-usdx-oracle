@@ -16,7 +16,6 @@ import {ITeeOracleFeedStore} from
     "flare-smart-contracts-v2/userInterfaces/tee/ITeeOracleFeedStore.sol";
 import {ITeeOracleInstructionsSender} from
     "flare-smart-contracts-v2/userInterfaces/tee/ITeeOracleInstructionsSender.sol";
-import {UsdxTeeExtensionStateVerifier} from "../src/UsdxTeeExtensionStateVerifier.sol";
 
 /**
  * Deploys the TEE oracle contracts deployer-governed: the way upstream's
@@ -32,10 +31,7 @@ import {UsdxTeeExtensionStateVerifier} from "../src/UsdxTeeExtensionStateVerifie
  * the USDX/USD feed with its submission policy and the fee destination. The
  * extension id comes from the environment, since a test deployment may run
  * under a public id the registry minted rather than the reserved 1. The
- * contracts are upstream's own sources, compiled from the sibling checkout,
- * plus this repository's one contract, the extension's state verifier, which the
- * registry consults on every availability check now that tee-node reports the
- * extension's state.
+ * contracts are upstream's own sources, compiled from the sibling checkout.
  *
  * Inputs come from the environment, set by deploy/scripts/deploy-oracle.sh:
  * DEPLOYER_PRIVATE_KEY, EXTENSION_ID (default 1), and the network's
@@ -134,13 +130,6 @@ contract DeployTeeOracle is Script {
         storeAddrs[1] = fdc2Verification;
         storeAddrs[2] = feeCalculator;
         store.updateContractAddresses(storeNames, storeAddrs);
-
-        // The extension owner publishes this address with setExtensionContracts
-        // (tools/cmd/wire-extension reads it from the addresses file).
-        UsdxTeeExtensionStateVerifier verifier = new UsdxTeeExtensionStateVerifier();
-        _logDeployed(
-            "UsdxTeeExtensionStateVerifier", "UsdxTeeExtensionStateVerifier", address(verifier)
-        );
 
         vm.stopBroadcast();
     }

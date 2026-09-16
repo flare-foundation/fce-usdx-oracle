@@ -26,13 +26,12 @@ import (
 // deploy here, only wire:
 //
 //  1. setExtensionContracts(extensionId, verifier, sender) — publishes the
-//     extension's instructions sender and state verifier to the diamond. The
-//     register-tee availability check dispatches through this sender, so it
-//     must land BEFORE post-build.sh; and the registry passes the machine's
-//     attested extension state through the verifier on that check, refusing an
-//     empty verifier address unless the state is empty too. tee-node reports
-//     the extension's state, so the verifier (UsdxTeeExtensionStateVerifier,
-//     deployed from contracts/) is required for any machine to reach production.
+//     extension's instructions sender to the diamond. The register-tee
+//     availability check dispatches through this sender, so it must land BEFORE
+//     post-build.sh. The verifier is set to the zero address: this extension
+//     answers GET /state with the empty state, and with no verifier the registry
+//     accepts exactly that and refuses both tee-node's "could not read the
+//     extension" sentinel and any other state.
 //  2. AddAllowedTeeMachineOwners — registerTee reverts NotAllowedExtensionOwner
 //     for a machine whose owner is not on this list.
 //  3. addSupportedKeyTypes([EVM]) — parity with what register() did for
@@ -42,7 +41,7 @@ import (
 // sequence of no-ops, so a failure partway through is fixed by re-running.
 func WireReservedExtension(
 	s *support.Support, privKey *ecdsa.PrivateKey,
-	extensionId *big.Int, instructionsSender, stateVerifier common.Address,
+	extensionId *big.Int, instructionsSender common.Address,
 ) error {
 	owner := crypto.PubkeyToAddress(privKey.PublicKey)
 	callOpts := &bind.CallOpts{From: owner, Context: context.Background()}
@@ -71,8 +70,12 @@ func WireReservedExtension(
 		return errors.Errorf("%s", err)
 	}
 
-	// Step 1: publish the instructions sender and the state verifier. One call
-	// sets both, so either differing means a new call.
+	// Step 1: publish the instructions sender. The same call sets the state
+	// verifier, and this extension registers none: it answers GET /state with
+	// the empty state, which the registry accepts on its own while still
+	// refusing tee-node's "could not read the extension" sentinel. Either
+	// address differing from what is published means a new call.
+	var noStateVerifier common.Address
 	currentSender, err := s.TeeExtensionRegistry.GetTeeExtensionInstructionsSender(callOpts, extensionId)
 	if err != nil {
 		return errors.Errorf("reading the current instructions sender: %s", err)
@@ -81,25 +84,26 @@ func WireReservedExtension(
 	if err != nil {
 		return errors.Errorf("reading the current state verifier: %s", err)
 	}
-	if currentSender == instructionsSender && currentVerifier == stateVerifier {
-		logger.Infof("Instructions sender already %s and state verifier already %s, skipping",
-			instructionsSender.Hex(), stateVerifier.Hex())
+	if currentSender == instructionsSender && currentVerifier == noStateVerifier {
+		logger.Infof("Instructions sender already %s and no state verifier set, skipping",
+			instructionsSender.Hex())
 	} else {
 		if currentSender != (common.Address{}) && currentSender != instructionsSender {
 			logger.Infof("Replacing instructions sender %s with %s", currentSender.Hex(), instructionsSender.Hex())
 		}
-		if currentVerifier != stateVerifier {
-			logger.Infof("Setting state verifier %s (was %s)", stateVerifier.Hex(), currentVerifier.Hex())
+		if currentVerifier != noStateVerifier {
+			logger.Infof("Clearing the state verifier (was %s): the extension's state is empty, "+
+				"which the registry accepts without one", currentVerifier.Hex())
 		}
-		tx, txErr := s.TeeExtensionRegistry.SetExtensionContracts(opts, extensionId, stateVerifier, instructionsSender)
+		tx, txErr := s.TeeExtensionRegistry.SetExtensionContracts(opts, extensionId, noStateVerifier, instructionsSender)
 		if txErr != nil {
 			return errors.Errorf("SetExtensionContracts failed: %s", txErr)
 		}
 		if _, txErr = support.CheckTx(tx, s.ChainClient); txErr != nil {
 			return errors.Errorf("%s", txErr)
 		}
-		logger.Infof("Extension contracts set: sender %s, state verifier %s (tx %s)",
-			instructionsSender.Hex(), stateVerifier.Hex(), tx.Hash().Hex())
+		logger.Infof("Extension contracts set: sender %s, no state verifier (tx %s)",
+			instructionsSender.Hex(), tx.Hash().Hex())
 	}
 
 	// Step 2: allow the owner to register TEE machines for this extension.

@@ -105,9 +105,8 @@ For a production deployment the oracle contracts (`TeeOracleInstructionsSender` 
 `TeeOracleFeedStore`) are deployed upstream — `deploy-tee-oracle.sh` plus governance follow-ups
 (`registerReserved`, the `TEE_ORACLE` fee rows, `addCustomFeeds`); see
 [deployment-steps.md](deployment-steps.md). For the simulation and for a test deployment on a
-testnet, `deploy-oracle.sh --chain <chain>` deploys the same contracts deployer-governed, plus the
-extension's state verifier, and checks or registers the extension (deploy/README, "Testing on
-Coston"). After the upstream deploy,
+testnet, `deploy-oracle.sh --chain <chain>` deploys the same contracts deployer-governed and
+checks or registers the extension (deploy/README, "Testing on Coston"). After the upstream deploy,
 `import-upstream-addresses.sh <chain>` slots the deployed addresses into
 `deploy/config/<chain>/deployed-addresses.json` so the tools resolve them by name, and
 `wire-extension` performs the extension-owner share (`setExtensionContracts`, machine-owner

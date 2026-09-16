@@ -185,18 +185,6 @@ else:
     print(f"NOTE: {len(stores)} feed stores deployed ({names}); no generic "
           "TeeOracleFeedStore alias written — pass -store explicitly")
 
-# This repository's own contract, the extension's state verifier, rides along
-# when the deploys file carries it (the local deploy and DeployStateVerifier
-# both print it). Upstream's deploys never do; the operator adds it by hand or
-# through the same DEPLOYED line.
-verifier = next((e for e in src if e.get("name") == "UsdxTeeExtensionStateVerifier"), None)
-if verifier is not None:
-    upserts.append({
-        "name": "UsdxTeeExtensionStateVerifier",
-        "contractName": "UsdxTeeExtensionStateVerifier.sol",
-        "address": verifier["address"],
-    })
-
 by_name = {e.get("name"): i for i, e in enumerate(dest)}
 for entry in upserts:
     i = by_name.get(entry["name"])
