@@ -272,7 +272,7 @@ func (p *Poller) ReadinessReport(
 	return readiness.EncodeData(body, signature, payload)
 }
 
-// Stats reports cumulative counters for GET /state.
+// Stats reports the cumulative observation counters the readiness report carries.
 func (p *Poller) Stats() (observations, failures int) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

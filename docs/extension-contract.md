@@ -58,10 +58,15 @@ received and expected identifiers, which is worth imitating.
 
 ### `GET /state`
 
-No request body. Returns a `StateResponse` (§4.5) with status 200. tee-node reads it on every
-TEE info request and nothing else does: the port is loopback-only, and every consumer reads the
-state out of the proxy's `/info`. A tee-node that cannot reach the route reports its all-ones
-`StateUnavailableVersion` there instead of failing the info response.
+No request body. Returns a `StateResponse` (§4.5) with status 200: the **empty state**, the
+zero `stateVersion` and no bytes. tee-node reads the route on every TEE info request and folds
+what it carries into the attested info the proxy republishes, and the registry's availability
+check verifies it, so the route must answer; a tee-node that cannot reach it reports its
+all-ones `StateUnavailableVersion` instead, which fails that check. This extension carries
+nothing there on purpose. Its account of itself is the signed `GET_READINESS` report
+([usdx-oracle-readiness-query.md](usdx-oracle-readiness-query.md)), produced by the poller and
+bound to the request that asked; an unsigned copy aging between feed requests, which anyone
+with the direct-channel key could move, told operators less.
 
 ### Routing rules
 
@@ -218,8 +223,8 @@ this naturally; the conformance fixtures compare the resulting hex exactly.
 
 | Field | Type | JSON | Notes |
 | --- | --- | --- | --- |
-| `stateVersion` | `common.Hash` | **32-byte hex** | bytes32 of the version string — asymmetric with `ActionResult.version` by design |
-| `state` | `hexutil.Bytes` | **hex string** | the JSON encoding of the extension's `State`. Bytes, not an object: tee-node decodes this body as its own `TeeState`, takes `state` and `stateVersion`, and carries them opaquely into the attested TEE info, which the proxy republishes as `teeInfo.state.state`. `stateVersion` names the schema of those bytes |
+| `stateVersion` | `common.Hash` | **32-byte hex** | the zero hash: there are no bytes, so no schema to name. A bytes32, asymmetric with `ActionResult.version` by design |
+| `state` | `hexutil.Bytes` | **hex string** | `0x`, empty: this extension carries no state. Bytes, not an object: tee-node decodes this body as its own `TeeState`, takes `state` and `stateVersion`, and carries them opaquely into the attested TEE info, which the proxy republishes as `teeInfo.state.state` |
 
 ### 4.6 `status` and `log`
 
@@ -239,7 +244,7 @@ An extension registers handlers against `(opType, opCommand)` pairs, both compar
 
 **Lookup order:** exact `(opType, opCommand)` match first; then `(opType, <empty bytes32>)` as a wildcard. Registering a handler with an empty `opCommand` makes it the default for every command under that op-type. No match at all is a 501.
 
-**Concurrency:** handler invocations are serialized — at most one runs at a time. `GET /state` is serialized against handlers too, so a state read never observes a half-applied mutation. Implementations may use a mutex (Go, Python) or a promise chain (TypeScript); what matters is the observable guarantee.
+**Concurrency:** handler invocations are serialized — at most one runs at a time. Implementations may use a mutex (Go, Python) or a promise chain (TypeScript); what matters is the observable guarantee. `GET /state` carries nothing and needs no serialisation.
 
 ---
 

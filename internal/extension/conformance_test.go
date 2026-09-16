@@ -26,13 +26,12 @@ import (
 // assert the ENVELOPE — routing, status codes, the ActionResult field set, and
 // the exact body of GET /state — never the price.
 //
-// They share one process because the counters accumulate and 12-get-state
-// asserts them exactly, so index.json fixes the order and the subtests below
-// must stay sequential.
+// They share one process and index.json fixes the order, so a fixture may rely
+// on what the ones before it did to the extension.
 const fixtureDir = "../../deploy/testdata/conformance"
 
 // The observation every GET_FEED fixture is answered with. Fixed so the replay
-// is deterministic, and matching the state 12-get-state asserts.
+// is deterministic.
 const (
 	conformanceValue      = int32(100_000_000)
 	conformanceDecimals   = int8(8)

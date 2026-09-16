@@ -211,7 +211,7 @@ The store keeps no per-machine bookkeeping: one global `observedAt` stamp is all
 - **Target binding.** The signed update names the extension id and the feed id (and the chain id), so it cannot be replayed onto another feed or another chain — but a second store registered for the *same* feed under the same extension would still accept it. Accepted trade-off, [findings §18](docs/usdx-oracle-findings.md).
 - **Clock independence.** `observedAt` is a global ratchet across machines: one enclave with a fast clock suppresses the others until chain time catches up.
 
-One more worth knowing before you touch anything: **`/state` counters describe prices served, not the poller** — a machine nobody queries reports zeroes while its observation loop fails every two minutes. Alert on on-chain feed *age*, or query `GET_READINESS`.
+One more worth knowing before you touch anything: **the machine's account of itself is the signed `GET_READINESS` report**; `GET /state`, which tee-node folds into the attested `/info`, carries the empty state. Alert on on-chain feed *age*, or query `GET_READINESS`.
 
 ---
 
@@ -274,7 +274,7 @@ Three things that are easy to misread as failures:
 | Orchestration | `internal/observation`, `internal/observation/poller` | One observation start to finish; the timer, the cache and the staleness bound |
 | Provisioning | `internal/provisioning/{envelope,store}` | M-of-N envelope verification; the only mutable state in the process |
 | Wire formats | `internal/wire/{feedupdate,readiness}`, `internal/failure` | The signed payloads, and the closed public error vocabulary |
-| HTTP surface | `internal/extension` | `POST /action` routing and `GET /state` |
+| HTTP surface | `internal/extension` | `POST /action` routing; `GET /state` answers the empty state |
 | Ops CLI | `cmd/usdxprov` | Build / sign / submit a `SET_SECRET` envelope |
 | Tooling & keeper | `tools/` | Registration, configuration publication, the keeper cycle, preflight, fleet status. **Language-neutral** — it re-declares the wire layout rather than importing it |
 | Conformance | `deploy/testdata/conformance/` | Golden wire fixtures, asserted against any implementation |

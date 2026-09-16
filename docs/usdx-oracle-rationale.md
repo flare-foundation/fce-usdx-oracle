@@ -25,8 +25,9 @@ Two of the extension's outputs are world-readable:
 
 - `ActionResult.Log` — returned to the TEE proxy and served from its
   action-result endpoint (`docs/extension-contract.md` §4.6).
-- `GET /state` — polled by tee-node, folded into `TEEState.state`, attested, and
-  republished by the proxy at `GET /info` (spec §4.1).
+- the `GET_READINESS` report — the machine's signed account of itself, served to
+  anyone holding the proxy's direct key (spec §4.1). `GET /state`, which tee-node
+  folds into the attested `/info`, carries the empty state.
 
 Go error strings routinely carry exactly what must not appear on either. Both of
 these are real, and both are among the likeliest failures in this extension:
@@ -693,7 +694,7 @@ different spans:
 - `mu` covers only the data fields, in short critical sections. It is
   deliberately **not** held across the tee-node round trips in `ApplySecret`: it
   is also taken by `Readiness` and `Resolve`, so a hung `/decrypt` would
-  otherwise freeze `GET /state` and every observation.
+  otherwise freeze every observation and every readiness answer.
 
 Order is `applyMu` then `mu`, never the reverse.
 
@@ -758,9 +759,9 @@ lives in the pinned block instead.
 
 `newHealth` seeds every known source as `unknown`. Absence must never read as
 health: an empty map is indistinguishable from "everything fine" to anyone
-reading `GET /state`, and that is exactly the state where a source has silently
-stopped being polled. The cash source is seeded by its pinned name even when
-unconfigured, so it never simply vanishes from `/state` — an absent key reads as
+reading the readiness report, and that is exactly the state where a source has
+silently stopped being polled. The cash source is seeded by its pinned name even
+when unconfigured, so it never simply vanishes from the report — an absent key reads as
 "no such source", which is the one thing this map must never say.
 
 ---

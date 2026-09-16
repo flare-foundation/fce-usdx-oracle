@@ -12,21 +12,16 @@ the enclave) · [usdx-oracle-keeper.md](usdx-oracle-keeper.md) (the consumer) ·
 
 ## Why
 
-Two ways exist to ask a machine about itself, and only one of them is meant to be used:
+This is the one way to ask a machine about itself. The extension's `GET /state`, which tee-node
+folds into the attested `/info`, carries the empty state: it once carried a second, unsigned copy
+of the fields below, written by the `GET_FEED` handler and therefore up to a keeper cycle behind,
+with counters that any holder of the direct-channel key could move. `GET_READINESS` describes
+the engine itself, signs the answer, and binds it to the request that asked.
 
-| Path | Available? | Trustworthy? |
-| --- | --- | --- |
-| `GET /state` on the extension | No — loopback-only inside the machine; only tee-node reads it | No — plain HTTP, unsigned; whatever answers the port |
-| `teeInfo.state.state` in the proxy's `/info` | Yes — tee-node reads `/state` on every info request and carries the bytes (tee-node `4761481` and later; older versions publish the field empty, and an unreadable extension shows as the all-ones `StateUnavailableVersion`) | Yes — covered by `dataSignature` and the attestation |
-
-The attested path is what `fleet-status`, `send-endpoints`, `send-admins` and the scripts all
-read. On a tee-node older than that they degrade together: delivery cannot be confirmed, `live`
-reports nothing, and `upload-rpc-keys.sh` cannot ask which refs are missing — so the operator
-names them by hand from the endpoints file instead.
-
-`GET_READINESS` answers the same questions without depending on the tee-node version, through
-the action path, and adds what `/state` cannot carry: a signature over the answer bound to the
-request, and the poller's own view of whether it would sign.
+Everything that reads a machine goes through it: `fleet-status`, `send-endpoints` and
+`send-admins` for delivery confirmation, `oracle-watch` and the keeper's preflight, and the
+operator scripts through `tools/cmd/readiness` (`read_machine_readiness` in `lib/env.sh`). All of
+them need the proxy's direct-channel key.
 
 ### Scope
 
@@ -88,12 +83,10 @@ number — never a credential, a URL, or an upstream's own words.
 | `failures` | int | cumulative failures, `Poller.Stats()` |
 | `lastErrorClass` | string | `internal/failure` vocabulary only — see below |
 
-**These must come from the poller.** `/state`'s equivalents are written by the `GET_FEED`
-handler, so a machine that has never served a request reports `updateCount: 0`, `failureCount: 0`
-and an empty `sourceHealth` while its loop runs perfectly — which reads exactly like a dead
-poller and has already cost one debugging session. `GET_READINESS` describes the engine, not the
-last request served, and that is the whole reason it is a separate surface rather than a copy of
-`/state`.
+**These come from the poller.** They describe the engine, not the last request served. A
+counter written by the request handler reads like a dead poller for a machine nobody has asked,
+and reads like a failing one when a key holder posts refused requests — both happened before the
+state was emptied, and both are why the report is produced by the poller and nothing else.
 
 ### Sources — the health map of the newest observation
 

@@ -32,7 +32,7 @@ internal/
 └── teenode/        client for tee-node's local /sign and /decrypt
 pkg/
 ├── server/         StartExtension: resolves the TEE identity, then starts the poller and the server
-├── types/          the public GET /state shape
+├── types/          the readiness payload shapes and the empty GET /state envelope
 └── contracts/      abigen bindings for the upstream TeeOracleStructs ABI
 ```
 
@@ -81,9 +81,9 @@ Both were found on-chain and are written up in
 **You must lock.** `Extension` holds mutable state guarded by `e.mu`; `actionHandler` may run
 concurrently.
 
-**Results go through `result`.** Handlers return an `outcome`; `result` builds the `ActionResult`,
-sets the `log` values the wire contract requires, and updates the `/state` counters. A handler never
-sees the action envelope, so nothing from it can be echoed by accident.
+**Results go through `result`.** Handlers return an `outcome`; `result` builds the `ActionResult`
+and sets the `log` values the wire contract requires. A handler never sees the action envelope, so
+nothing from it can be echoed by accident.
 
 **ABI payloads** are decoded with the `abi.Arguments` derived from the upstream ABI in
 `internal/provisioning/store/abi.go` (endpoints, admins) and in `internal/wire/feedupdate` (the

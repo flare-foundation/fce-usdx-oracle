@@ -265,7 +265,7 @@ poller.Poller.Run — every 2 minutes                poller.go:114
   │     re-run every tick, never cached
   │     builds RPC clients, bonds source, cash source (nil if no secret)
   │     provider names are positional ("rpc_flare_1") so nothing an operator
-  │     writes reaches the public /state
+  │     writes reaches the public readiness report
   │
   └─ observation.Observe — 20s deadline                  observation.go:104
         S   supply, all chains concurrently
@@ -429,7 +429,7 @@ any fault → failure.Failure (closed vocabulary, compile-time constant text)
    ├─ recorded by the poller
    ├─ next GET_FEED → ActionResult{status: 0, log: "error: <constant text>"}
    │     → proxy /action/result/<id> → the keeper records it as an error class
-   └─ GET /state → tee-node → attested → proxy /info      ← WORLD READABLE
+   └─ GET_READINESS → signed report (lastErrorClass, sourceHealth) ← PUBLIC TO KEY HOLDERS
 ```
 
 `Failure` has unexported fields and no exported constructor, so no runtime value
@@ -470,12 +470,9 @@ either public surface. That is a compile error, not a review item.
    `SET_ADMINS` installs one. The pre-production requirement is that the set
    published is a real one — `deploy/config/admins/dev-wellknown-keys.json` names
    private keys 1, 2 and 3 and is for local and testnet work only.
-2. **`/state` describes requests served, not the engine.** Its counters and
-   `sourceHealth` are written only on the GET_FEED path, so a machine nobody
-   queries reports an empty health map while its poller fails every 2 minutes.
-   `GET_READINESS` is the surface that reports the poller itself — use it, or
-   alert on on-chain feed *age*. (`Poller.Stats()` remains unused outside tests;
-   `ReadinessReport` reads the counters directly.)
+2. **`GET /state` carries the empty state.** `GET_READINESS` is the surface that
+   reports the poller itself — the only one — so use it, and alert on on-chain
+   feed *age* as well, which needs no key and no answering machine.
 3. **`checkWindow` measures retrieval time, not data age.** The 30s window bounds
    when we *fetched*; the reserve figure itself carries **no** freshness bound —
    both Hex endpoints republish on an on-chain event, not a schedule, so an old

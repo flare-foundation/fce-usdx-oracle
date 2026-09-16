@@ -114,9 +114,6 @@ func TestGetPrice_RejectedOverDirectChannel(t *testing.T) {
 	if result.Log != "error: "+failure.WrongActionType.Error() {
 		t.Errorf("log = %q", result.Log)
 	}
-	if e.updateCount != 0 {
-		t.Error("a refused request must not count as an update")
-	}
 }
 
 // SET_ENDPOINTS is authorised by the owner-only check in the on-chain sender.
@@ -311,9 +308,6 @@ func TestConfig_WithoutProvisionerIsNotConfigured(t *testing.T) {
 	if result.Log != "error: "+failure.NotConfigured.Error() {
 		t.Errorf("log = %q", result.Log)
 	}
-	if e.lastErrorClass != failure.ClassNotConfigured {
-		t.Errorf("class = %q, want %q", e.lastErrorClass, failure.ClassNotConfigured)
-	}
 }
 
 func TestConfig_UnknownCommandIs501(t *testing.T) {
@@ -321,56 +315,5 @@ func TestConfig_UnknownCommandIs501(t *testing.T) {
 	status, _ := e.processAction(configAction(toHash("NOT_A_COMMAND"), teetypes.Direct, []byte("x")))
 	if status != http.StatusNotImplemented {
 		t.Errorf("status = %d, want 501", status)
-	}
-}
-
-// --- readiness in /state ---
-
-func TestState_ReportsReadiness(t *testing.T) {
-	e := newProvisionedExtension(&fakeProvisioner{
-		readiness: types.Readiness{
-			EndpointsSet: true, Ready: false,
-			MissingRefs: []string{"hex_api_key"},
-		},
-	})
-
-	rr := doStateRequest(t, e)
-	state := decodeStateBody(t, rr)
-
-	if !state.Readiness.EndpointsSet {
-		t.Error("endpointsSet should be reported")
-	}
-	if state.Readiness.Ready {
-		t.Error("ready should be false")
-	}
-	if len(state.Readiness.MissingRefs) != 1 {
-		t.Errorf("missing refs = %v", state.Readiness.MissingRefs)
-	}
-}
-
-// Readiness is published on a world-readable, attested surface. It may name
-// which secrets are outstanding — that is the operational value — but never
-// their values.
-func TestState_ReadinessNamesRefsNotValues(t *testing.T) {
-	const secret = "SUPERSECRETVALUE"
-
-	e := newProvisionedExtension(&fakeProvisioner{
-		readiness: types.Readiness{
-			EndpointsSet: true,
-			MissingRefs:  []string{"hex_api_key", "ankr_eth_key"},
-		},
-	})
-
-	body := doStateRequest(t, e)
-	if strings.Contains(string(body), secret) {
-		t.Errorf("state leaks a secret value: %s", body)
-	}
-
-	state := decodeStateBody(t, body)
-	// Refs must be identifiers, not URLs or values.
-	for _, ref := range state.Readiness.MissingRefs {
-		if strings.Contains(ref, "://") || strings.Contains(ref, " ") {
-			t.Errorf("ref %q does not look like an identifier", ref)
-		}
 	}
 }

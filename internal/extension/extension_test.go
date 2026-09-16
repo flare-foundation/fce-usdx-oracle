@@ -31,8 +31,7 @@ var testInstructionID = common.HexToHash("0x111111111111111111111111111111111111
 func toHash(s string) common.Hash { return teeutils.ToHash(s) }
 
 // newTestExtension builds an Extension the way New() does, without binding a
-// listener. Constructing &Extension{} directly leaves sourceHealth nil, which
-// hides map-initialisation bugs that only surface via GET /state.
+// listener.
 // feedRequest is the GET_FEED instruction message for the feed this build
 // serves — abi.encode(FeedUpdateRequest{feedId}).
 func feedRequest(t *testing.T) []byte {
@@ -65,8 +64,6 @@ func newTestExtension() *Extension {
 			Data:       []byte{0xAB, 0xCD},
 			Health:     map[string]string{},
 		}},
-		lastErrorClass: failure.ClassNone,
-		sourceHealth:   map[string]string{},
 	}
 }
 
@@ -259,13 +256,6 @@ func TestProcessGetFeed_RejectsPayload(t *testing.T) {
 	if strings.Contains(result.Log, strconv.Itoa(len(payload))) {
 		t.Errorf("log %q discloses the payload length", result.Log)
 	}
-
-	if e.lastErrorClass != failure.ClassSourceInvalid {
-		t.Errorf("expected error class %q, got %q", failure.ClassSourceInvalid, e.lastErrorClass)
-	}
-	if e.failureCount != 1 {
-		t.Errorf("expected failureCount=1, got %d", e.failureCount)
-	}
 }
 
 // The request envelope is exactly one byte and exactly this value; anything else is
@@ -385,117 +375,6 @@ func TestProcessAction_UnknownActionTypeIsRefused(t *testing.T) {
 	}
 }
 
-// --- State tracking ---
-
-func TestState_UpdateCountIncrementsAcrossCalls(t *testing.T) {
-	e := newTestExtension()
-
-	for i := 1; i <= 3; i++ {
-		status, body := e.processAction(getFeedAction(t))
-		result := mustResult(t, status, body)
-		if result.Status != 1 {
-			t.Fatalf("call %d: expected status 1, got %d: %s", i, result.Status, result.Log)
-		}
-		if e.updateCount != i {
-			t.Errorf("call %d: expected updateCount=%d, got %d", i, i, e.updateCount)
-		}
-	}
-}
-
-func TestState_ReflectsLastObservation(t *testing.T) {
-	e := newTestExtension()
-
-	if _, body := e.processAction(getFeedAction(t)); len(body) == 0 {
-		t.Fatal("expected a result body")
-	}
-
-	if e.lastPrice != "100000000" {
-		t.Errorf("expected lastPrice=100000000, got %q", e.lastPrice)
-	}
-	if e.lastDecimals != config.PriceDecimals {
-		t.Errorf("expected lastDecimals=%d, got %d", config.PriceDecimals, e.lastDecimals)
-	}
-	if e.lastObservedAt != testTimestamp {
-		t.Errorf("expected lastObservedAt=%d, got %d", testTimestamp, e.lastObservedAt)
-	}
-	if e.lastErrorClass != failure.ClassNone {
-		t.Errorf("expected no error class, got %q", e.lastErrorClass)
-	}
-}
-
-// A success after a failure must clear the error class, otherwise /state reports
-// a stale failure forever and the monitoring in WP7 fires on a healthy feed.
-func TestState_SuccessClearsErrorClass(t *testing.T) {
-	e := newTestExtension()
-
-	bad := buildTestAction(
-		config.OPTypeTeeOracle,
-		config.OPCommandGetFeed,
-		[]byte(`{"unexpected":"payload"}`),
-	)
-	e.processAction(bad)
-	if e.lastErrorClass == failure.ClassNone {
-		t.Fatal("expected an error class to be recorded")
-	}
-
-	e.processAction(getFeedAction(t))
-	if e.lastErrorClass != failure.ClassNone {
-		t.Errorf("expected error class cleared after success, got %q", e.lastErrorClass)
-	}
-	if e.failureCount != 1 {
-		t.Errorf("expected failureCount to stay at 1, got %d", e.failureCount)
-	}
-	if e.updateCount != 1 {
-		t.Errorf("expected updateCount=1, got %d", e.updateCount)
-	}
-}
-
-// GET /state is public and attested (spec §4.1). This asserts the wire shape
-// carries only operational fields — no supply, reserves, endpoints or secrets.
-func TestState_ExposesOnlyOperationalFields(t *testing.T) {
-	e := newTestExtension()
-	e.processAction(getFeedAction(t))
-
-	b, err := json.Marshal(types.State{
-		Readiness:      types.Readiness{MissingRefs: []string{}},
-		LastPrice:      e.lastPrice,
-		LastDecimals:   e.lastDecimals,
-		LastObservedAt: e.lastObservedAt,
-		UpdateCount:    e.updateCount,
-		FailureCount:   e.failureCount,
-		LastErrorClass: string(e.lastErrorClass),
-		SourceHealth:   e.sourceHealth,
-	})
-	if err != nil {
-		t.Fatalf("marshalling state: %v", err)
-	}
-
-	var fields map[string]any
-	if err := json.Unmarshal(b, &fields); err != nil {
-		t.Fatalf("unmarshalling state: %v", err)
-	}
-
-	allowed := map[string]bool{
-		"lastPrice": true, "lastDecimals": true, "lastObservedAt": true,
-		"updateCount": true, "failureCount": true, "lastErrorClass": true,
-		"sourceHealth": true,
-		// readiness names outstanding secret REFS, never their values —
-		// TestState_ReadinessNamesRefsNotValues holds that line.
-		"readiness": true,
-	}
-	for k := range fields {
-		if !allowed[k] {
-			t.Errorf("unexpected field %q in public state — /state is world-readable, "+
-				"see spec §4.1 before adding fields here", k)
-		}
-	}
-	for k := range allowed {
-		if _, ok := fields[k]; !ok {
-			t.Errorf("expected field %q in state", k)
-		}
-	}
-}
-
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
@@ -576,15 +455,6 @@ func TestProcessGetFeed_UsesObserverResult(t *testing.T) {
 	if !bytes.Equal(result.Data, obs.Data) {
 		t.Errorf("data = %x, want %x", result.Data, obs.Data)
 	}
-	if e.lastPrice != "95374751" {
-		t.Errorf("lastPrice = %q", e.lastPrice)
-	}
-	if e.lastObservedAt != 1_700_000_123 {
-		t.Errorf("lastObservedAt = %d", e.lastObservedAt)
-	}
-	if e.sourceHealth["hex_bonds"] != config.HealthOK {
-		t.Errorf("health not adopted from the observation: %v", e.sourceHealth)
-	}
 }
 
 // A failed observation must publish nothing and surface only the vocabulary.
@@ -608,13 +478,6 @@ func TestProcessGetFeed_ObserverFailureFailsClosed(t *testing.T) {
 	if result.Log != "error: "+failure.BackingUnavailable.Error() {
 		t.Errorf("log = %q", result.Log)
 	}
-	if e.lastErrorClass != failure.ClassSourceDown {
-		t.Errorf("lastErrorClass = %q", e.lastErrorClass)
-	}
-	// Health must still be reported, so an operator can see which source broke.
-	if e.sourceHealth["hex_bonds"] != config.HealthDown {
-		t.Errorf("health not reported on failure: %v", e.sourceHealth)
-	}
 }
 
 // A non-vocabulary error must not reach the public Log.
@@ -631,32 +494,6 @@ func TestProcessGetFeed_ForeignErrorIsNotPublished(t *testing.T) {
 	}
 	if result.Log != "error: "+failure.Internal.Error() {
 		t.Errorf("log = %q, want the generic internal reason", result.Log)
-	}
-}
-
-// A failed observation must not overwrite the last good price: the feed freezes
-// at its last value with an ageing timestamp rather than going blank.
-func TestProcessGetFeed_FailureKeepsLastGoodPrice(t *testing.T) {
-	o := &fakeObserver{obs: observation.Observation{
-		Value: 100_000_000, Decimals: 8, ObservedAt: 1_700_000_000,
-		Data: []byte{0x01}, Health: map[string]string{},
-	}}
-	e := newTestExtension()
-	e.observer = o
-
-	e.processAction(getFeedAction(t))
-	if e.lastPrice != "100000000" {
-		t.Fatalf("setup: lastPrice = %q", e.lastPrice)
-	}
-
-	o.err = failure.BackingUnavailable
-	e.processAction(getFeedAction(t))
-
-	if e.lastPrice != "100000000" {
-		t.Errorf("lastPrice = %q; a failure must not clear the last good price", e.lastPrice)
-	}
-	if e.lastObservedAt != 1_700_000_000 {
-		t.Errorf("lastObservedAt = %d; it must age rather than reset", e.lastObservedAt)
 	}
 }
 
@@ -678,41 +515,6 @@ func TestNilObserverPanics(t *testing.T) {
 		NewExtension(0, 0, nil, &fakeProvisioner{})
 	})
 }
-
-// doStateRequest performs GET /state against the handler and returns the body.
-func doStateRequest(t *testing.T, e *Extension) []byte {
-	t.Helper()
-	rec := newRecorder()
-	e.stateHandler(rec, nil)
-	return rec.body
-}
-
-// decodeStateBody reads a GET /state body the way tee-node and the tools do:
-// the envelope's state field is bytes holding the JSON encoding of types.State.
-func decodeStateBody(t *testing.T, body []byte) types.State {
-	t.Helper()
-	var resp types.StateResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	state, err := types.DecodeState(resp.State)
-	if err != nil {
-		t.Fatalf("decode state bytes: %v", err)
-	}
-	return state
-}
-
-type recorder struct {
-	body   []byte
-	status int
-	hdr    http.Header
-}
-
-func newRecorder() *recorder { return &recorder{hdr: http.Header{}} }
-
-func (r *recorder) Header() http.Header         { return r.hdr }
-func (r *recorder) Write(b []byte) (int, error) { r.body = append(r.body, b...); return len(b), nil }
-func (r *recorder) WriteHeader(s int)           { r.status = s }
 
 // The observer's staleness bound is only as good as the clock it is measured
 // against, and the only trustworthy one available is the requesting block's.
@@ -750,8 +552,5 @@ func TestProcessGetFeed_ClockRefusalIsPublishable(t *testing.T) {
 	}
 	if result.Log != "error: "+failure.ClockBehindChain.Error() {
 		t.Errorf("log = %q, want %q", result.Log, failure.ClockBehindChain.Error())
-	}
-	if e.lastErrorClass != failure.ClassClockSkew {
-		t.Errorf("lastErrorClass = %q, want %q", e.lastErrorClass, failure.ClassClockSkew)
 	}
 }

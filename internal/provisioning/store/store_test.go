@@ -951,7 +951,7 @@ func TestStore_SecretRotationTakesEffect(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	// Resolve is called per observation, so a rotated credential takes effect
-	// without a restart. The URL itself never reaches /state, so this only
+	// without a restart. The URL itself never reaches the readiness report, so this only
 	// checks that resolution succeeded with the new value in place.
 	if len(cfg.Chains) == 0 {
 		t.Fatal("no chains resolved")

@@ -145,8 +145,8 @@ Two reasons we recommend against it.
 
 `report.PriceReport` is `{ChainID, Store, FeedID, Price, Decimals, ObservedAt,
 InstructionID}`. There is no field for "computed without cash", and the on-chain payload
-is price-only **by decision** (spec §4.1, Hex confidentiality). `GET /state` cannot carry
-it either, for the same reason.
+is price-only **by decision** (spec §4.1, Hex confidentiality). The readiness report cannot
+carry it either, for the same reason.
 
 So a degraded price would reach consumers and auditors as an ordinary one. We would be
 silently changing what the published number means, with no channel to say so. The
@@ -219,7 +219,7 @@ this publishes nothing, where degradation would have printed 0.990 against a tru
 Two things make this more than a technicality. `internal/observation/price` now rounds
 half-up rather than truncating (findings §21), which is what lets the measured
 figures — bonds $0.004 below supply, purely because Hex quotes to the cent —
-reach par at all. And `GET /state` reports the cash source as `not_configured`
+reach par at all. And the readiness report's health map reports the cash source as `not_configured`
 rather than dropping it, so a par-from-bonds observation is distinguishable from
 a complete one even though the published price is identical by construction.
 
@@ -332,8 +332,8 @@ No extension change is needed; the data is already on the wire.
 | Source | Signal |
 | --- | --- |
 | `ActionResult.Log` | A `failure.Failure` from the closed vocabulary — the error *class* is the alert key |
-| Proxy `GET /info` → `TEEState.state` | `sourceHealth` map, per source: `ok` / `degraded` / `down` / `unknown` |
-| Same | `failureCount`, `lastErrorClass`, `updateCount`, `lastObservedAt`, `readiness` |
+| `GET_READINESS` report | `sourceHealth` map, per source: `ok` / `down` / `lagging` / `disagree` / `unknown` / `not_configured` |
+| Same | `failures`, `observations`, `lastErrorClass`, `lastObservedAt`, `observationAge`, `wouldSign`, `readiness` |
 | Keeper's own timeout | No result at all → TEE or proxy unreachable, distinct from a source outage |
 
 The classes that matter for this alert:

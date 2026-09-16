@@ -87,7 +87,7 @@ keeper dying; 7 catches everything, including causes nobody anticipated.
 ## Cause 4 — routing a status-0 result
 
 `ActionResult.Log` carries a constant from the closed vocabulary in `internal/failure`, and
-`GET /state` carries the coarser `lastErrorClass`. The class is the alert key.
+the readiness report carries the coarser `lastErrorClass`. The class is the alert key.
 
 | Class | Failures | Meaning | Route |
 | --- | --- | --- | --- |

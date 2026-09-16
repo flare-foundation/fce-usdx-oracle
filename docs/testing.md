@@ -192,9 +192,9 @@ curl -sS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/getfeed
 ```
 
 ```bash
-# through the node, as every consumer does: mocknode folds the dev server's state into its /info
-curl -sS http://127.0.0.1:<mocknode port>/info | jq -r .teeInfo.state.state | xxd -r -p \
-  | jq '{lastPrice, lastObservedAt, sourceHealth, readiness}'
+# the machine's account of itself: its signed readiness report, asked of the dev server directly
+(cd tools && go run ./cmd/readiness -extension http://127.0.0.1:8099) \
+  | jq '{observationAge, wouldSign, sourceHealth, readiness}'
 ```
 
 The first request is served from whatever the boot-time observation produced; the price appears
@@ -205,11 +205,15 @@ action budget.
 **What good looks like** — `status: 1`, and:
 
 ```json
-{ "lastPrice": "100000000", "sourceHealth": { "hex_bonds": "ok", "hex_cash": "not_configured",
+{ "observationAge": 12, "wouldSign": true,
+  "sourceHealth": { "hex_bonds": "ok", "hex_cash": "not_configured",
   "rpc_flare": "ok", "rpc_flare_1": "ok", "rpc_flare_2": "ok", "rpc_ethereum": "ok", "…": "…" },
   "readiness": { "endpointsSet": true, "adminsSet": true, "ready": false,
                  "missingSecretRefs": ["hex_api_key", "hex_cash_url"] } }
 ```
+
+The price itself is in the `data` of the `GET_FEED` result, the signed update; `oracle-observe.sh`
+decodes it.
 
 `ready: false` with `hex_api_key` and `hex_cash_url` missing is **expected** until Hex issues the
 key and the cash URL is provisioned through `SET_SECRET`. The
@@ -361,7 +365,7 @@ Same five steps, three differences that follow from the split:
 - **Rotation is explicit.** The default uploads only what the machine says is missing, which
   makes a re-run after a partial failure safe. `--all` re-uploads every ref named in
   `ENDPOINTS_FILE` — that is the rotation path, and the only one that needs a local copy of
-  the configuration, because `/state` publishes what is *missing* and never the full list.
+  the configuration, because the readiness report names what is *missing* and never the full list.
 
 ```bash
 ./deploy/scripts/upload-rpc-keys.sh --refs ankr_eth_key      # one ref
@@ -391,7 +395,7 @@ docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.live.yaml 
 ```
 
 Expect `SET_ENDPOINTS applied`, and `SET_ADMINS applied` for the admin set. The `endpointsHash` that `send-endpoints` printed must equal the
-`endpointsHash` in `/state`.
+`endpointsHash` in the machine's readiness report.
 
 ## 5. Request a feed update and put it on-chain
 
@@ -488,10 +492,9 @@ Relaying an update the store already holds ends in
 failure: the store takes strictly increasing timestamps, which is what makes replay and
 out-of-order delivery harmless.
 
-**The machine's own health** is the extension's state — last price, counters, error class and
-per-source health. Only tee-node reads the extension's `GET /state`, on every TEE info request;
-everything else reads it out of the proxy's `/info` (`teeInfo.state.state`, the hex-encoded JSON
-of the state), which `oracle-status.sh` decodes.
+**The machine's own health** is its signed readiness report (`GET_READINESS`): observation age,
+counters, error class and per-source health, which `oracle-status.sh` prints. `GET /state`, the
+route tee-node folds into `/info`, carries the empty state.
 
 ### Verifying the contracts on the explorer
 
@@ -523,11 +526,11 @@ Everything here was hit for real while bringing this up.
 | `requestFeedUpdate` reverts `TeeIdNotConfigured` | A target machine does not have both endpoints and admins published for the feed. | Run `send-endpoints` and `send-admins` for it; `fleet-status` shows which commitment is missing. |
 | Revert `0x3b06a1be` (`MessageEmpty()`) | The instruction carried an empty message. | The sender must send the ABI-encoded `FeedUpdateRequest`; findings §22. |
 | Result `status 3`, log `context deadline exceeded` | The handler took longer than tee-node's **2 s** action budget. | Observation must stay off the request path — that is what `internal/observation/poller` is; findings §23. |
-| Result `status 0`, log `no recent observation` | The background loop has not produced anything inside `MaxObservationAge` (10 min). | Check `/state` `sourceHealth`; an upstream is failing. Working as designed — it fails closed. |
+| Result `status 0`, log `no recent observation` | The background loop has not produced anything inside `MaxObservationAge` (10 min). | Check `sourceHealth` in the readiness report; an upstream is failing. Working as designed — it fails closed. |
 | Result `status 0`, log `instruction carries an unexpected payload` | `originalMessage` was not an ABI-encoded `FeedUpdateRequest` naming this feed. | This extension serves exactly one feed and refuses requests for any other — check the sender's feed id matches the build's (`internal/config`). |
-| `submitFeedUpdates` reverts `StaleEndpoints` | A machine in the batch is running a different config than the sender's `latestEndpointsHash`. | Compare `/state` `endpointsHash` against the hash `send-endpoints` printed; re-send if they differ. |
+| `submitFeedUpdates` reverts `StaleEndpoints` | A machine in the batch is running a different config than the sender's `latestEndpointsHash`. | Compare the readiness report's `endpointsHash` against the hash `send-endpoints` printed; re-send if they differ. |
 | `submitFeedUpdates` reverts `NoAdminsPublished` | No admin set has been published for the feed yet. | Run `send-admins` for it. |
-| `submitFeedUpdates` reverts `StaleAdmins` | A machine in the batch is running a different admin set than the sender's `latestAdminsHash`. | Compare `/state` `adminsHash` against the hash `send-admins` printed; re-send if they differ. |
+| `submitFeedUpdates` reverts `StaleAdmins` | A machine in the batch is running a different admin set than the sender's `latestAdminsHash`. | Compare the readiness report's `adminsHash` against the hash `send-admins` printed; re-send if they differ. |
 | `submitFeedUpdates` reverts `WrongExtensionId` / `WrongFeedId` | A signed update names a different extension or feed than the store's. | Deployment mismatch — check the extension id and feed id pinned in the build (`internal/config`) against the store's `extensionId()`. |
 | `SET_SECRET` rejected right after a restart | The admin set is memory-only and was lost. | Re-run `send-admins`, then re-submit the envelope. |
 | `submitFeedUpdates` rejects a signature | A signer is not a registered PRODUCTION machine on the store's extension, **or the extension is emergency paused** — `Fdc2Verification` rejects both. | Check `getTeeMachineStatus(<TEE_ID>)` is 2 and re-run `post-build.sh` if the machine was re-created; check the extension's pause state. |

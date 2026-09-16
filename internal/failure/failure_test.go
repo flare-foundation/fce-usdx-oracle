@@ -40,7 +40,7 @@ func TestVocabularyIsPopulated(t *testing.T) {
 			t.Error("a failure has an empty reason")
 		}
 		if f.Class() == ClassNone {
-			t.Errorf("failure %q has no class; GET /state would report it as healthy", f.Error())
+			t.Errorf("failure %q has no class; the readiness report would show it as healthy", f.Error())
 		}
 	}
 }

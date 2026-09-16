@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sync"
 
-	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/observation"
 	"fce-usdx-oracle/pkg/types"
 
@@ -42,7 +40,6 @@ type Provisioner interface {
 }
 
 type Extension struct {
-	mu     sync.RWMutex
 	Server *http.Server
 
 	signPort int
@@ -53,14 +50,6 @@ type Extension struct {
 	// Nil when the extension cannot be provisioned; the provisioning commands
 	// then answer NotConfigured.
 	provisioner Provisioner
-
-	lastPrice      string
-	lastDecimals   int8
-	lastObservedAt uint64
-	updateCount    int
-	failureCount   int
-	lastErrorClass failure.Class
-	sourceHealth   map[string]string
 }
 
 // NewExtension builds an Extension listening on extensionPort and calling
@@ -78,11 +67,9 @@ func NewExtension(
 	}
 
 	e := &Extension{
-		signPort:       signPort,
-		observer:       observer,
-		provisioner:    provisioner,
-		lastErrorClass: failure.ClassNone,
-		sourceHealth:   map[string]string{},
+		signPort:    signPort,
+		observer:    observer,
+		provisioner: provisioner,
 	}
 
 	mux := http.NewServeMux()

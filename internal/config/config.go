@@ -67,7 +67,7 @@ func OpName(h common.Hash) string {
 	return strings.TrimRight(string(h[:]), "\x00")
 }
 
-// Source health per upstream in GET /state. Unknown is the zero value: a source
+// Source health per upstream in the readiness report. Unknown is the zero value: a source
 // that has never been polled must not read as healthy.
 const (
 	HealthUnknown = "unknown"
@@ -198,7 +198,7 @@ func AdminPolicy() envelope.Policy {
 }
 
 // ChainHealthKey and ProviderHealthKey name a chain and one of its RPC
-// providers in the sourceHealth map GET /state publishes.
+// providers in the sourceHealth map the readiness report carries.
 //
 // Both live here because both are public surface and they have to agree: the
 // keys were formerly built in two packages that did not know of each other, so

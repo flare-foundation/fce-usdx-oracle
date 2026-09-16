@@ -615,7 +615,7 @@ func TestObserve_WithoutCash_MatchesTheFullObservation(t *testing.T) {
 
 // An unprovisioned source must not simply disappear from health. A missing key
 // reads as "no such source", which is indistinguishable from healthy to anyone
-// reading GET /state — and it is a different remedy from an outage.
+// reading the readiness report — and it is a different remedy from an outage.
 func TestObserve_WithoutCash_ReportsNotConfigured(t *testing.T) {
 	src, binding := testConfig(t,
 		&fakeChain{supplies: []string{"1000000"}, decimals: 6},

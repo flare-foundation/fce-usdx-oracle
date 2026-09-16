@@ -1,5 +1,5 @@
 // Package failure defines the extension's complete public error vocabulary.
-// ActionResult.Log and GET /state are world-readable, so Failure has unexported
+// ActionResult.Log and the readiness report are world-readable, so Failure has unexported
 // fields and no constructor: only the values below exist. Log debug detail apart.
 //
 // Not the only route to that field, though: a non-200 from POST /action reaches
@@ -27,7 +27,7 @@ func Coerce(err error, fallback Failure) Failure {
 	return fallback
 }
 
-// Class is the coarse taxonomy reported by GET /state as lastErrorClass.
+// Class is the coarse taxonomy the readiness report carries as lastErrorClass.
 type Class string
 
 const (

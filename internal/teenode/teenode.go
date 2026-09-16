@@ -102,7 +102,7 @@ func (c *Client) Sign(ctx context.Context, message []byte) ([]byte, error) {
 
 // Decrypt unseals a secret encrypted to the TEE public key. The plaintext is a
 // credential: never log it, echo it into an error, or let it reach
-// ActionResult.Log or GET /state.
+// ActionResult.Log or the readiness report.
 func (c *Client) Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) == 0 {
 		return nil, failure.Internal

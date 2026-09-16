@@ -57,7 +57,7 @@ type Sources struct {
 type Binding struct {
 	// The extension this machine serves and the feed it speaks for, both pinned
 	// in the build. Zero values are rejected at signing time rather than here,
-	// so a build lacking them still answers GET /state.
+	// so a build lacking them still starts and reports its readiness.
 	ExtensionID *big.Int
 	FeedID      [21]byte
 
@@ -336,7 +336,7 @@ func readBacking(
 		health[src.Cash.Name()] = healthOf(cashErr)
 	} else {
 		// Distinct from "down": an outage and a missing SET_SECRET need
-		// different responses from whoever reads GET /state.
+		// different responses from whoever reads the readiness report.
 		health[config.HexCashName] = config.HealthNotConfigured
 	}
 
@@ -389,13 +389,13 @@ func checkWindow(window time.Duration, supplies []supply.Reading, readings ...ba
 }
 
 // newHealth seeds every known source as unknown. Absence must never read as
-// health: an empty map looks like "everything fine" on GET /state.
+// health: an empty map looks like "everything fine" in the readiness report.
 func newHealth(src Sources) map[string]string {
 	h := make(map[string]string, len(src.Chains)*3+2)
 	for _, ch := range src.Chains {
 		h[config.ChainHealthKey(ch.Name)] = config.HealthUnknown
 		// Seeded so a provider that was never reached still appears. An absent
-		// key reads as "fine" to anything consuming /state, which is the one
+		// key reads as "fine" to anything consuming the report, which is the one
 		// thing this map must never do.
 		for _, p := range ch.Providers {
 			h[p.Name] = config.HealthUnknown

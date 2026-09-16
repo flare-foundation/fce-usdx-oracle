@@ -119,10 +119,11 @@ tooling can find them by name (`TeeOracleFeedStore`, `TeeOracleInstructionsSende
 
 Deploy the extension's state verifier, the one contract this repository adds. The registry
 passes each machine's attested extension state through it on every availability check, and
-tee-node reports the extension's `GET /state` in that attestation, so without a verifier no
-machine reaches production (the registry accepts an empty state only). The verifier has no
-owner and no configuration; it refuses tee-node's "could not read the extension" sentinel and
-a malformed report, and nothing else:
+tee-node reports the extension's `GET /state` in that attestation. This extension answers that
+route with the empty state, which the registry accepts with or without a verifier, and rejects
+tee-node's "could not read the extension" sentinel either way; the verifier therefore changes
+nothing today and the extension may equally be wired with a zero verifier. It has no owner and
+no configuration; it refuses that sentinel and a malformed report, and nothing else:
 
 ```bash
 cd contracts && forge script script/DeployStateVerifier.s.sol:DeployStateVerifier \

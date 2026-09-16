@@ -56,12 +56,6 @@ func TestGetReadiness_Success(t *testing.T) {
 	if !o.lastProvisioning.EndpointsSet || len(o.lastProvisioning.MissingRefs) != 1 {
 		t.Errorf("provisioning readiness was not passed through: %+v", o.lastProvisioning)
 	}
-
-	// A status query is not a price. Counting it would make polling look like
-	// production on GET /state.
-	if e.updateCount != 0 {
-		t.Errorf("readiness must not touch the price counters, updateCount=%d", e.updateCount)
-	}
 }
 
 // The direct action carries the proxy's action id in place of an instruction

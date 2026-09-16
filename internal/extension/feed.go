@@ -2,7 +2,6 @@ package extension
 
 import (
 	"context"
-	"strconv"
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
@@ -34,27 +33,12 @@ func (e *Extension) processGetFeed(df *instruction.DataFixed) outcome {
 	// the data-provider quorum along with the rest of DataFixed. Always a real
 	// block here — GET_FEED is instruction-only, so this handler has one. It is
 	// the observedAt the update is signed with, as the store defines the field,
-	// and the clock the reading's age is checked against; the reading's own
-	// time is what the state reports as lastObservedAt.
+	// and the clock the reading's age is checked against. Which source broke on
+	// a failure, and how the reading is ageing, are the readiness report's to
+	// tell; nothing is recorded here.
 	obs, err := e.observer.Report(context.Background(), df.Timestamp)
-
-	// Health is reported either way: on failure it is what tells an operator
-	// WHICH source broke.
-	e.mu.Lock()
-	e.sourceHealth = obs.Health
-	e.mu.Unlock()
-
 	if err != nil {
 		return refuse(failure.Coerce(err, failure.Internal))
 	}
-
-	e.mu.Lock()
-	e.lastPrice = strconv.FormatInt(int64(obs.Value), 10)
-	e.lastDecimals = obs.Decimals
-	e.lastObservedAt = obs.ObservedAt
-	e.updateCount++
-	e.lastErrorClass = failure.ClassNone
-	e.mu.Unlock()
-
 	return succeed(obs.Data)
 }

@@ -29,19 +29,15 @@ type outcome struct {
 func succeed(data []byte) outcome      { return outcome{data: data} }
 func refuse(f failure.Failure) outcome { return outcome{fail: f} }
 
-// result turns an outcome into the wire result, and records a refusal in the
-// counters GET /state publishes.
+// result turns an outcome into the wire result. A refusal leaves no trace
+// beyond the result itself: the machine keeps no counters that a request can
+// move, and its own account of its observations is the readiness report.
 func (e *Extension) result(
 	action teetypes.Action, opCommand common.Hash, o outcome,
 ) (int, []byte) {
 	status, err := uint8(1), error(nil)
 	if !o.fail.IsZero() {
 		status, err = 0, o.fail
-
-		e.mu.Lock()
-		e.failureCount++
-		e.lastErrorClass = o.fail.Class()
-		e.mu.Unlock()
 	}
 
 	b, encErr := json.Marshal(buildResult(action, opCommand, o.data, status, err))

@@ -44,7 +44,7 @@ type Reading struct {
 }
 
 type Source interface {
-	// Name must never be a URL: /state is public, endpoint paths are not.
+	// Name must never be a URL: the readiness report is public, endpoint paths are not.
 	Name() string
 
 	// Fetch returns the current reading. The error is always a failure.Failure.
@@ -89,7 +89,7 @@ func New(cfg Config) (Source, error) {
 		return nil, errors.New("backing: source name is required")
 	}
 	if strings.Contains(cfg.Name, "://") || strings.Contains(cfg.Name, ".") {
-		// A URL-shaped name would disclose the endpoint on GET /state, and with
+		// A URL-shaped name would disclose the endpoint in the readiness report, and with
 		// it any key embedded in a query string.
 		return nil, errors.New("backing: source name must be an identifier, not a URL")
 	}

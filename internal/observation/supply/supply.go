@@ -49,7 +49,7 @@ type Caller interface {
 
 // Provider is one RPC endpoint for a chain.
 type Provider struct {
-	// Never a URL: /state is public and endpoint URLs may embed API keys.
+	// Never a URL: the readiness report is public and endpoint URLs may embed API keys.
 	Name string
 
 	Client Caller

@@ -88,7 +88,7 @@ Roughly bottom-up. "Flow" refers to §6.
 | `internal/observation` | orchestrates **one** observation: ordering, deadlines, health map | `Observe` `:124`, `Sign` `:219`, `readAllChains` `:276`, `readBacking` `:319`, `checkWindow` `:371` | C, D |
 | `internal/observation/poller` | runs `Observe` on a timer, caches the latest, enforces staleness, and answers readiness | `Poller.Run` `:76`, `Latest` `:133`, `Report` `:159`, `ReadinessReport` `:207` | C, D, D2 |
 | `internal/extension` | HTTP surface + action routing | `processAction` `:185`, `processTeeOracle` `:206`, `processGetFeed` `:268`, `processGetReadiness` `:318`, `processSetEndpoints`/`processSetAdmins`/`processSetSecret` (provisioning.go), `stateHandler` `:125` | A, B, D, D2 |
-| `pkg/types` | the **public** `/state` and readiness-payload shapes | `State`, `Readiness`, `ReadinessReport`, `StateResponse` | D, D2 |
+| `pkg/types` | the readiness payload shapes and the empty `/state` envelope | `Readiness`, `ReadinessReport`, `StateResponse` | D, D2 |
 | `pkg/server` | wires everything together | `StartExtension` `:25` | boot |
 
 ### Binaries (`cmd/`)
@@ -272,7 +272,7 @@ poller.Poller.Run — every 2 min                poller.go:69
   │     re-run every tick (never cached), so a rotated credential needs no restart
   │     builds RPC clients, bonds source, cash source (nil if no secret yet)
   │     provider names are POSITIONAL — "rpc_flare_1" — so nothing an operator
-  │     writes can reach the public /state
+  │     writes can reach the public readiness report
   │
   └─ observation.Observe — 20s deadline              observation.go:104
         S  readAllChains, all chains concurrently      observation.go:204
@@ -370,8 +370,8 @@ Three properties are the whole point:
   only an encoding or signing fault is an error here.
 - **Its domain differs from the price report's.** The identity key signs both, so a
   readiness answer can never be reinterpreted as a price however the bytes are routed.
-- **It does not touch the `/state` counters.** Those describe prices *served*; counting
-  status polls would make monitoring look like production traffic.
+- **It is the machine's only account of itself.** `GET /state` carries the empty state, so
+  nothing a request does is counted anywhere a reader could mistake for the poller.
 
 `wouldSign` is the field that earns its keep: `tools/pkg/keeper.wouldRefuse` reads it
 before paying for an on-chain request, so a machine whose newest observation has aged
@@ -491,7 +491,7 @@ flare-smart-contracts-v2 checkout (see `contracts/`).
 
 **1. The failure vocabulary is closed.** `failure.Failure` has unexported fields and no
 exported constructor, so a value can only be one of the ~24 declared in
-`internal/failure`. `ActionResult.Log` and `GET /state` are both world-readable, and an
+`internal/failure`. `ActionResult.Log` and the readiness report are both world-readable, and an
 ordinary Go error carries exactly what must not appear there — an API key inside a
 `*url.Error`, a reserve figure inside a parse error. This is enforced by the compiler,
 not by review.
@@ -546,10 +546,9 @@ carries the long form.
   ref picks one: `hex_api_key` → `backing` (1-of-N allowed), everything else → `providers`
   (2-of-N minimum). The checked-in `deploy/config/admins/dev-wellknown-keys.json` names private
   keys 1, 2 and 3 — local and testnet only.
-- **`/state` counters count served `GET_FEED` actions, not the poller.**
-  `observe.Poller.Stats()` exists but is never called — a machine nobody queries reports
-  an empty health map while its poller may be failing every 2 minutes. Alert on on-chain
-  feed *age*, not on these counters.
+- **`GET /state` carries the empty state.** The machine's counters and health are the
+  poller's, read through `GET_READINESS`, which needs the proxy's key and a machine that
+  answers. Alert on on-chain feed *age* as well, which needs neither.
 - **The report has no target binding.** A genuinely signed report is replayable into any
   other store registered under the same extension. Accepted trade-off, findings §18.
 - **`observedAt` is a global ratchet** across all machines: one enclave with a fast clock

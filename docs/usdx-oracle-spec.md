@@ -29,6 +29,7 @@
 | 2026-08-05 | **GET_FEED carries an ABI-encoded `FeedUpdateRequest`** naming the feed (supersedes the original one-byte `0x01` envelope once one sender began serving several feeds), never an empty message | `sendInstructions` reverts `MessageEmpty()`, so `requestFeedUpdate()` could never dispatch an empty message. The extension requires exactly that encoding and rejects any other shape, preserving the property the empty message was chosen for. Findings §22. |
 | 2026-08-05 | **Observation moved onto a timer; GET_FEED only signs** | tee-node allows an extension 2 s per action (`settings.ProxyTimeout`, a const in its internal package); a complete observation measures 2.0–2.9 s, so every request timed out. `internal/observation/poller` observes every 2 min and `MaxObservationAge` (10 min) bounds the resulting staleness. Findings §23. |
 | 2026-09-15 | **The signed `observedAt` is the requesting instruction's block timestamp** | That is the store's definition of the field (`ITeeOracleFeedStore.FeedUpdate`), and `submitFeedUpdates` requires every update in a batch to carry the same value, which only a shared on-chain instant gives; the reading's own time was signed before, so no two machines on independent timers could ever form a batch. The inputs behind an update are at most `MaxObservationAge` (10 min) older than the stamp, checked against that very timestamp before signing; the reading's time stays on the observation as `lastObservedAt`. |
+| 2026-09-16 | **`GET /state` carries the empty state** | The signed `GET_READINESS` report is the machine's one account of itself. The state was a second, unsigned copy of its fields, written by the `GET_FEED` handler and therefore up to a keeper cycle behind, with counters any holder of the direct-channel key could move (security review II, T-26). tee-node relays the empty state as such and the registry accepts it. |
 
 ---
 
@@ -311,24 +312,29 @@ enclave.
 
 ### 4.1 What is public, and what is not
 
-This matters more than it looks, because **the extension's `GET /state` is not
-private**. tee-node polls it and folds the response into `TEEState.state`, which
-is attested and then published by the TEE proxy at `GET /info`. Anything the
-extension puts in `/state` is world-readable with a signature attached.
+This matters more than it looks, because **nothing the extension says about
+itself is private**. tee-node polls `GET /state` and folds the response into
+`TEEState.state`, attested and published by the TEE proxy at `GET /info`; the
+signed `GET_READINESS` report is served to anyone holding the proxy's direct
+key. The extension therefore carries nothing in `/state` — the zero version and
+no bytes, which tee-node relays as such and the registry accepts — and its one
+account of itself is the readiness report.
 
 Consequence of the price-only payload decision: if Hex considers the reserve
 components confidential, they can go in **neither** the on-chain payload **nor**
-`/state`. The surfaces are:
+the readiness report. The surfaces are:
 
 | Surface | Visibility | May carry reserve components? |
 | --- | --- | --- |
 | `ActionResult.data` → `TeeOracleFeedStore` | public, on-chain, permanent | no (decided) |
-| `GET /state` → `TEEState.state` → proxy `/info` | public, attested | **no** — same exposure |
+| `GET /state` → `TEEState.state` → proxy `/info` | public, attested | carries nothing |
+| `GET_READINESS` report | public to key holders, signed | **no** — same exposure |
 | Extension logs | **OPEN** — see below | probably, if egress is controlled |
 
-So `/state` carries only non-sensitive operational data: last published price,
-last update timestamp, success/failure counters, last error class, per-source
-health. No raw supply or reserve figures.
+So the readiness report carries only non-sensitive operational data: observation
+age, success/failure counters, last error class, per-source health, the
+configuration hashes and the names of missing secrets. No raw supply or reserve
+figures, and no price — the price is what `GET_FEED` signs.
 
 **OPEN:** where do extension logs actually go from a Confidential Space VM, and
 who can read them? If they land in Cloud Logging under an account Flare controls,
@@ -505,7 +511,7 @@ time of the survey.
 | 3.3 | Orchestration: parallel fetch of 3 chains + 2 APIs, with a global deadline | | |
 | 3.4 | Consistency window enforcement (see §6.1) | | |
 | 3.5 | Result payload encoding + `POST /sign` for the TEE signature | | |
-| 3.6 | `GET /state`: last price, last update ts, counters, last error class, per-source health — **no raw supply or reserve figures** (§4.1: `/state` is public) | | |
+| 3.6 | `GET /state` answers the empty state; the signed `GET_READINESS` report carries observation age, counters, last error class, per-source health — **no raw supply or reserve figures** (§4.1: it is public) | | |
 | 3.7 | Error taxonomy → `ActionResult.status` / `log` (fail closed, never publish a guessed price) | | |
 | 3.8 | Structured logging that never logs secrets, full API responses, or reserve figures (§4.1) | | |
 
@@ -542,7 +548,7 @@ extension registration. The residual gap is narrower: a second store registered
 for the *same* feed under the same extension would still accept the update.
 
 Price only. Supply and backing components are excluded as possibly sensitive to
-Hex — and for the same reason excluded from `GET /state`, which is public (§4.1).
+Hex — and for the same reason excluded from the readiness report, which is public (§4.1).
 Consumers therefore cannot recompute `min(1, B/S)` from on-chain data; see §4.1
 for a possible lagged-disclosure remedy.
 
@@ -873,7 +879,7 @@ For Hex:
    redemption — and not otherwise. `last_update` is a change timestamp, which is
    why the extension no longer bounds its age (§6.1 mitigation 4).
 7. Are the raw reserve components confidential? We have assumed **yes** and
-   excluded them from both the on-chain payload and `/state` (§4.1). If they are
+   excluded them from both the on-chain payload and the readiness report (§4.1). If they are
    in fact publishable, we would rather include them — it makes the feed
    auditable. Also: would a *lagged* disclosure (e.g. T+24h) be acceptable?
 8. Uptime expectations and a contact/escalation path.

@@ -10,9 +10,9 @@
 //
 // # Why sign this?
 //
-// Unsigned state is already available via GET /state. Signing is what distinguishes
-// "what this machine says" from "what the enclave says," the same standard as price
-// data. Otherwise, exposing the extension's port would suffice.
+// Signing is what distinguishes "what this machine says" from "what the enclave
+// says," the same standard as price data. Otherwise, exposing the extension's
+// port and reading an unsigned answer from it would suffice.
 //
 // # Why a separate domain?
 //

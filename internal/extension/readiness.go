@@ -10,10 +10,9 @@ import (
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
-// processGetReadiness returns the machine's signed account of its own state. It
-// does not fail closed: an unprovisioned machine reports that it is
-// unprovisioned. It leaves the /state counters untouched, which count feed
-// updates served rather than status polls.
+// processGetReadiness returns the machine's signed account of itself: the
+// provisioning block and the poller's view of its observations. It does not
+// fail closed: an unprovisioned machine reports that it is unprovisioned.
 //
 // correlator is bound into the signed report. This command is direct-only, so
 // there is no instruction id and the proxy's action id stands in; it must be

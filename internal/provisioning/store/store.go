@@ -104,7 +104,7 @@ type Decryptor interface {
 type Store struct {
 	// applyMu covers a whole Apply* call including the verifier's version map; mu
 	// covers only the data fields, and is never held across a tee-node round trip,
-	// or a hung /decrypt would freeze /state. Order is applyMu then mu.
+	// or a hung /decrypt would freeze the readiness report. Order is applyMu then mu.
 	applyMu sync.Mutex
 
 	mu        sync.RWMutex
@@ -516,8 +516,8 @@ func resolvePrivateURL(ep Endpoint, value []byte) (string, error) {
 	return blob.Url, nil
 }
 
-// Readiness reports what provisioning is still outstanding, in the shape
-// GET /state publishes. Names refs, never values.
+// Readiness reports what provisioning is still outstanding, in the shape the
+// readiness report publishes. Names refs, never values.
 func (s *Store) Readiness() types.Readiness {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
