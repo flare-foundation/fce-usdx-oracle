@@ -359,8 +359,7 @@ Two things to expect at step 6:
   it catches up. `send-endpoints` checks delivery and says so on success; `fleet-status`
   reconciles the fleet.
 
-For liveness, read each machine's `GET /state` or ask it over `GET_READINESS` — which is what
-`fleet-status` does.
+For liveness, ask each machine over `GET_READINESS` — which is what `fleet-status` does.
 
 ---
 

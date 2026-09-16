@@ -57,8 +57,8 @@ pin their own copy in `pkg/utils` — a divergence would revert every request wi
 repo to explain it.
 
 **Fire-and-forget, so publishers confirm.** An instruction may never be delivered, and the
-extension may reject it. `send-endpoints` and `send-admins` therefore poll the machine's own
-`/state` until it reports the hash they just published, and fail if it does not. Skipping that
+extension may reject it. `send-endpoints` and `send-admins` therefore ask the machine for its
+signed readiness report until it names the hash they just published, and fail if it does not. Skipping that
 (`-wait 0`) leaves the chain expecting one config and the machine running another — silently.
 
 **`-dry-run` before spending gas.** Both publishers validate the payload against the extension's
@@ -271,9 +271,10 @@ The keeper preflights the store's guards before spending gas, so a rejection arr
 
 | Tool | Answers |
 | --- | --- |
-| `oracle-watch` | Polls one machine's `/info` state and its signed readiness report on a timer, records every sample and prints the changes: source health, last error class, ready, would-sign, failed observations. The between-cycles view the keeper's records cannot give. |
-| `fleet-status` | "Which machines are configured for the feed, and are they all running the same thing?" Registry status, `isTeeIdConfigured`, the sender's expected endpoints/admins hashes vs each machine's live state — for every machine at once. `-store`/`-feedId`, `-json`. |
-| `oracle-status.sh` | What the oracle publishes right now: the feed, the store, the registry, and the machine's `/state`. Reads only. |
+| `readiness` | Prints one machine's signed readiness report as JSON: the provisioning block, observation age, would-sign, counters and source health, with the signer. The scripts read a machine through it (`read_machine_readiness`, `lib/env.sh`); `-extension` asks a dev server directly. Needs the proxy's `DIRECT_API_KEY`. |
+| `oracle-watch` | Polls one machine's signed readiness report on a timer, records every sample and prints the changes: source health, last error class, ready, would-sign, failed observations. The between-cycles view the keeper's records cannot give. |
+| `fleet-status` | "Which machines are configured for the feed, and are they all running the same thing?" Registry status, `isTeeIdConfigured`, the sender's expected endpoints/admins hashes vs each machine's live readiness report (`-directApiKey`) — for every machine at once. `-store`/`-feedId`, `-json`. |
+| `oracle-status.sh` | What the oracle publishes right now: the feed, the store, the registry, and the machine's readiness report. Reads only. |
 | `oracle-observe.sh` | Runs the real observation against live sources with no chain, Docker or TEE. The highest-value local check: if this is wrong, everything downstream is. |
 | `audit-deploy` | Sanity-checks `deployed-addresses.json` against a chain: code present, supported platforms and code hashes, and replays a failing `addTeeVersion` as `eth_call` to decode the custom error. |
 | `verify-deploy` | Post-deploy assertions by stage: `-step register\|services\|tee-version\|tee-machine\|all`, `-checks D5,R2` to narrow, `-json` for machines. |
@@ -296,7 +297,7 @@ anything before the first line that is exactly `[`.
 | `SIMULATED_TEE=true` | expected code hash and platform are the simulated constants rather than parsed from an attestation token |
 | `SIMULATED_CODE_HASH` | overrides that expected hash, for addressing a fleet running two builds mid-upgrade. Validated as exactly 32 bytes, and **ignored unless `SIMULATED_TEE=true`** — under real attestation the hash comes from the token and must not be overridable |
 | `EXTENSION_OWNER_KEY` | signs `addTeeVersion` as someone other than the deployer |
-| `DIRECT_API_KEY` | the direct channel gate; also what lets `fleet-status`, `send-endpoints` and `send-admins` fall back to a signed `GET_READINESS` when a machine publishes no attested state |
+| `DIRECT_API_KEY` | the direct channel gate: what `fleet-status`, `send-endpoints`, `send-admins`, `oracle-watch`, `readiness` and the scripts ask a machine with (`GET_READINESS`) |
 
 ### When a transaction just says `execution reverted`
 

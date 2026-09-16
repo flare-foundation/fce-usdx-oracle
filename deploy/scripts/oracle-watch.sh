@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # oracle-watch.sh — follow the machine's own account of itself, and record it.
 #
-# Every interval, tools/cmd/oracle-watch reads the extension state the proxy
-# republishes in /info and asks the machine for its signed readiness report over
-# the direct channel, appends one JSON sample per poll, and prints each change:
-# a source's health, the class of the last failed observation, the ready and
-# would-sign flags, a failed observation. It reads and never sends — no fee, no
-# transaction — so it can run all day next to the keeper. The machine observes
-# every two minutes on its own timer; that is the interval worth polling at.
+# Every interval, tools/cmd/oracle-watch asks the machine for its signed
+# readiness report over the proxy's direct channel, appends one JSON sample per
+# poll, and prints each change: a source's health, the class of the last failed
+# observation, the ready and would-sign flags, a failed observation. It reads
+# and never sends — no fee, no transaction — so it can run all day next to the
+# keeper. The machine observes every two minutes on its own timer; that is the
+# interval worth polling at.
 #
 # Usage:
 #   ./deploy/scripts/oracle-watch.sh                                 # every 2m, samples to stdout
@@ -16,7 +16,8 @@
 #   ./deploy/scripts/oracle-watch.sh --once                          # one sample and the full picture
 #
 # The proxy is EXT_PROXY_URL from .env (the recorded stack on the simulation),
-# the direct key DIRECT_API_KEY; without a key only /info is read.
+# the direct key DIRECT_API_KEY — required, since the report is the one thing the
+# machine says about itself; the simulation's proxy accepts any key.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -40,8 +41,10 @@ done
 
 PROXY="${EXT_PROXY_URL:-http://localhost:6674}"
 ARGS=(-p "$PROXY")
-# The simulation's proxy accepts any /direct key (api_key_optional).
-[[ -n "${STACK:-}" ]] && ARGS+=(-directApiKey "${DIRECT_API_KEY:-local}")
+# The simulation's proxy accepts any /direct key (api_key_optional); elsewhere
+# the tool reads DIRECT_API_KEY itself and refuses to start without one.
+KEY="${DIRECT_API_KEY:-${STACK:+local}}"
+[[ -n "$KEY" ]] && ARGS+=(-directApiKey "$KEY")
 [[ -n "$INTERVAL" ]] && ARGS+=(-interval "$INTERVAL")
 [[ -n "$RECORDS" ]] && ARGS+=(-records "$RECORDS")
 [[ "$ONCE" == true ]] && ARGS+=(-once)

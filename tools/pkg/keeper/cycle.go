@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
-	"fce-usdx-oracle/tools/pkg/fccutils"
 	"fce-usdx-oracle/tools/pkg/feedupdate"
 	"fce-usdx-oracle/tools/pkg/support"
 	instrutils "fce-usdx-oracle/tools/pkg/utils"
@@ -126,7 +125,11 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) ([]feedupdate.
 		return fail(OutcomeInternal, errors.New("no target machines configured"))
 	}
 
-	if skip, why := wouldRefuse(ctx, cfg); skip {
+	skip, why, health := wouldRefuse(ctx, cfg)
+	// The preflight's view of the sources, from the first machine that answered:
+	// on a failed cycle it is what says WHICH source broke.
+	rec.SourceHealth = health
+	if skip {
 		return fail(OutcomeRequestSkipped, errors.New(why))
 	}
 
@@ -145,14 +148,11 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) ([]feedupdate.
 	results, err := pollResults(ctx, cfg.pollTargets(), len(cfg.TeeIDs), actionID, teetypes.Threshold, cfg.PollTimeout)
 	if err != nil {
 		rec.ResultStatus = "timeout"
-		rec.SourceHealth = sourceHealth(cfg.Proxy)
 		return fail(OutcomeNoResult, err)
 	}
 
-	// The first proxy to answer stands for the round: on failure it is what says
-	// WHICH source broke.
+	// The first proxy to answer stands for the round.
 	rec.Proxy = results[0].proxy
-	rec.SourceHealth = sourceHealth(results[0].proxy)
 
 	updates := make([]feedupdate.Update, 0, len(results))
 	for _, r := range results {
@@ -561,23 +561,6 @@ func fetchResult(
 
 	status := body.Result.Status
 	return body.Result, status == statusSucceeded || status == statusFailed, nil
-}
-
-// sourceHealth reads the extension's per-source health map off the proxy.
-// Best-effort: nil means the proxy could not be read, never "the sources are
-// fine". Stale "ok" values persist if requests stop — alert on feed age instead.
-func sourceHealth(proxyURL string) map[string]string {
-	raw, err := fccutils.ReadExtensionState(proxyURL)
-	if err != nil {
-		return nil
-	}
-	var state struct {
-		SourceHealth map[string]string `json:"sourceHealth"`
-	}
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return nil
-	}
-	return state.SourceHealth
 }
 
 // storeObservedAt reads the store's current stamp. Best-effort: it is a

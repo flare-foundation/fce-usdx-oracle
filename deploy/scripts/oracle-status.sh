@@ -120,20 +120,16 @@ else
     warn "  no FlareTeeManager in $ADDR_FILE"
 fi
 
-section "Extension state — out of the proxy's /info"
-# tee-node reads the extension's GET /state on every info request and carries
-# it, attested, in teeInfo.state.state; the extension's own port is loopback
-# only. read_machine_state (lib/env.sh) does the read and the decoding, for a
-# local stack and a testnet machine alike.
-STATE_FILTER='{lastPrice, lastObservedAt, updateCount, failureCount, lastErrorClass, sourceHealth, readiness}'
+section "Machine readiness — the signed GET_READINESS report"
+# The machine's own account of itself, asked over the proxy's direct channel
+# (read_machine_readiness, lib/env.sh). The proxy's key is DIRECT_API_KEY; the
+# simulation's proxy accepts any.
+READINESS_FILTER='{signer, lastObservedAt, observationAge, wouldSign, observations, failures, lastErrorClass, sourceHealth, readiness}'
 if [[ -z "${EXT_PROXY_URL:-}" ]]; then
-    warn "  no proxy URL (EXT_PROXY_URL) to read the machine's state through"
-elif STATE="$(read_machine_state "$EXT_PROXY_URL")"; then
-    jq "$STATE_FILTER" <<<"$STATE"
+    warn "  no proxy URL (EXT_PROXY_URL) to ask the machine through"
+elif REPORT="$(read_machine_readiness "$EXT_PROXY_URL" "${DIRECT_API_KEY:-${STACK:+local}}")"; then
+    jq "$READINESS_FILTER" <<<"$REPORT"
 else
-    case $? in
-        2) warn "  tee-node behind $EXT_PROXY_URL could not read its extension's /state (down, or mid-restart)" ;;
-        *) warn "  the proxy at $EXT_PROXY_URL publishes no machine state (unreachable, or a tee-node that does not fold GET /state into /info)" ;;
-    esac
+    warn "  the machine behind $EXT_PROXY_URL did not answer the readiness request (unreachable, or DIRECT_API_KEY is not this proxy's key)"
 fi
 echo ""

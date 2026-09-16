@@ -95,8 +95,9 @@ type Record struct {
 	// closed vocabulary, which is the alert key.
 	ErrorClass string `json:"errorClass,omitempty"`
 
-	// Best-effort: a missing map means the proxy could not be read, never that
-	// the sources are healthy.
+	// From the readiness preflight, the first machine that answered. Best-effort:
+	// a missing map means no machine could be asked (no key, none reachable),
+	// never that the sources are healthy.
 	SourceHealth map[string]string `json:"sourceHealth,omitempty"`
 
 	// SubmitOutcome is "accepted", a named store guard, or "not_attempted".

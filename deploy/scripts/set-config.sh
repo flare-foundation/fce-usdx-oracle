@@ -112,13 +112,12 @@ LOG="$(echo "$RESP" | jq -r '.log // "?"')"
 
 echo ""
 echo "Readiness:"
-# Read through the node, as every consumer does: mocknode folds the dev
-# server's GET /state into its /info the way tee-node does.
-INFO_URL="${INFO_URL:-http://127.0.0.1:${SIGN_PORT:-7701}}"
-if STATE="$(read_machine_state "$INFO_URL")"; then
-    jq '.readiness' <<<"$STATE"
+# The machine's account of itself is its signed readiness report, asked of the
+# dev server directly: the harness has no proxy.
+if REPORT="$(read_extension_readiness "http://127.0.0.1:$PORT")"; then
+    jq '.readiness' <<<"$REPORT"
 else
-    echo "  (no state readable through the node at $INFO_URL — is mocknode running with EXTENSION_PORT=$PORT?)"
+    echo "  (the dev server at :$PORT did not answer the readiness request)"
 fi
 
 if [[ "$STATUS" == "1" ]]; then

@@ -35,23 +35,25 @@ record_stack() {
     } > "$PROJECT_DIR/deploy/config/stack.env"
 }
 
-# read_machine_state <proxy-or-node-url> — the extension's State as JSON, read
-# out of GET /info. tee-node reads the extension's GET /state on every info
-# request and carries the state bytes, attested, in teeInfo.state.state; the
-# bytes are the JSON encoding of the state. This is the one way the scripts
-# read the state: the extension's own port is loopback-only inside the machine,
-# and mocknode folds the dev server's state in the same way for the harness.
+# read_machine_readiness <proxy-url> [api-key] — the machine's signed readiness
+# report as JSON: the provisioning block (configuration hashes, ready flag,
+# missing secret refs) and the poller's own view (observation age, whether it
+# would sign, its counters, source health), with the signer. It is the one way
+# the scripts read a machine: GET_READINESS over the proxy's direct channel,
+# which needs the proxy's key (DIRECT_API_KEY unless given; the simulation's
+# proxy accepts any). The extension publishes nothing else about itself — its
+# GET /state carries the empty state.
 #
-# Exit status: 0 with the JSON on stdout; 1 when the URL did not answer or
-# carries no state (a tee-node that does not fold it in); 2 when tee-node
-# reported it could not read its extension (StateVersion is the all-ones
-# sentinel), which clears once the extension answers again.
-read_machine_state() {
-    local info ver hex
-    info="$(curl -fsS -m 10 "${1%/}/info" 2>/dev/null)" || return 1
-    ver="$(jq -r '.teeInfo.state.stateVersion // empty' <<<"$info" 2>/dev/null)" || return 1
-    hex="$(jq -r '.teeInfo.state.state // empty' <<<"$info" 2>/dev/null)" || return 1
-    [[ "$ver" == "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ]] && return 2
-    [[ -n "$hex" && "$hex" != "0x" ]] || return 1
-    printf '%s' "${hex#0x}" | xxd -r -p
+# Exit status: 0 with the JSON on stdout; 1 when the machine could not be asked
+# or did not answer, with the reason on stderr.
+read_machine_readiness() {
+    local root="${PROJECT_DIR:-${REPO_ROOT:?}}" key="${2:-${DIRECT_API_KEY:-}}"
+    ( cd "$root/tools" && go run ./cmd/readiness -p "${1%/}" -directApiKey "$key" -timeout 20s )
+}
+
+# read_extension_readiness <extension-url> — the same report, asked of a dev
+# server's own /action: the development harness has no proxy.
+read_extension_readiness() {
+    local root="${PROJECT_DIR:-${REPO_ROOT:?}}"
+    ( cd "$root/tools" && go run ./cmd/readiness -extension "${1%/}" -timeout 20s )
 }

@@ -224,8 +224,8 @@ func main() {
 	// The delivery check confirms against the primary proxy only. With multiple
 	// machines use cmd/fleet-status to reconcile every machine's live hash.
 	if err := waitForAdmins(*pf, *apiKeyF, publication.PayloadHash, *waitF); err != nil {
-		if errors.Is(err, fccutils.ErrNoAttestedState) {
-			logger.Infof("Delivery not confirmed: %s", err)
+		if errors.Is(err, errNoAPIKey) {
+			logger.Warnf("Delivery not confirmed: %s", err)
 			return
 		}
 		logger.Errorf("%s", err)
@@ -250,91 +250,46 @@ func parseFeedID(s string) ([21]byte, error) {
 	return id, nil
 }
 
-// waitForAdmins polls the machine's own /state until it reports the hash just
-// published, or the budget runs out.
+// errNoAPIKey is returned when the delivery check cannot run at all: a
+// machine's account of itself is its signed readiness report, asked over the
+// proxy's direct channel, and that needs the proxy's key.
+var errNoAPIKey = errors.New("no API key (-directApiKey or DIRECT_API_KEY) to ask the machine with, " +
+	"so whether it applied the publication is unknown")
+
+// readinessQueryTimeout bounds one readiness round trip inside the wait budget.
+const readinessQueryTimeout = 15 * time.Second
+
+// waitForAdmins asks the machine for its signed readiness report until it names the
+// hash just published, or the budget runs out.
 func waitForAdmins(proxyURL, apiKey string, want common.Hash, budget time.Duration) error {
+	if apiKey == "" {
+		return errNoAPIKey
+	}
 	deadline := time.Now().Add(budget)
 	backoff := 2 * time.Second
-
 	var last string
 	for {
-		got, err := fetchAdminsHash(proxyURL)
-		switch {
-		case errors.Is(err, fccutils.ErrNoAttestedState):
-			// Ask the machine instead of giving up. GET_READINESS carries the
-			// same hash, signed, over a channel that does not depend on
-			// tee-node folding /state into /info.
-			if h, qerr := queryAdminsHash(proxyURL, apiKey, budget); qerr == nil {
-				got = h
-				if strings.EqualFold(got, want.Hex()) {
-					return nil
-				}
-				last = "the machine reports " + adminsOrNone(got)
-				break
-			} else if apiKey != "" {
-				last = "readiness query failed: " + qerr.Error()
-				break
-			}
-			// Nothing will appear later: this tee-node never publishes state and there
-			// is no key to ask directly with. Do not spend the budget waiting.
-			return err
-		case err != nil:
-			last = err.Error()
-		case strings.EqualFold(got, want.Hex()):
-			return nil
-		case got == "":
-			last = "the machine reports no admin set at all"
-		default:
-			last = "the machine reports " + got
-		}
-
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return errors.Errorf("the machine did not report %s within %s: %s",
-				want.Hex(), budget, last)
+			return errors.Errorf("the machine did not report %s within %s: %s", want.Hex(), budget, last)
 		}
-		if backoff > remaining {
-			backoff = remaining
+		report, err := keeper.QueryReadiness(context.Background(), proxyURL, apiKey,
+			min(remaining, readinessQueryTimeout))
+		switch {
+		case err != nil:
+			last = "readiness query failed: " + err.Error()
+		case strings.EqualFold(report.Payload.Readiness.AdminsHash, want.Hex()):
+			return nil
+		case report.Payload.Readiness.AdminsHash == "":
+			last = "the machine reports no admin set at all"
+		default:
+			last = "the machine reports " + report.Payload.Readiness.AdminsHash
 		}
-		time.Sleep(backoff)
+		if backoff > time.Until(deadline) {
+			backoff = time.Until(deadline)
+		}
+		if backoff > 0 {
+			time.Sleep(backoff)
+		}
 	}
-}
-
-// queryAdminsHash asks the machine directly, for deployments whose tee-node
-// publishes no attested state. Signed by the enclave, so it is the same claim
-// the attested path would have carried — only the transport differs.
-func queryAdminsHash(proxyURL, apiKey string, budget time.Duration) (string, error) {
-	if apiKey == "" {
-		return "", errors.New("no API key to query readiness with")
-	}
-	report, err := keeper.QueryReadiness(context.Background(), proxyURL, apiKey, budget)
-	if err != nil {
-		return "", err
-	}
-	return report.Payload.Readiness.AdminsHash, nil
-}
-
-func adminsOrNone(h string) string {
-	if h == "" {
-		return "no admin set at all"
-	}
-	return h
-}
-
-// fetchAdminsHash reads the active admin set hash the machine publishes on
-// GET /state, republished inside the proxy's GET /info.
-func fetchAdminsHash(proxyURL string) (string, error) {
-	raw, err := fccutils.ReadExtensionState(proxyURL)
-	if err != nil {
-		return "", err
-	}
-	var state struct {
-		Readiness struct {
-			AdminsHash string `json:"adminsHash"`
-		} `json:"readiness"`
-	}
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return "", errors.Errorf("decoding the extension state: %s", err)
-	}
-	return state.Readiness.AdminsHash, nil
 }

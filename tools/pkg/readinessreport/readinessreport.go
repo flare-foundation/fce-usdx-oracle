@@ -15,7 +15,7 @@
 // Decode checks that the payload is the one the signature covers, and recovers
 // who signed it. That makes it the enclave's own claim rather than whatever
 // answered a port — which is the entire reason this exists instead of reading
-// GET /state over the network.
+// an unsigned answer off a port over the network.
 //
 // It remains a SELF-REPORT. A machine says what it believes; a feed update it
 // lands says what the chain accepted, because the feed store verified the

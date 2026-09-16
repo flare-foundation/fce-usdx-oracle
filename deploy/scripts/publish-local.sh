@@ -236,12 +236,12 @@ OUT="$(send_retry "$GOV_KEY" "$TARGET" 'executeGovernanceCall(bytes)' "$CALLDATA
 log "executed in tx $(jq -r .transactionHash <<<"$OUT") — the instruction is dispatched"
 
 section "Delivery"
-# The proxy's /info carries the extension's state as hex bytes: tee-node reads
-# GET /state on every info request. The readiness block in it is what the
-# machine says it is running.
+# The machine's signed readiness report is what it says it is running
+# (read_machine_readiness, lib/env.sh); the proxy's key is DIRECT_API_KEY, and
+# the simulation's proxy accepts any.
 DEADLINE=$(( $(date +%s) + 120 ))
 while :; do
-    GOT="$(read_machine_state "$EXT_PROXY_URL" 2>/dev/null | jq -r --arg f "$HASH_FIELD" '.readiness[$f] // ""' 2>/dev/null || true)"
+    GOT="$(read_machine_readiness "$EXT_PROXY_URL" "${DIRECT_API_KEY:-${STACK:+local}}" 2>/dev/null | jq -r --arg f "$HASH_FIELD" '.readiness[$f] // ""' 2>/dev/null || true)"
     if [[ "$(lower "$GOT")" == "$(lower "$EXPECT")" ]]; then
         echo -e "  ${GREEN}the machine reports $HASH_FIELD = $EXPECT${NC}"
         break

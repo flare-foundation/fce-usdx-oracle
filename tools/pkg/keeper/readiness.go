@@ -90,17 +90,19 @@ func QueryReadiness(
 
 // wouldRefuse reports whether EVERY machine that could serve the request says it
 // would refuse to sign, and why. All of them, because the request goes to every
-// listed machine and any one of them signing is enough. Every uncertainty answers false: "not known" is not "do not try".
-func wouldRefuse(ctx context.Context, cfg Config) (bool, string) {
+// listed machine and any one of them signing is enough. Every uncertainty
+// answers false: "not known" is not "do not try". The source health of the
+// first machine that answered comes back alongside, for the cycle record.
+func wouldRefuse(ctx context.Context, cfg Config) (skip bool, why string, health map[string]string) {
 	if cfg.DirectAPIKey == "" {
-		return false, ""
+		return false, "", nil
 	}
 
 	// Config.Proxy plus every fleet proxy, deduplicated — the same set the
 	// result is later polled on, for the same reason.
 	targets := cfg.pollTargets()
 	if len(targets) == 0 {
-		return false, ""
+		return false, "", nil
 	}
 
 	// Returns on the first machine that would sign or cannot be read, so the healthy
@@ -111,10 +113,13 @@ func wouldRefuse(ctx context.Context, cfg Config) (bool, string) {
 		if err != nil {
 			logger.Debugf("[%s] readiness preflight unavailable at %s, requesting anyway: %s",
 				cfg.KeeperID, proxy, err)
-			return false, ""
+			return false, "", health
+		}
+		if health == nil {
+			health = report.Payload.SourceHealth
 		}
 		if report.Payload.WouldSign {
-			return false, ""
+			return false, "", health
 		}
 		if first == "" {
 			first = fmt.Sprintf("%s reports observation %ds old, class %q, ready=%t",
@@ -125,7 +130,7 @@ func wouldRefuse(ctx context.Context, cfg Config) (bool, string) {
 
 	return true, fmt.Sprintf(
 		"skipped the on-chain request: all %d reachable machine(s) report they would "+
-			"not sign (%s) — no fee spent", len(targets), first)
+			"not sign (%s) — no fee spent", len(targets), first), health
 }
 
 // readinessPreflightTimeout is short on purpose: this runs before the real work

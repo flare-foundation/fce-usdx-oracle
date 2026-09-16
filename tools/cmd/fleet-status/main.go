@@ -14,7 +14,9 @@
 //	             latestAdminsHash, plus versions) and whether each machine is at
 //	             it (isTeeIdConfigured — the precondition requestFeedUpdate
 //	             enforces per target)
-//	live         what each machine says it is running right now (GET /state)
+//	live         what each machine says it is running right now: its signed
+//	             readiness report, asked over the proxy's direct channel, so
+//	             this column needs the proxy's key (-directApiKey)
 //
 // A machine can be registered, sent a config it rejected, and still report
 // ready: true — running the PREVIOUS config. It then fails every submitFeedUpdates
@@ -36,6 +38,7 @@ import (
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclesender"
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
 	"fce-usdx-oracle/tools/pkg/fccutils"
+	"fce-usdx-oracle/tools/pkg/keeper"
 	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -54,6 +57,9 @@ func main() {
 	storeF := flag.String("store", "",
 		"TeeOracleFeedStore address (default: the TeeOracleFeedStore entry in the addresses file)")
 	jsonOut := flag.Bool("json", false, "emit one JSON object per machine instead of a table")
+	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
+		"proxy API key for the live columns, read over GET_READINESS; without one they stay "+
+			"empty (default: $DIRECT_API_KEY)")
 	flag.Parse()
 
 	if *senderF != "" && !common.IsHexAddress(*senderF) {
@@ -94,7 +100,7 @@ func main() {
 		}
 	}
 
-	machines, err := buildReport(context.Background(), s, senderAddr, storeAddr, feedID)
+	machines, err := buildReport(context.Background(), s, senderAddr, storeAddr, feedID, *apiKeyF)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
@@ -127,7 +133,7 @@ type Machine struct {
 	// isProvenConfigured, both gone: the store keeps no per-machine bookkeeping.
 	ObservedAt uint64 `json:"observedAt,omitempty"`
 
-	// Live, from GET /state. Best-effort.
+	// Live, from the signed readiness report. Best-effort.
 	LiveEndpointsHash string            `json:"liveEndpointsHash,omitempty"`
 	LiveAdminsHash    string            `json:"liveAdminsHash,omitempty"`
 	LiveReady         bool              `json:"liveReady,omitempty"`
@@ -136,6 +142,7 @@ type Machine struct {
 
 func buildReport(
 	ctx context.Context, s *support.Support, senderAddr, storeAddr common.Address, feedID [21]byte,
+	apiKey string,
 ) ([]Machine, error) {
 	sender, err := teeoraclesender.NewIITeeOracleInstructionsSenderCaller(senderAddr, s.ChainClient)
 	if err != nil {
@@ -188,14 +195,15 @@ func buildReport(
 		m.EndpointsHash = common.Hash(latestEndpoints).Hex()
 		m.AdminsHash = common.Hash(latestAdmins).Hex()
 
-		// Live state from the machine's own /state. Best-effort: a machine that
-		// cannot be reached is not necessarily broken.
+		// Live, from the machine's signed readiness report. Best-effort: a machine
+		// that cannot be asked is not necessarily broken, and without the proxy's
+		// key it cannot be asked at all.
 		url := ""
 		if i < len(active.Urls) {
 			url = strings.TrimRight(strings.TrimSpace(active.Urls[i]), "/")
 		}
-		if url != "" {
-			liveState(url, &m)
+		if url != "" && apiKey != "" {
+			liveState(ctx, url, apiKey, &m)
 		}
 
 		machines = append(machines, m)
@@ -204,30 +212,19 @@ func buildReport(
 	return machines, nil
 }
 
-func liveState(proxyURL string, m *Machine) {
-	// The extension's State, as tee-node carries it in the attested info.
-	raw, err := fccutils.ReadExtensionState(proxyURL)
+func liveState(ctx context.Context, proxyURL, apiKey string, m *Machine) {
+	report, err := keeper.QueryReadiness(ctx, proxyURL, apiKey, liveQueryTimeout)
 	if err != nil {
 		return
 	}
-
-	var state struct {
-		Readiness struct {
-			EndpointsHash string `json:"endpointsHash"`
-			AdminsHash    string `json:"adminsHash"`
-			Ready         bool   `json:"ready"`
-		} `json:"readiness"`
-		SourceHealth map[string]string `json:"sourceHealth"`
-	}
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return
-	}
-
-	m.LiveEndpointsHash = state.Readiness.EndpointsHash
-	m.LiveAdminsHash = state.Readiness.AdminsHash
-	m.LiveReady = state.Readiness.Ready
-	m.SourceHealth = state.SourceHealth
+	m.LiveEndpointsHash = report.Payload.Readiness.EndpointsHash
+	m.LiveAdminsHash = report.Payload.Readiness.AdminsHash
+	m.LiveReady = report.Payload.Readiness.Ready
+	m.SourceHealth = report.Payload.SourceHealth
 }
+
+// liveQueryTimeout bounds one machine's readiness round trip.
+const liveQueryTimeout = 15 * time.Second
 
 func teestatus(s uint8) string {
 	switch s {

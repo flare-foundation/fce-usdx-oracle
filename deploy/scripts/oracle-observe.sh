@@ -39,7 +39,6 @@ SIGN_PORT="${SIGN_PORT:-9099}"
 export SIGN_PORT
 # shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"
-NODE_URL="http://127.0.0.1:$SIGN_PORT"
 
 # A stale pair from an aborted run would hold the ports, and a fresh devserver
 # could not bind while the readiness probe below happily answered from the old
@@ -87,14 +86,14 @@ DEV_PID=$!
 # them; the pids are tracked by hand above.
 disown "$MOCK_PID" "$DEV_PID" 2>/dev/null || true
 
-# Up means the dev server's state is readable through the node's /info, the
-# only way the state is read anywhere.
+# Up means the dev server answers a readiness request on its own /action.
+EXT_URL="http://127.0.0.1:$EXT_PORT"
 for _ in $(seq 1 60); do
-    read_machine_state "$NODE_URL" >/dev/null 2>&1 && break
+    read_extension_readiness "$EXT_URL" >/dev/null 2>&1 && break
     sleep 1
 done
-read_machine_state "$NODE_URL" >/dev/null 2>&1 || {
-    echo -e "${RED}devserver never came up (its state is not readable through mocknode at $NODE_URL)${NC}" >&2
+read_extension_readiness "$EXT_URL" >/dev/null 2>&1 || {
+    echo -e "${RED}devserver never came up (no readiness answer at $EXT_URL)${NC}" >&2
     cat "$LOG_DIR/devserver.log" >&2
     exit 1
 }
@@ -165,18 +164,31 @@ done
 echo "$RESP" | jq '{status, log}'
 
 section "Observation"
-STATE="$(read_machine_state "$NODE_URL")"
-echo "$STATE" | jq '{lastPrice, lastDecimals, lastObservedAt,
-                     updateCount, failureCount, lastErrorClass,
-                     sourceHealth, readiness}'
+# The machine's account of itself: its signed readiness report.
+read_extension_readiness "$EXT_URL" | jq '{lastObservedAt, observationAge, wouldSign,
+                                          observations, failures, lastErrorClass,
+                                          sourceHealth, readiness}'
 
-PRICE="$(echo "$STATE" | jq -r '.lastPrice // ""')"
-DEC="$(echo "$STATE" | jq -r '.lastDecimals // 8')"
-if [[ -n "$PRICE" ]]; then
-    python3 -c "print(f'\n  price: \${int('$PRICE')/10**int('$DEC'):.8f}')"
+# The price is in the signed update the GET_FEED just returned:
+# abi.encode(FeedUpdate, Signature), seven static words then the signature —
+# value and decimals are the third and fourth words, two's complement.
+DATA="$(echo "$RESP" | jq -r '.data // ""')"
+if [[ -n "$DATA" && "$DATA" != "0x" ]]; then
+    # The script is single-quoted on purpose: the hex reaches python through the
+    # environment, so nothing the machine returned is ever expanded by the shell.
+    # shellcheck disable=SC2016
+    DATA="$DATA" python3 -c '
+import os
+h = os.environ["DATA"][2:]
+w = [h[i:i + 64] for i in range(0, len(h), 64)]
+def signed(x):
+    v = int(x, 16)
+    return v - (1 << 256) if v >= 1 << 255 else v
+value, dec = signed(w[2]), signed(w[3])
+print(f"\n  price: ${value / 10 ** dec:.8f}  (value {value}, decimals {dec}, observedAt {int(w[4], 16)})")'
     echo -e "  ${GREEN}observation succeeded${NC}"
 else
-    echo -e "\n  ${RED}no price — read .log above and sourceHealth for which source broke${NC}"
+    echo -e "\n  ${RED}no price — read the log above and sourceHealth for which source broke${NC}"
 fi
 
 # ready:false with only hex_api_key missing is expected until Hex issues the

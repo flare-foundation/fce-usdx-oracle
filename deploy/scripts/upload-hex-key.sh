@@ -9,7 +9,7 @@
 #   2. for each credential: encrypt it to that key, sign the envelope with the
 #      backing admin key, submit it over the direct channel and wait for the
 #      machine's own verdict                        (ECIES; plaintext never leaves this shell)
-#   3. confirm from the machine's published state that nothing is still missing
+#   3. confirm from the machine's readiness report that nothing is still missing
 #
 # Two credentials fall under the backing set, and the machine uses the cash
 # source only once it holds both:
@@ -234,44 +234,39 @@ for REF in "${REFS[@]}"; do
   fi
 done
 
-step "3/3  Confirming from the machine's state"
-# Each submit above already waited for the machine's verdict; this reads the
-# machine's own published readiness as the cross-check, and gives it a moment
-# because the state is refreshed after the result is filed. The state comes out
-# of the proxy's /info, where tee-node carries the extension's GET /state on
-# every request (read_machine_state, lib/env.sh). The body is read on its own
-# before the ref list is taken from it: an empty body and a body naming nothing
-# both yield an empty list, and treating them alike once reported "no longer
-# missing" for a machine that had said nothing at all.
-#
-# The proxy serves the machine info it last collected, not a live read: this
-# repository's proxy configuration refreshes it every 10s, an operator's may
-# refresh it once a minute or less often. The state is therefore polled for up
-# to two and a half minutes before the uploads are called unconfirmed.
-state_json=""
+step "3/3  Confirming from the machine's readiness report"
+# Each submit above already waited for the machine's verdict; this asks the
+# machine for its signed readiness report as the cross-check
+# (read_machine_readiness, lib/env.sh). The report is read on its own before the
+# ref list is taken from it: no report and a report naming nothing both yield an
+# empty list, and treating them alike once reported "no longer missing" for a
+# machine that had said nothing at all. Polled for up to two and a half minutes:
+# the report is the machine's live answer, but the secret is installed by the
+# poller's next observation.
+report_json=""
 missing=""
 outstanding=""
 for attempt in $(seq 1 30); do
-  state_json="$(read_machine_state "$PROXY_URL" 2>/dev/null || true)"
-  [ -n "$state_json" ] || break
-  missing="$(printf '%s' "$state_json" | jq -r '.readiness.missingSecretRefs[]?' 2>/dev/null || true)"
+  report_json="$(read_machine_readiness "$PROXY_URL" "$USDXPROV_API_KEY" 2>/dev/null || true)"
+  [ -n "$report_json" ] || break
+  missing="$(printf '%s' "$report_json" | jq -r '.readiness.missingSecretRefs[]?' 2>/dev/null || true)"
   outstanding=""
   for REF in "${REFS[@]}"; do
     printf '%s\n' "$missing" | grep -qx "$REF" && outstanding="$outstanding $REF"
   done
   [ -n "$outstanding" ] || break
-  [ "$attempt" -eq 1 ] && echo "  waiting for the proxy to serve a machine state taken after the uploads (it refreshes periodically)..."
+  [ "$attempt" -eq 1 ] && echo "  waiting for the machine's next observation to install the uploads..."
   [ "$attempt" -lt 30 ] && sleep 5
 done
 
 confirmed=false
-if [ -z "$state_json" ]; then
-  echo "  ?     the proxy publishes no readable machine state (a tee-node that does not"
-  echo "        fold GET /state into /info, or one that could not read its extension)."
+if [ -z "$report_json" ]; then
+  echo "  ?     the machine did not answer its readiness query (proxy unreachable, wrong"
+  echo "        /direct key, or the machine down)."
   echo "        Every submit above was applied by the machine itself, which is the"
   echo "        verdict that counts; oracle-status.sh repeats this cross-check later."
 elif [ -n "$outstanding" ]; then
-  die "the machine still reports as missing:$outstanding after 2.5 minutes — although it reported the uploads applied. The proxy may refresh the machine info rarely: ./deploy/scripts/oracle-status.sh repeats this check; otherwise see the machine's logs"
+  die "the machine still reports as missing:$outstanding after 2.5 minutes — although it reported the uploads applied. The machine installs a secret on its next observation: ./deploy/scripts/oracle-status.sh repeats this check; otherwise see the machine's logs"
 else
   for REF in "${REFS[@]}"; do
     echo "  ok    $REF is installed"
@@ -281,7 +276,7 @@ else
     echo "  note  still outstanding, for whoever holds those credentials:"
     for m in $missing; do printf '        %s\n' "$m"; done
   fi
-  ready="$(printf '%s' "$state_json" | jq -r '.readiness.ready' 2>/dev/null || true)"
+  ready="$(printf '%s' "$report_json" | jq -r '.readiness.ready' 2>/dev/null || true)"
   [ "$ready" = true ] && echo "  ok    the machine reports ready: true"
 fi
 

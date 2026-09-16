@@ -14,8 +14,8 @@
 #     second admin to sign and submit. It holds ciphertext only — the plaintext
 #     credential never leaves the shell that read it.
 #
-# Which refs are uploaded comes from the MACHINE, not from a file here: it
-# publishes missingSecretRefs in its own state, computed from the endpoint
+# Which refs are uploaded comes from the MACHINE, not from a file here: its
+# signed readiness report names missingSecretRefs, computed from the endpoint
 # configuration it actually applied. A ref exists because a provider URL named
 # it, so asking the machine is the only way to be sure the two agree.
 #
@@ -134,9 +134,8 @@ envVarFor() {
   esac
 }
 
-# readMachineState pulls the extension's state out of the proxy's /info, where
-# tee-node carries the extension's GET /state on every request (read_machine_state,
-# lib/env.sh), and leaves it in STATE_JSON.
+# readMachineReport asks the machine for its signed readiness report
+# (read_machine_readiness, lib/env.sh) and leaves it in REPORT_JSON.
 #
 # It reports failure through its exit status rather than dying, because a
 # subshell is where every caller would run it — and `exit` inside $( ) ends the
@@ -146,34 +145,34 @@ envVarFor() {
 # the chain, the /direct key and the admin keys default from there.
 source "$REPO_ROOT/deploy/scripts/lib/chains.sh"
 source "$REPO_ROOT/deploy/scripts/lib/env.sh"; load_env
-STATE_JSON=""
-readMachineState() {
-  # Cleared first: a failed read must not leave the previous, now stale, state
+REPORT_JSON=""
+readMachineReport() {
+  # Cleared first: a failed read must not leave the previous, now stale, report
   # behind for a caller that is about to report on it.
-  STATE_JSON=""
-  STATE_JSON="$(read_machine_state "$PROXY_URL")" || return 1
-  [ -n "$STATE_JSON" ] || return 1
+  REPORT_JSON=""
+  REPORT_JSON="$(read_machine_readiness "$PROXY_URL" "$USDXPROV_API_KEY")" || return 1
+  [ -n "$REPORT_JSON" ] || return 1
 }
 
 missingRefs() {
-  printf '%s' "$STATE_JSON" | jq -r '.readiness.missingSecretRefs[]?' 2>/dev/null || true
+  printf '%s' "$REPORT_JSON" | jq -r '.readiness.missingSecretRefs[]?' 2>/dev/null || true
 }
 
 # configuredRefs is every provider secret named in the endpoint configuration —
 # the rotation list, since a ref already installed is absent from
 # missingSecretRefs but still needs the new value.
 #
-# It comes from the file rather than the machine because /state publishes only
+# It comes from the file rather than the machine because the report names only
 # what is MISSING, by design: the full list would name the credentials a machine
-# holds, on a world-readable surface. So the caller has to supply the
-# configuration, and confirm it is the one that was published — the machine's
-# endpointsHash below is what that confirmation compares against.
+# holds. So the caller has to supply the configuration, and confirm it is the
+# one that was published — the machine's endpointsHash below is what that
+# confirmation compares against.
 configuredRefs() {
-  jq -r '.[].providers[]?.secret // empty' "$ENDPOINTS_FILE" | sort -u
+  jq -r '.[].endpoints[]?.secret // empty' "$ENDPOINTS_FILE" | sort -u
 }
 
 liveEndpointsHash() {
-  printf '%s' "$STATE_JSON" | jq -r '.readiness.endpointsHash // ""' 2>/dev/null || true
+  printf '%s' "$REPORT_JSON" | jq -r '.readiness.endpointsHash // ""' 2>/dev/null || true
 }
 
 echo "=== USDX oracle — upload the RPC provider credentials ==="
@@ -263,10 +262,10 @@ fi
 echo
 echo "--- 2/4  Working out which refs to upload -------------------------"
 echo
-# Ordered so that only the branch which genuinely needs the machine's state is
-# gated on reading it. --refs and --all both name the refs from something the
-# operator already holds, so requiring a state read there would fail a run that
-# never had a question to ask.
+# Ordered so that only the branch which genuinely needs the machine's answer is
+# gated on asking it. --refs and --all both name the refs from something the
+# operator already holds, so requiring the machine's answer there would fail a
+# run that never had a question to ask.
 if [ -n "$REFS_ARG" ]; then
   OLD_IFS="$IFS"; IFS=','; read -r -a REFS <<< "$REFS_ARG"; IFS="$OLD_IFS"
   echo "  from --refs: ${REFS[*]}"
@@ -275,19 +274,20 @@ elif [ "$ALL" = true ]; then
   # shellcheck disable=SC2207
   REFS=($(configuredRefs))
   echo "  every ref named in $ENDPOINTS_FILE (rotation)"
-  # Best effort: the list came from the file, so a machine that publishes no
-  # state costs the cross-check but not the run.
-  if readMachineState && [ -n "$(liveEndpointsHash)" ]; then
+  # Best effort: the list came from the file, so a machine that does not answer
+  # costs the cross-check but not the run.
+  if readMachineReport && [ -n "$(liveEndpointsHash)" ]; then
     echo "  the machine is running endpointsHash $(liveEndpointsHash)"
     echo "  confirm that is this file's hash before trusting the list:"
   else
-    echo "  the machine publishes no state, so it cannot be asked which config it runs;"
+    echo "  the machine did not answer, so it cannot be asked which config it runs;"
     echo "  confirm this file is the published one before trusting the list:"
   fi
   echo "    cd tools && go run ./cmd/send-endpoints -dry-run -config $ENDPOINTS_FILE"
-elif ! readMachineState; then
-  die "this machine publishes no readable state, so it cannot be asked which credentials it \
-wants — name them with --refs <a,b>, or --all to take every ref from ENDPOINTS_FILE"
+elif ! readMachineReport; then
+  die "this machine did not answer its readiness query (proxy unreachable, wrong /direct key, or \
+the machine down), so it cannot be asked which credentials it wants — name them with --refs <a,b>, \
+or --all to take every ref from ENDPOINTS_FILE"
 else
   # shellcheck disable=SC2207
   REFS=($(missingRefs))
@@ -419,14 +419,14 @@ echo
 # A read failure here is reported, never fatal — the uploads already happened,
 # and exiting non-zero would say they did not.
 #
-# The proxy serves the machine info it last collected, refreshed periodically
-# (every 10s as this repository configures it, an operator's perhaps once a
-# minute), so the state is polled for up to two and a half minutes until it no
-# longer lists a submitted ref as missing.
+# The report is the machine's live answer, but a submitted secret is installed
+# by the poller's next observation (every two minutes), so the report is polled
+# for up to two and a half minutes until it no longer lists a submitted ref as
+# missing.
 still_missing=""
 for attempt in $(seq 1 30); do
-  if ! readMachineState; then
-    echo "  ?     cannot re-read ${PROXY_URL%/}/info — the uploads above were not confirmed"
+  if ! readMachineReport; then
+    echo "  ?     the machine did not answer its readiness query — the uploads above were not confirmed"
     break
   fi
   still_missing="$(missingRefs)"
@@ -435,12 +435,12 @@ for attempt in $(seq 1 30); do
     [ -n "$ref" ] && printf '%s\n' "$still_missing" | grep -qx "$ref" && pending=true
   done
   [ "$pending" = true ] || break
-  [ "$attempt" -eq 1 ] && echo "  waiting for the proxy to serve a machine state taken after the uploads..."
+  [ "$attempt" -eq 1 ] && echo "  waiting for the machine's next observation to install the uploads..."
   [ "$attempt" -lt 30 ] && sleep 5
 done
 for ref in "${submitted[@]:-}"; do
   [ -n "$ref" ] || continue
-  if [ -z "$STATE_JSON" ]; then
+  if [ -z "$REPORT_JSON" ]; then
     echo "  ?     $ref was accepted, unconfirmed"
   elif printf '%s\n' "$still_missing" | grep -qx "$ref"; then
     echo "  FAIL  $ref was accepted but the machine still reports it missing"

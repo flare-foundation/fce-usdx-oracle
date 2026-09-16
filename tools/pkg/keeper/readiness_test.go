@@ -107,7 +107,7 @@ func TestWouldRefuse_OneWillingMachineIsEnoughToRequest(t *testing.T) {
 		ResultProxies: []string{willing.URL},
 	}
 
-	if skip, why := wouldRefuse(context.Background(), cfg); skip {
+	if skip, why, _ := wouldRefuse(context.Background(), cfg); skip {
 		t.Errorf("skipped the request although a machine would sign: %s", why)
 	}
 }
@@ -126,7 +126,7 @@ func TestWouldRefuse_SkipsOnlyWhenEveryMachineRefuses(t *testing.T) {
 		ResultProxies: []string{b.URL},
 	}
 
-	skip, why := wouldRefuse(context.Background(), cfg)
+	skip, why, _ := wouldRefuse(context.Background(), cfg)
 	if !skip {
 		t.Fatal("expected the request to be skipped when no machine would sign")
 	}
@@ -153,7 +153,7 @@ func TestWouldRefuse_UnreadableMachineRequestsAnyway(t *testing.T) {
 		ResultProxies: []string{silent.URL},
 	}
 
-	if skip, why := wouldRefuse(context.Background(), cfg); skip {
+	if skip, why, _ := wouldRefuse(context.Background(), cfg); skip {
 		t.Errorf("skipped although one machine could not be read: %s", why)
 	}
 }
@@ -165,7 +165,7 @@ func TestWouldRefuse_WithoutKeyOrTargetRequestsAnyway(t *testing.T) {
 		"no key":    {Proxy: "http://example.invalid"},
 		"no target": {DirectAPIKey: "k"},
 	} {
-		if skip, _ := wouldRefuse(context.Background(), cfg); skip {
+		if skip, _, _ := wouldRefuse(context.Background(), cfg); skip {
 			t.Errorf("%s: expected the request to go ahead", name)
 		}
 	}
