@@ -135,13 +135,16 @@ def is_impl(e):
     return e.get("name", "").endswith("Implementation")
 
 # save-deployed-addresses.ts records contractName without the .sol suffix while
-# the hand-maintained files carry it; compare on the bare name.
+# the hand-maintained files carry it; compare on the bare name. A trailing
+# "Proxy" goes too: upstream's deploy records a proxy under its own contract
+# (TeeOracleFeedStoreProxy.sol), ours under the contract it fronts, and both
+# name the same thing.
 def contract(e):
-    return e.get("contractName", "").removesuffix(".sol")
+    return e.get("contractName", "").removesuffix(".sol").removesuffix("Proxy")
 
 # The deploy script logs the sender proxy as "TeeOracleInstructionsSender" and
-# each feed store proxy under its registry name (contractName
-# TeeOracleFeedStore.sol); implementations get "<name>Implementation".
+# each feed store proxy under its registry name (UsdxFeedStore upstream);
+# implementations get "<name>Implementation".
 sender = next((e for e in src
                if e.get("name") == "TeeOracleInstructionsSender" and not is_impl(e)), None)
 stores = [e for e in src
