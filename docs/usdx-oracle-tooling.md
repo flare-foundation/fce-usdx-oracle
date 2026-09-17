@@ -116,7 +116,7 @@ allowlist, EVM key type) once governance has run `registerReserved`.
 
 | Command | What it does | Key flags |
 | --- | --- | --- |
-| `wire-extension` | Wires a RESERVED extension after governance runs `registerReserved`: `setExtensionContracts` (the sender — required before `register-tee`'s availability check), machine-owner allowlist, EVM key type. Idempotent. | `-extensionId`, `-sender` |
+| `wire-extension` | Wires a RESERVED extension after governance runs `registerReserved`: `setExtensionContracts` (the sender — required before `register-tee`'s availability check) and the machine-owner allowlist. The allowlisted address is the machines' owner, not the caller: `-machineOwner`, else `MACHINE_OWNER_KEY`'s address, else `INITIAL_OWNER`. Idempotent. | `-extensionId`, `-sender`, `-machineOwner` |
 | `set-governance` | Publishes the TEE governance signer set + threshold from `GOVERNANCE_SIGNERS` / `GOVERNANCE_THRESHOLD`. **Must match what the TEE node was launched with**, or `register-tee` fails `InvalidGovernanceHash`. | |
 | `allow-tee-version` | Whitelists a code hash + platform for the extension, read from the proxy's `/info`. Idempotent — skips if already active. | `-version` |
 | `register-tee` | Registers the machine and takes it to `PRODUCTION`, in four resumable steps. Signs as the machine's initial owner, which the registry requires as the sender: `MACHINE_OWNER_KEY`, or the deployment key where they are one. It refuses before sending when the key is not the owner the machine reports. | `-command`, `-state`, `-resume` |

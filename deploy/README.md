@@ -49,7 +49,7 @@ troubleshooting table, is [docs/local-e2e.md](../docs/local-e2e.md).
 #   with a private Hex token (see "Private Hex credentials" below):
 #   HEX_API_KEY=<token> HEX_CASH_URL=https://… ./deploy/scripts/use-chain.sh local
 ./deploy/scripts/deploy-oracle.sh --chain local             # oracle contracts on the sim, extension 1 reserved
-(cd tools && go run ./cmd/wire-extension)           # owner wiring: instructions sender, allowed machine owners, key types
+(cd tools && go run ./cmd/wire-extension)           # owner wiring: instructions sender, and the machines' owner on the allowlist
 
 # Start the extension TEE and its proxy, and register the machine. Two ways,
 # use one or the other; the commands after them are the same:
@@ -168,7 +168,7 @@ EXTENSION_OWNER_KEY=0x… EXT_PROXY_URL=https://<name>.ngrok-free.app ./deploy/s
 docker compose -f deploy/docker-compose.coston-indexer.yaml up -d   # the chain's indexer, shared with coston; ~20 min to "Up to date" on a fresh database
 ngrok http 6674 --url=https://<name>.ngrok-free.app     # in another terminal, left running (6684 for b)
 ./deploy/scripts/deploy-oracle.sh --chain coston_local  # oracle contracts on the testnet; extension checked or registered, its id recorded
-(cd tools && go run ./cmd/wire-extension)               # owner wiring: instructions sender, allowed machine owners, key types
+(cd tools && go run ./cmd/wire-extension)               # owner wiring: instructions sender, and the machines' owner on the allowlist
 
 USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup.sh --chain coston_local        # a) in Docker: compose stack, proxy on 6674
 USE_LOCAL_SIBLINGS=1 ./deploy/scripts/full-setup-host.sh --chain coston_local   # b) as host processes: proxy on 6684 (--attach as on the simulation)
@@ -245,8 +245,9 @@ has none. Shown for Coston; `<chain>` elsewhere.
 EXTENSION_OWNER_KEY=0x… EXT_PROXY_URL=https://<machine> DIRECT_API_KEY=<its proxy's key> SIMULATED_TEE=false ./deploy/scripts/use-chain.sh coston
 #   EXTENSION_ID=1 is the reserved id; the template already carries it
 ./deploy/scripts/import-upstream-addresses.sh coston   # the official sender and UsdxFeedStore, from upstream's deploys file
-(cd tools && go run ./cmd/wire-extension)              # owner wiring; publishes the sender the addresses file names, so check it first,
-#   and allowlists MACHINE_OWNER_KEY's address as the machines' owner
+(cd tools && go run ./cmd/wire-extension)              # publishes the sender the addresses file names and allowlists the machines' owner
+#   (MACHINE_OWNER_KEY's address, or -machineOwner). Where governance has already done both it sends
+#   nothing and reports a skip for each, which is the check that the addresses file matches the chain.
 EXPECTED_CODE_HASH=<measured hash> ./deploy/scripts/post-build.sh   # registers THAT machine: allows the build, governance, register, production
 #   a second machine, without editing .env: post-build.sh --proxy https://<machine 2>
 ./deploy/scripts/publish-local.sh admins             # the chain's admin set (deploy/config/admins/<chain>.json); a machine holds

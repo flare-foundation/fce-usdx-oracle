@@ -11,7 +11,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
-	"github.com/flare-foundation/tee-node/pkg/wallets"
 	"github.com/pkg/errors"
 )
 
@@ -32,16 +31,23 @@ import (
 //     answers GET /state with the empty state, and with no verifier the registry
 //     accepts exactly that and refuses both tee-node's "could not read the
 //     extension" sentinel and any other state.
-//  2. AddAllowedTeeMachineOwners — registerTee reverts NotAllowedExtensionOwner
-//     for a machine whose owner is not on this list.
-//  3. addSupportedKeyTypes([EVM]) — parity with what register() did for
-//     minted (non-reserved) extensions.
+//  2. AddAllowedTeeMachineOwners(machineOwner) — registerTee reverts
+//     NotAllowedExtensionOwner for a machine whose owner is not on this list.
+//     The address is the machines' initial owner, which is not this caller
+//     wherever the two roles are held by different keys; allowlisting the
+//     caller instead would widen the set of addresses that may register a
+//     machine under this extension, and still leave the real owner out.
 //
-// Every step is idempotent — a re-run against an already-wired extension is a
-// sequence of no-ops, so a failure partway through is fixed by re-running.
+// The extension's supported key types are deliberately not touched. They exist
+// for wallet-key operations, which this extension has none of: its machines
+// sign with their enclave keys, and upstream's checklist for a reserved
+// extension does not list them either.
+//
+// Both steps are idempotent — a re-run against an already-wired extension is a
+// pair of no-ops, so a failure partway through is fixed by re-running.
 func WireReservedExtension(
 	s *support.Support, privKey *ecdsa.PrivateKey,
-	extensionId *big.Int, instructionsSender common.Address,
+	extensionId *big.Int, instructionsSender, machineOwner common.Address,
 ) error {
 	owner := crypto.PubkeyToAddress(privKey.PublicKey)
 	callOpts := &bind.CallOpts{From: owner, Context: context.Background()}
@@ -106,42 +112,22 @@ func WireReservedExtension(
 			instructionsSender.Hex(), tx.Hash().Hex())
 	}
 
-	// Step 2: allow the owner to register TEE machines for this extension.
-	alreadyMachineOwner, err := s.TeeOwnerAllowlist.IsAllowedTeeMachineOwner(callOpts, extensionId, owner)
+	// Step 2: allow the machines' owner to register them for this extension.
+	alreadyMachineOwner, err := s.TeeOwnerAllowlist.IsAllowedTeeMachineOwner(callOpts, extensionId, machineOwner)
 	if err != nil {
 		return errors.Errorf("checking TEE machine owner status: %s", err)
 	}
 	if alreadyMachineOwner {
-		logger.Infof("%s already allowed as TEE machine owner, skipping", owner.Hex())
+		logger.Infof("%s already allowed as TEE machine owner, skipping", machineOwner.Hex())
 	} else {
-		tx, txErr := s.TeeOwnerAllowlist.AddAllowedTeeMachineOwners(opts, extensionId, []common.Address{owner})
+		tx, txErr := s.TeeOwnerAllowlist.AddAllowedTeeMachineOwners(opts, extensionId, []common.Address{machineOwner})
 		if txErr != nil {
 			return errors.Errorf("AddAllowedTeeMachineOwners failed: %s", txErr)
 		}
 		if _, txErr = support.CheckTx(tx, s.ChainClient); txErr != nil {
 			return errors.Errorf("%s", txErr)
 		}
-		logger.Infof("%s allowed as TEE machine owner (tx %s)", owner.Hex(), tx.Hash().Hex())
-	}
-
-	// Step 3: support the EVM key type on the extension, as register() did for
-	// minted extensions. The TEE oracle itself signs with the machine's enclave
-	// key; this keeps wallet-key operations available should they ever be used.
-	evmSupported, err := s.TeeExtensionRegistry.IsKeyTypeSupported(callOpts, extensionId, wallets.EVMType)
-	if err != nil {
-		return errors.Errorf("checking EVM key type support: %s", err)
-	}
-	if evmSupported {
-		logger.Infof("Key type EVM already supported, skipping")
-	} else {
-		tx, txErr := s.TeeExtensionRegistry.AddSupportedKeyTypes(opts, extensionId, [][32]byte{wallets.EVMType})
-		if txErr != nil {
-			return errors.Errorf("AddSupportedKeyTypes failed: %s", txErr)
-		}
-		if _, txErr = support.CheckTx(tx, s.ChainClient); txErr != nil {
-			return errors.Errorf("%s", txErr)
-		}
-		logger.Infof("Key type EVM added (tx %s)", tx.Hash().Hex())
+		logger.Infof("%s allowed as TEE machine owner (tx %s)", machineOwner.Hex(), tx.Hash().Hex())
 	}
 
 	return nil
