@@ -46,6 +46,7 @@ type fakeClient struct {
 
 	mu           sync.Mutex
 	calledBlocks []*big.Int
+	headerBlocks []uint64
 }
 
 // HeaderByNumber serves the head when number is nil and the pinned block
@@ -66,6 +67,10 @@ func (c *fakeClient) HeaderByNumber(ctx context.Context, number *big.Int) (*type
 		}, nil
 	}
 
+	c.mu.Lock()
+	c.headerBlocks = append(c.headerBlocks, number.Uint64())
+	c.mu.Unlock()
+
 	if c.blockTimeErr != nil {
 		return nil, c.blockTimeErr
 	}
@@ -77,6 +82,14 @@ func (c *fakeClient) HeaderByNumber(ctx context.Context, number *big.Int) (*type
 		Number: new(big.Int).Set(number),
 		Time:   uint64(c.stampFor(number.Uint64()).Unix()),
 	}, nil
+}
+
+// pinnedHeaderReads counts reads of a specific block's header, which is one per
+// candidate the round probes.
+func (c *fakeClient) pinnedHeaderReads() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.headerBlocks)
 }
 
 func (c *fakeClient) stampFor(uint64) time.Time {
@@ -97,6 +110,12 @@ func (c *fakeClient) CallContract(ctx context.Context, call ethereum.CallMsg, bl
 	}
 	if c.callErr != nil {
 		return nil, c.callErr
+	}
+	// A provider whose head is below the requested block does not hold it, the
+	// same rule HeaderByNumber applies. Without this a lagging provider would vote
+	// on state it cannot have, which no real endpoint allows.
+	if blockNumber != nil && blockNumber.IsUint64() && blockNumber.Uint64() > c.head {
+		return nil, errors.New("unknown block")
 	}
 	if c.badLen {
 		return []byte{0x01}, nil
@@ -603,6 +622,88 @@ func TestRead_TwoStalledProvidersBreakQuorum(t *testing.T) {
 
 	if _, err := Read(context.Background(), c); !errors.Is(err, failure.SupplyUnavailable) {
 		t.Errorf("expected SupplyUnavailable, got %v", err)
+	}
+}
+
+// T-10. A head is a claim, not proof. One provider naming a head it does not hold
+// pushes the Quorum-th highest onto a block only ONE honest provider can serve, and
+// the vote there is one honest answer against one forged — a tie. Before the step
+// down, a single provider denied every round this way.
+func TestRead_OverclaimedHeadDoesNotDenyTheRound(t *testing.T) {
+	honestA := client(1000, "20620459685024", 6)
+	honestB := client(999, "20620459685024", 6)
+	liar := client(11000, "999999999999", 6)
+
+	got, err := Read(context.Background(), cfg(t, 2, honestA, honestB, liar))
+	if err != nil {
+		t.Fatalf("two honest providers agree one block lower: %v", err)
+	}
+	if got.Block != 999 {
+		t.Errorf("block = %d, want 999 — the highest block two providers actually serve", got.Block)
+	}
+	if want := "20620459.685024"; got.Amount.FloatString(6) != want {
+		t.Errorf("amount = %s, want the honest figure %s", got.Amount.FloatString(6), want)
+	}
+	if h := got.Providers["rpc_test_c"]; h != config.HealthDisagree {
+		t.Errorf("overclaiming provider = %q, want %q", h, config.HealthDisagree)
+	}
+}
+
+// The provider displaced by the overclaim is the one the round steps back to
+// include. Its failure at the abandoned candidate must leave no mark: health only
+// demotes, so a discarded attempt would strand the honest provider at `down`.
+func TestRead_ProviderDisplacedByAnOverclaimIsNotBlamed(t *testing.T) {
+	honestA := client(1000, "100", 6)
+	honestB := client(999, "100", 6)
+	liar := client(11000, "999999", 6)
+
+	got, err := Read(context.Background(), cfg(t, 2, honestA, honestB, liar))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h := got.Providers["rpc_test_b"]; h != config.HealthOK {
+		t.Errorf("displaced provider = %q, want %q — it served the block finally read",
+			h, config.HealthOK)
+	}
+}
+
+// The same denial reached by withholding rather than forging: the overclaiming
+// provider cannot serve the pinned header at all.
+func TestRead_OverclaimedHeadWithheldStillStepsDown(t *testing.T) {
+	honestA := client(1000, "100", 6)
+	honestB := client(999, "100", 6)
+	liar := client(11000, "100", 6)
+	liar.blockTimeErr = errors.New("no")
+
+	got, err := Read(context.Background(), cfg(t, 2, honestA, honestB, liar))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Block != 999 {
+		t.Errorf("block = %d, want 999", got.Block)
+	}
+}
+
+// Stepping answers a shortfall of corroboration and nothing else. A block that is
+// simply too old fails on the spot: every lower block is older still, so walking
+// down would only spend what is left of the observation deadline.
+func TestRead_StaleBlockDoesNotWalkDown(t *testing.T) {
+	old := time.Now().Add(-time.Hour)
+	a := client(1000, "100", 6)
+	a.blockTime = old
+	b := client(999, "100", 6)
+	b.blockTime = old
+
+	c := cfg(t, 2, a, b)
+	c.MaxBlockAge = time.Minute
+
+	if _, err := Read(context.Background(), c); !errors.Is(err, failure.SupplyBlockStale) {
+		t.Fatalf("expected SupplyBlockStale, got %v", err)
+	}
+	for _, cl := range []*fakeClient{a, b} {
+		if n := cl.pinnedHeaderReads(); n != 1 {
+			t.Errorf("pinned header read %d times, want 1 — a stale block must not be retried lower", n)
+		}
 	}
 }
 

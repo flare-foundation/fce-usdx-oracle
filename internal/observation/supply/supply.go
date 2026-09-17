@@ -2,13 +2,19 @@
 //
 // To resolve different "latest" heads from providers, we pin to an explicit block:
 //  1. Ask each provider for its head.
-//  2. Take the Quorum-th highest block.
+//  2. Take the Quorum-th highest claimed head, then step down through the distinct
+//     heads below it until Quorum providers actually serve one.
 //  3. Query all providers at that block and require Quorum identical results for a
 //     uniquely most-common answer (not median).
 //
-// Using the Quorum-th highest avoids stale data from lagging providers. MaxBlockAge
-// covers cases head selection alone cannot, like single-provider chains or Quorum
-// equal to the number of providers.
+// Step 2 steps down because a head is a claim, not proof. One provider naming a head
+// it does not hold shifts the Quorum-th highest onto a block only a single honest
+// provider can serve, and the vote there is a tie — so a single provider would
+// otherwise deny the whole round.
+//
+// Taking the Quorum-th highest first avoids stale data from lagging providers, and
+// means a provider claiming a LOW head is simply ignored rather than able to drag
+// the pin backwards. MaxBlockAge covers cases head selection alone cannot.
 //
 // Every call is bounded by ProviderTimeout, so a provider that accepts the
 // connection and never answers is demoted like any other unreachable one instead
@@ -22,6 +28,7 @@ package supply
 import (
 	"context"
 	"errors"
+	"maps"
 	"math/big"
 	"sort"
 	"sync"
@@ -143,7 +150,7 @@ func (c ChainSource) Validate() error {
 // Reading carries per-provider standing.
 func Read(ctx context.Context, ch ChainSource) (Reading, error) {
 	// Everyone starts healthy and is demoted by the calls below. Sound because
-	// agreedBlock contacts every provider before anything else can fail.
+	// providerHeads contacts every provider before anything else can fail.
 	health := make(map[string]string, len(ch.Providers))
 	for _, p := range ch.Providers {
 		health[p.Name] = config.HealthOK
@@ -152,29 +159,72 @@ func Read(ctx context.Context, ch ChainSource) (Reading, error) {
 		return Reading{Chain: ch.Name, Providers: health}, err
 	}
 
-	block, err := agreedBlock(ctx, ch, health)
+	claims, err := providerHeads(ctx, ch, health)
 	if err != nil {
 		return failed(err)
 	}
 
+	candidateBlocks := pinCandidateBlocks(claims, ch.Quorum)
+	if len(candidateBlocks) == 0 {
+		return failed(failure.SupplyUnavailable)
+	}
+
+	var (
+		lastErr    = error(failure.SupplyUnavailable)
+		lastHealth = health
+	)
+	for _, block := range candidateBlocks {
+		// A candidate the round steps away from says nothing about a provider, and
+		// health only ever demotes, so each attempt scores against its own copy and
+		// only the one that settles is kept.
+		attempt := maps.Clone(health)
+
+		// Before the read, not after: vote reports a provider that cannot serve the
+		// block as `down` unless it is already known to be behind, and which
+		// providers are behind is a property of the candidate being probed.
+		markLagging(ch, claims, block, attempt)
+
+		reading, err := readAtBlock(ctx, ch, block, attempt)
+		if err == nil {
+			maps.Copy(health, attempt)
+			reading.Providers = health
+			return reading, nil
+		}
+
+		lastErr, lastHealth = err, attempt
+		if !steppable(err) {
+			break
+		}
+	}
+
+	maps.Copy(health, lastHealth)
+	return failed(lastErr)
+}
+
+// readAtBlock reads the chain's supply at one pinned block. Separate from Read so
+// the whole read can be retried lower: whether enough providers corroborate is only
+// known by asking, and the round that reveals it is not always the first.
+func readAtBlock(
+	ctx context.Context, ch ChainSource, block uint64, health map[string]string,
+) (Reading, error) {
 	at := new(big.Int).SetUint64(block)
 
 	blockTime, err := agreedBlockTime(ctx, ch, at, health)
 	if err != nil {
-		return failed(err)
+		return Reading{}, err
 	}
 	if ch.MaxBlockAge > 0 && time.Since(blockTime) > ch.MaxBlockAge {
-		return failed(failure.SupplyBlockStale)
+		return Reading{}, failure.SupplyBlockStale
 	}
 
 	decimals, err := readDecimals(ctx, ch, at, health)
 	if err != nil {
-		return failed(err)
+		return Reading{}, err
 	}
 
 	raw, err := readTotalSupply(ctx, ch, at, health)
 	if err != nil {
-		return failed(err)
+		return Reading{}, err
 	}
 
 	// Exact: a big.Rat division by a power of ten loses nothing.
@@ -188,18 +238,31 @@ func Read(ctx context.Context, ch ChainSource) (Reading, error) {
 		BlockTime:   blockTime,
 		Decimals:    decimals,
 		RetrievedAt: time.Now().UTC(),
-		Providers:   health,
 	}, nil
 }
 
-// agreedBlock returns the Quorum-th highest head — the highest block at least
-// Quorum providers can serve. The package comment says why not the minimum.
-func agreedBlock(ctx context.Context, ch ChainSource, health map[string]string) (uint64, error) {
-	type result struct {
-		n   uint64
-		err error
-	}
-	results := make([]result, len(ch.Providers))
+// steppable reports whether a lower block is worth trying. Only a shortfall of
+// corroboration is: it is the shape a pin lands in when a provider named a head it
+// does not hold, and the step re-includes the provider that claim displaced. Every
+// other fault is about the block itself — too old, malformed, out of time — and a
+// lower block answers none of them while spending what is left of the deadline.
+func steppable(err error) bool {
+	return errors.Is(err, failure.SupplyUnavailable) || errors.Is(err, failure.SupplyNoQuorum)
+}
+
+// headClaim is one provider's answer to "what is your head?", index-aligned with
+// ch.Providers. It is a claim: nothing verifies the provider holds that block.
+type headClaim struct {
+	n  uint64
+	ok bool
+}
+
+// providerHeads asks every provider for its current head and demotes the ones that
+// did not answer. The result is index-aligned with ch.Providers.
+func providerHeads(
+	ctx context.Context, ch ChainSource, health map[string]string,
+) ([]headClaim, error) {
+	claims := make([]headClaim, len(ch.Providers))
 
 	var wg sync.WaitGroup
 	for i, p := range ch.Providers {
@@ -209,57 +272,73 @@ func agreedBlock(ctx context.Context, ch ChainSource, health map[string]string) 
 
 			// nil is the latest block.
 			h, err := p.Client.HeaderByNumber(cctx, nil)
-			if err != nil {
-				results[i] = result{err: err}
+			if err != nil || h == nil || h.Number == nil {
 				return
 			}
-			if h == nil || h.Number == nil {
-				results[i] = result{err: errors.New("nil header")}
-				return
-			}
-			results[i] = result{n: h.Number.Uint64()}
+			claims[i] = headClaim{n: h.Number.Uint64(), ok: true}
 		})
 	}
 	wg.Wait()
 
 	if err := ctx.Err(); err != nil {
-		return 0, failure.SupplyTimeout
+		return nil, failure.SupplyTimeout
 	}
 
-	heads := make([]uint64, 0, len(results))
-	for i, r := range results {
-		if r.err != nil {
+	answered := 0
+	for i, c := range claims {
+		if !c.ok {
 			health[ch.Providers[i].Name] = config.HealthDown
 			continue
 		}
-		heads = append(heads, r.n)
+		answered++
 	}
 
 	// Fewer than Quorum providers answered at all, so no block can reach Quorum
 	// agreement later either.
-	if len(heads) < ch.Quorum {
-		return 0, failure.SupplyUnavailable
+	if answered < ch.Quorum {
+		return nil, failure.SupplyUnavailable
 	}
+	return claims, nil
+}
 
-	// Descending, then the Quorum-th: exactly Quorum providers reported a head
-	// at or above it, so at least that many hold the state.
+// pinCandidateBlocks returns the blocks worth probing, highest first: the Quorum-th
+// highest claim and every distinct claim below it. Duplicates are collapsed because
+// probing the same block twice cannot produce a different answer, and block 0 ends
+// the list — a chain that short is a reset devnet, not one with USDX on it.
+func pinCandidateBlocks(claims []headClaim, quorum int) []uint64 {
+	heads := make([]uint64, 0, len(claims))
+	for _, c := range claims {
+		if c.ok {
+			heads = append(heads, c.n)
+		}
+	}
+	if len(heads) < quorum {
+		return nil
+	}
 	sort.Slice(heads, func(i, j int) bool { return heads[i] > heads[j] })
-	pinned := heads[ch.Quorum-1]
 
-	// Block 0 is a freshly reset devnet, not a chain with USDX on it.
-	if pinned == 0 {
-		return 0, failure.SupplyUnavailable
+	out := make([]uint64, 0, len(heads)-quorum+1)
+	for _, h := range heads[quorum-1:] {
+		if h == 0 {
+			break
+		}
+		if len(out) > 0 && out[len(out)-1] == h {
+			continue
+		}
+		out = append(out, h)
 	}
+	return out
+}
 
-	// Tolerated — it is what Quorum < len(Providers) is for — but recorded, because
-	// it is also the shape a provider takes when it tries to rewind the observation.
-	for i, r := range results {
-		if r.err == nil && r.n < pinned && health[ch.Providers[i].Name] == config.HealthOK {
+// markLagging records providers whose own head is below the settled pin. Tolerated
+// — it is what Quorum < len(Providers) is for — but recorded, because it is also the
+// shape a provider takes when it tries to rewind the observation.
+func markLagging(ch ChainSource, claims []headClaim, pinned uint64, health map[string]string) {
+	for i, c := range claims {
+		if c.ok && c.n < pinned && health[ch.Providers[i].Name] == config.HealthOK {
 			health[ch.Providers[i].Name] = config.HealthLagging
 		}
 	}
-
-	return pinned, nil
 }
 
 // agreedBlockTime returns the pinned block's own header timestamp, agreed by
