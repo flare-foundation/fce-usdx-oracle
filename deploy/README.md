@@ -37,6 +37,24 @@ Two things hold everywhere:
   override. `stop-services.sh` stops that stack and removes the record. On a live chain nothing is recorded and
   `EXT_PROXY_URL` in `.env` (the machine's public proxy URL) applies.
 
+## The test suites
+
+Start with the checks that need no chain, no TEE and no credentials. They catch most breakage in
+seconds:
+
+```bash
+go test ./... && (cd tools && go test ./...) && (cd contracts && forge test)
+```
+
+| Suite | Covers |
+| --- | --- |
+| `go test ./...` at the root and in `tools/` | The quorum procedure, price arithmetic, decimal parsing, the provisioning verifier, the wire encodings and the keeper cycle |
+| `forge test` in `contracts/` | Solidity's own encoding of the payloads that cross the extension boundary, written to `testdata/wire/` and asserted against by both Go codecs |
+| `TestConformance` in `internal/extension` | Replays the golden fixtures in `testdata/conformance/` against a running extension and diffs the responses. This is the acceptance test for an implementation in another language |
+
+[docs/testing.md](../docs/testing.md) covers what each layer proves, how to drive the feed end to
+end, and how to read the outcomes that look like failures but are not.
+
 ## Testing on the local simulation
 
 Prerequisites: the e2e repository's simulation up (Hardhat on 8545, its redis instances,
