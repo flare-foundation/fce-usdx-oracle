@@ -9,7 +9,7 @@
         "url": "https://flare.rpc.thirdweb.com"
       },
       {
-        "url": "https://flare.gateway.tenderly.co"
+        "url": "https://flare.drpc.org"
       }
     ]
   },
@@ -28,10 +28,16 @@
     ]
   },
   "songbird": {
-    "threshold": 1,
+    "threshold": 2,
     "endpoints": [
       {
         "url": "https://songbird-api.flare.network/ext/C/rpc"
+      },
+      {
+        "url": "https://rpc.au.cc/songbird"
+      },
+      {
+        "url": "https://19.rpc.thirdweb.com"
       }
     ]
   },
