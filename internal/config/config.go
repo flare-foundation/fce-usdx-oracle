@@ -120,6 +120,14 @@ func init() {
 const (
 	ObservationDeadline = 20 * time.Second
 
+	// Bound on one RPC provider's answer within a single round of the supply read.
+	// Four rounds run in sequence per chain, so an endpoint that accepts the
+	// connection and never answers costs at most four times this, leaving the rest
+	// of ObservationDeadline to the reserve reads that follow. Without it a single
+	// silent endpoint consumes the whole deadline and fails an observation the
+	// remaining providers could satisfy.
+	ProviderTimeout = 3 * time.Second
+
 	// Faster than Hex's ~10 minute post-event republish, so several consecutive
 	// failures still fit inside MaxObservationAge.
 	ObservationInterval = 2 * time.Minute

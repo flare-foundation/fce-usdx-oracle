@@ -154,7 +154,8 @@ func testConfig(t *testing.T, chain *fakeChain, bonds, cash *fakeSource) (Source
 			Providers: []supply.Provider{
 				{Name: "rpc_flare_1", Client: chain},
 			},
-			Quorum: 1,
+			Quorum:          1,
+			ProviderTimeout: time.Second,
 		}},
 		Bonds: bonds,
 		Cash:  cashSource(cash),

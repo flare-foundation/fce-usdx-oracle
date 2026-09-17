@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
 
 	"github.com/ethereum/go-ethereum"
@@ -38,6 +39,11 @@ type fakeClient struct {
 	// read healthy — how a provider that cannot serve the pinned block behaves.
 	blockTimeErr error
 
+	// stall blocks every call until its context is cancelled: an endpoint that
+	// accepts the connection and then never answers. Distinct from headErr and
+	// callErr, which are the endpoint that fails immediately.
+	stall bool
+
 	mu           sync.Mutex
 	calledBlocks []*big.Int
 }
@@ -46,6 +52,10 @@ type fakeClient struct {
 // otherwise. Both carry a timestamp: a real chain has no blocks without one, and
 // agreedBlockTime rejects a zero stamp as malformed.
 func (c *fakeClient) HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error) {
+	if c.stall {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if number == nil {
 		if c.headErr != nil {
 			return nil, c.headErr
@@ -81,6 +91,10 @@ func (c *fakeClient) CallContract(ctx context.Context, call ethereum.CallMsg, bl
 	c.calledBlocks = append(c.calledBlocks, blockNumber)
 	c.mu.Unlock()
 
+	if c.stall {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if c.callErr != nil {
 		return nil, c.callErr
 	}
@@ -101,6 +115,10 @@ func client(head uint64, supply string, decimals uint8) *fakeClient {
 	return &fakeClient{head: head, supply: s, decimals: decimals}
 }
 
+// testProviderTimeout stands in for config.ProviderTimeout so a stalled provider
+// costs milliseconds here rather than the production bound.
+const testProviderTimeout = 150 * time.Millisecond
+
 func cfg(t *testing.T, quorum int, clients ...*fakeClient) ChainSource {
 	t.Helper()
 	providers := make([]Provider, len(clients))
@@ -109,7 +127,7 @@ func cfg(t *testing.T, quorum int, clients ...*fakeClient) ChainSource {
 	}
 	return ChainSource{
 		Name: "testchain", Token: testToken, Providers: providers,
-		Quorum: quorum,
+		Quorum: quorum, ProviderTimeout: testProviderTimeout,
 	}
 }
 
@@ -521,6 +539,73 @@ func TestTotal_IgnoresNilAmounts(t *testing.T) {
 	}
 }
 
+// The finding this bounds: quorum is over ANSWERS, so before ProviderTimeout a
+// provider that accepted the connection and went silent held every round until the
+// observation deadline, and the read failed although two providers had already
+// agreed. A provider that fails fast was always tolerated; this makes the silent
+// one cost the same.
+func TestRead_StalledProviderDoesNotFailAQuorateRead(t *testing.T) {
+	silent := client(1000, "20620459685024", 6)
+	silent.stall = true
+
+	c := cfg(t, 2,
+		client(1000, "20620459685024", 6),
+		client(1000, "20620459685024", 6),
+		silent,
+	)
+
+	got, err := Read(context.Background(), c)
+	if err != nil {
+		t.Fatalf("two agreeing providers must carry the read: %v", err)
+	}
+	if want := "20620459.685024"; got.Amount.FloatString(6) != want {
+		t.Errorf("amount = %s, want %s", got.Amount.FloatString(6), want)
+	}
+	if got := got.Providers["rpc_test_c"]; got != config.HealthDown {
+		t.Errorf("silent provider health = %q, want %q", got, config.HealthDown)
+	}
+}
+
+// A silent provider must cost its own timeout per round and nothing more. The
+// bound is what keeps four rounds inside the observation deadline the chains and
+// the reserve reads share.
+func TestRead_StalledProviderCostsOnlyItsTimeout(t *testing.T) {
+	silent := client(1000, "20620459685024", 6)
+	silent.stall = true
+
+	c := cfg(t, 2,
+		client(1000, "20620459685024", 6),
+		client(1000, "20620459685024", 6),
+		silent,
+	)
+
+	start := time.Now()
+	if _, err := Read(context.Background(), c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Four sequential rounds, each bounded by ProviderTimeout, plus slack for a
+	// loaded test machine.
+	if elapsed, limit := time.Since(start), 4*testProviderTimeout+time.Second; elapsed > limit {
+		t.Errorf("read took %s, want under %s", elapsed, limit)
+	}
+}
+
+// Quorum is what tolerates the silent provider, so losing a second one past the
+// threshold must still fail rather than read on with one answer.
+func TestRead_TwoStalledProvidersBreakQuorum(t *testing.T) {
+	first := client(1000, "20620459685024", 6)
+	first.stall = true
+	second := client(1000, "20620459685024", 6)
+	second.stall = true
+
+	c := cfg(t, 2, client(1000, "20620459685024", 6), first, second)
+
+	if _, err := Read(context.Background(), c); !errors.Is(err, failure.SupplyUnavailable) {
+		t.Errorf("expected SupplyUnavailable, got %v", err)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	good := cfg(t, 2, client(1, "1", 6), client(1, "1", 6))
 	if err := good.Validate(); err != nil {
@@ -538,6 +623,8 @@ func TestValidate(t *testing.T) {
 		{"quorum above provider count", func(c *ChainSource) { c.Quorum = 99 }},
 		{"provider without name", func(c *ChainSource) { c.Providers[0].Name = "" }},
 		{"provider without client", func(c *ChainSource) { c.Providers[0].Client = nil }},
+		{"zero provider timeout", func(c *ChainSource) { c.ProviderTimeout = 0 }},
+		{"negative provider timeout", func(c *ChainSource) { c.ProviderTimeout = -time.Second }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

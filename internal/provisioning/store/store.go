@@ -630,7 +630,8 @@ func (s *Store) Open() (observation.Sources, observation.Binding, error) {
 			// From the pinned policy, never from the payload: the party that
 			// chooses the providers must not also choose how stale a block from
 			// them may be.
-			MaxBlockAge: pinned.MaxBlockAge,
+			MaxBlockAge:     pinned.MaxBlockAge,
+			ProviderTimeout: config.ProviderTimeout,
 		})
 	}
 

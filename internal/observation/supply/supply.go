@@ -10,6 +10,10 @@
 // covers cases head selection alone cannot, like single-provider chains or Quorum
 // equal to the number of providers.
 //
+// Every call is bounded by ProviderTimeout, so a provider that accepts the
+// connection and never answers is demoted like any other unreachable one instead
+// of holding the round until the observation deadline.
+//
 // Supply is the sum of totalSupply() over the pinned contracts, matching Hex’s reserves basis.
 //
 // See rationale §6 for details and findings §24 for the relevant incident.
@@ -72,6 +76,12 @@ type ChainSource struct {
 	// this; zero disables it. The only freshness bound that is not wall-clock, and
 	// the only one that still works at Quorum 1. Rationale §6.
 	MaxBlockAge time.Duration
+
+	// ProviderTimeout bounds a single provider's answer within one round. Quorum
+	// tolerates a provider that fails; this is what makes it tolerate one that
+	// merely never replies, which is otherwise indistinguishable from a slow
+	// chain and costs the whole shared deadline.
+	ProviderTimeout time.Duration
 }
 
 // Reading is one chain's supply, normalised out of the token's own decimals.
@@ -114,6 +124,9 @@ func (c ChainSource) Validate() error {
 	}
 	if c.Quorum < 1 || c.Quorum > len(c.Providers) {
 		return errors.New("supply: quorum must be between 1 and the provider count")
+	}
+	if c.ProviderTimeout <= 0 {
+		return errors.New("supply: provider timeout must be positive")
 	}
 	for _, p := range c.Providers {
 		if p.Name == "" {
@@ -191,8 +204,11 @@ func agreedBlock(ctx context.Context, ch ChainSource, health map[string]string) 
 	var wg sync.WaitGroup
 	for i, p := range ch.Providers {
 		wg.Go(func() {
+			cctx, cancel := context.WithTimeout(ctx, ch.ProviderTimeout)
+			defer cancel()
+
 			// nil is the latest block.
-			h, err := p.Client.HeaderByNumber(ctx, nil)
+			h, err := p.Client.HeaderByNumber(cctx, nil)
 			if err != nil {
 				results[i] = result{err: err}
 				return
@@ -258,7 +274,10 @@ func agreedBlockTime(
 	var wg sync.WaitGroup
 	for i, p := range ch.Providers {
 		wg.Go(func() {
-			h, err := p.Client.HeaderByNumber(ctx, at)
+			cctx, cancel := context.WithTimeout(ctx, ch.ProviderTimeout)
+			defer cancel()
+
+			h, err := p.Client.HeaderByNumber(cctx, at)
 			if err != nil || h == nil {
 				return
 			}
@@ -361,8 +380,11 @@ func callAll(ctx context.Context, ch ChainSource, selector []byte, at *big.Int) 
 	var wg sync.WaitGroup
 	for i, p := range ch.Providers {
 		wg.Go(func() {
+			cctx, cancel := context.WithTimeout(ctx, ch.ProviderTimeout)
+			defer cancel()
+
 			// Always an explicit block number: never a tag, never nil.
-			data, err := p.Client.CallContract(ctx, call, at)
+			data, err := p.Client.CallContract(cctx, call, at)
 			// A single ABI word. Anything else is a wrong address, a proxy
 			// without an implementation, or a provider missing that block.
 			if err != nil || len(data) != 32 {
