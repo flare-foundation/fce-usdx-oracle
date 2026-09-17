@@ -295,7 +295,7 @@ anything before the first line that is exactly `[`.
 | --- | --- |
 | `SIMULATED_TEE=true` | expected code hash and platform are the simulated constants rather than parsed from an attestation token |
 | `SIMULATED_CODE_HASH` | overrides that expected hash, for addressing a fleet running two builds mid-upgrade. Validated as exactly 32 bytes, and **ignored unless `SIMULATED_TEE=true`** — under real attestation the hash comes from the token and must not be overridable |
-| `EXTENSION_OWNER_KEY` | signs the extension owner's calls as someone other than the deployer: `addTeeVersion`, the wiring, the governance set |
+| `EXTENSION_OWNER_KEY` | the extension owner's key, which every tool signs with unless it names another role's: the wiring, `addTeeVersion`, the governance set, the configuration publications, the keeper's fees |
 | `MACHINE_OWNER_KEY` | signs the machine owner's calls: registration, the move to production, and pausing. The registry requires the machine's own initial owner as the sender, so this is needed wherever that address is not the deployer |
 | `DIRECT_API_KEY` | the direct channel gate: what `fleet-status`, `send-endpoints`, `send-admins`, `oracle-watch`, `readiness` and the scripts ask a machine with (`GET_READINESS`) |
 

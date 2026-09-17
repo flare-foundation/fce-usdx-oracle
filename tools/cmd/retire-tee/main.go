@@ -12,7 +12,8 @@
 // each), and the relay keeps failing to deliver. stop-services.sh runs the -p
 // form before it stops a stack.
 //
-// Pausing is the owner's call (the registering key, DEPLOYMENT_PRIVATE_KEY) on a
+// Pausing is the machine owner's call (MACHINE_OWNER_KEY, or the extension
+// owner's key where they are one address) on a
 // machine at PRODUCTION; a paused machine is never dispatched to and its
 // updates are rejected, and there is no unpause. -stale finds the machines
 // whose registered URL either does not answer or answers as a different

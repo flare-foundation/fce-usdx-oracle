@@ -46,7 +46,7 @@ The relay is what delivers cosigned instructions to *this* extension's proxy too
 ```bash
 ./deploy/scripts/use-chain.sh local            # .env.local → .env (Hardhat test keys only)
 ./deploy/scripts/deploy-oracle.sh --chain local        # oracle contracts on the sim, extension 1 reserved, addresses imported
-(cd tools && go run ./cmd/wire-extension)      # owner wiring: instructions sender, allowed machine owners, key types
+(cd tools && go run ./cmd/wire-extension)      # owner wiring: instructions sender, and the machines' owner on the allowlist
 ./deploy/scripts/full-setup.sh --chain local   # extension + proxy in Docker, version, governance, machine registered
 ./deploy/scripts/publish-local.sh endpoints    # SET_ENDPOINTS, executed at once: the local sender is deployer-governed
 ./deploy/scripts/publish-local.sh admins       # SET_ADMINS, dev-only well-known keys
@@ -93,7 +93,7 @@ The two stacks do not clash, and the record names whichever was started last.
   for this network (`deployment/chain-config/scdev.json`: extension 1, the USDX/USD feed and its
   submission policy) except for its last step: the sender and the feed store are not switched to
   production mode. They stay governed by the deployer, the key the tools sign with
-  (`DEPLOYMENT_PRIVATE_KEY`), so publications execute at once instead of waiting out the
+  (`EXTENSION_OWNER_KEY`), so publications execute at once instead of waiting out the
   simulation's hour-long governance timelock. Production mode is one-way, so this is decided here,
   at deploy time, and only for the simulation. The script then reserves extension 1 for
   `INITIAL_OWNER` and imports every address into `deploy/config/local/`. It reuses contracts that are
@@ -120,7 +120,7 @@ Everything in `.env.local` is a public Hardhat test key.
 | Key | Address | Role |
 | --- | --- | --- |
 | `LOCAL_GOVERNANCE_KEY` (account 0) | `0xc783…1eB6` | the simulation's contract governance and sole timelock executor; reserves extension 1 |
-| `DEPLOYMENT_PRIVATE_KEY` (the funded sim key) | `0xF4E0…3a64` | deploys the oracle contracts and stays their governance; owner of reserved extension 1, owner of the TEE machine, the proxy's signer, the keeper's wallet |
+| `EXTENSION_OWNER_KEY` (the funded sim key) | `0xF4E0…3a64` | deploys the oracle contracts and stays their governance; owner of reserved extension 1, owner of the TEE machine, the proxy's signer, the keeper's wallet |
 
 `publish-local.sh` decides its route by the sender's `productionMode()`: false on a
 `deploy-oracle.sh --chain local` deploy, true on upstream's, whose governance is then account 0.

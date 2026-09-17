@@ -22,8 +22,6 @@ package main
 import (
 	"flag"
 	"math/big"
-	"os"
-	"strings"
 
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
@@ -58,21 +56,9 @@ func main() {
 		fccutils.FatalWithCause(err)
 	}
 
-	// Same key resolution as allow-tee-version: EXTENSION_OWNER_KEY overrides,
-	// otherwise DEPLOYMENT_PRIVATE_KEY. Whichever it is, THIS address must be
-	// the owner governance registered with registerReserved.
+	// THIS address must be the owner governance registered with registerReserved.
 	privKey := testSupport.Prv
-	keySource := "DEPLOYMENT_PRIVATE_KEY (default)"
-	if pk := os.Getenv("EXTENSION_OWNER_KEY"); pk != "" {
-		pk = strings.TrimPrefix(strings.TrimPrefix(pk, "0x"), "0X")
-		privKey, err = crypto.HexToECDSA(pk)
-		if err != nil {
-			fccutils.FatalWithCause(errors.Errorf("EXTENSION_OWNER_KEY: %s", err))
-		}
-		keySource = "EXTENSION_OWNER_KEY"
-	}
-
-	logger.Infof("Using key: %s (owner: %s)", keySource, crypto.PubkeyToAddress(privKey.PublicKey).Hex())
+	logger.Infof("Using EXTENSION_OWNER_KEY (owner: %s)", crypto.PubkeyToAddress(privKey.PublicKey).Hex())
 	logger.Infof("Extension id:        %s", extensionID.String())
 	logger.Infof("Instructions sender: %s", senderAddr.Hex())
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/ecdsa"
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
 	"fce-usdx-oracle/tools/pkg/support"
@@ -33,25 +32,10 @@ func main() {
 		fccutils.FatalWithCause(err)
 	}
 
-	var privKey *ecdsa.PrivateKey
-	privKeyString := os.Getenv("EXTENSION_OWNER_KEY")
-	if privKeyString != "" {
-		if strings.HasPrefix(privKeyString, "0x") || strings.HasPrefix(privKeyString, "0X") {
-			privKeyString = privKeyString[2:]
-		}
-		privKey, err = crypto.HexToECDSA(privKeyString)
-		if err != nil {
-			fccutils.FatalWithCause(err)
-		}
-	} else {
-		privKey = testSupport.Prv
-	}
-
-	keySource := "EXTENSION_OWNER_KEY"
-	if privKeyString == "" {
-		keySource = "DEPLOYMENT_PRIVATE_KEY (default)"
-	}
-	logger.Infof("Using key: %s (deployer: %s)", keySource, crypto.PubkeyToAddress(privKey.PublicKey).Hex())
+	// addTeeVersion is the extension owner's, which is the key every tool signs
+	// with unless it names another role's.
+	privKey := testSupport.Prv
+	logger.Infof("Using EXTENSION_OWNER_KEY (%s)", crypto.PubkeyToAddress(privKey.PublicKey).Hex())
 
 	teeID, _, err := fccutils.TeeProxyId(teeInfo)
 	if err != nil {

@@ -118,16 +118,16 @@ func RegisterDeployChecks(r *Report, client *ethclient.Client, key *ecdsa.Privat
 	}
 }
 
-// CheckDeployerKeySource checks whether the deployer private key is configured.
+// CheckDeployerKeySource checks whether the signing key is configured.
 func CheckDeployerKeySource() CheckResult {
-	privKey := os.Getenv("DEPLOYMENT_PRIVATE_KEY")
+	privKey := os.Getenv("EXTENSION_OWNER_KEY")
 	if privKey != "" {
 		return CheckResult{
 			Step:    "deploy",
 			ID:      "D5",
 			Name:    "deployer key source",
 			Status:  PASS,
-			Message: "DEPLOYMENT_PRIVATE_KEY is set",
+			Message: "EXTENSION_OWNER_KEY is set",
 		}
 	}
 
@@ -147,8 +147,8 @@ func CheckDeployerKeySource() CheckResult {
 		ID:      "D5",
 		Name:    "deployer key source",
 		Status:  WARN,
-		Message: "DEPLOYMENT_PRIVATE_KEY not set — using Hardhat dev key which has no funds on Coston2",
-		Fix:     "Set DEPLOYMENT_PRIVATE_KEY in .env to a funded account on the target network",
+		Message: "EXTENSION_OWNER_KEY not set — using Hardhat dev key which has no funds on a live chain",
+		Fix:     "Set EXTENSION_OWNER_KEY in .env to a funded account on the target network",
 	}
 }
 
@@ -603,7 +603,6 @@ func RegisterServicesChecks(r *Report, extensionEnvPath string) {
 func RegisterTeeVersionChecks(r *Report, extensionEnvPath string) {
 	// V2: Extension owner key.
 	extOwnerKey := os.Getenv("EXTENSION_OWNER_KEY")
-	privKey := os.Getenv("DEPLOYMENT_PRIVATE_KEY")
 	localMode := os.Getenv("LOCAL_MODE")
 
 	if extOwnerKey != "" {
@@ -614,22 +613,14 @@ func RegisterTeeVersionChecks(r *Report, extensionEnvPath string) {
 			Status:  PASS,
 			Message: "EXTENSION_OWNER_KEY is configured",
 		})
-	} else if privKey != "" {
-		r.Add(CheckResult{
-			Step:    "tee-version",
-			ID:      "V2",
-			Name:    "extension owner key",
-			Status:  PASS,
-			Message: "using DEPLOYMENT_PRIVATE_KEY (EXTENSION_OWNER_KEY not set)",
-		})
 	} else if localMode != "true" && localMode != "" {
 		r.Add(CheckResult{
 			Step:    "tee-version",
 			ID:      "V2",
 			Name:    "extension owner key",
 			Status:  WARN,
-			Message: "neither EXTENSION_OWNER_KEY nor DEPLOYMENT_PRIVATE_KEY set — AddTeeVersion will use dev key which isn't the extension owner on Coston2",
-			Fix:     "Set EXTENSION_OWNER_KEY or DEPLOYMENT_PRIVATE_KEY in .env",
+			Message: "EXTENSION_OWNER_KEY not set — AddTeeVersion will use the dev key, which owns no extension on a live chain",
+			Fix:     "Set EXTENSION_OWNER_KEY in .env",
 		})
 	} else {
 		r.Add(CheckResult{

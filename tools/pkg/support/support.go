@@ -101,10 +101,19 @@ func DefaultPrivateKey() (*ecdsa.PrivateKey, error) {
 			fmt.Fprintf(os.Stderr, "Warning: Error loading .env file: %v\n", err2)
 		}
 	}
-	privKeyString := os.Getenv("DEPLOYMENT_PRIVATE_KEY")
+	privKeyString := os.Getenv("EXTENSION_OWNER_KEY")
+
+	// The variable was DEPLOYMENT_PRIVATE_KEY until the roles were named for what
+	// they are. Refused rather than accepted as a synonym: falling through to the
+	// dev key would sign with an address that owns nothing on a live chain, and
+	// the failure would surface far from its cause.
+	if privKeyString == "" && os.Getenv("DEPLOYMENT_PRIVATE_KEY") != "" {
+		return nil, errors.New("DEPLOYMENT_PRIVATE_KEY is set but EXTENSION_OWNER_KEY is not: " +
+			"the variable is now named for the role it plays — rename it in .env and in every .env.<chain>")
+	}
 
 	if privKeyString == "" {
-		fmt.Fprintln(os.Stderr, "WARNING: DEPLOYMENT_PRIVATE_KEY not set — using hardcoded Hardhat dev key")
+		fmt.Fprintln(os.Stderr, "WARNING: EXTENSION_OWNER_KEY not set — using hardcoded Hardhat dev key")
 		fmt.Fprintln(os.Stderr, "         This key only has funds on local devnets (Hardhat/Anvil)")
 		return configs.PrvWithFunds, nil
 	} else {

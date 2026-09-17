@@ -11,7 +11,7 @@
 # production deployment is upstream's own script plus governance, and nothing
 # here.
 #
-# The deployer is the key the tools sign with (DEPLOYMENT_PRIVATE_KEY). The
+# The deployer is the key the tools sign with (EXTENSION_OWNER_KEY). The
 # extension it deploys for is EXTENSION_ID, and how that id becomes ours depends
 # on the chain:
 #
@@ -28,7 +28,7 @@
 # Every deployed address lands in deploy/config/<chain>/deployed-addresses.json
 # through import-upstream-addresses.sh, where the tools resolve them by name.
 #
-# Reads .env: CHAIN_URL, DEPLOYMENT_PRIVATE_KEY, INITIAL_OWNER, EXTENSION_ID,
+# Reads .env: CHAIN_URL, EXTENSION_OWNER_KEY, INITIAL_OWNER, EXTENSION_ID,
 # UPSTREAM_DIR, and for local LOCAL_GOVERNANCE_KEY and SIM_DUMP. Needs forge,
 # cast and jq.
 #
@@ -82,13 +82,13 @@ CHAIN_URL="${CHAIN_URL:-$(chain_rpc "$CHAIN")}"
 UPSTREAM="${UPSTREAM_DIR:-$PROJECT_DIR/../../../fsp/flare-smart-contracts-v2}"
 [[ "$UPSTREAM" != /* ]] && UPSTREAM="$PROJECT_DIR/$UPSTREAM"
 ADDRS="$PROJECT_DIR/deploy/config/$CHAIN/deployed-addresses.json"
-DEPLOYER_KEY="${DEPLOYMENT_PRIVATE_KEY:-}"
+DEPLOYER_KEY="${EXTENSION_OWNER_KEY:-}"
 # forge reads the key as a uint and insists on the 0x prefix; .env may omit it.
 [[ -z "$DEPLOYER_KEY" || "$DEPLOYER_KEY" == 0x* ]] || DEPLOYER_KEY="0x$DEPLOYER_KEY"
 EXTENSION_ID="${EXTENSION_ID:-1}"
 
 for t in forge cast jq; do command -v "$t" >/dev/null || die "$t is required"; done
-[[ -n "$DEPLOYER_KEY" ]] || die "DEPLOYMENT_PRIVATE_KEY is not set — activate .env.$CHAIN (use-chain.sh $CHAIN)"
+[[ -n "$DEPLOYER_KEY" ]] || die "EXTENSION_OWNER_KEY is not set — activate .env.$CHAIN (use-chain.sh $CHAIN)"
 [[ -d "$UPSTREAM/contracts" ]] || die "no flare-smart-contracts-v2 checkout at $UPSTREAM (UPSTREAM_DIR)"
 GOT_CHAIN_ID="$(cast chain-id --rpc-url "$CHAIN_URL" 2>/dev/null)" || die "no chain at $CHAIN_URL"
 [[ "$GOT_CHAIN_ID" == "$WANT_CHAIN_ID" ]] || die "the chain at $CHAIN_URL has id $GOT_CHAIN_ID; $CHAIN is $WANT_CHAIN_ID — is .env the right one?"

@@ -69,17 +69,17 @@ func TestKeyHasFunds_NilClient(t *testing.T) {
 }
 
 func TestIsUsingDevKey_WhenSet(t *testing.T) {
-	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
+	t.Setenv("EXTENSION_OWNER_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
 	if IsUsingDevKey() {
-		t.Error("expected IsUsingDevKey() to return false when DEPLOYMENT_PRIVATE_KEY is set")
+		t.Error("expected IsUsingDevKey() to return false when EXTENSION_OWNER_KEY is set")
 	}
 }
 
 func TestIsUsingDevKey_WhenUnset(t *testing.T) {
 	// t.Setenv cannot unset; the check treats an empty value as unset.
-	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "")
+	t.Setenv("EXTENSION_OWNER_KEY", "")
 	if !IsUsingDevKey() {
-		t.Error("expected IsUsingDevKey() to return true when DEPLOYMENT_PRIVATE_KEY is unset")
+		t.Error("expected IsUsingDevKey() to return true when EXTENSION_OWNER_KEY is unset")
 	}
 }
 
@@ -113,9 +113,9 @@ func TestAddressNotZero_ErrorContainsHexAddress(t *testing.T) {
 }
 
 func TestIsUsingDevKey_WhenEmpty(t *testing.T) {
-	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "")
+	t.Setenv("EXTENSION_OWNER_KEY", "")
 	if !IsUsingDevKey() {
-		t.Error("expected IsUsingDevKey() to return true when DEPLOYMENT_PRIVATE_KEY is empty string")
+		t.Error("expected IsUsingDevKey() to return true when EXTENSION_OWNER_KEY is empty string")
 	}
 }
 

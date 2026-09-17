@@ -10,7 +10,7 @@
 #   ./deploy/scripts/use-chain.sh --list        List available .env.<chain> files.
 #   ./deploy/scripts/use-chain.sh -h | --help   Show this help.
 #
-#   DEPLOYMENT_PRIVATE_KEY=0x… EXT_PROXY_URL=https://… ./deploy/scripts/use-chain.sh coston
+#   EXTENSION_OWNER_KEY=0x… EXT_PROXY_URL=https://… ./deploy/scripts/use-chain.sh coston
 #       On a live chain, .env.<chain> is created from .env.example when missing,
 #       and every value the funded key implies is filled in where the file has
 #       none: INITIAL_OWNER (derived), PROXY_PRIVATE_KEY and DIRECT_API_KEY
@@ -54,11 +54,16 @@ Usage:
   $SCRIPT_NAME --list        List available .env.<chain> files.
   $SCRIPT_NAME -h | --help   Show this help.
 
-  DEPLOYMENT_PRIVATE_KEY=0x… EXT_PROXY_URL=https://… $SCRIPT_NAME coston
+  EXTENSION_OWNER_KEY=0x… EXT_PROXY_URL=https://… $SCRIPT_NAME coston
                              Live chain: create .env.coston when missing and fill in
-                             everything the funded key implies (owner, proxy key,
-                             DIRECT_API_KEY, provisioning keys, the admin set).
-                             Derived values never replace present ones.
+                             everything the extension owner's key implies (owner,
+                             proxy key, DIRECT_API_KEY, provisioning keys, the admin
+                             set). Derived values never replace present ones.
+  MACHINE_OWNER_KEY=0x… $SCRIPT_NAME <chain>
+                             The key of the machines' INITIAL_OWNER, which the
+                             registry requires as the sender of a registration.
+                             Needed only where that address is not the extension
+                             owner, which is the usual arrangement.
   EXT_PROXY_URL=… DIRECT_API_KEY=… SIMULATED_TEE=false $SCRIPT_NAME coston
                              Given on the call, these are written (replacing): the
                              remote machine's URL, its proxy's key, real attestation.
@@ -177,11 +182,11 @@ if [[ "$LIVE" == true ]]; then
     # The deployer key is filled only into a file that has none: it owns the
     # extension, the contracts and the funds, and a file with another key is a
     # different deployment, which this switch must not quietly replace.
-    HAVE_KEY="$(val_in "$SRC" DEPLOYMENT_PRIVATE_KEY)"
-    if [[ -n "${DEPLOYMENT_PRIVATE_KEY:-}" && -n "$HAVE_KEY" && "0x${DEPLOYMENT_PRIVATE_KEY#0x}" != "0x${HAVE_KEY#0x}" ]]; then
-        die ".env.$CHAIN already holds a different DEPLOYMENT_PRIVATE_KEY; it is not replaced from the command line — edit the file, or move it aside for a new deployment"
+    HAVE_KEY="$(val_in "$SRC" EXTENSION_OWNER_KEY)"
+    if [[ -n "${EXTENSION_OWNER_KEY:-}" && -n "$HAVE_KEY" && "0x${EXTENSION_OWNER_KEY#0x}" != "0x${HAVE_KEY#0x}" ]]; then
+        die ".env.$CHAIN already holds a different EXTENSION_OWNER_KEY; it is not replaced from the command line — edit the file, or move it aside for a new deployment"
     fi
-    fill DEPLOYMENT_PRIVATE_KEY "${DEPLOYMENT_PRIVATE_KEY:-}"
+    fill EXTENSION_OWNER_KEY "${EXTENSION_OWNER_KEY:-}"
     # What a machine's placement decides, given on the call: the public URL the
     # machine is registered under, the /direct key its proxy holds (the laptop
     # stack's is generated below; a remote proxy's is the operator's), and
@@ -189,11 +194,15 @@ if [[ "$LIVE" == true ]]; then
     given EXT_PROXY_URL
     given DIRECT_API_KEY
     given SIMULATED_TEE
-    DEPLOYER_KEY="$(val_in "$SRC" DEPLOYMENT_PRIVATE_KEY)"
+    # The machines' owner is a role of its own wherever the extension owner is
+    # not an allowed machine owner, so its key is written like the rest rather
+    # than edited in by hand afterwards.
+    given MACHINE_OWNER_KEY
+    DEPLOYER_KEY="$(val_in "$SRC" EXTENSION_OWNER_KEY)"
     if [[ -n "$DEPLOYER_KEY" ]]; then
         command -v cast >/dev/null || die "cast (Foundry) is required to derive the owner and generate the keys"
         DEPLOYER_KEY="0x${DEPLOYER_KEY#0x}"
-        [[ "$DEPLOYER_KEY" =~ ^0x[0-9a-fA-F]{64}$ ]] || die "DEPLOYMENT_PRIVATE_KEY in .env.$CHAIN is not a 32-byte hex key"
+        [[ "$DEPLOYER_KEY" =~ ^0x[0-9a-fA-F]{64}$ ]] || die "EXTENSION_OWNER_KEY in .env.$CHAIN is not a 32-byte hex key"
         fill INITIAL_OWNER "$(cast wallet address --private-key "$DEPLOYER_KEY")"
         fill PROXY_PRIVATE_KEY "$(cast wallet new | awk '/^Private key:/{print $3}')"
         fill DIRECT_API_KEY "$(openssl rand -hex 32)"
@@ -280,17 +289,18 @@ fi
 
 # --- Summary ---
 
-key_val=$(get_val DEPLOYMENT_PRIVATE_KEY)
+key_val=$(get_val EXTENSION_OWNER_KEY)
 log "  CHAIN_URL              = $(v=$(get_val CHAIN_URL);        echo "${v:-<unset>}")"
 log "  EXT_PROXY_URL          = $(v=$(get_val EXT_PROXY_URL);    echo "${v:-<unset: the machine public URL, registered on chain by post-build.sh, which refuses to guess it>}")"
 log "  NORMAL_PROXY_URL       = $(v=$(get_val NORMAL_PROXY_URL); echo "${v:-<unset>}")"
 log "  INITIAL_OWNER          = $(v=$(get_val INITIAL_OWNER);    echo "${v:-<unset>}")"
-log "  DEPLOYMENT_PRIVATE_KEY = $([[ -n "$key_val" ]] && echo "<set>" || echo "<unset — the funded key: DEPLOYMENT_PRIVATE_KEY=0x… $SCRIPT_NAME $CHAIN>")"
+log "  EXTENSION_OWNER_KEY    = $([[ -n "$key_val" ]] && echo "<set>" || echo "<unset — the funded key: EXTENSION_OWNER_KEY=0x… $SCRIPT_NAME $CHAIN>")"
 if [[ "$LIVE" == true ]]; then
     log "  PROXY_PRIVATE_KEY      = $([[ -n "$(get_val PROXY_PRIVATE_KEY)" ]] && echo "<set>" || echo "<unset>")"
     log "  DIRECT_API_KEY         = $([[ -n "$(get_val DIRECT_API_KEY)" ]] && echo "<set>" || echo "<unset>")"
     log "  EXTENSION_ID           = $(v=$(get_val EXTENSION_ID); echo "${v:-<unset>}")"
     log "  SIMULATED_TEE          = $(v=$(get_val SIMULATED_TEE); echo "${v:-<unset>}")"
+    log "  MACHINE_OWNER_KEY      = $([[ -n "$(get_val MACHINE_OWNER_KEY)" ]] && echo "<set>" || echo "<unset — the extension owner registers the machines>")"
 fi
 log "  HEX_API_KEY            = $([[ -n "$(get_val HEX_API_KEY)" ]]   && echo "<set>" || echo "<unset — cash-less>")"
 log "  HEX_CASH_URL           = $([[ -n "$(get_val HEX_CASH_URL)" ]]  && echo "<set>" || echo "<unset — cash-less>")"

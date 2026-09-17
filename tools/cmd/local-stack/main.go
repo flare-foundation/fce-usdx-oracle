@@ -291,7 +291,7 @@ func renderProxyConfig(template, dst, redis string, chainID uint64, addresses ma
 	return external, os.WriteFile(dst, []byte(text), 0o644)
 }
 
-// ownerAddress is INITIAL_OWNER, or the address of DEPLOYMENT_PRIVATE_KEY, the
+// ownerAddress is INITIAL_OWNER, or the address of EXTENSION_OWNER_KEY, the
 // same derivation cmd/start-tee applies. It is also the default governance
 // signer, so it is resolved here rather than left to the child.
 func ownerAddress() (common.Address, error) {
@@ -301,13 +301,13 @@ func ownerAddress() (common.Address, error) {
 		}
 		return common.HexToAddress(owner), nil
 	}
-	key := strings.TrimPrefix(strings.TrimPrefix(os.Getenv("DEPLOYMENT_PRIVATE_KEY"), "0x"), "0X")
+	key := strings.TrimPrefix(strings.TrimPrefix(os.Getenv("EXTENSION_OWNER_KEY"), "0x"), "0X")
 	if key == "" {
-		return common.Address{}, fmt.Errorf("set INITIAL_OWNER or DEPLOYMENT_PRIVATE_KEY; the TEE needs its initial owner")
+		return common.Address{}, fmt.Errorf("set INITIAL_OWNER or EXTENSION_OWNER_KEY; the TEE needs its initial owner")
 	}
 	priv, err := crypto.HexToECDSA(key)
 	if err != nil {
-		return common.Address{}, fmt.Errorf("DEPLOYMENT_PRIVATE_KEY: %v", err)
+		return common.Address{}, fmt.Errorf("EXTENSION_OWNER_KEY: %v", err)
 	}
 	return crypto.PubkeyToAddress(priv.PublicKey), nil
 }

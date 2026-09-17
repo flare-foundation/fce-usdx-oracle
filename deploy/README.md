@@ -158,7 +158,7 @@ which nobody deploys beside; it is the next section. Prerequisites: one funded k
 domain are all you provide; the chain switch derives or generates the rest.
 
 ```bash
-DEPLOYMENT_PRIVATE_KEY=0x… EXT_PROXY_URL=https://<name>.ngrok-free.app ./deploy/scripts/use-chain.sh coston_local
+EXTENSION_OWNER_KEY=0x… EXT_PROXY_URL=https://<name>.ngrok-free.app ./deploy/scripts/use-chain.sh coston_local
 #   creates .env.coston_local when missing and fills in what the key implies: INITIAL_OWNER, a
 #   proxy key, DIRECT_API_KEY, the provisioning keys and deploy/config/admins/coston_local.json.
 #   Present values are kept, so later switches are just: ./deploy/scripts/use-chain.sh coston_local
@@ -242,10 +242,11 @@ the call they are written into `.env.<chain>`; the deployer key is filled only i
 has none. Shown for Coston; `<chain>` elsewhere.
 
 ```bash
-DEPLOYMENT_PRIVATE_KEY=0x… EXT_PROXY_URL=https://<machine> DIRECT_API_KEY=<its proxy's key> SIMULATED_TEE=false ./deploy/scripts/use-chain.sh coston
+EXTENSION_OWNER_KEY=0x… EXT_PROXY_URL=https://<machine> DIRECT_API_KEY=<its proxy's key> SIMULATED_TEE=false ./deploy/scripts/use-chain.sh coston
 #   EXTENSION_ID=1 is the reserved id; the template already carries it
 ./deploy/scripts/import-upstream-addresses.sh coston   # the official sender and UsdxFeedStore, from upstream's deploys file
-(cd tools && go run ./cmd/wire-extension)              # owner wiring; publishes the sender the addresses file names, so check it first
+(cd tools && go run ./cmd/wire-extension)              # owner wiring; publishes the sender the addresses file names, so check it first,
+#   and allowlists MACHINE_OWNER_KEY's address as the machines' owner
 EXPECTED_CODE_HASH=<measured hash> ./deploy/scripts/post-build.sh   # registers THAT machine: allows the build, governance, register, production
 #   a second machine, without editing .env: post-build.sh --proxy https://<machine 2>
 ./deploy/scripts/publish-local.sh admins             # the chain's admin set (deploy/config/admins/<chain>.json); a machine holds
@@ -292,7 +293,7 @@ indexer enforces a ten-day minimum), or name an indexer of your own in `.env` (`
 
 | Script | Purpose |
 | --- | --- |
-| `use-chain.sh <chain>` | Activate `.env.<chain>` as `.env`. On a live chain it creates the file from the template when missing and fills in what `DEPLOYMENT_PRIVATE_KEY` (given on the call or in the file) implies: owner, proxy key, `DIRECT_API_KEY`, provisioning keys, the chain's admin set; present values are kept. Hex credentials given on the call, or present in the `.env` being replaced, are carried; `--no-hex` drops them. |
+| `use-chain.sh <chain>` | Activate `.env.<chain>` as `.env`. On a live chain it creates the file from the template when missing and fills in what `EXTENSION_OWNER_KEY` (given on the call or in the file) implies: owner, proxy key, `DIRECT_API_KEY`, provisioning keys, the chain's admin set; present values are kept. Hex credentials given on the call, or present in the `.env` being replaced, are carried; `--no-hex` drops them. |
 | `deploy-oracle.sh --chain c [--refresh]` | Deploy the oracle contracts deployer-governed, make the extension ours (the simulation reserves it; on a testnet it checks the reservation, or registers a public id for an allowlisted key and records it in `.env` and `.env.<chain>`), import addresses. Refuses every chain whose contracts are upstream's — `coston` and the mainnets — where the deploy is upstream's own. |
 | `import-upstream-addresses.sh <network> [upstream]` | Merge upstream's deployed addresses into `config/<network>/deployed-addresses.json`; for `local` it seeds the file from the sim dump. On a live chain it also refreshes the system contracts from the network's `FlareContractRegistry` (the authority — Flare redeploys contracts) and renders the chain's indexer configuration from them. |
 | `full-setup.sh [--chain c] [--local]` | Start the stack (`start-services.sh`), then `post-build.sh`. `--local` runs the extension TEE and proxy as host processes. |

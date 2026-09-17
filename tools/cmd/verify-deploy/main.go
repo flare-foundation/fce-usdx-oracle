@@ -32,7 +32,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "\nHints:\n")
 			fmt.Fprintf(os.Stderr, "  - Check that the addresses file exists: %s\n", *af)
 			fmt.Fprintf(os.Stderr, "  - Check that the chain node is running: %s\n", *cf)
-			fmt.Fprintf(os.Stderr, "  - If using a custom key, ensure DEPLOYMENT_PRIVATE_KEY is set in .env\n")
+			fmt.Fprintf(os.Stderr, "  - If using a custom key, ensure EXTENSION_OWNER_KEY is set in .env\n")
 			os.Exit(1)
 		}
 

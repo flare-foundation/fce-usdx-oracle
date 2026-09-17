@@ -61,7 +61,7 @@ fi
 # cast's `name(args)(returns)` shape, and the values come back one per line as
 # `cast call` prints them. C_VALUE attaches value, which the store's consumer read
 # needs: FTSO custom feeds charge a read fee, and eth_call spends nothing.
-FROM="$(cast wallet address --private-key "${LOCAL_GOVERNANCE_KEY:-${DEPLOYMENT_PRIVATE_KEY:?set DEPLOYMENT_PRIVATE_KEY or LOCAL_GOVERNANCE_KEY}}")"
+FROM="$(cast wallet address --private-key "${LOCAL_GOVERNANCE_KEY:-${EXTENSION_OWNER_KEY:?set EXTENSION_OWNER_KEY or LOCAL_GOVERNANCE_KEY}}")"
 c() {  # c call <to> 'name(args)(returns)' [args...]
     [[ "$1" == "call" ]] || { echo "c: only 'call' is supported" >&2; return 1; }
     local to="$2" sig="$3"; shift 3

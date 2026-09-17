@@ -123,15 +123,14 @@ cd tools && go run ./cmd/register-tee -a /path/to/deployed-addresses.json -p htt
 |----------|---------|-------------|
 | `ADDRESSES_FILE` | auto-detected | Path to `deployed-addresses.json` |
 | `CHAIN_URL` | `http://127.0.0.1:8545` | Chain RPC endpoint |
-| `DEPLOYMENT_PRIVATE_KEY` | Hardhat dev key | Funded private key for transactions |
+| `EXTENSION_OWNER_KEY` | Hardhat dev key | The extension owner's key, which every tool signs with unless it names another role's |
 | `PROXY_PRIVATE_KEY` | Hardhat dev key | Proxy signing key (used by start-services) |
 | `EXTENSION_ID` | from `deploy/config/extension.env` | Extension ID (the reserved id 1, written by full-setup) |
-| `INITIAL_OWNER` | derived from `DEPLOYMENT_PRIVATE_KEY` | Initial contract owner address |
+| `INITIAL_OWNER` | derived from `EXTENSION_OWNER_KEY` | Initial contract owner address |
 | `EXT_PROXY_URL` | `http://localhost:6674` | Extension proxy URL (post-build, test) |
 | `NORMAL_PROXY_URL` | `http://localhost:6662` | Normal/FTDC proxy URL (post-build) |
-| `EXTENSION_OWNER_KEY` | falls back to `DEPLOYMENT_PRIVATE_KEY` | Private key override for AddTeeVersion |
 | `TEE_VERSION` | `v0.1.0` | Version string for TEE registration |
-| `GOVERNANCE_SIGNERS` | `INITIAL_OWNER` (deployer) | Comma-separated 0x addresses that govern this extension's TEE machines |
+| `GOVERNANCE_SIGNERS` | `INITIAL_OWNER` | Comma-separated 0x addresses that govern this extension's TEE machines |
 | `GOVERNANCE_THRESHOLD` | `1` | Minimum distinct governance signatures required |
 | `LOCAL_MODE` | `true` | Skip attestation in local dev |
 | `WAIT_TIMEOUT` | `120` | Service wait timeout in seconds |

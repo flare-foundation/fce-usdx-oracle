@@ -43,7 +43,7 @@ func main() {
 	// the machine owner's key rather than the deployment key. They are one key
 	// on a test deployment and separate ones wherever the extension owner is not
 	// an allowed machine owner, which is the usual arrangement.
-	keySource := "DEPLOYMENT_PRIVATE_KEY (default)"
+	keySource := "EXTENSION_OWNER_KEY (no MACHINE_OWNER_KEY set)"
 	if key, keyErr := fccutils.OverrideKey("MACHINE_OWNER_KEY"); keyErr != nil {
 		fccutils.FatalWithCause(keyErr)
 	} else if key != nil {

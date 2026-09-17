@@ -86,7 +86,7 @@ file; sharing one across machines makes a re-run resume the wrong machine's prog
 Governance action, one transaction:
 
 ```
-cast send <FlareTeeManager> "pause(address)" <TEE_ID> --private-key $DEPLOYMENT_PRIVATE_KEY --rpc-url $CHAIN_URL
+cast send <FlareTeeManager> "pause(address)" <TEE_ID> --private-key $EXTENSION_OWNER_KEY --rpc-url $CHAIN_URL
 ```
 
 Authorisation is `NotOwnerOrPauser`, and the owner is the `_claimBackAddress` passed at
@@ -183,11 +183,11 @@ A build is identified on-chain by its **code hash**, and an extension only accep
 attested hash is on its allow-list. Two calls manage that list, both governance-only:
 
 ```
-cast send <FlareTeeManager> "addTeeVersion(uint256,bytes32,bytes32,bytes32[])" <EXT_ID> $(cast format-bytes32-string "v0.2.0") <NEW_CODE_HASH> "[<PLATFORM>]" --private-key $DEPLOYMENT_PRIVATE_KEY --rpc-url $CHAIN_URL
+cast send <FlareTeeManager> "addTeeVersion(uint256,bytes32,bytes32,bytes32[])" <EXT_ID> $(cast format-bytes32-string "v0.2.0") <NEW_CODE_HASH> "[<PLATFORM>]" --private-key $EXTENSION_OWNER_KEY --rpc-url $CHAIN_URL
 ```
 
 ```
-cast send <FlareTeeManager> "disableCodeHashPlatforms(uint256,bytes32,bytes32[])" <EXT_ID> <OLD_CODE_HASH> "[<PLATFORM>]" --private-key $DEPLOYMENT_PRIVATE_KEY --rpc-url $CHAIN_URL
+cast send <FlareTeeManager> "disableCodeHashPlatforms(uint256,bytes32,bytes32[])" <EXT_ID> <OLD_CODE_HASH> "[<PLATFORM>]" --private-key $EXTENSION_OWNER_KEY --rpc-url $CHAIN_URL
 ```
 
 Read the list back:
@@ -227,7 +227,7 @@ time** and let the others carry the feed.
 `VersionNotSupported`:
 
 ```
-cast send <FlareTeeManager> "addTeeVersion(uint256,bytes32,bytes32,bytes32[])" <EXT_ID> $(cast format-bytes32-string "v0.2.0") <NEW_CODE_HASH> "[<PLATFORM>]" --private-key $DEPLOYMENT_PRIVATE_KEY --rpc-url $CHAIN_URL
+cast send <FlareTeeManager> "addTeeVersion(uint256,bytes32,bytes32,bytes32[])" <EXT_ID> $(cast format-bytes32-string "v0.2.0") <NEW_CODE_HASH> "[<PLATFORM>]" --private-key $EXTENSION_OWNER_KEY --rpc-url $CHAIN_URL
 ```
 
 Confirm both hashes are now accepted before going further:
@@ -254,7 +254,7 @@ sudo systemctl disable --now usdx-keeper
    the new one, and the public key different from before.
 4. **Pause the old identity**, before registering the new one — they share a URL, and the new one
    cannot be promoted while the old is `PRODUCTION`:
-   `cast send <FlareTeeManager> "pause(address)" <OLD_TEE_ID> --private-key $DEPLOYMENT_PRIVATE_KEY --rpc-url $CHAIN_URL`
+   `cast send <FlareTeeManager> "pause(address)" <OLD_TEE_ID> --private-key $EXTENSION_OWNER_KEY --rpc-url $CHAIN_URL`
 5. **Register the new identity**, with its own state file:
    `cd tools && go run ./cmd/register-tee -a ../deploy/config/coston2/deployed-addresses.json -c $CHAIN_URL -p <PROXY_URL> -h <PROXY_URL> -ep $NORMAL_PROXY_URL -command rRap -state ../config/register-tee-<name>-v2.state`
 6. **Re-provision it** — steps 1–4 of the [production runbook](usdx-oracle-production-setup.md),
@@ -276,7 +276,7 @@ sudo systemctl enable --now usdx-keeper
 Then retire the old build, so nothing can register under it again:
 
 ```
-cast send <FlareTeeManager> "disableCodeHashPlatforms(uint256,bytes32,bytes32[])" <EXT_ID> <OLD_CODE_HASH> "[<PLATFORM>]" --private-key $DEPLOYMENT_PRIVATE_KEY --rpc-url $CHAIN_URL
+cast send <FlareTeeManager> "disableCodeHashPlatforms(uint256,bytes32,bytes32[])" <EXT_ID> <OLD_CODE_HASH> "[<PLATFORM>]" --private-key $EXTENSION_OWNER_KEY --rpc-url $CHAIN_URL
 ```
 
 Machines already in `PRODUCTION` are unaffected by this; what it prevents is anything

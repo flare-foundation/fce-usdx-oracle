@@ -7,7 +7,6 @@
 package main
 
 import (
-	"crypto/ecdsa"
 	"flag"
 	"os"
 	"strconv"
@@ -33,18 +32,8 @@ func main() {
 		fccutils.FatalWithCause(err)
 	}
 
-	// Extension owner key (falls back to the deployment key, like the other tools).
-	var privKey *ecdsa.PrivateKey
-	if privKeyString := os.Getenv("EXTENSION_OWNER_KEY"); privKeyString != "" {
-		privKeyString = strings.TrimPrefix(privKeyString, "0x")
-		privKeyString = strings.TrimPrefix(privKeyString, "0X")
-		privKey, err = crypto.HexToECDSA(privKeyString)
-		if err != nil {
-			fccutils.FatalWithCause(err)
-		}
-	} else {
-		privKey = testSupport.Prv
-	}
+	// setNewTeeGovernance is the extension owner's.
+	privKey := testSupport.Prv
 	deployer := crypto.PubkeyToAddress(privKey.PublicKey)
 
 	// INITIAL_OWNER if set (the node's compose default), else the deployer:

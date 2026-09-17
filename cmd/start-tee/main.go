@@ -140,7 +140,7 @@ func setOwnerAddress() common.Address {
 	if owner == "" {
 		var privKey *ecdsa.PrivateKey
 		var err error
-		privKeyString := os.Getenv("DEPLOYMENT_PRIVATE_KEY")
+		privKeyString := os.Getenv("EXTENSION_OWNER_KEY")
 		if privKeyString == "" {
 			// Default Hardhat-funded key.
 			privKey, err = crypto.HexToECDSA("804b01a8c27a65cc694a867be76edae3ccce7a7161cda1f67a8349df696d2207")

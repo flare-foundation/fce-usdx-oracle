@@ -68,7 +68,7 @@ EXT_PROXY_URL=                                                        # leave em
 
 LOCAL_MODE=false
 SIMULATED_TEE=false
-DEPLOYMENT_PRIVATE_KEY=<private key, no 0x prefix>
+EXTENSION_OWNER_KEY=<private key, no 0x prefix>
 INITIAL_OWNER=0x<derived address from Step 2>
 ```
 

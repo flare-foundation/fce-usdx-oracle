@@ -86,8 +86,8 @@ func KeyHasFunds(client *ethclient.Client, key *ecdsa.PrivateKey, minWei *big.In
 	return nil
 }
 
-// IsUsingDevKey returns true if the DEPLOYMENT_PRIVATE_KEY environment variable is empty,
+// IsUsingDevKey returns true if the EXTENSION_OWNER_KEY environment variable is empty,
 // indicating the deployer is falling back to the hardcoded dev key.
 func IsUsingDevKey() bool {
-	return os.Getenv("DEPLOYMENT_PRIVATE_KEY") == ""
+	return os.Getenv("EXTENSION_OWNER_KEY") == ""
 }

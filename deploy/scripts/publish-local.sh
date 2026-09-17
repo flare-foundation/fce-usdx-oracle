@@ -22,7 +22,7 @@
 # simulation; a shorter one is the simulation's own configuration to make.
 #
 # Reads .env (activate .env.local first): CHAIN_URL, ADDRESSES_FILE, EXT_PROXY_URL,
-# LOCAL_GOVERNANCE_KEY, or DEPLOYMENT_PRIVATE_KEY where the deployer is the
+# LOCAL_GOVERNANCE_KEY, or EXTENSION_OWNER_KEY where the deployer is the
 # governance. Needs cast, jq, python3, go.
 #
 # Usage:
@@ -106,8 +106,8 @@ CHAIN_URL="${CHAIN_URL:-$(chain_rpc "$CHAIN")}"
 EXT_PROXY_URL="${EXT_PROXY_URL:-http://localhost:6674}"
 # The sender's governance signs: the simulation's governance key locally, the
 # deployer on a testnet, where deploy-oracle.sh left the contracts deployer-governed.
-GOV_KEY="${LOCAL_GOVERNANCE_KEY:-${DEPLOYMENT_PRIVATE_KEY:-}}"
-[[ -n "$GOV_KEY" ]] || die "neither LOCAL_GOVERNANCE_KEY nor DEPLOYMENT_PRIVATE_KEY is set — activate the chain's .env (use-chain.sh)"
+GOV_KEY="${LOCAL_GOVERNANCE_KEY:-${EXTENSION_OWNER_KEY:-}}"
+[[ -n "$GOV_KEY" ]] || die "neither LOCAL_GOVERNANCE_KEY nor EXTENSION_OWNER_KEY is set — activate the chain's .env (use-chain.sh)"
 ADDR_FILE="${ADDRESSES_FILE:-deploy/config/$CHAIN/deployed-addresses.json}"
 [[ "$ADDR_FILE" != /* ]] && ADDR_FILE="$PROJECT_DIR/$ADDR_FILE"
 [[ -f "$ADDR_FILE" ]] || die "addresses file not found: $ADDR_FILE — run deploy-oracle.sh --chain local first"
@@ -184,7 +184,7 @@ if [[ -z "$EXEC_FILE" ]]; then
     # mode the sender's governance is GovernanceSettings' governance address.
     SENDER_GOV="$(cast abi-decode 'f()(address)' "$(eth_call "$TARGET" 'governance()')" 2>/dev/null || true)"
     [[ -z "$SENDER_GOV" || "$(lower "$SENDER_GOV")" == "$(lower "$GOV_ADDR")" ]] \
-        || die "the sender's governance is $SENDER_GOV, not the key given ($GOV_ADDR; LOCAL_GOVERNANCE_KEY or DEPLOYMENT_PRIVATE_KEY)"
+        || die "the sender's governance is $SENDER_GOV, not the key given ($GOV_ADDR; LOCAL_GOVERNANCE_KEY or EXTENSION_OWNER_KEY)"
     RECORD_KEY="$GOV_KEY"
     OUT="$(send_retry "$RECORD_KEY" "$TARGET" "$CALLDATA")" || die "recording reverted:\n$OUT"
     REC_TX="$(jq -r .transactionHash <<<"$OUT")"

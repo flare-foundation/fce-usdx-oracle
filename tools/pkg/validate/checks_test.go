@@ -90,7 +90,7 @@ func TestCheckExtensionEnvFormat_Missing(t *testing.T) {
 }
 
 func TestCheckDeployerKeySource_DevKey(t *testing.T) {
-	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "")
+	t.Setenv("EXTENSION_OWNER_KEY", "")
 	t.Setenv("LOCAL_MODE", "false")
 
 	result := CheckDeployerKeySource()
@@ -113,7 +113,7 @@ func TestCheckDeployerKeySource_DevKey(t *testing.T) {
 }
 
 func TestCheckDeployerKeySource_RealKey(t *testing.T) {
-	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "abc")
+	t.Setenv("EXTENSION_OWNER_KEY", "abc")
 
 	result := CheckDeployerKeySource()
 
@@ -131,7 +131,7 @@ func TestCheckDeployerKeySource_RealKey(t *testing.T) {
 }
 
 func TestCheckDeployerKeySource_DevKeyLocal(t *testing.T) {
-	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "")
+	t.Setenv("EXTENSION_OWNER_KEY", "")
 	t.Setenv("LOCAL_MODE", "true")
 
 	result := CheckDeployerKeySource()
@@ -316,7 +316,7 @@ func TestRegisterTeeVersionChecks_WithConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Setenv("DEPLOYMENT_PRIVATE_KEY", "abc123")
+	t.Setenv("EXTENSION_OWNER_KEY", "abc123")
 	r := &Report{}
 	RegisterTeeVersionChecks(r, envFile)
 	// Should have V2 PASS and V4 PASS at minimum
