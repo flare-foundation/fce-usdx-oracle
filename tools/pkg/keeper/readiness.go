@@ -161,7 +161,7 @@ func postDirectAction(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-API-Key", apiKey)
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := proxyClient.Do(httpReq)
 	if err != nil {
 		return common.Hash{}, errors.Errorf("posting to the proxy: %s", err)
 	}

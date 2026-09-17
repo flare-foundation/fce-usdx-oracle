@@ -16,8 +16,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
@@ -471,21 +473,40 @@ func pollResults(
 	// are reported at DEBUG only and the outcome names each proxy's last answer.
 	lastSeen := map[string]string{}
 
+	type outcome struct {
+		result teetypes.ActionResult
+		ok     bool
+		err    error
+	}
+
 	for attempt := 1; ; attempt++ {
-		// Sequential across proxies: a fleet is a handful of machines, and one
-		// slow proxy delaying a round costs less than the concurrency would.
-		still := pending[:0]
-		for _, proxy := range pending {
-			res, ok, err := fetchResult(proxy, id, tag)
+		// Concurrent across proxies, each bounded by proxyTimeout: a round costs
+		// the slowest proxy rather than the sum, so one machine owner cannot hold
+		// the fleet's poll by pointing the registry at an endpoint that never
+		// answers. Results are index-aligned, so the reporting order below stays
+		// the caller's order.
+		outcomes := make([]outcome, len(pending))
+		var wg sync.WaitGroup
+		for i, proxy := range pending {
+			wg.Go(func() {
+				res, ok, err := fetchResult(ctx, proxy, id, tag)
+				outcomes[i] = outcome{result: res, ok: ok, err: err}
+			})
+		}
+		wg.Wait()
+
+		still := make([]string, 0, len(pending))
+		for i, proxy := range pending {
+			o := outcomes[i]
 			switch {
-			case err != nil:
-				lastSeen[proxy] = err.Error()
+			case o.err != nil:
+				lastSeen[proxy] = o.err.Error()
 				still = append(still, proxy)
-			case ok:
-				answered[proxy] = res
+			case o.ok:
+				answered[proxy] = o.result
 				continue
 			default:
-				lastSeen[proxy] = fmt.Sprintf("pending (status %d)", res.Status)
+				lastSeen[proxy] = fmt.Sprintf("pending (status %d)", o.result.Status)
 				still = append(still, proxy)
 			}
 			logger.Debugf("attempt %d (%s): %s", attempt, proxy, lastSeen[proxy])
@@ -536,14 +557,36 @@ func pollResults(
 	return out, nil
 }
 
-// fetchResult returns the result and whether its status is terminal.
+// proxyTimeout bounds one request to a machine's proxy. The poll targets are the
+// URLs the registry publishes, each chosen by that machine's owner, so a proxy
+// that accepts the connection and never answers costs this and no more.
+const proxyTimeout = 10 * time.Second
+
+// maxProxyBody caps a proxy response before it is decoded. Real results are a few
+// kilobytes; the cap is what stops an endless body from growing the keeper without
+// bound.
+const maxProxyBody = 1 << 20
+
+// proxyClient bounds every phase of a proxy request, including the ones a context
+// deadline alone does not cover once a body has started arriving.
+var proxyClient = &http.Client{Timeout: proxyTimeout}
+
+// fetchResult returns the result and whether its status is terminal. The URL is
+// the one the registry publishes for that machine, so its owner chooses it: the
+// request carries the caller's cancellation, proxyClient bounds how long it may
+// take, and the body is capped before it is decoded.
 func fetchResult(
-	proxyURL string, id common.Hash, tag teetypes.SubmissionTag,
+	ctx context.Context, proxyURL string, id common.Hash, tag teetypes.SubmissionTag,
 ) (teetypes.ActionResult, bool, error) {
 	url := strings.TrimRight(proxyURL, "/") +
 		"/action/result/" + id.Hex() + "?submissionTag=" + string(tag)
 
-	resp, err := http.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return teetypes.ActionResult{}, false, errors.Errorf("building the proxy request: %s", err)
+	}
+
+	resp, err := proxyClient.Do(req)
 	if err != nil {
 		return teetypes.ActionResult{}, false, errors.Errorf("querying the proxy: %s", err)
 	}
@@ -555,7 +598,7 @@ func fetchResult(
 	}
 
 	var body teetypes.ActionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxProxyBody)).Decode(&body); err != nil {
 		return teetypes.ActionResult{}, false, errors.Errorf("decoding the proxy response: %s", err)
 	}
 

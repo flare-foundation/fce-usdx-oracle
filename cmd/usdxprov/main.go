@@ -461,11 +461,20 @@ func awaitResult(proxyURL string, id common.Hash, wait time.Duration) error {
 	}
 }
 
+// httpTimeout bounds one request to a proxy or node. Every URL here is an
+// operator argument and may name a host that accepts the connection and never
+// answers, which would otherwise hold the command indefinitely.
+const httpTimeout = 10 * time.Second
+
+// maxBody caps a response before it is decoded; real payloads are a few kilobytes.
+const maxBody = 1 << 20
+
+var httpClient = &http.Client{Timeout: httpTimeout}
+
 // fetchResult reads one action result off the proxy and reports whether it is
 // terminal. A 404 is the normal state until tee-node has answered.
 func fetchResult(url string) (teetypes.ActionResult, bool, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return teetypes.ActionResult{}, false, err
 	}
@@ -474,7 +483,7 @@ func fetchResult(url string) (teetypes.ActionResult, bool, error) {
 		return teetypes.ActionResult{}, false, fmt.Errorf("proxy returned %d", resp.StatusCode)
 	}
 	var body teetypes.ActionResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(&body); err != nil {
 		return teetypes.ActionResult{}, false, fmt.Errorf("decoding the result: %w", err)
 	}
 	st := body.Result.Status
@@ -503,7 +512,7 @@ func postDirect(proxyURL, apiKey string, message []byte) (common.Hash, error) {
 		req.Header.Set("X-API-Key", apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -560,7 +569,7 @@ func postAction(actionURL string, message []byte) error {
 		return err
 	}
 
-	resp, err := http.Post(actionURL, "application/json", bytes.NewReader(raw))
+	resp, err := httpClient.Post(actionURL, "application/json", bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
@@ -583,7 +592,7 @@ func postAction(actionURL string, message []byte) error {
 // --- helpers ---
 
 func fetchKey(base string) (*ecdsa.PublicKey, common.Address, error) {
-	resp, err := http.Get(strings.TrimRight(base, "/") + "/info")
+	resp, err := httpClient.Get(strings.TrimRight(base, "/") + "/info")
 	if err != nil {
 		return nil, common.Address{}, fmt.Errorf("fetching /info: %w", err)
 	}
@@ -601,7 +610,7 @@ func fetchKey(base string) (*ecdsa.PublicKey, common.Address, error) {
 			PublicKey teetypes.PublicKey `json:"publicKey"`
 		} `json:"teeInfo"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(&info); err != nil {
 		return nil, common.Address{}, fmt.Errorf("parsing /info: %w", err)
 	}
 

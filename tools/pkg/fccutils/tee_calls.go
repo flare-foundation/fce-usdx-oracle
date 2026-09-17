@@ -2,6 +2,7 @@ package fccutils
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
@@ -19,15 +20,26 @@ import (
 
 const repeats = 15
 
+// nodeTimeout bounds one request to a tee-node or its proxy. The URL is an
+// operator argument and may name a host that accepts the connection and never
+// answers, which would otherwise hold these commands forever.
+const nodeTimeout = 10 * time.Second
+
+// maxBody caps a node response before it is decoded; real payloads are a few
+// kilobytes.
+const maxBody = 1 << 20
+
+var nodeClient = &http.Client{Timeout: nodeTimeout}
+
 func TeeInfo(nodeURL string) (*types.SignedTeeInfoResponse, error) {
-	result, err := http.Get(nodeURL + "/info")
+	result, err := nodeClient.Get(nodeURL + "/info")
 	if err != nil {
 		return nil, errors.Errorf("%s", err)
 	}
 	defer func() { _ = result.Body.Close() }()
 
 	var teeInfo types.SignedTeeInfoResponse
-	err = json.NewDecoder(result.Body).Decode(&teeInfo)
+	err = json.NewDecoder(io.LimitReader(result.Body, maxBody)).Decode(&teeInfo)
 	if err != nil {
 		return nil, errors.Errorf("%s", err)
 	}
@@ -86,9 +98,14 @@ func ActionResult(nodeURL string, actionID common.Hash) (*types.ActionResponse, 
 	var result *http.Response
 	var err error
 	for range repeats {
-		result, err = http.Get(nodeURL + "/action/result/" + actionID.Hex())
+		result, err = nodeClient.Get(nodeURL + "/action/result/" + actionID.Hex())
 		if err == nil && result.StatusCode == http.StatusOK {
 			break
+		}
+		if result != nil {
+			// Every non-terminal answer holds a connection until its body is
+			// closed; the retry loop would otherwise leak one per attempt.
+			_ = result.Body.Close()
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -102,7 +119,7 @@ func ActionResult(nodeURL string, actionID common.Hash) (*types.ActionResponse, 
 	defer func() { _ = result.Body.Close() }()
 
 	var response types.ActionResponse
-	err = json.NewDecoder(result.Body).Decode(&response)
+	err = json.NewDecoder(io.LimitReader(result.Body, maxBody)).Decode(&response)
 	if err != nil {
 		return nil, errors.Errorf("%s", err)
 	}

@@ -118,7 +118,9 @@ func queryExtension(ctx context.Context, extensionURL string) (readinessreport.R
 		return readinessreport.Report{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	// Bounded rather than DefaultClient: the extension URL is an operator
+	// argument and may accept the connection without ever answering.
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
 		return readinessreport.Report{}, errors.Errorf("posting to the extension: %s", err)
 	}

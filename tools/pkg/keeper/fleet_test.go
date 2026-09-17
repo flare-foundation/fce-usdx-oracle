@@ -1,6 +1,7 @@
 package keeper
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -186,6 +187,102 @@ func TestPollResultsReturnsAPartialRoundAtTheDeadline(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].result.Log != "only-one" {
 		t.Errorf("got %+v, want the one answer that arrived", got)
+	}
+}
+
+// The poll targets are registry URLs their owners choose. A proxy that accepts
+// the connection and never answers must not outlive the caller's cancellation:
+// the request carries the context, so SIGTERM reaches it mid-flight rather than
+// only between rounds.
+func TestPollResultsIsInterruptedWhileWaitingOnAProxy(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer silent.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	if _, err := pollResults(ctx, []string{silent.URL}, 1,
+		common.HexToHash("0x1"), teetypes.Threshold, time.Minute); err == nil {
+		t.Fatal("expected the cancelled context to end the poll")
+	}
+	if elapsed := time.Since(started); elapsed >= proxyTimeout {
+		t.Errorf("poll took %s; cancellation must not wait out the per-request bound", elapsed)
+	}
+}
+
+// Proxies are polled concurrently, so a round costs the slowest of them rather
+// than the sum. Sequentially, one machine owner could stretch every round by the
+// length of their own endpoint's delay.
+func TestPollResultsPollsProxiesConcurrently(t *testing.T) {
+	const delay = 400 * time.Millisecond
+
+	slow := func(log string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(delay)
+			encodeJSON(t, w, teetypes.ActionResponse{
+				Result: teetypes.ActionResult{Status: statusSucceeded, Log: log},
+			})
+		}))
+	}
+	a, b, c := slow("a"), slow("b"), slow("c")
+	defer a.Close()
+	defer b.Close()
+	defer c.Close()
+
+	started := time.Now()
+	got, err := pollResults(context.Background(), []string{a.URL, b.URL, c.URL}, 3,
+		common.HexToHash("0x1"), teetypes.Threshold, time.Minute)
+	if err != nil {
+		t.Fatalf("pollResults: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d results, want 3", len(got))
+	}
+	// Sequential would be three delays; concurrent is one plus scheduling.
+	if elapsed := time.Since(started); elapsed >= 2*delay {
+		t.Errorf("round took %s, want about %s", elapsed, delay)
+	}
+}
+
+// A proxy streaming a body that never ends must be cut off at maxProxyBody rather
+// than decoded into the keeper's memory. Asserted on what the server manages to
+// write: uncapped, the decoder drains everything offered.
+func TestFetchResultCapsAnEndlessBody(t *testing.T) {
+	const ceiling = 64 << 20 // hard stop so the handler always terminates
+
+	var written atomic.Int64
+	endless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Valid JSON that is never closed, so nothing but a cap ends the read.
+		_, _ = w.Write([]byte(`{"result":{"log":"`))
+		chunk := bytes.Repeat([]byte("x"), 32<<10)
+		for written.Load() < ceiling {
+			n, err := w.Write(chunk)
+			written.Add(int64(n))
+			if err != nil {
+				return
+			}
+		}
+	}))
+	defer endless.Close()
+
+	if _, _, err := fetchResult(context.Background(), endless.URL,
+		common.HexToHash("0x1"), teetypes.Threshold); err == nil {
+		t.Fatal("expected a capped body to fail decoding rather than stream without bound")
+	}
+
+	// The cap plus whatever the socket buffered, nowhere near the ceiling.
+	if got, limit := written.Load(), int64(8*maxProxyBody); got > limit {
+		t.Errorf("proxy wrote %d bytes into the keeper, want at most %d", got, limit)
 	}
 }
 

@@ -122,7 +122,9 @@ func setProxyURL(configurationPort, proxyPort int) error {
 
 	url = fmt.Sprintf("http://localhost:%d/proxy", configurationPort)
 	logger.Infof("Setting proxy url on tee: %s", url)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	// Bounded: the node may accept the connection before it is ready to answer.
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
