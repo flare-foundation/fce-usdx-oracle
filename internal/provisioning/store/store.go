@@ -38,7 +38,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 // secretPlaceholder may appear in the path or a query value, never in the
@@ -612,7 +611,7 @@ func (s *Store) Open() (observation.Sources, observation.Binding, error) {
 			if err != nil {
 				return observation.Sources{}, observation.Binding{}, failure.NotConfigured
 			}
-			client, err := ethclient.Dial(url)
+			client, err := dialRPC(url)
 			if err != nil {
 				return observation.Sources{}, observation.Binding{}, failure.NotConfigured
 			}

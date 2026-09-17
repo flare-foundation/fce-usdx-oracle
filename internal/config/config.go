@@ -128,6 +128,15 @@ const (
 	// remaining providers could satisfy.
 	ProviderTimeout = 3 * time.Second
 
+	// Cap on a single RPC response body. go-ethereum buffers a response whole —
+	// the success path into a JSON decoder, the non-2xx path into a byte buffer —
+	// so without this a provider answering with a multi-gigabyte result is held in
+	// memory before the single-word check that would reject it ever runs. The
+	// enclave keeps its provisioned secrets in memory, so exhausting it costs a
+	// full re-provisioning round rather than a restart. A one-word call result and
+	// its headers are a few hundred bytes.
+	MaxRPCResponseBytes = 1 << 20
+
 	// Faster than Hex's ~10 minute post-event republish, so several consecutive
 	// failures still fit inside MaxObservationAge.
 	ObservationInterval = 2 * time.Minute
