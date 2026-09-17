@@ -674,6 +674,7 @@ func (s *Store) cashURL() (string, bool) {
 func newBacking(spec config.BackingSpec) (backing.Source, error) {
 	return backing.New(backing.Config{
 		Name: spec.Name, URL: spec.URL,
+		MetricName:      spec.MetricName,
 		RequireCurrency: spec.RequireCurrency,
 		Timeout:         spec.Timeout,
 		AuthHeader:      spec.AuthHeader, AuthValue: spec.AuthValue,

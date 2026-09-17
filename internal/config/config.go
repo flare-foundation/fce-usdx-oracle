@@ -147,6 +147,14 @@ const (
 const (
 	HexBondsURL = "https://api.htdigitalassets.com/alm-stablecoin-db/metrics/current_reserves_amount"
 
+	// The metric each endpoint must name in its own response, compared on every
+	// read. Both endpoints share one response shape, so this label is the only
+	// field distinguishing a reserve amount from another metric on the same host.
+	// It bounds the cash endpoint in particular, whose URL is provisioned rather
+	// than pinned here.
+	HexBondsMetric = "current_reserves_amount"
+	HexCashMetric  = "current_cash_reserves_amount"
+
 	// OPEN: the endpoint returns 404 rather than 401 without credentials, so
 	// bearer vs X-API-Key cannot be distinguished until a key is issued.
 	HexCashAuthHeader = "X-API-Key"
@@ -373,6 +381,7 @@ func mustFeedID() [21]byte {
 func BondsSource() BackingSpec {
 	return BackingSpec{
 		Name: HexBondsName, URL: HexBondsURL,
+		MetricName:      HexBondsMetric,
 		RequireCurrency: false,
 		Timeout:         HTTPTimeout,
 	}
@@ -383,6 +392,7 @@ func BondsSource() BackingSpec {
 func CashSource(url, apiKey string) BackingSpec {
 	return BackingSpec{
 		Name: HexCashName, URL: url,
+		MetricName:      HexCashMetric,
 		RequireCurrency: true,
 		Timeout:         HTTPTimeout,
 		AuthHeader:      HexCashAuthHeader, AuthValue: apiKey,
@@ -394,6 +404,7 @@ func CashSource(url, apiKey string) BackingSpec {
 type BackingSpec struct {
 	Name            string
 	URL             string
+	MetricName      string
 	RequireCurrency bool
 	Timeout         time.Duration
 	AuthHeader      string

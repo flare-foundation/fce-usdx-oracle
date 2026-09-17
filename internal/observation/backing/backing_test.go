@@ -20,6 +20,12 @@ const (
 	privateBody = `{"metric_name":"current_cash_reserves_amount","value":"205304.47","currency":"USD","last_update":"%s"}`
 )
 
+// The metric each endpoint names in its own response.
+const (
+	publicMetric  = "current_reserves_amount"
+	privateMetric = "current_cash_reserves_amount"
+)
+
 func nowStamp() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // newTestSource points a Source at a test server. It bypasses New()'s https
@@ -36,6 +42,9 @@ func newTestSource(t *testing.T, cfg Config, handler http.HandlerFunc) Source {
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 2 * time.Second
+	}
+	if cfg.MetricName == "" {
+		cfg.MetricName = publicMetric
 	}
 
 	// Mirror the client New() builds, so the tests exercise the production
@@ -69,7 +78,7 @@ func TestFetch_PublicEndpointShape(t *testing.T) {
 }
 
 func TestFetch_PrivateEndpointShape(t *testing.T) {
-	s := newTestSource(t, Config{RequireCurrency: true},
+	s := newTestSource(t, Config{MetricName: privateMetric, RequireCurrency: true},
 		serve(fmt.Sprintf(privateBody, nowStamp())))
 
 	got, err := s.Fetch(context.Background())
@@ -109,7 +118,7 @@ func TestFetch_AcceptsBothValueFormatsOnEitherEndpoint(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			body := fmt.Sprintf(
-				`{"metric_name":"m","value":%q,"last_update":%q}`, c.value, nowStamp())
+				`{"metric_name":"current_reserves_amount","value":%q,"last_update":%q}`, c.value, nowStamp())
 			s := newTestSource(t, Config{}, serve(body))
 			got, err := s.Fetch(context.Background())
 			if err != nil {
@@ -129,13 +138,13 @@ func TestFetch_RejectsMalformed(t *testing.T) {
 		want failure.Failure
 	}{
 		{"not json", `not json at all`, failure.BackingMalformed},
-		{"empty value", `{"metric_name":"m","value":"","last_update":"2026-07-31T12:00:00Z"}`, failure.BackingMalformed},
-		{"unparseable value", `{"metric_name":"m","value":"abc","last_update":"2026-07-31T12:00:00Z"}`, failure.BackingMalformed},
-		{"locale comma value", `{"metric_name":"m","value":"1,50","last_update":"2026-07-31T12:00:00Z"}`, failure.BackingMalformed},
-		{"negative value", `{"metric_name":"m","value":"-1","last_update":"2026-07-31T12:00:00Z"}`, failure.BackingMalformed},
-		{"bad timestamp", `{"metric_name":"m","value":"1","last_update":"yesterday"}`, failure.BackingMalformed},
-		{"unknown field", `{"metric_name":"m","value":"1","last_update":"2026-07-31T12:00:00Z","surprise":1}`, failure.BackingMalformed},
-		{"wrong currency", `{"metric_name":"m","value":"1","currency":"EUR","last_update":"2026-07-31T12:00:00Z"}`, failure.BackingCurrency},
+		{"empty value", `{"metric_name":"current_reserves_amount","value":"","last_update":"2026-07-31T12:00:00Z"}`, failure.BackingMalformed},
+		{"unparseable value", `{"metric_name":"current_reserves_amount","value":"abc","last_update":"2026-07-31T12:00:00Z"}`, failure.BackingMalformed},
+		{"locale comma value", `{"metric_name":"current_reserves_amount","value":"1,50","last_update":"2026-07-31T12:00:00Z"}`, failure.BackingMalformed},
+		{"negative value", `{"metric_name":"current_reserves_amount","value":"-1","last_update":"2026-07-31T12:00:00Z"}`, failure.BackingMalformed},
+		{"bad timestamp", `{"metric_name":"current_reserves_amount","value":"1","last_update":"yesterday"}`, failure.BackingMalformed},
+		{"unknown field", `{"metric_name":"current_reserves_amount","value":"1","last_update":"2026-07-31T12:00:00Z","surprise":1}`, failure.BackingMalformed},
+		{"wrong currency", `{"metric_name":"current_reserves_amount","value":"1","currency":"EUR","last_update":"2026-07-31T12:00:00Z"}`, failure.BackingCurrency},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -148,11 +157,58 @@ func TestFetch_RejectsMalformed(t *testing.T) {
 	}
 }
 
+// Hex serves a family of metrics behind this one response shape, so a sibling —
+// a ratio, a count, another currency's figure — parses cleanly and would be
+// summed into backing as dollars. The response's own label is what separates them.
+func TestFetch_RejectsADifferentMetric(t *testing.T) {
+	body := fmt.Sprintf(
+		`{"metric_name":"current_collateralisation_ratio","value":"1.13","last_update":%q}`,
+		nowStamp())
+	s := newTestSource(t, Config{}, serve(body))
+	if _, err := s.Fetch(context.Background()); !errors.Is(err, failure.BackingMetric) {
+		t.Errorf("expected BackingMetric, got %v", err)
+	}
+}
+
+// The expectation is per source, not a single shared constant: the cash endpoint's
+// URL is provisioned rather than compiled in, so this is what keeps it from being
+// repointed at another of Hex's metrics.
+func TestFetch_MetricIsPinnedPerSource(t *testing.T) {
+	s := newTestSource(t, Config{MetricName: privateMetric, RequireCurrency: true},
+		serve(fmt.Sprintf(publicBody, nowStamp())))
+	if _, err := s.Fetch(context.Background()); !errors.Is(err, failure.BackingMetric) {
+		t.Errorf("expected BackingMetric, got %v", err)
+	}
+}
+
+// Decode reads one JSON value and stops. Without an explicit end-of-input check a
+// body carrying a second value passes on the strength of the first.
+func TestFetch_RejectsTrailingData(t *testing.T) {
+	valid := fmt.Sprintf(publicBody, nowStamp())
+	for _, trailer := range []string{`garbage`, `{"value":"0"}`, `null`, `[]`} {
+		t.Run(trailer, func(t *testing.T) {
+			s := newTestSource(t, Config{}, serve(valid+trailer))
+			if _, err := s.Fetch(context.Background()); !errors.Is(err, failure.BackingMalformed) {
+				t.Errorf("expected BackingMalformed, got %v", err)
+			}
+		})
+	}
+}
+
+// Trailing WHITESPACE is not trailing data: a pretty-printed body must still parse.
+func TestFetch_AcceptsTrailingWhitespace(t *testing.T) {
+	body := fmt.Sprintf(publicBody, nowStamp()) + "\n\t \n"
+	s := newTestSource(t, Config{}, serve(body))
+	if _, err := s.Fetch(context.Background()); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 // An unexpected currency must be rejected even when the field is optional.
 // Tolerating absence is not the same as tolerating "EUR".
 func TestFetch_PresentButWrongCurrencyRejectedEvenWhenOptional(t *testing.T) {
 	body := fmt.Sprintf(
-		`{"metric_name":"m","value":"1","currency":"EUR","last_update":%q}`, nowStamp())
+		`{"metric_name":"current_reserves_amount","value":"1","currency":"EUR","last_update":%q}`, nowStamp())
 	s := newTestSource(t, Config{RequireCurrency: false}, serve(body))
 	if _, err := s.Fetch(context.Background()); !errors.Is(err, failure.BackingCurrency) {
 		t.Errorf("expected BackingCurrency, got %v", err)
@@ -254,6 +310,7 @@ func TestFetch_DoesNotFollowRedirects(t *testing.T) {
 
 	s, err := New(Config{
 		Name: "hex_test", URL: strings.Replace(src.URL, "http://", "https://", 1),
+		MetricName: publicMetric,
 		AuthHeader: "X-API-Key", AuthValue: "secret-value", Timeout: time.Second,
 	})
 	if err != nil {
@@ -323,7 +380,7 @@ func TestFetch_BodyIsSizeCapped(t *testing.T) {
 
 // Every error leaving this package must be publishable.
 func TestFetch_AllErrorsArePublishable(t *testing.T) {
-	bodies := []string{`not json`, `{"value":""}`, `{"metric_name":"m","value":"x","last_update":"y"}`}
+	bodies := []string{`not json`, `{"value":""}`, `{"metric_name":"current_reserves_amount","value":"x","last_update":"y"}`}
 	for _, b := range bodies {
 		s := newTestSource(t, Config{}, serve(b))
 		_, err := s.Fetch(context.Background())
@@ -340,7 +397,10 @@ func TestFetch_AllErrorsArePublishable(t *testing.T) {
 // --- config validation ---
 
 func TestNew_RejectsUnsafeConfig(t *testing.T) {
-	base := Config{Name: "hex_bonds", URL: "https://example.com/m", Timeout: time.Second}
+	base := Config{
+		Name: "hex_bonds", URL: "https://example.com/m",
+		MetricName: publicMetric, Timeout: time.Second,
+	}
 
 	cases := []struct {
 		name   string
@@ -353,6 +413,7 @@ func TestNew_RejectsUnsafeConfig(t *testing.T) {
 		{"auth value without header", func(c *Config) { c.AuthValue = "k" }},
 		{"auth header without value", func(c *Config) { c.AuthHeader = "X-API-Key" }},
 		{"zero timeout", func(c *Config) { c.Timeout = 0 }},
+		{"empty metric name", func(c *Config) { c.MetricName = "" }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -367,7 +428,8 @@ func TestNew_RejectsUnsafeConfig(t *testing.T) {
 
 func TestNew_AcceptsValidConfig(t *testing.T) {
 	if _, err := New(Config{
-		Name: "hex_bonds", URL: "https://api.example.com/metrics", Timeout: time.Second,
+		Name: "hex_bonds", URL: "https://api.example.com/metrics",
+		MetricName: publicMetric, Timeout: time.Second,
 	}); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}

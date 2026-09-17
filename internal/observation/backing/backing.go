@@ -55,6 +55,11 @@ type Config struct {
 	Name string
 	URL  string
 
+	// MetricName is the value the response must carry in metric_name. Required:
+	// both endpoints label themselves, and the label is the only field telling a
+	// reserve amount from another metric of the same shape on the same host.
+	MetricName string
+
 	// Sent when both are non-empty.
 	AuthHeader string
 	AuthValue  string
@@ -100,6 +105,11 @@ func New(cfg Config) (Source, error) {
 	}
 	if u.Scheme != "https" {
 		return nil, errors.New("backing: source URL must use https")
+	}
+	if cfg.MetricName == "" {
+		// No implicit "accept anything": an unset expectation would silently
+		// restore the case this check exists to catch.
+		return nil, errors.New("backing: source metric name is required")
 	}
 	if (cfg.AuthHeader == "") != (cfg.AuthValue == "") {
 		return nil, errors.New("backing: auth header and value must be set together")
@@ -204,8 +214,9 @@ func isTimeout(err error) bool {
 }
 
 // parse turns a response body into a Reading, rejecting an unrecognised shape,
-// a non-USD figure, an unparseable amount or a timestamp from the future. An
-// OLD timestamp is not a rejection reason — see Config.
+// trailing data, a metric other than the configured one, a non-USD figure, an
+// unparseable amount or a timestamp from the future. An OLD timestamp is not a
+// rejection reason — see Config.
 func (s *hexSource) parse(body []byte) (Reading, error) {
 	var r response
 	dec := json.NewDecoder(strings.NewReader(string(body)))
@@ -214,6 +225,18 @@ func (s *hexSource) parse(body []byte) (Reading, error) {
 		// Unknown fields are rejected rather than ignored: a shape change from
 		// Hex is a signal to stop and look.
 		return Reading{}, failure.BackingMalformed
+	}
+
+	// Decode stops at the end of the first JSON value, so anything after it
+	// would go unread. The body must hold one value and nothing else.
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return Reading{}, failure.BackingMalformed
+	}
+
+	// Identity before content: the figure is only meaningful once the response
+	// is known to be the metric this source was configured to read.
+	if r.MetricName != s.cfg.MetricName {
+		return Reading{}, failure.BackingMetric
 	}
 
 	if r.Value == "" {

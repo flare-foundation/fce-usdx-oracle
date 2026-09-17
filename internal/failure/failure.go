@@ -85,6 +85,10 @@ var (
 	BackingMalformed   = Failure{ClassSourceInvalid, "backing source returned a malformed response"}
 	BackingCurrency    = Failure{ClassSourceInvalid, "backing source reported an unexpected currency"}
 
+	// Hex serves a family of metrics behind one response shape, so the name a
+	// response gives itself is what separates a reserve figure from a sibling.
+	BackingMetric = Failure{ClassSourceInvalid, "backing source reported an unexpected metric"}
+
 	// There is no "backing data is stale" — an old figure is usually the correct
 	// one. Only a FUTURE stamp is a fault, and it means a broken upstream or a
 	// skewed clock, so it stays distinct from BackingMalformed.
@@ -148,7 +152,7 @@ var All = []Failure{
 	UnexpectedPayload, WrongActionType,
 	ProvisionRejected, NotConfigured,
 	BackingUnavailable, BackingTimeout, BackingMalformed,
-	BackingCurrency, BackingTimestamp, BackingImplausible,
+	BackingCurrency, BackingMetric, BackingTimestamp, BackingImplausible,
 	SupplyUnavailable, SupplyTimeout, SupplyMalformed,
 	SupplyNoQuorum, SupplyImplausible, SupplyBlockStale,
 	WindowExceeded, Deadline,
