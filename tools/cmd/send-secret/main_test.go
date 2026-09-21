@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/wire/configpayload"
@@ -19,7 +19,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/crypto/ecies"
-	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 )
 
 // The proxy's /info carries no teeId field; the machine identity must be
@@ -84,11 +83,13 @@ func TestBuildRefusesAKeyThatIsNotTheAttestedMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	chain := chainServer(t)
+	defer chain.Close()
 	out := filepath.Join(t.TempDir(), "envelope.json")
-	t.Setenv("USDXPROV_VALUE", "a-real-credential")
+	t.Setenv("SECRET_VALUE", "a-real-credential")
 
 	err = build([]string{
-		"-url", srv.URL, "-chain-id", "114", "-ref", protocol.HexAPIKeyRef,
+		"-p", srv.URL, "-c", chain.URL, "-ref", protocol.HexAPIKeyRef,
 		"-tee", crypto.PubkeyToAddress(attested.PublicKey).Hex(), "-out", out,
 	})
 	if err == nil {
@@ -118,11 +119,13 @@ func TestBuildAcceptsTheAttestedMachine(t *testing.T) {
 	})
 	defer srv.Close()
 
+	chain := chainServer(t)
+	defer chain.Close()
 	out := filepath.Join(t.TempDir(), "envelope.json")
-	t.Setenv("USDXPROV_VALUE", "a-real-credential")
+	t.Setenv("SECRET_VALUE", "a-real-credential")
 
 	err = build([]string{
-		"-url", srv.URL, "-chain-id", "114", "-ref", protocol.HexAPIKeyRef,
+		"-p", srv.URL, "-c", chain.URL, "-ref", protocol.HexAPIKeyRef,
 		"-tee", teeID.Hex(), "-out", out,
 	})
 	if err != nil {
@@ -136,6 +139,27 @@ func TestBuildAcceptsTheAttestedMachine(t *testing.T) {
 	if common.HexToAddress(f.TeeID) != teeID {
 		t.Errorf("envelope teeId = %s, want %s", f.TeeID, teeID.Hex())
 	}
+	if f.ChainID != fmt.Sprint(testChainID) {
+		t.Errorf("envelope chainId = %s, want the %d the node reported", f.ChainID, testChainID)
+	}
+}
+
+// chainServer answers eth_chainId with testChainID, which is all build asks a node.
+const testChainID = 114
+
+func chainServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Method != "eth_chainId" {
+			t.Errorf("unexpected rpc %s", req.Method)
+		}
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x%x"}`, req.ID, testChainID)
+	}))
 }
 
 // infoServer serves the real /info shape: teeInfo.publicKey as {x, y} hex
@@ -165,7 +189,7 @@ const (
 
 // The cash URL is provisioned as abi.encode(salt, url), never as a string, so
 // build derives it from HEX_CASH_URL and HEX_CASH_SALT and must refuse a value
-// given for it: a URL pasted into USDXPROV_VALUE would otherwise be encrypted as
+// given for it: a URL pasted into SECRET_VALUE would otherwise be encrypted as
 // a string the enclave then rejects against its commitment.
 func TestBuildRefusesAValueForTheCashURL(t *testing.T) {
 	key, err := crypto.GenerateKey()
@@ -178,13 +202,15 @@ func TestBuildRefusesAValueForTheCashURL(t *testing.T) {
 	})
 	defer srv.Close()
 
+	chain := chainServer(t)
+	defer chain.Close()
 	out := filepath.Join(t.TempDir(), "envelope.json")
-	t.Setenv("USDXPROV_VALUE", testCashURL)
+	t.Setenv("SECRET_VALUE", testCashURL)
 	t.Setenv("HEX_CASH_URL", testCashURL)
 	t.Setenv("HEX_CASH_SALT", testCashSalt)
 
 	err = build([]string{
-		"-url", srv.URL, "-chain-id", "114", "-ref", protocol.HexCashURLRef, "-out", out,
+		"-p", srv.URL, "-c", chain.URL, "-ref", protocol.HexCashURLRef, "-out", out,
 	})
 	if err == nil {
 		t.Fatal("build accepted a string value for the cash URL")
@@ -209,13 +235,15 @@ func TestBuildEncryptsTheCashURLPreimage(t *testing.T) {
 	})
 	defer srv.Close()
 
+	chain := chainServer(t)
+	defer chain.Close()
 	out := filepath.Join(t.TempDir(), "envelope.json")
-	t.Setenv("USDXPROV_VALUE", "")
+	t.Setenv("SECRET_VALUE", "")
 	t.Setenv("HEX_CASH_URL", testCashURL)
 	t.Setenv("HEX_CASH_SALT", testCashSalt)
 
 	err = build([]string{
-		"-url", srv.URL, "-chain-id", "114", "-ref", protocol.HexCashURLRef,
+		"-p", srv.URL, "-c", chain.URL, "-ref", protocol.HexCashURLRef,
 		"-tee", crypto.PubkeyToAddress(key.PublicKey).Hex(), "-out", out,
 	})
 	if err != nil {
@@ -278,65 +306,5 @@ func TestPrivateURLValidation(t *testing.T) {
 				t.Fatalf("parsed %+v", u)
 			}
 		})
-	}
-}
-
-// resultServer files a result for id after `after` polls; before that it 404s,
-// as the proxy does until tee-node has answered.
-func resultServer(t *testing.T, id common.Hash, after int, result teetypes.ActionResult) (*httptest.Server, *int) {
-	t.Helper()
-	polls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/action/result/"+id.Hex() || r.URL.Query().Get("submissionTag") != string(teetypes.Submit) {
-			t.Errorf("unexpected request %s", r.URL)
-		}
-		polls++
-		if polls < after {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		encodeJSON(t, w, teetypes.ActionResponse{Result: result})
-	}))
-	return srv, &polls
-}
-
-// submit's wait is the machine's own verdict, not the proxy's acceptance: a 404
-// until tee-node has answered, then status 1 applied or 0 rejected with the
-// extension's reason. Returning early on the 404 is exactly the race that made
-// the upload script report a credential missing that landed a moment later.
-func TestAwaitResultReportsTheMachinesVerdict(t *testing.T) {
-	resultPollInterval = 2 * time.Millisecond
-	t.Cleanup(func() { resultPollInterval = time.Second })
-	id := common.HexToHash("0x11")
-
-	applied, polls := resultServer(t, id, 3, teetypes.ActionResult{ID: id, Status: 1})
-	defer applied.Close()
-	if err := awaitResult(applied.URL, id, time.Second); err != nil {
-		t.Fatalf("an applied result was reported as: %v", err)
-	}
-	if *polls < 3 {
-		t.Fatalf("returned after %d polls, before the result was filed", *polls)
-	}
-
-	rejected, _ := resultServer(t, id, 1, teetypes.ActionResult{ID: id, Status: 0, Log: "provisioning rejected"})
-	defer rejected.Close()
-	err := awaitResult(rejected.URL, id, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "provisioning rejected") {
-		t.Fatalf("a rejection must surface the machine's reason, got: %v", err)
-	}
-
-	never, _ := resultServer(t, id, 1<<30, teetypes.ActionResult{})
-	defer never.Close()
-	if err := awaitResult(never.URL, id, 20*time.Millisecond); err == nil {
-		t.Fatal("a result that never arrives must be reported, not treated as applied")
-	}
-}
-
-// encodeJSON writes v as a test server's response. The fixtures are the
-// package's own types, so a failure is a broken test rather than a case.
-func encodeJSON(t *testing.T, w http.ResponseWriter, v any) {
-	t.Helper()
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		t.Errorf("encoding the response: %v", err)
 	}
 }

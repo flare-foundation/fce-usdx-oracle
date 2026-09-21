@@ -69,7 +69,7 @@ Five area passes, each reading the code rather than the documentation: the obser
 pipeline (`internal/observation/**`, `internal/config`), the extension surface and provisioning
 (`internal/extension`, `internal/provisioning`, `pkg/wire`, `internal/teenode`,
 `pkg/server`, `cmd/extension-tee`, `cmd/dev/start-tee`), the operator tooling (`tools/**`,
-`tools/cmd/usdxprov`), deployment and CI (`Dockerfile*`, `deploy/**`, `.gitlab-ci.yml`), and the
+`tools/cmd/send-secret`), deployment and CI (`Dockerfile*`, `deploy/**`, `.gitlab-ci.yml`), and the
 on-chain protocol (the upstream store, sender, verification and manager contracts, and how the
 enclave and keeper use them). The highest-impact claims were then re-read independently. The
 three questions in the title were asked of every actor in the next section.
@@ -138,7 +138,7 @@ Severity reflects impact on the feed under the actor model above. `[wrong]`, `[b
 | T-37 | Low | ops | Direct API key passed on argv where the tools already read it from the environment | — |
 | T-38 | Low | ops | Proxy-supplied `Log` strings reach logs and records unquoted and unbounded | — |
 | T-39 | Low | ops | Predictable `/tmp` build and hand-off paths | SR-37 |
-| T-40 | Low | ops | `usdxprov -tee` optional; scheme unchecked | SR-33 |
+| T-40 | Low | ops | `send-secret -tee` optional; scheme unchecked | SR-33 |
 | T-41 | Low | ops | `allow-tee-version` still allows the self-reported hash by default | SR-15 |
 | T-42 | Low | ops | Sibling development build copies the whole checkout, `.env` included | SR-38 |
 | T-43 | Low | ops | Secrets in compose `environment:` visible through `docker inspect` | — |
@@ -270,7 +270,7 @@ identical answers are in.
 is checked only between rounds), `:503-507` (the context is observed only while sleeping);
 `tools/pkg/keeper/readiness.go:151-159` (`http.DefaultClient.Do` on the keeper's signal-only
 context); `tools/pkg/fccutils/tee_calls.go:23, 30, 89, 105` (the same pattern in `register-tee`,
-`allow-tee-version`, `set-governance`, `verify-tee`, `retire-tee`); `tools/cmd/usdxprov/main.go:506,
+`allow-tee-version`, `set-governance`, `verify-tee`, `retire-tee`); `tools/cmd/send-secret/main.go:506,
 563, 586, 604`. Contrast `tools/pkg/fccutils/attested_state.go:42, 60`, which does it right.
 
 **Scenario.** The poll targets are the URLs the registry publishes, so any allowlisted machine
@@ -483,7 +483,7 @@ URLs for non-loopback hosts.
 `use-chain.sh flare` does the same on a mainnet. The deployer key is also written as both the
 backing admin and the first provider admin.
 **Fix.** `umask 077` in every writer, or `chmod 600` after each write; refuse to write
-`USDXPROV_*` and `HEX_*` when `chain_is_mainnet`; reconcile the documentation.
+`SECRET_VALUE`, `ADMIN_KEY` and `HEX_*` when `chain_is_mainnet`; reconcile the documentation.
 
 ### T-18 · Medium · `.env` values are written double-quoted and sourced: command injection via a credential
 
@@ -613,9 +613,9 @@ verbatim, so embedded newlines forge log lines.
 exec, and it runs with the hot key in its environment.
 **Fix.** `mktemp -d`, or build under the project directory.
 
-### T-40 · Low · `usdxprov -tee` optional; scheme unchecked
+### T-40 · Low · `send-secret -tee` optional; scheme unchecked
 
-**Where.** `tools/cmd/usdxprov/main.go:207, 497-506, 586`. Without `-tee` the tool encrypts to
+**Where.** `tools/cmd/send-secret/main.go:207, 497-506, 586`. Without `-tee` the tool encrypts to
 whatever `/info` served, over any scheme.
 **Fix.** Require `-tee` unless an explicit unpinned flag is given; refuse `http://` off loopback.
 
@@ -741,7 +741,7 @@ the comment beside it is wrong. Drop it before registering a hash, or document i
 | SR-10 | open | T-04 |
 | SR-11 | open | T-03 |
 | SR-12 | open | T-15 |
-| SR-13 | fixed | `usdxprov build -ref hex_cash_url` derives the blob; `upload-hex-key.sh` uploads both refs |
+| SR-13 | fixed | `send-secret build -ref hex_cash_url` derives the blob; `upload-hex-key.sh` uploads both refs |
 | SR-14 | partial | live chains require `PROXY_PRIVATE_KEY`; tools' fallback unchanged (T-44) |
 | SR-15 | partial | T-41 |
 | SR-16 | open | T-13 |

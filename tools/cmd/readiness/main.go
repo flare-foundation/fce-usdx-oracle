@@ -14,28 +14,21 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/types"
 	"fce-usdx-oracle/tools/pkg/configs"
+	"fce-usdx-oracle/tools/pkg/direct"
 	"fce-usdx-oracle/tools/pkg/keeper"
 	"fce-usdx-oracle/tools/pkg/readinessreport"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
-	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 	"github.com/pkg/errors"
 )
 
@@ -93,52 +86,13 @@ func main() {
 // does. Development only: a production extension listens on loopback inside
 // its VM and is reached through its proxy.
 func queryExtension(ctx context.Context, extensionURL string) (readinessreport.Report, error) {
-	var id common.Hash
-	if _, err := rand.Read(id[:]); err != nil {
-		return readinessreport.Report{}, errors.Errorf("drawing an action id: %s", err)
-	}
-	// The pinned one-byte envelope, matching internal/protocol.ReadinessRequestV1.
-	di, err := json.Marshal(teetypes.DirectInstruction{
-		OPType:    protocol.OPTypeTeeOracle,
-		OPCommand: protocol.OPCommandGetReadiness,
-		Message:   hexutil.Bytes{0x01},
-	})
-	if err != nil {
-		return readinessreport.Report{}, errors.Errorf("encoding the instruction: %s", err)
-	}
-	body, err := json.Marshal(teetypes.Action{Data: teetypes.ActionData{
-		ID: id, Type: teetypes.Direct, SubmissionTag: teetypes.Submit, Message: di,
-	}})
-	if err != nil {
-		return readinessreport.Report{}, errors.Errorf("encoding the action: %s", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(extensionURL, "/")+"/action", bytes.NewReader(body))
+	id, result, err := direct.PostToExtension(ctx, extensionURL,
+		protocol.OPTypeTeeOracle, protocol.OPCommandGetReadiness,
+		[]byte{protocol.ReadinessRequestV1})
 	if err != nil {
 		return readinessreport.Report{}, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	// Bounded rather than DefaultClient: the extension URL is an operator
-	// argument and may accept the connection without ever answering.
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-	if err != nil {
-		return readinessreport.Report{}, errors.Errorf("posting to the extension: %s", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return readinessreport.Report{}, errors.Errorf("reading the extension's answer: %s", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return readinessreport.Report{}, errors.Errorf("the extension answered %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	var result teetypes.ActionResult
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return readinessreport.Report{}, errors.Errorf("decoding the action result: %s", err)
-	}
-	if result.Status != 1 {
+	if result.Status != direct.StatusSucceeded {
 		return readinessreport.Report{}, errors.Errorf(
 			"the extension refused the readiness request (status %d): %s", result.Status, result.Log)
 	}

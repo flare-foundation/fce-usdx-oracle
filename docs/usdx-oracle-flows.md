@@ -55,7 +55,7 @@ redis            the proxy's action queue
 | `cmd/dev/devserver` | local dev | real provisioning + observation, no chain |
 | `cmd/dev/mocknode` | local dev | fake tee-node `/sign` `/decrypt` `/info` |
 | `cmd/dev/start-tee` | `start-services.sh --local` | no Docker |
-| `tools/cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
+| `tools/cmd/send-secret` | ops | build / sign / submit a `SET_SECRET` envelope |
 | `tools/cmd/keeper` | ops | the relay timer (`-tee` names the target machines) |
 | `tools/cmd/send-endpoints` | ops | publish `SET_ENDPOINTS` to the extension's active machines (`-feedId`, `-config`) |
 | `tools/cmd/send-admins` | ops | publish `SET_ADMINS` to the fleet |
@@ -229,12 +229,12 @@ the scripts it is the same three commands:
 
 ```
 admin laptop
-  usdxprov build    GET proxy/info → public key → teeId derived from it
+  send-secret build    GET proxy/info → public key → teeId derived from it
                     ciphertext = ECIES.Encrypt(pubkey, secret)
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, hash)
-  usdxprov sign     admin #1   (refuses a duplicate signer)
-  usdxprov sign     admin #2   (providers set only; backing can be 1-of-N)
-  usdxprov submit   POST proxy/direct     ← must be within envelope.Freshness
+  send-secret sign     admin #1   (refuses a duplicate signer)
+  send-secret sign     admin #2   (providers set only; backing can be 1-of-N)
+  send-secret submit   POST proxy/direct     ← must be within envelope.Freshness
                                             (1 hour) of issuedAt
      ↓  tee-node polls the direct queue → POST /action (type = direct)
 enclave
@@ -457,7 +457,7 @@ either public surface. That is a compile error, not a review item.
 | --- | --- |
 | Do the real sources yield a sane price? | `./deploy/scripts/oracle-observe.sh` |
 | Does the wire contract hold? | `go test ./internal/extension/ -run TestConformance` |
-| Does provisioning work? | `./deploy/scripts/set-config.sh endpoints` then `usdxprov` |
+| Does provisioning work? | `./deploy/scripts/set-config.sh endpoints` then `send-secret` |
 | Does the whole chain work? | `./deploy/scripts/oracle-cycle.sh` |
 | What is it publishing right now? | `./deploy/scripts/oracle-status.sh` |
 

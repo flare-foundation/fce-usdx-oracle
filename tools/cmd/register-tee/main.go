@@ -1,3 +1,11 @@
+// Command register-tee registers a machine with the registry, proves its
+// availability and takes it to production. The registry takes a registration
+// only from the machine's initial owner, the address it was launched with, so
+// the key is MACHINE_OWNER_KEY wherever that owner is not the extension owner,
+// and a mismatch is reported here, naming both addresses, rather than left to
+// the chain's OnlyOwner. The three steps are recorded in a state file so an
+// interrupted run continues from the last one with -resume instead of starting
+// over.
 package main
 
 import (

@@ -14,7 +14,7 @@
 # Two credentials fall under the backing set, and the machine uses the cash
 # source only once it holds both:
 #
-#   hex_api_key    the Hex API key, from HEX_API_KEY (USDXPROV_VALUE is accepted too)
+#   hex_api_key    the Hex API key, from HEX_API_KEY (SECRET_VALUE is accepted too)
 #   hex_cash_url   the restricted cash URL, from HEX_CASH_URL and HEX_CASH_SALT. Uploaded
 #                  only when HEX_CASH_URL is set, and it must be the URL the published
 #                  SET_ENDPOINTS committed to — publish-local.sh commits from the same
@@ -38,8 +38,8 @@
 #   CHAIN_ID           target chain id                (default: CHAIN_ID from .env)
 #   EXPECTED_CODE_HASH optional: pins the upload to one build on top of the registry's
 #                      acceptance (a SIMULATED_TEE=true machine defaults to tee-node's test constant)
-#   USDXPROV_KEY       backing admin private key, hex (default on the simulation: the dev backing admin)
-#   USDXPROV_API_KEY   proxy API key for the direct channel (default: DIRECT_API_KEY)
+#   ADMIN_KEY          backing admin private key, hex (default on the simulation: the dev backing admin)
+#   DIRECT_API_KEY     proxy API key for the direct channel
 #   HEX_API_KEY        the Hex API key itself
 #   HEX_CASH_URL       the restricted cash URL, https  (optional; enables the cash source)
 #   HEX_CASH_SALT      32-byte hex salt of its commitment (required with HEX_CASH_URL)
@@ -104,14 +104,12 @@ ask_secret() {
 LOCAL_SIM=false
 [ -n "${STACK:-}" ] && LOCAL_SIM=true
 if [ "$LOCAL_SIM" = true ]; then
-  : "${USDXPROV_API_KEY:=${DIRECT_API_KEY:-local}}"
-  : "${USDXPROV_KEY:=0x0000000000000000000000000000000000000000000000000000000000000001}"
-else
-  : "${USDXPROV_API_KEY:=${DIRECT_API_KEY:-}}"
+  : "${DIRECT_API_KEY:=local}"
+  : "${ADMIN_KEY:=0x0000000000000000000000000000000000000000000000000000000000000001}"
 fi
-: "${USDXPROV_VALUE:=${HEX_API_KEY:-}}"
+: "${SECRET_VALUE:=${HEX_API_KEY:-}}"
 : "${PROXY_URL:=${EXT_PROXY_URL:-}}"
-export USDXPROV_API_KEY USDXPROV_KEY USDXPROV_VALUE PROXY_URL
+export DIRECT_API_KEY ADMIN_KEY SECRET_VALUE PROXY_URL
 
 echo "=== USDX oracle — upload the Hex backing credentials ==="
 
@@ -134,9 +132,9 @@ fi
 # accepts only the hash given to it. EXPECTED_CODE_HASH pins the upload to that
 # exact build on top; it is optional.
 
-ask_secret USDXPROV_KEY     "Backing admin private key (hidden)"
-ask_secret USDXPROV_API_KEY "Proxy API key (hidden)"
-ask_secret USDXPROV_VALUE   "Hex API key (hidden)"
+ask_secret ADMIN_KEY      "Backing admin private key (hidden)"
+ask_secret DIRECT_API_KEY "Proxy API key (hidden)"
+ask_secret SECRET_VALUE   "Hex API key (hidden)"
 
 # The URL goes first: the machine accepts the blob only against the published
 # commitment, so a mismatch surfaces before the key is spent on a machine that
@@ -160,8 +158,8 @@ fi
 # in-memory counter to zero.
 VERSION="${VERSION:-$(date +%s)}"
 
-( cd "$REPO_ROOT/tools" && go build -o "$WORKDIR/usdxprov" ./cmd/usdxprov ) \
-  || die "could not build usdxprov"
+( cd "$REPO_ROOT/tools" && go build -o "$WORKDIR/send-secret" ./cmd/send-secret ) \
+  || die "could not build send-secret"
 
 step "1/3  Verifying the machine"
 # Gating step, and the source of the teeId step 2 pins the encryption to. If
@@ -170,7 +168,7 @@ step "1/3  Verifying the machine"
 # still derives the teeId from the attestation and confirms the registration.
 ATTESTED_TEE_ID=""
 if [ "$VERIFY" = true ]; then
-  # -print-tee-id puts the ATTESTED teeId on stdout and the human report on
+  # -printTeeId puts the ATTESTED teeId on stdout and the human report on
   # stderr, so the operator still sees every check while the id is captured.
   #
   # Capturing it matters because this command and the encryption below are
@@ -178,7 +176,7 @@ if [ "$VERIFY" = true ]; then
   # here proves something about the key THIS request received; passing the id to
   # build is what makes build refuse a different key on its own request.
   ATTESTED_TEE_ID="$( cd "$REPO_ROOT/tools" && go run ./cmd/verify-tee \
-      -p "$PROXY_URL" ${EXPECTED_CODE_HASH:+-code-hash "$EXPECTED_CODE_HASH"} -print-tee-id )" \
+      -p "$PROXY_URL" ${EXPECTED_CODE_HASH:+-codeHash "$EXPECTED_CODE_HASH"} -printTeeId )" \
     || die "verification failed — nothing was sent"
   [ -n "$ATTESTED_TEE_ID" ] \
     || die "verification passed but printed no teeId — nothing was sent"
@@ -203,12 +201,12 @@ for REF in "${REFS[@]}"; do
   #
   # The plaintext exists only in this shell and inside the target enclave. For
   # hex_cash_url the value is derived from HEX_CASH_URL and HEX_CASH_SALT, so the
-  # API key in USDXPROV_VALUE is cleared for that one build.
+  # API key in SECRET_VALUE is cleared for that one build.
   echo "» build"
   value_env=""
-  [ "$REF" = hex_cash_url ] && value_env="USDXPROV_VALUE="
-  ( cd "$REPO_ROOT" && env $value_env "$WORKDIR/usdxprov" build \
-      -url "$PROXY_URL" -chain-id "$CHAIN_ID" -ref "$REF" \
+  [ "$REF" = hex_cash_url ] && value_env="SECRET_VALUE="
+  ( cd "$REPO_ROOT" && env $value_env "$WORKDIR/send-secret" build \
+      -p "$PROXY_URL" -ref "$REF" \
       -version "$VERSION" ${ATTESTED_TEE_ID:+-tee "$ATTESTED_TEE_ID"} \
       -out "$envelope" ) \
     || die "could not build the envelope for $REF"
@@ -217,7 +215,7 @@ for REF in "${REFS[@]}"; do
   # credential falls under the providers set and needs two distinct signers.
   echo
   echo "» sign"
-  "$WORKDIR/usdxprov" sign -in "$envelope" \
+  "$WORKDIR/send-secret" sign -in "$envelope" \
     || die "could not sign the envelope for $REF"
 
   # Direct channel: no gas, no transaction, no permanent record of the ciphertext.
@@ -226,7 +224,7 @@ for REF in "${REFS[@]}"; do
   # holds the value, not merely that the proxy took the envelope.
   echo
   echo "» submit"
-  if ! "$WORKDIR/usdxprov" submit -in "$envelope" -url "$PROXY_URL"; then
+  if ! "$WORKDIR/send-secret" submit -in "$envelope" -p "$PROXY_URL"; then
     if [ "$REF" = hex_cash_url ]; then
       die "$REF was not applied — the usual cause is a published hex_cash commitment that was not made from this HEX_CASH_URL and HEX_CASH_SALT"
     fi
@@ -247,7 +245,7 @@ report_json=""
 missing=""
 outstanding=""
 for attempt in $(seq 1 30); do
-  report_json="$(read_machine_readiness "$PROXY_URL" "$USDXPROV_API_KEY" 2>/dev/null || true)"
+  report_json="$(read_machine_readiness "$PROXY_URL" "$DIRECT_API_KEY" 2>/dev/null || true)"
   [ -n "$report_json" ] || break
   missing="$(printf '%s' "$report_json" | jq -r '.readiness.missingSecretRefs[]?' 2>/dev/null || true)"
   outstanding=""

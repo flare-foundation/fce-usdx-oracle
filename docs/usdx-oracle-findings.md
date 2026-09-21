@@ -768,8 +768,8 @@ it leaks.
   endpoint config. Revert strings are constants. The endpoint payload itself
   is public by construction (it arrives by on-chain instruction) and carries
   URLs with `{secret}` placeholders and ref names, never credential values.
-- *Operator tooling.* `deploy-store`, `set-endpoints.sh` and `usdxprov` print
-  addresses, refs, versions and expiry — nothing secret. `usdxprov build`
+- *Operator tooling.* `deploy-store`, `set-endpoints.sh` and `send-secret` print
+  addresses, refs, versions and expiry — nothing secret. `send-secret build`
   prints metadata about the envelope but never the credential, which exists in
   plaintext only inside the target TEE.
 
@@ -782,7 +782,7 @@ it leaks.
    submitter), never on the two public surfaces, and their content is either
    the caller's own input or public type names. Not a disclosure; recorded so
    nobody assumes the closed-vocabulary property extends to raw HTTP bodies.
-2. *`usdxprov` takes the credential (`-value`) and the admin key (`-key`) as
+2. *`send-secret` takes the credential (`-value`) and the admin key (`-key`) as
    argv flags*, which are visible in `ps` output and shell history on the
    operator's own machine. Operational exposure rather than a logging one; a
    stdin/env mode would close it.
@@ -1183,7 +1183,7 @@ public RPC (spec §2.8), so a three-provider rule cannot be met there for free.
 
 **No cosigners on any instruction.** Every instruction this system sends —
 `GET_PRICE` and `SET_ENDPOINTS` in `InstructionSender`, the provisioning
-envelope dispatched by `usdxprov`, and the `set-endpoints.sh` payload — goes
+envelope dispatched by `send-secret`, and the `set-endpoints.sh` payload — goes
 out with an empty `cosigners` list and `cosignersThreshold` 0. The machine
 executes on delivery; no external address has to co-sign first. This is the
 default state, recorded so changing it later is a documented decision. If
@@ -1363,7 +1363,7 @@ matching a registered machine.
 
 That argument is sound. It just did not reach the encryption.
 
-`verify-tee` and `usdxprov build` are **separate processes making separate
+`verify-tee` and `send-secret build` are **separate processes making separate
 requests**. The upload scripts ran the first, and then the second re-fetched
 `/info` on its own and encrypted the credential to whatever public key came
 back — with no attestation parsing, no signature check, and nothing carried over
@@ -1385,7 +1385,7 @@ from the key it was served and refuses outright if it differs, before any
 encryption happens — so no ciphertext is produced for a substituted key and no
 envelope reaches disk.
 
-`verify-tee` grew `-print-tee-id`, which writes the attested `teeId` to stdout
+`verify-tee` grew `-printTeeId`, which writes the attested `teeId` to stdout
 and moves the human report to stderr. Both upload scripts capture it and pass it
 to every `build`. The human report is moved rather than suppressed on purpose:
 suppressing it would make the scripted path the one nobody watches.

@@ -42,7 +42,7 @@ every command reads `../.env` for the chain, the addresses file and the keys.
 | --- | --- |
 | `send-endpoints` | publishes the RPC provider groups and their quorums |
 | `send-admins` | publishes the admin signer sets that may install credentials |
-| `usdxprov` | builds, signs and submits a `SET_SECRET` envelope carrying one credential |
+| `send-secret` | builds, signs and submits a `SET_SECRET` envelope carrying one credential, taken from `SECRET_VALUE` |
 
 **Running the feed**, with a funded wallet and the proxies' direct-channel key
 
@@ -69,6 +69,7 @@ Commands sign with the role's key, taken from `.env`:
 | --- | --- |
 | `EXTENSION_OWNER_KEY` | the extension owner, and the default for everything that names no other role |
 | `MACHINE_OWNER_KEY` | the machines' owner, for registration, production and pausing, where it is not the extension owner |
+| `ADMIN_KEY` | one admin of a signer set, for signing a `SET_SECRET` envelope; the upload scripts take several as `ADMIN_KEYS` |
 | `DIRECT_API_KEY` | not a signing key: the proxy's gate for the direct channel, which readiness queries and `SET_SECRET` use |
 
 ## Where to go from here

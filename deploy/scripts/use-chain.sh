@@ -14,7 +14,7 @@
 #       On a live chain, .env.<chain> is created from .env.example when missing,
 #       and every value the funded key implies is filled in where the file has
 #       none: INITIAL_OWNER (derived), PROXY_PRIVATE_KEY and DIRECT_API_KEY
-#       (generated), USDXPROV_KEY / USDXPROV_KEYS (the deployer, plus a generated
+#       (generated), ADMIN_KEY / ADMIN_KEYS (the deployer, plus a generated
 #       second provider admin) and deploy/config/admins/<chain>.json with the
 #       matching addresses. Derived values never overwrite what the file has, so
 #       later switches are just `use-chain.sh coston`, and the file stays editable.
@@ -206,8 +206,8 @@ if [[ "$LIVE" == true ]]; then
         fill INITIAL_OWNER "$(cast wallet address --private-key "$DEPLOYER_KEY")"
         fill PROXY_PRIVATE_KEY "$(cast wallet new | awk '/^Private key:/{print $3}')"
         fill DIRECT_API_KEY "$(openssl rand -hex 32)"
-        fill USDXPROV_KEY "$DEPLOYER_KEY"
-        fill USDXPROV_KEYS "$DEPLOYER_KEY,$(cast wallet new | awk '/^Private key:/{print $3}')"
+        fill ADMIN_KEY "$DEPLOYER_KEY"
+        fill ADMIN_KEYS "$DEPLOYER_KEY,$(cast wallet new | awk '/^Private key:/{print $3}')"
     fi
     fill LOCAL_MODE false
     fill SIMULATED_TEE true
@@ -270,7 +270,7 @@ fi
 # Addresses only. Written once; a set of your own replaces it by hand.
 ADMINS="$PROJECT_DIR/deploy/config/admins/$CHAIN.json"
 if [[ "$LIVE" == true && ! -f "$ADMINS" ]]; then
-    OWNER_ADDR="$(val_in "$SRC" INITIAL_OWNER)"; SECOND_KEY="$(val_in "$SRC" USDXPROV_KEYS | cut -d, -f2)"
+    OWNER_ADDR="$(val_in "$SRC" INITIAL_OWNER)"; SECOND_KEY="$(val_in "$SRC" ADMIN_KEYS | cut -d, -f2)"
     if [[ -n "$OWNER_ADDR" && -n "$SECOND_KEY" ]]; then
         SECOND_ADDR="$(cast wallet address --private-key "$SECOND_KEY")"
         jq -n --arg d "$OWNER_ADDR" --arg s "$SECOND_ADDR" \

@@ -307,16 +307,16 @@ restricted cash endpoint, which the machine needs alongside the key before the c
 figure counts. On the recorded local stack the proxy URL, chain id, API key and the dev
 backing admin key default as well, so the run is unattended; elsewhere it prompts for
 whatever is unset, hidden for secrets (`PROXY_URL`, `CHAIN_ID`, `EXPECTED_CODE_HASH`,
-`USDXPROV_KEY`, `USDXPROV_API_KEY`).
+`ADMIN_KEY`, `DIRECT_API_KEY`).
 
 Three steps: verify the machine, which also yields the attested key everything is
 encrypted to; then, per credential, encrypt, sign once and submit over the direct channel,
-waiting for the machine's own verdict on each (`usdxprov submit -wait`, so "applied" means
+waiting for the machine's own verdict on each (`send-secret submit -wait`, so "applied" means
 the enclave holds it, not that the proxy took it); then confirm from the machine's
 published state. Verification gates the rest — if it fails, nothing is sent. The URL goes
 before the key, because the machine accepts it only against the published commitment:
 `publish-local.sh endpoints` makes that commitment from the same two variables, and
-`usdxprov commit` prints it for a hand-written configuration.
+`send-secret commit` prints it for a hand-written configuration.
 
 **Why the verification step is not optional.** The next step encrypts a credential to a
 public key the proxy served. A proxy that lied about that key would receive the plaintext.
@@ -324,7 +324,7 @@ Reading a code hash from the same proxy proves nothing on its own, so `verify-te
 the loop against the chain instead:
 
 ```bash
-cd tools && go run ./cmd/verify-tee -p <PROXY_URL> -code-hash 0x<EXPECTED>
+cd tools && go run ./cmd/verify-tee -p <PROXY_URL> -codeHash 0x<EXPECTED>
 ```
 
 It parses the code hash out of the **attestation** (not the self-reported JSON), derives
@@ -332,11 +332,11 @@ the teeId from the **attested public key**, then checks on-chain that the derive
 registered at PRODUCTION and that its extension accepts that code hash on that platform.
 Substitute the key and the derived teeId stops matching a registered machine; substitute
 the attestation and the code hash stops matching what governance accepts. Pass
-`-code-hash` obtained **out of band** — without it the tool only proves the machine is
+`-codeHash` obtained **out of band** — without it the tool only proves the machine is
 *some* accepted machine, not that it runs the build you reviewed, and it says so.
 
-**Secrets never go in argv.** `usdxprov` reads its three credentials from `USDXPROV_VALUE`,
-`USDXPROV_KEY` and `USDXPROV_API_KEY`, and warns if you use the equivalent flag — a value
+**Secrets never go in argv.** `send-secret` reads its three credentials from `SECRET_VALUE`,
+`ADMIN_KEY` and `DIRECT_API_KEY`, and has no flag form for them — a value
 in argv is readable by any other local process through `ps` and lands in shell history.
 
 Only one signature is needed here: `hex_api_key` falls under the `backing` set, which is
@@ -358,7 +358,7 @@ Same five steps, three differences that follow from the split:
   configuration actually applied. Each credential is read from an environment variable named
   after its ref: `ankr_flare_key` → `ANKR_FLARE_KEY`.
 - **Two signatures.** The `providers` set is at least 2-of-N, so one laptop usually cannot
-  finish. The script signs with every key in `USDXPROV_KEYS` (comma-separated), submits if it
+  finish. The script signs with every key in `ADMIN_KEYS` (comma-separated), submits if it
   has enough, and otherwise **hands off**: the envelope goes to `OUT_DIR` for the next admin
   to sign and submit. It holds ciphertext and signatures only, so it is safe to send over any
   channel — but it expires one hour after it was built.

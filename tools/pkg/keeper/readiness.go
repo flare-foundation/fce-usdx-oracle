@@ -1,20 +1,14 @@
 package keeper
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"strings"
 	"time"
 
 	"fce-usdx-oracle/pkg/protocol"
+	"fce-usdx-oracle/tools/pkg/direct"
 	"fce-usdx-oracle/tools/pkg/readinessreport"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 	"github.com/pkg/errors"
@@ -42,7 +36,7 @@ func QueryReadiness(
 			"readiness needs an API key (-directApiKey or DIRECT_API_KEY)")
 	}
 
-	id, err := postDirectAction(ctx, proxyURL, apiKey,
+	id, err := direct.Post(ctx, proxyURL, apiKey,
 		protocol.OPTypeTeeOracle, protocol.OPCommandGetReadiness,
 		readinessRequestV1)
 	if err != nil {
@@ -56,7 +50,7 @@ func QueryReadiness(
 		return readinessreport.Report{}, err
 	}
 
-	if res.Status != statusSucceeded {
+	if res.Status != direct.StatusSucceeded {
 		// The extension answers even when unprovisioned, so a failure here is
 		// the machine refusing the request rather than describing itself — a
 		// wrong envelope, or a build without the command.
@@ -128,52 +122,3 @@ func wouldRefuse(ctx context.Context, cfg Config) (skip bool, why string, health
 // readinessPreflightTimeout is short on purpose: this runs before the real work
 // and must not eat the cycle's budget. Failing it simply means requesting.
 const readinessPreflightTimeout = 15 * time.Second
-
-// postDirectAction enqueues one direct action on a proxy and returns the id it
-// assigned. Takes the op pair loose rather than reading it off the instruction
-// sender: GET_READINESS has no on-chain counterpart to read it from.
-func postDirectAction(
-	ctx context.Context, proxyURL, apiKey string,
-	opType, opCommand common.Hash, message []byte,
-) (common.Hash, error) {
-	body, err := json.Marshal(map[string]string{
-		"opType":    opType.Hex(),
-		"opCommand": opCommand.Hex(),
-		"message":   hexutil.Encode(message),
-	})
-	if err != nil {
-		return common.Hash{}, errors.Errorf("encoding the direct instruction: %s", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(proxyURL, "/")+"/direct", bytes.NewReader(body))
-	if err != nil {
-		return common.Hash{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-API-Key", apiKey)
-
-	resp, err := proxyClient.Do(httpReq)
-	if err != nil {
-		return common.Hash{}, errors.Errorf("posting to the proxy: %s", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// The body is the proxy's own error text; 401 here means the API key,
-		// not the extension.
-		return common.Hash{}, errors.Errorf("proxy returned %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(out)))
-	}
-
-	// The proxy echoes the action it enqueued, which is where the id comes from.
-	var action teetypes.Action
-	if err := json.Unmarshal(out, &action); err != nil {
-		return common.Hash{}, errors.Errorf("decoding the proxy response: %s", err)
-	}
-	if action.Data.ID == (common.Hash{}) {
-		return common.Hash{}, errors.New("the proxy returned no action id")
-	}
-	return action.Data.ID, nil
-}

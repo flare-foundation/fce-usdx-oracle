@@ -1,5 +1,5 @@
-// set-governance registers the TEE governance signer set + threshold for this
-// extension on-chain, from GOVERNANCE_SIGNERS and GOVERNANCE_THRESHOLD
+// Command set-governance registers the TEE governance signer set and threshold
+// for this extension on-chain, from GOVERNANCE_SIGNERS and GOVERNANCE_THRESHOLD
 // (defaulting to the deployer alone, threshold 1).
 //
 // These MUST match the env vars passed to the TEE node, which derives its

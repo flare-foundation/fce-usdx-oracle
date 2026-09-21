@@ -1,3 +1,8 @@
+// Command verify-deploy runs the deployment checklist: the contracts, the
+// registration, the services, the allowed version, the machine and the
+// end-to-end test, one step or all of them, each a list of named checks. The
+// report is printed for a terminal or as JSON, and the exit code is non-zero
+// when any check failed, so a script can gate on it.
 package main
 
 import (

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fce-usdx-oracle/pkg/wire/readiness"
+	"fce-usdx-oracle/tools/pkg/direct"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,7 +75,7 @@ func readinessProxy(t *testing.T, wouldSign bool) *httptest.Server {
 			return
 		}
 		encodeJSON(t, w, teetypes.ActionResponse{
-			Result: teetypes.ActionResult{Status: statusSucceeded, Data: data},
+			Result: teetypes.ActionResult{Status: direct.StatusSucceeded, Data: data},
 		})
 	}))
 }

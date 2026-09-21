@@ -86,7 +86,7 @@ Roughly bottom-up. "Flow" refers to §6.
 | `pkg/wire/feedupdate` | the signed **feed update** payload's ABI layout, and the `GET_FEED` request envelope | `EncodeFeedRequest`, `DecodeFeedRequest`, `EncodeUpdate`, `SigningMessage`, `EncodeData`, `DecodeData`, `Prefix` | D |
 | `pkg/wire/readiness` | the signed **readiness** payload's ABI layout — a separate domain, so an answer can never be reinterpreted as a feed update | `EncodeBody`, `EncodeData`, `DecodeData`, `Domain` | D2 |
 | `internal/teenode` | HTTP client for tee-node's local `/sign` + `/decrypt` | `Sign` `:82`, `Decrypt` `:106`, `TeeID` `:184`, `NormalizeV` `:158` | B, D, D2 |
-| `pkg/wire/envelope` | the **provisioning envelope**'s ABI layout: signed body, signatures, ciphertext, under its own domain | `EncodeBody`, `Encode`, `Decode` | B, `usdxprov` |
+| `pkg/wire/envelope` | the **provisioning envelope**'s ABI layout: signed body, signatures, ciphertext, under its own domain | `EncodeBody`, `Encode`, `Decode` | B, `send-secret` |
 | `pkg/wire/configpayload` | the **Endpoints** and **Admins** payloads and the hashes the sender publishes | `DecodeEndpoints`, `DecodeAdmins`, `EndpointsHash`, `AdminsHash` | B, `tools/` |
 | `internal/provisioning/envelope` | verifies M-of-N admin-signed provisioning envelopes against the installed sets | `Verifier.Verify`, `SetAdmins`, `AdminSet` | B |
 | `internal/provisioning/store` | the only mutable state: provider URLs, admin sets + credentials → `oracle.Config`; also the wire codec for the ABI-encoded configuration payloads | `ApplyEndpoints` `:166`, `ApplyAdmins` `:223`, `ApplySecret` `:406`, `Readiness` `:541`, `Resolve` `:588`, `validate` `:706` | A, A2, B, C |
@@ -104,7 +104,7 @@ Roughly bottom-up. "Flow" refers to §6.
 | `cmd/dev/devserver` | local dev: real provisioning + observation, no chain |
 | `cmd/dev/mocknode` | fake tee-node `/sign` `/decrypt` `/info` for local dev |
 | `cmd/dev/start-tee` | host-process runner behind `start-services.sh --local` |
-| `tools/cmd/usdxprov` | ops CLI: `build` / `sign` / `submit` a `SET_SECRET` envelope |
+| `tools/cmd/send-secret` | ops CLI: `build` / `sign` / `submit` a `SET_SECRET` envelope |
 
 ---
 
@@ -245,11 +245,11 @@ on `tools/cmd/verify-tee` first, and read every secret from the environment
 rather than argv, where `ps` would expose it.
 
 ```
-admin laptop (tools/cmd/usdxprov)
-  usdxprov build    GET proxy/info → TEE public key; ciphertext = ECIES(pubkey, secret)
+admin laptop (tools/cmd/send-secret)
+  send-secret build    GET proxy/info → TEE public key; ciphertext = ECIES(pubkey, secret)
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
-  usdxprov sign     admin #1, then admin #2   (refuses a duplicate signer)
-  usdxprov submit   POST proxy/direct         (must be within envelope.Freshness —
+  send-secret sign     admin #1, then admin #2   (refuses a duplicate signer)
+  send-secret submit   POST proxy/direct         (must be within envelope.Freshness —
                                                1 hour — of issuedAt)
     ↓ tee-node polls the direct queue → POST /action (type = direct)
 enclave

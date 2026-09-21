@@ -89,7 +89,7 @@ if [[ "$TOOL" == send-endpoints && -n "${HEX_CASH_URL:-}" && -z "$EXEC_FILE" ]];
         export HEX_CASH_SALT
         log "generated HEX_CASH_SALT and recorded it in .env"
     fi
-    URL_HASH="$(cd "$PROJECT_DIR/tools" && go run ./cmd/usdxprov commit)" || die "could not compute the hex_cash commitment"
+    URL_HASH="$(cd "$PROJECT_DIR/tools" && go run ./cmd/send-secret commit)" || die "could not compute the hex_cash commitment"
     mkdir -p "$PROJECT_DIR/out"
     COMMITTED="$PROJECT_DIR/out/endpoints.committed.json"
     jq --arg h "$URL_HASH" '.hex_cash.endpoints[0].urlHash = $h' "$CONFIG" > "$COMMITTED" \

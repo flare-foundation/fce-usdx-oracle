@@ -14,15 +14,13 @@ package keeper
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
+	"fce-usdx-oracle/tools/pkg/direct"
 	"fce-usdx-oracle/tools/pkg/feedupdate"
 	"fce-usdx-oracle/tools/pkg/support"
 	instrutils "fce-usdx-oracle/tools/pkg/utils"
@@ -34,12 +32,6 @@ import (
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
 	"github.com/pkg/errors"
-)
-
-// Terminal action statuses. Anything else means still in flight.
-const (
-	statusFailed    uint8 = 0
-	statusSucceeded uint8 = 1
 )
 
 // Config is everything one cycle needs.
@@ -158,7 +150,7 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) ([]feedupdate.
 
 	updates := make([]feedupdate.Update, 0, len(results))
 	for _, r := range results {
-		if r.result.Status != statusSucceeded {
+		if r.result.Status != direct.StatusSucceeded {
 			// A status-0 result is the extension declining to publish; Log is a
 			// class from its closed vocabulary. Relaying anything would invent a
 			// price.
@@ -434,11 +426,7 @@ func PollResult(
 	ctx context.Context, proxyURL string, id common.Hash, tag teetypes.SubmissionTag,
 	timeout time.Duration,
 ) (teetypes.ActionResult, error) {
-	res, err := pollResults(ctx, []string{proxyURL}, 1, id, tag, timeout)
-	if err != nil {
-		return teetypes.ActionResult{}, err
-	}
-	return res[0].result, nil
+	return direct.Await(ctx, proxyURL, id, tag, timeout)
 }
 
 // polled is one proxy's terminal result.
@@ -480,7 +468,7 @@ func pollResults(
 	}
 
 	for attempt := 1; ; attempt++ {
-		// Concurrent across proxies, each bounded by proxyTimeout: a round costs
+		// Concurrent across proxies, each bounded by direct.Timeout: a round costs
 		// the slowest proxy rather than the sum, so one machine owner cannot hold
 		// the fleet's poll by pointing the registry at an endpoint that never
 		// answers. Results are index-aligned, so the reporting order below stays
@@ -489,7 +477,7 @@ func pollResults(
 		var wg sync.WaitGroup
 		for i, proxy := range pending {
 			wg.Go(func() {
-				res, ok, err := fetchResult(ctx, proxy, id, tag)
+				res, ok, err := direct.Result(ctx, proxy, id, tag)
 				outcomes[i] = outcome{result: res, ok: ok, err: err}
 			})
 		}
@@ -555,55 +543,6 @@ func pollResults(
 		}
 	}
 	return out, nil
-}
-
-// proxyTimeout bounds one request to a machine's proxy. The poll targets are the
-// URLs the registry publishes, each chosen by that machine's owner, so a proxy
-// that accepts the connection and never answers costs this and no more.
-const proxyTimeout = 10 * time.Second
-
-// maxProxyBody caps a proxy response before it is decoded. Real results are a few
-// kilobytes; the cap is what stops an endless body from growing the keeper without
-// bound.
-const maxProxyBody = 1 << 20
-
-// proxyClient bounds every phase of a proxy request, including the ones a context
-// deadline alone does not cover once a body has started arriving.
-var proxyClient = &http.Client{Timeout: proxyTimeout}
-
-// fetchResult returns the result and whether its status is terminal. The URL is
-// the one the registry publishes for that machine, so its owner chooses it: the
-// request carries the caller's cancellation, proxyClient bounds how long it may
-// take, and the body is capped before it is decoded.
-func fetchResult(
-	ctx context.Context, proxyURL string, id common.Hash, tag teetypes.SubmissionTag,
-) (teetypes.ActionResult, bool, error) {
-	url := strings.TrimRight(proxyURL, "/") +
-		"/action/result/" + id.Hex() + "?submissionTag=" + string(tag)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return teetypes.ActionResult{}, false, errors.Errorf("building the proxy request: %s", err)
-	}
-
-	resp, err := proxyClient.Do(req)
-	if err != nil {
-		return teetypes.ActionResult{}, false, errors.Errorf("querying the proxy: %s", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		// 404 until the TEE has answered — the normal early state, not a fault.
-		return teetypes.ActionResult{}, false, errors.Errorf("proxy returned %d", resp.StatusCode)
-	}
-
-	var body teetypes.ActionResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxProxyBody)).Decode(&body); err != nil {
-		return teetypes.ActionResult{}, false, errors.Errorf("decoding the proxy response: %s", err)
-	}
-
-	status := body.Result.Status
-	return body.Result, status == statusSucceeded || status == statusFailed, nil
 }
 
 // storeObservedAt reads the store's current stamp. Best-effort: it is a

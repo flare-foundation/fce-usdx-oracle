@@ -8,7 +8,7 @@
 // is the ABI form, never the JSON.
 //
 // Credentials never go this way: the config is calldata and therefore public.
-// Secrets travel over the direct channel via usdxprov.
+// Secrets travel over the direct channel via send-secret.
 //
 // One publication fans out to every machine active on the extension when the
 // call executes; the sender reads that set itself and quotes the fee for it

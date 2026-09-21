@@ -27,9 +27,9 @@
 //
 // Gating is necessary but not sufficient. This command and the encryption that
 // follows it are separate processes making separate requests, so a proxy can
-// serve an honest key here and a substituted one to `usdxprov build` a moment
-// later — and build encrypts to whatever it is handed. -print-tee-id writes the
-// ATTESTED teeId to stdout so the caller can pass it to `usdxprov build -tee`,
+// serve an honest key here and a substituted one to `send-secret build` a moment
+// later — and build encrypts to whatever it is handed. -printTeeId writes the
+// ATTESTED teeId to stdout so the caller can pass it to `send-secret build -tee`,
 // which then refuses any key deriving to a different address. Without that hand-
 // off, verification proves something true about a request nobody encrypted to.
 package main
@@ -58,16 +58,16 @@ func main() {
 	af := flag.String("a", configs.AddressesFile, "file with deployed addresses")
 	cf := flag.String("c", configs.ChainNodeURL, "chain node url")
 	pf := flag.String("p", configs.ExtensionProxyURL, "extension proxy url")
-	expectedCodeHash := flag.String("code-hash", "",
+	expectedCodeHash := flag.String("codeHash", "",
 		"the code hash you expect this machine to be running (0x…); "+
 			"obtain it out-of-band, never from the machine you are checking")
 	quiet := flag.Bool("quiet", false, "print only failures")
-	printTeeID := flag.Bool("print-tee-id", false,
+	printTeeID := flag.Bool("printTeeId", false,
 		"on success, write ONLY the attested teeId to stdout (all other output goes to "+
-			"stderr) so a script can pass it to `usdxprov build -tee`")
+			"stderr) so a script can pass it to `send-secret build -tee`")
 	flag.Parse()
 
-	// With -print-tee-id stdout carries one address and nothing else, so the human
+	// With -printTeeId stdout carries one address and nothing else, so the human
 	// report moves to stderr rather than being suppressed — the scripted path must
 	// not be the one nobody watches.
 	out := io.Writer(os.Stdout)
@@ -119,7 +119,7 @@ func main() {
 	//    machine is *some* registered machine, not that it runs *your* build.
 	if *expectedCodeHash == "" {
 		fmt.Fprintln(os.Stderr,
-			"  WARN  no -code-hash given, so this does not check WHICH build is running.\n"+
+			"  WARN  no -codeHash given, so this does not check WHICH build is running.\n"+
 				"        Pass the hash you were given out-of-band to make this meaningful.")
 	} else {
 		want := common.HexToHash(*expectedCodeHash)

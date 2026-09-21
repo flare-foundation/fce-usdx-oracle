@@ -1,10 +1,8 @@
-// audit-deploy: sanity-check deployed-addresses.json against a chain.
-//   - Code present at each address
-//   - For FlareTeeManager (diamond proxy): list system-supported platforms via the
-//     ExtensionManager facet, and for a given extensionId print the owner +
-//     supported codeHashes.
-//   - Replays the most recent failing call (addTeeVersion) as eth_call to decode
-//     custom errors when -addTeeVersion is provided.
+// Command audit-deploy checks deployed-addresses.json against a chain: that
+// code is present at every address; for FlareTeeManager, a diamond proxy, the
+// platforms its ExtensionManager facet supports and, for a given extension id,
+// the owner and the allowed code hashes; and, with -addTeeVersion, the most
+// recent failing call replayed as eth_call so its custom error can be decoded.
 package main
 
 import (

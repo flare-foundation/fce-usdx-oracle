@@ -11,7 +11,7 @@ Three families:
 | Family | What it is |
 | --- | --- |
 | `deploy/scripts/*.sh` | orchestration — sequences the Go tools and Docker |
-| `tools/cmd/*` | Go CLIs that talk to the chain and the proxy, `usdxprov` among them |
+| `tools/cmd/*` | Go CLIs that talk to the chain and the proxy, `send-secret` among them |
 | `cmd/*` | the extension binaries: the image entry point and the development runners |
 
 `tools/` is its own module and imports the extension's wire packages rather than restating
@@ -208,9 +208,9 @@ Never on-chain. The credential is encrypted to the enclave's attested key and de
 | Tool | What it does |
 | --- | --- |
 | `verify-tee` | **Run before any credential.** Answers: is this proxy fronting an enclave running code we accept? |
-| `usdxprov build` | Reads the attested key, encrypts the credential to it, emits an unsigned envelope. |
-| `usdxprov sign` | One admin signs the envelope body. Refuses a duplicate signer — M-of-N needs distinct ones. |
-| `usdxprov submit` | Combines signatures and POSTs to `/direct`. Must land within one hour of the build. |
+| `send-secret build` | Reads the attested key, encrypts the credential to it, emits an unsigned envelope. |
+| `send-secret sign` | One admin signs the envelope body. Refuses a duplicate signer — M-of-N needs distinct ones. |
+| `send-secret submit` | Combines signatures and POSTs to `/direct`. Must land within one hour of the build. |
 | `upload-hex-key.sh` | The three above, for `hex_api_key`, gated on `verify-tee`. Backing set, so one signature can finish it. |
 | `upload-rpc-keys.sh` | The same for every RPC ref the machine reports missing, with handoff when it cannot meet the providers threshold. |
 
@@ -229,11 +229,11 @@ you   → the code hash is the one you were told, out of band
 
 Substitute the key and the derived `teeId` stops matching a registered machine; substitute the
 attestation and the code hash stops matching what governance accepts. It exits non-zero on the
-first failure so a script can gate on it. Without `-code-hash` it proves the machine is *some*
+first failure so a script can gate on it. Without `-codeHash` it proves the machine is *some*
 accepted machine, not that it runs your build — and it says so.
 
-**Secrets come from the environment, never argv.** `usdxprov` reads `USDXPROV_VALUE`,
-`USDXPROV_KEY` and `USDXPROV_API_KEY`, and warns if you use the equivalent flag: argv is readable
+**Secrets come from the environment, never argv.** `send-secret` reads `SECRET_VALUE`,
+`ADMIN_KEY` and `DIRECT_API_KEY`, and has no flag form for any of them: argv is readable
 by any local process through `ps`. The upload scripts prompt hidden for anything unset.
 
 ---
@@ -358,9 +358,9 @@ cannot help, because the siblings build's context root is `tee/`, not the repo.
 | Binary | For |
 | --- | --- |
 | `cmd/extension-tee` | **production** — what the Dockerfile builds (tee-node + extension in one process) |
-| `cmd/` | `docker` (production entrypoint), `devserver` + `mocknode` (local dev), `start-tee` (host-process runner), `usdxprov` (provisioning CLI) |
+| `cmd/` | `extension-tee` (the image's one binary); under `dev/`, `devserver` and `mocknode` (local development) and `start-tee` (the host-process runner)
 | `cmd/dev/devserver` · `cmd/dev/mocknode` · `cmd/dev/start-tee` | local dev |
-| `tools/cmd/usdxprov` | ops: build / sign / submit a `SET_SECRET` envelope |
+| `tools/cmd/send-secret` | ops: build / sign / submit a `SET_SECRET` envelope |
 
 ---
 

@@ -210,7 +210,7 @@ and the admin set is your key rather than the dev keys. The machine attests with
 code hash (`SIMULATED_TEE=true`), which the testnet registries accept, so the upload scripts
 assume tee-node's test constant for `EXPECTED_CODE_HASH`. `<TEE_ID>` is printed by
 `full-setup.sh` and recoverable with
-`(cd tools && go run ./cmd/verify-tee -p http://localhost:6674 -print-tee-id)`.
+`(cd tools && go run ./cmd/verify-tee -p http://localhost:6674 -printTeeId)`.
 
 `.env.coston_local` is the only place the deployment's keys live, and a lost deployer key loses
 the extension, its contracts and the funds: never copy `.env.example` over it, and keep the key

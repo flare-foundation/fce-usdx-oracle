@@ -22,11 +22,10 @@ import (
 
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/pkg/protocol"
+	"fce-usdx-oracle/pkg/wire/eip191"
 	wire "fce-usdx-oracle/pkg/wire/envelope"
 
-	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // AdminSet is one signer set and the number of distinct members that must sign.
@@ -225,11 +224,9 @@ func (v *Verifier) Verify(message []byte) (wire.Envelope, error) {
 // hasThreshold reports whether set.Threshold distinct members signed; without
 // deduplication one compromised key could supply the same signature M times.
 func hasThreshold(body []byte, sigs [][]byte, set AdminSet) bool {
-	digest := accounts.TextHash(crypto.Keccak256(body))
-
 	seen := make(map[common.Address]bool, len(sigs))
 	for _, sig := range sigs {
-		signer, ok := recoverSigner(digest, sig)
+		signer, ok := eip191.Recover(body, sig)
 		if !ok {
 			continue
 		}
@@ -243,40 +240,4 @@ func hasThreshold(body []byte, sigs [][]byte, set AdminSet) bool {
 
 func isAdmin(admins []common.Address, a common.Address) bool {
 	return slices.Contains(admins, a)
-}
-
-// recoverSigner accepts v as 27/28, the standard produced by personal-sign
-// tooling and hardware wallets.
-func recoverSigner(digest []byte, sig []byte) (common.Address, bool) {
-	if len(sig) != wire.SignatureLength {
-		return common.Address{}, false
-	}
-
-	normalised := make([]byte, wire.SignatureLength)
-	copy(normalised, sig)
-
-	switch normalised[64] {
-	case 27, 28:
-		normalised[64] -= 27
-	case 0, 1:
-		// Tolerated: some signers emit the raw recovery id.
-	default:
-		return common.Address{}, false
-	}
-
-	// go-ethereum's own validation, with homestead set so the high-s form is
-	// rejected and one signature means one thing. Wider than the hand-rolled
-	// low-s test it replaces, which admitted r or s of zero and either at or
-	// above the curve order.
-	r := new(big.Int).SetBytes(normalised[:32])
-	s := new(big.Int).SetBytes(normalised[32:64])
-	if !crypto.ValidateSignatureValues(normalised[64], r, s, true) {
-		return common.Address{}, false
-	}
-
-	pub, err := crypto.SigToPub(digest, normalised)
-	if err != nil || pub == nil {
-		return common.Address{}, false
-	}
-	return crypto.PubkeyToAddress(*pub), true
 }

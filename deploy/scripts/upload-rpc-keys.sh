@@ -32,12 +32,11 @@
 # any other process on this machine through `ps`.
 #
 #   PROXY_URL          extension proxy base URL
-#   CHAIN_ID           target chain id (Coston2 = 114, Flare = 14)
 #   EXPECTED_CODE_HASH optional: pins the upload to one build on top of the registry's
 #                      acceptance (a SIMULATED_TEE=true machine defaults to tee-node's test constant)
-#   USDXPROV_KEYS      provider admin private keys held HERE, comma-separated
-#                      (USDXPROV_KEY is accepted as the single-key form)
-#   USDXPROV_API_KEY   proxy API key for the direct channel
+#   ADMIN_KEYS         provider admin private keys held HERE, comma-separated
+#                      (ADMIN_KEY is accepted as the single-key form)
+#   DIRECT_API_KEY     proxy API key for the direct channel
 #   <REF_IN_CAPS>      the credential for each ref — ANKR_FLARE_KEY for
 #                      ankr_flare_key, and so on
 #   OUT_DIR            where a handed-off envelope is written
@@ -150,7 +149,7 @@ readMachineReport() {
   # Cleared first: a failed read must not leave the previous, now stale, report
   # behind for a caller that is about to report on it.
   REPORT_JSON=""
-  REPORT_JSON="$(read_machine_readiness "$PROXY_URL" "$USDXPROV_API_KEY")" || return 1
+  REPORT_JSON="$(read_machine_readiness "$PROXY_URL" "$DIRECT_API_KEY")" || return 1
   [ -n "$REPORT_JSON" ] || return 1
 }
 
@@ -186,12 +185,7 @@ echo
 # upload-hex-key.sh; the prompt only covers what neither .env nor the
 # environment names.
 : "${PROXY_URL:=${EXT_PROXY_URL:-}}"
-: "${USDXPROV_API_KEY:=${DIRECT_API_KEY:-}}"
 ask PROXY_URL          "Extension proxy URL"    "http://localhost:6674"
-# The chain id is the active chain's (lib/chains.sh); asked only when .env names
-# no chain at all.
-: "${CHAIN_ID:=$(chain_id "$(resolve_chain "")" 2>/dev/null || true)}"
-ask CHAIN_ID           "Chain id"
 # A machine run with SIMULATED_TEE=true attests with tee-node's fixed test code
 # hash rather than a build's, so when .env says the machine is simulated and
 # names no hash, that constant is what the check can expect. A real Confidential
@@ -204,24 +198,24 @@ fi
 # As in upload-hex-key.sh: the registry vouches for the build, EXPECTED_CODE_HASH
 # pins one on top and is optional.
 
-# USDXPROV_KEY is what usdxprov itself reads, so a single-key operator can use
+# ADMIN_KEY is what send-secret itself reads, so a single-key operator can use
 # the same variable for both scripts.
-if [ -z "${USDXPROV_KEYS:-}" ]; then
-  if [ -n "${USDXPROV_KEY:-}" ]; then
-    USDXPROV_KEYS="$USDXPROV_KEY"
+if [ -z "${ADMIN_KEYS:-}" ]; then
+  if [ -n "${ADMIN_KEY:-}" ]; then
+    ADMIN_KEYS="$ADMIN_KEY"
   else
-    ask_secret USDXPROV_KEYS "Provider admin private key(s), comma-separated (hidden)"
+    ask_secret ADMIN_KEYS "Provider admin private key(s), comma-separated (hidden)"
   fi
 fi
 
-OLD_IFS="$IFS"; IFS=','; read -r -a ADMIN_KEYS <<< "$USDXPROV_KEYS"; IFS="$OLD_IFS"
+OLD_IFS="$IFS"; IFS=','; read -r -a ADMIN_KEYS <<< "$ADMIN_KEYS"; IFS="$OLD_IFS"
 [ "${#ADMIN_KEYS[@]}" -gt 0 ] || die "no admin key given"
 
 # Only whoever submits needs the proxy API key, and an admin holding fewer keys
 # than the threshold will only ever hand off. Asked here rather than at the
 # submit itself so nobody is hunting for a key while the freshness window runs.
 if [ "${#ADMIN_KEYS[@]}" -ge "$PROVIDER_FLOOR" ]; then
-  ask_secret USDXPROV_API_KEY "Proxy API key (hidden)"
+  ask_secret DIRECT_API_KEY "Proxy API key (hidden)"
 else
   echo "Holding ${#ADMIN_KEYS[@]} of the $PROVIDER_FLOOR signatures needed, so this run will hand"
   echo "the envelopes off rather than submit them. No proxy API key required."
@@ -236,19 +230,19 @@ echo
 # credential to a key this same proxy serves, so nothing runs until the chain
 # agrees the machine behind it is real and running an accepted build.
 mkdir -p "$BIN_DIR"
-( cd "$REPO_ROOT/tools" && go build -o "$BIN_DIR/usdxprov" ./cmd/usdxprov ) \
-  || die "could not build usdxprov"
+( cd "$REPO_ROOT/tools" && go build -o "$BIN_DIR/send-secret" ./cmd/send-secret ) \
+  || die "could not build send-secret"
 
 ATTESTED_TEE_ID=""
 if [ "$VERIFY" = true ]; then
   ( cd "$REPO_ROOT/tools" && go build -o "$BIN_DIR/verify-tee" ./cmd/verify-tee ) \
     || die "could not build verify-tee"
-  # -print-tee-id puts the ATTESTED teeId on stdout and the human report on
+  # -printTeeId puts the ATTESTED teeId on stdout and the human report on
   # stderr. Every build below pins to it, so a proxy that serves an honest key
   # to this check and a substituted one to an encryption a moment later is
   # refused rather than handed a credential. One id for the whole run: every ref
   # goes to the same machine.
-  ATTESTED_TEE_ID="$("$BIN_DIR/verify-tee" -p "$PROXY_URL" ${EXPECTED_CODE_HASH:+-code-hash "$EXPECTED_CODE_HASH"} -print-tee-id)" \
+  ATTESTED_TEE_ID="$("$BIN_DIR/verify-tee" -p "$PROXY_URL" ${EXPECTED_CODE_HASH:+-codeHash "$EXPECTED_CODE_HASH"} -printTeeId)" \
     || die "verification failed — no credential was sent"
   [ -n "$ATTESTED_TEE_ID" ] \
     || die "verification passed but printed no teeId — no credential was sent"
@@ -320,7 +314,7 @@ echo
 for ref in "${REFS[@]}"; do
   var="$(envVarFor "$ref")"
   [ -n "$var" ] || die "ref $ref does not map to a legal environment variable name; \
-upload it by hand, from tools/: USDXPROV_VALUE=… go run ./cmd/usdxprov build -ref $ref …"
+upload it by hand, from tools/: SECRET_VALUE=… go run ./cmd/send-secret build -ref $ref …"
   ask_secret "$var" "Credential for $ref (hidden, or set $var)"
 done
 
@@ -342,17 +336,17 @@ for ref in "${REFS[@]}"; do
   # -tee pins the encryption to the machine the attestation named. The expansion
   # is unquoted-by-design so an empty value passes no flag at all (--no-verify);
   # a teeId is a hex address, so word splitting has nothing to split.
-  USDXPROV_VALUE="${!var}" "$BIN_DIR/usdxprov" build \
-      -url "$PROXY_URL" -chain-id "$CHAIN_ID" -ref "$ref" \
+  SECRET_VALUE="${!var}" "$BIN_DIR/send-secret" build \
+      -p "$PROXY_URL" -ref "$ref" \
       -version "$version" ${ATTESTED_TEE_ID:+-tee "$ATTESTED_TEE_ID"} \
       -out "$envelope" \
     || die "could not build the envelope for $ref"
 
-  # Every key held HERE signs. usdxprov refuses a duplicate signer, so a key
+  # Every key held HERE signs. send-secret refuses a duplicate signer, so a key
   # that already signed is a warning rather than a second useless signature.
   for key in "${ADMIN_KEYS[@]}"; do
     [ -n "$key" ] || continue
-    USDXPROV_KEY="$key" "$BIN_DIR/usdxprov" sign -in "$envelope" \
+    ADMIN_KEY="$key" "$BIN_DIR/send-secret" sign -in "$envelope" \
       || echo "        (that key did not add a signature)"
   done
 
@@ -364,8 +358,8 @@ for ref in "${REFS[@]}"; do
     cp "$envelope" "$OUT_DIR/$ref.json"
     echo "        kept at $OUT_DIR/$ref.json"
     echo "        Before the expiry printed above, the next admin runs this with"
-    echo "        their own key in USDXPROV_KEY:"
-    echo "          (cd tools && go run ./cmd/usdxprov sign -in <file> && go run ./cmd/usdxprov submit -in <file> -url $PROXY_URL)"
+    echo "        their own key in ADMIN_KEY:"
+    echo "          (cd tools && go run ./cmd/send-secret sign -in <file> && go run ./cmd/send-secret submit -in <file> -p $PROXY_URL)"
   }
 
   sigs="$(jq -r '.signatures | length' "$envelope")"
@@ -377,7 +371,7 @@ for ref in "${REFS[@]}"; do
   fi
 
   submit_out=""; submit_rc=0
-  submit_out="$("$BIN_DIR/usdxprov" submit -in "$envelope" -url "$PROXY_URL" 2>&1)" || submit_rc=$?
+  submit_out="$("$BIN_DIR/send-secret" submit -in "$envelope" -p "$PROXY_URL" 2>&1)" || submit_rc=$?
   printf '%s\n' "$submit_out"
   if [ "$submit_rc" -eq 0 ]; then
     submitted+=("$ref")

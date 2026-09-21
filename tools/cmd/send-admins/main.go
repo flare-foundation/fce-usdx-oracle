@@ -5,7 +5,7 @@
 // The payload is addresses and thresholds — nothing secret, and public on
 // purpose: who may provision a machine should be as verifiable as which
 // providers it reads. Private keys never go anywhere near this tool; admins sign
-// provisioning envelopes with usdxprov.
+// provisioning envelopes with send-secret.
 //
 // The contract ABI-encodes Admins{version, feedId, roles} and assigns the
 // version; this tool takes a role-tagged JSON file and builds the typed AdminRole

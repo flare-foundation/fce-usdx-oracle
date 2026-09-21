@@ -190,7 +190,7 @@ func (p Policy) MinThresholdFor(ref string) int {
 }
 
 // AdminPolicy is the pinned policy: the enclave's verifier is built with it, and
-// usdxprov applies the same rule before an envelope makes the trip.
+// send-secret applies the same rule before an envelope makes the trip.
 func AdminPolicy() Policy {
 	return Policy{
 		BackingRefs:  BackingRefs(),

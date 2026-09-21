@@ -34,7 +34,7 @@ func TestNewVerifierRefusesAnUnusablePolicy(t *testing.T) {
 }
 
 // A ref the policy does not name falls under the stronger set, and the floor
-// follows the set — the rule usdxprov applies before an envelope is sent.
+// follows the set — the rule send-secret applies before an envelope is sent.
 func TestPolicyRoutesRefsToTheirSet(t *testing.T) {
 	p := protocol.Policy{BackingRefs: []string{"hex_api_key"}, MinBacking: 1, MinProviders: 3}
 	if got := p.RoleFor("hex_api_key"); got != protocol.RoleBacking {

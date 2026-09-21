@@ -18,9 +18,9 @@ import (
 	"encoding/json"
 
 	"fce-usdx-oracle/pkg/types"
+	"fce-usdx-oracle/pkg/wire/eip191"
 	"fce-usdx-oracle/pkg/wire/readiness"
 
-	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/pkg/errors"
@@ -69,9 +69,9 @@ func Decode(data []byte) (Report, error) {
 		return Report{}, errors.New("the payload does not match the hash the signature covers")
 	}
 
-	signer, err := recoverSigner(body, signature)
-	if err != nil {
-		return Report{}, err
+	signer, ok := eip191.Recover(body, signature)
+	if !ok {
+		return Report{}, errors.New("signature does not recover")
 	}
 
 	var p types.ReadinessReport
@@ -86,24 +86,4 @@ func Decode(data []byte) (Report, error) {
 		Timestamp:     header.Timestamp,
 		Raw:           raw,
 	}, nil
-}
-
-// recoverSigner mirrors the store's recovery: EIP-191 over keccak(body), with v
-// normalised. tee-node returns 27/28 and go-ethereum wants 0/1.
-func recoverSigner(body, signature []byte) (common.Address, error) {
-	sig := make([]byte, 65)
-	copy(sig, signature)
-	switch sig[64] {
-	case 27, 28:
-		sig[64] -= 27
-	case 0, 1:
-	default:
-		return common.Address{}, errors.Errorf("bad recovery id %d", sig[64])
-	}
-
-	pub, err := crypto.SigToPub(accounts.TextHash(crypto.Keccak256(body)), sig)
-	if err != nil || pub == nil {
-		return common.Address{}, errors.New("signature does not recover")
-	}
-	return crypto.PubkeyToAddress(*pub), nil
 }

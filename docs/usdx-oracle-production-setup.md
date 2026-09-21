@@ -185,7 +185,7 @@ set -a; . ./provisioning.env; set +a; ENDPOINTS_FILE=<ENDPOINTS_JSON> ./deploy/s
 ```
 
 It verifies the machine against the chain, encrypts each credential to the attested key, signs
-with whatever keys are in `USDXPROV_KEYS`, and writes what it cannot finish to `OUT_DIR` (default
+with whatever keys are in `ADMIN_KEYS`, and writes what it cannot finish to `OUT_DIR` (default
 `$TMPDIR/usdx-envelopes`). Each file holds ciphertext and signatures only — safe to send over any
 channel.
 
@@ -200,16 +200,16 @@ only hand off, and it says so before it starts.
 **Admin B — signs, passes on:**
 
 ```bash
-cd tools && USDXPROV_KEY=<ADMIN_B_KEY> go run ./cmd/usdxprov sign -in <ENVELOPE_JSON>
+cd tools && ADMIN_KEY=<ADMIN_B_KEY> go run ./cmd/send-secret sign -in <ENVELOPE_JSON>
 ```
 
 **Admin C — signs and submits over the direct channel:**
 
 ```bash
-cd tools && USDXPROV_KEY=<ADMIN_C_KEY> go run ./cmd/usdxprov sign -in <ENVELOPE_JSON> && USDXPROV_API_KEY=<DIRECT_API_KEY> go run ./cmd/usdxprov submit -in <ENVELOPE_JSON> -url <PROXY_URL>
+cd tools && ADMIN_KEY=<ADMIN_C_KEY> go run ./cmd/send-secret sign -in <ENVELOPE_JSON> && DIRECT_API_KEY=<DIRECT_API_KEY> go run ./cmd/send-secret submit -in <ENVELOPE_JSON> -p <PROXY_URL>
 ```
 
-Only the submitter needs `DIRECT_API_KEY`. `usdxprov sign` refuses a duplicate signer, so the
+Only the submitter needs `DIRECT_API_KEY`. `send-secret sign` refuses a duplicate signer, so the
 same admin cannot fill two slots of an M-of-N.
 
 Repeat per ref, and per machine. Afterwards the machine should report no missing provider ref:
@@ -241,16 +241,16 @@ submits in one pass. Use the three commands directly, keeping the envelope somew
 it can be handed over, and remember the one-hour window:
 
 ```bash
-cd tools && go run ./cmd/verify-tee -p <PROXY_URL> -code-hash <0x…>
+cd tools && go run ./cmd/verify-tee -p <PROXY_URL> -codeHash <0x…>
 ```
 
 ```bash
-cd tools && USDXPROV_VALUE=<HEX_API_KEY> go run ./cmd/usdxprov build -url <PROXY_URL> -chain-id <CHAIN_ID> -ref hex_api_key -version $(date +%s) -out <ENVELOPE_JSON>
-cd tools && HEX_CASH_URL=<URL> HEX_CASH_SALT=<0x…> go run ./cmd/usdxprov build -url <PROXY_URL> -chain-id <CHAIN_ID> -ref hex_cash_url -version $(date +%s) -out <ENVELOPE_JSON>
+cd tools && SECRET_VALUE=<HEX_API_KEY> go run ./cmd/send-secret build -p <PROXY_URL> -ref hex_api_key -version $(date +%s) -out <ENVELOPE_JSON>
+cd tools && HEX_CASH_URL=<URL> HEX_CASH_SALT=<0x…> go run ./cmd/send-secret build -p <PROXY_URL> -ref hex_cash_url -version $(date +%s) -out <ENVELOPE_JSON>
 ```
 
 The second envelope carries the cash URL as `abi.encode(salt, url)`; the salt must be the one
-the published `hex_cash` commitment was made with (`usdxprov commit` prints that commitment for
+the published `hex_cash` commitment was made with (`send-secret commit` prints that commitment for
 the endpoints configuration from the same two variables).
 
 Then the backing admin signs and submits, exactly as admin C does in step 3.
@@ -333,9 +333,9 @@ which the scripts get right by using wall-clock seconds.
 
 ## Rules
 
-1. **Never pass a credential as a flag.** `usdxprov` reads them from the environment and warns
-   if you use the equivalent flag — argv is readable by any local process through `ps`, and
-   lands in shell history. The upload scripts prompt hidden when a variable is unset.
+1. **Never pass a credential as a flag.** `send-secret` has no flag for one: it reads them from
+   the environment, because argv is readable by any local process through `ps` and lands in
+   shell history. The upload scripts prompt hidden when a variable is unset.
 2. **Never skip `verify-tee`.** The step after it encrypts a credential to a key the proxy
    served; a proxy that lied about that key receives the plaintext. Verification closes the loop
    against the chain — the `teeId` is derived from the attested key, and the chain says whether
@@ -345,7 +345,7 @@ which the scripts get right by using wall-clock seconds.
    `token contains an invalid number of segments`. Never for a machine holding a real credential:
    without it, nothing has established that the key the credential is sealed to belongs to a
    registered enclave rather than to whoever answered the port.
-3. **Obtain the expected code hash out of band.** Without `-code-hash`, verification proves the
+3. **Obtain the expected code hash out of band.** Without `-codeHash`, verification proves the
    machine is *some* accepted machine, not that it runs the build you reviewed.
 4. **Never put real credentials in `.env`.** Every tool in this repo reads it, and it outlives
    the upload by months. Export them in the shell that runs the upload, or answer the prompt.

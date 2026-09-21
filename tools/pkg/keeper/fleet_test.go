@@ -1,13 +1,14 @@
 package keeper
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"fce-usdx-oracle/tools/pkg/direct"
 
 	"github.com/ethereum/go-ethereum/common"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
@@ -116,7 +117,7 @@ func TestPollResultsFindsTheResultOnAnotherProxy(t *testing.T) {
 
 	holder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		encodeJSON(t, w, teetypes.ActionResponse{
-			Result: teetypes.ActionResult{Status: statusSucceeded, Log: "from-the-holder"},
+			Result: teetypes.ActionResult{Status: direct.StatusSucceeded, Log: "from-the-holder"},
 		})
 	}))
 	defer holder.Close()
@@ -144,7 +145,7 @@ func TestPollResultsReturnsEveryAnswerInProxyOrder(t *testing.T) {
 	serve := func(log string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			encodeJSON(t, w, teetypes.ActionResponse{
-				Result: teetypes.ActionResult{Status: statusSucceeded, Log: log},
+				Result: teetypes.ActionResult{Status: direct.StatusSucceeded, Log: log},
 			})
 		}))
 	}
@@ -171,7 +172,7 @@ func TestPollResultsReturnsEveryAnswerInProxyOrder(t *testing.T) {
 func TestPollResultsReturnsAPartialRoundAtTheDeadline(t *testing.T) {
 	answers := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		encodeJSON(t, w, teetypes.ActionResponse{
-			Result: teetypes.ActionResult{Status: statusSucceeded, Log: "only-one"},
+			Result: teetypes.ActionResult{Status: direct.StatusSucceeded, Log: "only-one"},
 		})
 	}))
 	defer answers.Close()
@@ -214,7 +215,7 @@ func TestPollResultsIsInterruptedWhileWaitingOnAProxy(t *testing.T) {
 		common.HexToHash("0x1"), teetypes.Threshold, time.Minute); err == nil {
 		t.Fatal("expected the cancelled context to end the poll")
 	}
-	if elapsed := time.Since(started); elapsed >= proxyTimeout {
+	if elapsed := time.Since(started); elapsed >= direct.Timeout {
 		t.Errorf("poll took %s; cancellation must not wait out the per-request bound", elapsed)
 	}
 }
@@ -229,7 +230,7 @@ func TestPollResultsPollsProxiesConcurrently(t *testing.T) {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(delay)
 			encodeJSON(t, w, teetypes.ActionResponse{
-				Result: teetypes.ActionResult{Status: statusSucceeded, Log: log},
+				Result: teetypes.ActionResult{Status: direct.StatusSucceeded, Log: log},
 			})
 		}))
 	}
@@ -250,39 +251,6 @@ func TestPollResultsPollsProxiesConcurrently(t *testing.T) {
 	// Sequential would be three delays; concurrent is one plus scheduling.
 	if elapsed := time.Since(started); elapsed >= 2*delay {
 		t.Errorf("round took %s, want about %s", elapsed, delay)
-	}
-}
-
-// A proxy streaming a body that never ends must be cut off at maxProxyBody rather
-// than decoded into the keeper's memory. Asserted on what the server manages to
-// write: uncapped, the decoder drains everything offered.
-func TestFetchResultCapsAnEndlessBody(t *testing.T) {
-	const ceiling = 64 << 20 // hard stop so the handler always terminates
-
-	var written atomic.Int64
-	endless := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		// Valid JSON that is never closed, so nothing but a cap ends the read.
-		_, _ = w.Write([]byte(`{"result":{"log":"`))
-		chunk := bytes.Repeat([]byte("x"), 32<<10)
-		for written.Load() < ceiling {
-			n, err := w.Write(chunk)
-			written.Add(int64(n))
-			if err != nil {
-				return
-			}
-		}
-	}))
-	defer endless.Close()
-
-	if _, _, err := fetchResult(context.Background(), endless.URL,
-		common.HexToHash("0x1"), teetypes.Threshold); err == nil {
-		t.Fatal("expected a capped body to fail decoding rather than stream without bound")
-	}
-
-	// The cap plus whatever the socket buffered, nowhere near the ceiling.
-	if got, limit := written.Load(), int64(8*maxProxyBody); got > limit {
-		t.Errorf("proxy wrote %d bytes into the keeper, want at most %d", got, limit)
 	}
 }
 

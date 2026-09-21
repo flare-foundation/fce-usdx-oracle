@@ -1,3 +1,11 @@
+// Command allow-tee-version allows an image's code hash and platform for the
+// extension, so the registry accepts machines running it. Both are read from
+// the machine's proxy /info; when EXPECTED_CODE_HASH names the deployed image's
+// id, known out of band, the machine's report must match it, since the hash
+// allowed here is what the registry will accept and it must be the build the
+// operator means rather than whatever the machine says it runs. A pair the
+// registry already allows is skipped rather than resubmitted. Signs as the
+// extension owner, the only address allowed to.
 package main
 
 import (
@@ -5,10 +13,11 @@ import (
 	"fce-usdx-oracle/tools/pkg/fccutils"
 	"fce-usdx-oracle/tools/pkg/support"
 	"flag"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"os"
 	"strings"
+
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/flare-foundation/go-flare-common/pkg/logger"
 )
 
 func main() {
@@ -16,7 +25,7 @@ func main() {
 	cf := flag.String("c", configs.ChainNodeURL, "chain node url")
 	pf := flag.String("p", configs.ExtensionProxyURL, "proxy url")
 	versionF := flag.String("version", "v0.1.0", "version")
-	expectedF := flag.String("code-hash", os.Getenv("EXPECTED_CODE_HASH"),
+	expectedF := flag.String("codeHash", os.Getenv("EXPECTED_CODE_HASH"),
 		"the code hash to allow, known out of band (the deployed image's id); the machine's own "+
 			"report must match it (default: EXPECTED_CODE_HASH)")
 	flag.Parse()
