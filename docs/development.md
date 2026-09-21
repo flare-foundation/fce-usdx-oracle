@@ -14,7 +14,7 @@ cmd/
     ├── mocknode/   stand-in for tee-node's /sign, /decrypt and /info
     └── start-tee/  host-process runner behind deploy/scripts/start-services.sh --local
 internal/
-├── config/         pinned facts: op hashes, chains, endpoints, timing bounds, health keys
+├── config/         the extension's settings: reserve endpoints, timing bounds, health keys; names the protocol's facts
 ├── failure/        the closed public error vocabulary
 ├── extension/      the HTTP surface: extension.go, router.go, result.go, one file per command
 ├── observation/    Sources, Binding, Observe, Sign — one observation start to finish
@@ -23,14 +23,17 @@ internal/
 │   ├── backing/    Hex Trust's two reserve endpoints
 │   ├── price/      min(1, backing/supply), pure arithmetic
 │   └── decimal/    exact money parsing
-├── wire/
-│   ├── feedupdate/ the signed FeedUpdate layout the store verifies
-│   └── readiness/  the signed readiness report
 ├── provisioning/
-│   ├── envelope/   the SET_SECRET envelope and its M-of-N Verifier
+│   ├── envelope/   the M-of-N Verifier over the SET_SECRET envelope
 │   └── store/      endpoints, admin sets and credentials — the only mutable state
 └── teenode/        client for tee-node's local /sign and /decrypt
-pkg/
+pkg/                what the tooling imports; nothing under internal/ is reachable from tools/
+├── protocol/       the feed id, op tags, credential refs, admin roles and policy, the chain set
+├── wire/
+│   ├── feedupdate/    the signed FeedUpdate layout the store verifies, and the GET_FEED request
+│   ├── readiness/     the signed readiness report
+│   ├── configpayload/ the Endpoints and Admins payloads and their published hashes
+│   └── envelope/      the SET_SECRET envelope: body, signatures, ciphertext
 ├── server/         StartExtension: resolves the TEE identity, then starts the poller and the server
 ├── types/          the readiness payload shapes and the empty GET /state envelope
 └── contracts/      abigen bindings for the upstream TeeOracleStructs ABI
@@ -59,7 +62,7 @@ Both were found on-chain and are written up in
 
 - **An instruction's message may not be empty.** The registry rejects it with `MessageEmpty()`.
   `GET_FEED` carries an ABI-encoded `FeedUpdateRequest` naming the feed, and `GET_READINESS`
-  carries the one-byte envelope `config.ReadinessRequestV1`; the handlers require exactly those
+  carries the one-byte envelope `protocol.ReadinessRequestV1`; the handlers require exactly those
   shapes and echo nothing else back.
 - **A handler has 2 seconds to answer.** tee-node's client timeout is a const in its internal
   package. Anything slower must happen off the request path — which is what
@@ -86,7 +89,7 @@ and sets the `log` values the wire contract requires. A handler never sees the a
 nothing from it can be echoed by accident.
 
 **ABI payloads** are decoded with the `abi.Arguments` derived from the upstream ABI in
-`internal/provisioning/store/abi.go` (endpoints, admins) and in `internal/wire/feedupdate` (the
+`internal/provisioning/store/abi.go` (endpoints, admins) and in `pkg/wire/feedupdate` (the
 feed-update request).
 
 ## Verify

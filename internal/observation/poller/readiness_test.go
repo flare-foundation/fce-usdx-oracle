@@ -9,8 +9,8 @@ import (
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/observation"
-	"fce-usdx-oracle/internal/wire/readiness"
 	"fce-usdx-oracle/pkg/types"
+	"fce-usdx-oracle/pkg/wire/readiness"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"

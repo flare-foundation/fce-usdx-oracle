@@ -13,7 +13,7 @@ import (
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/observation/backing"
 	"fce-usdx-oracle/internal/observation/supply"
-	"fce-usdx-oracle/internal/wire/feedupdate"
+	"fce-usdx-oracle/pkg/wire/feedupdate"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -138,7 +138,7 @@ var testEndpointsHash = common.HexToHash("0x9f3c")
 var testAdminsHash = common.HexToHash("0x5e21")
 
 // The feed this test machine speaks for. Non-zero because the store's sentinels
-// are zero: internal/wire/feedupdate refuses to sign an update naming neither.
+// are zero: pkg/wire/feedupdate refuses to sign an update naming neither.
 var testExtensionID = big.NewInt(66281)
 
 var testFeedID = [21]byte{

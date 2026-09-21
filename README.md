@@ -141,7 +141,8 @@ code hash attests.
 | `cmd/extension-tee` | tee-node and the extension in one process, the image's only binary |
 | `internal/observation` | one observation start to finish: quorum RPC reads, reserve reads, the arithmetic, the timer and the cache |
 | `internal/provisioning` | the M-of-N envelope verifier and the credential store, the only mutable state in the process |
-| `internal/wire`, `internal/failure` | the signed payloads and the closed public error vocabulary |
+| `pkg/protocol`, `pkg/wire` | what the feed is and the payloads it signs: ids, op tags, credential refs, admin roles and chains, and every wire format; the packages the tooling imports |
+| `internal/failure` | the closed public error vocabulary |
 | `internal/extension`, `pkg/server` | the HTTP surface tee-node drives, and the process that starts it |
 | `cmd/dev` | the dev server, the tee-node stand-in and the host-process runner, none of which the image ships |
 

@@ -27,7 +27,7 @@ import (
 	"fce-usdx-oracle/internal/observation/backing"
 	"fce-usdx-oracle/internal/observation/price"
 	"fce-usdx-oracle/internal/observation/supply"
-	"fce-usdx-oracle/internal/wire/feedupdate"
+	"fce-usdx-oracle/pkg/wire/feedupdate"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -175,7 +175,7 @@ func Observe(ctx context.Context, src Sources, binding Binding) (Observation, er
 	// published as fact.
 	scaled, err := feedupdate.ValueFromBig(value)
 	if err != nil {
-		return Observation{Health: health}, err
+		return Observation{Health: health}, failure.Coerce(err, failure.Internal)
 	}
 
 	// The reading's own time is the home chain's block header timestamp, not
@@ -241,7 +241,7 @@ func signPayload(ctx context.Context, signer Signer, obs Observation, observedAt
 	// hashes what it is given and applies EIP-191 itself. See package feedupdate.
 	message, err := feedupdate.SigningMessage(update, config.ChainID())
 	if err != nil {
-		return nil, err
+		return nil, failure.Coerce(err, failure.Internal)
 	}
 
 	signature, err := signer.Sign(ctx, message)
@@ -249,7 +249,11 @@ func signPayload(ctx context.Context, signer Signer, obs Observation, observedAt
 		return nil, err
 	}
 
-	return feedupdate.EncodeData(update, signature)
+	data, err := feedupdate.EncodeData(update, signature)
+	if err != nil {
+		return nil, failure.Coerce(err, failure.Internal)
+	}
+	return data, nil
 }
 
 // homeBlockTime picks the stamp out of the home chain's reading. Fails closed:

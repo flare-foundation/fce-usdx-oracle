@@ -5,7 +5,7 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
-	"fce-usdx-oracle/internal/wire/feedupdate"
+	"fce-usdx-oracle/pkg/wire/feedupdate"
 
 	"github.com/flare-foundation/go-flare-common/pkg/tee/instruction"
 )
@@ -20,7 +20,7 @@ func (e *Extension) processGetFeed(df *instruction.DataFixed) outcome {
 	// ActionResult.Log is public.
 	feedID, reqErr := feedupdate.DecodeFeedRequest(df.OriginalMessage)
 	if reqErr != nil {
-		return refuse(failure.Coerce(reqErr, failure.Internal))
+		return refuse(failure.UnexpectedPayload)
 	}
 	// Refused here rather than observed and signed. An update naming another feed
 	// would be rejected by that feed's store anyway, but only after this machine

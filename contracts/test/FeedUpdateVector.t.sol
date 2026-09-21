@@ -27,7 +27,7 @@ library SignedPayload {
 bytes32 constant TEE_ORACLE_FEED = bytes32("TEE_ORACLE_FEED");
 
 /**
- * Pins the two facts internal/wire/feedupdate in the Go enclave relies on, and prints the
+ * Pins the two facts pkg/wire/feedupdate in the Go enclave relies on, and prints the
  * golden vector its unit test asserts against.
  *
  * The load-bearing claim is that a struct whose every field is static encodes

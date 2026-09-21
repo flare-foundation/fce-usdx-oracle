@@ -29,10 +29,9 @@
 package feedupdate
 
 import (
+	"errors"
 	"math"
 	"math/big"
-
-	"fce-usdx-oracle/internal/failure"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -40,6 +39,18 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/abicoder"
 	"github.com/flare-foundation/go-flare-common/pkg/signing"
+)
+
+// The two errors this package returns. A public wire package cannot hand out the
+// enclave's closed vocabulary, and a caller outside it learns nothing about
+// which byte was wrong, which is the point; the enclave maps both onto its own
+// classes at the boundary.
+var (
+	// ErrInvalid is an update or request that cannot be encoded: a zero feed id,
+	// a value outside the wire's range, a chain id of zero, a malformed signature.
+	ErrInvalid = errors.New("feedupdate: invalid feed update")
+	// ErrMalformed is a payload that does not decode as this layout.
+	ErrMalformed = errors.New("feedupdate: not a feed update")
 )
 
 // PrefixName is the domain tag, cast to bytes32 rather than hashed. Shared by
@@ -178,11 +189,11 @@ func mustArgs(specs ...argSpec) abi.Arguments {
 // harness and the tooling need to produce exactly what it dispatches.
 func EncodeFeedRequest(feedID [21]byte) ([]byte, error) {
 	if feedID == ([21]byte{}) {
-		return nil, failure.Internal
+		return nil, ErrInvalid
 	}
 	message, err := requestArgs.Pack(feedID)
 	if err != nil {
-		return nil, failure.Internal
+		return nil, ErrInvalid
 	}
 	return message, nil
 }
@@ -197,16 +208,16 @@ func EncodeFeedRequest(feedID [21]byte) ([]byte, error) {
 // here rather than silently truncated.
 func DecodeFeedRequest(message []byte) ([21]byte, error) {
 	if len(message) != RequestLength {
-		return [21]byte{}, failure.UnexpectedPayload
+		return [21]byte{}, ErrMalformed
 	}
 
 	values, err := requestArgs.Unpack(message)
 	if err != nil || len(values) != 1 {
-		return [21]byte{}, failure.UnexpectedPayload
+		return [21]byte{}, ErrMalformed
 	}
 	feedID, ok := values[0].([21]byte)
 	if !ok || feedID == ([21]byte{}) {
-		return [21]byte{}, failure.UnexpectedPayload
+		return [21]byte{}, ErrMalformed
 	}
 	return feedID, nil
 }
@@ -217,11 +228,11 @@ func DecodeFeedRequest(message []byte) ([21]byte, error) {
 // wrapped value would be published as fact.
 func ValueFromBig(v *big.Int) (int32, error) {
 	if v == nil || !v.IsInt64() {
-		return 0, failure.Internal
+		return 0, ErrInvalid
 	}
 	n := v.Int64()
 	if n < math.MinInt32 || n > math.MaxInt32 {
-		return 0, failure.Internal
+		return 0, ErrInvalid
 	}
 	return int32(n), nil
 }
@@ -232,25 +243,25 @@ func validate(u FeedUpdate) error {
 	// Zero is the store's ZeroExtensionId sentinel, and an unset feed id means
 	// the build was never given one — see config.ExtensionID().
 	if u.ExtensionID == nil || u.ExtensionID.Sign() <= 0 {
-		return failure.Internal
+		return ErrInvalid
 	}
 	if u.FeedID == ([21]byte{}) {
-		return failure.Internal
+		return ErrInvalid
 	}
 	if u.Decimals < 0 {
-		return failure.Internal
+		return ErrInvalid
 	}
 	// Zero observedAt, zero endpointsHash and zero adminsHash are the store's
 	// "never seen", NoEndpointsPublished and NoAdminsPublished sentinels; none
 	// could ever be accepted.
 	if u.ObservedAt == 0 {
-		return failure.Internal
+		return ErrInvalid
 	}
 	if u.EndpointsHash == (common.Hash{}) {
-		return failure.Internal
+		return ErrInvalid
 	}
 	if u.AdminsHash == (common.Hash{}) {
-		return failure.Internal
+		return ErrInvalid
 	}
 	return nil
 }
@@ -270,7 +281,7 @@ func EncodeUpdate(u FeedUpdate) ([]byte, error) {
 		u.AdminsHash,
 	)
 	if err != nil {
-		return nil, failure.Internal
+		return nil, ErrInvalid
 	}
 	return body, nil
 }
@@ -295,7 +306,7 @@ func DataHash(u FeedUpdate) (common.Hash, error) {
 // because the signer hashes what it is given.
 func SigningMessage(u FeedUpdate, chainID uint64) ([]byte, error) {
 	if chainID == 0 {
-		return nil, failure.Internal
+		return nil, ErrInvalid
 	}
 	dataHash, err := DataHash(u)
 	if err != nil {
@@ -304,10 +315,10 @@ func SigningMessage(u FeedUpdate, chainID uint64) ([]byte, error) {
 	message, err := abicoder.Encode(
 		signing.PayloadArgument, signing.NewPayload(Prefix(), chainID, dataHash))
 	if err != nil {
-		return nil, failure.Internal
+		return nil, ErrInvalid
 	}
 	if len(message) != PayloadLength {
-		return nil, failure.Internal
+		return nil, ErrInvalid
 	}
 	return message, nil
 }
@@ -337,11 +348,11 @@ func Digest(u FeedUpdate, chainID uint64) (common.Hash, error) {
 // upstream of here rather than something to paper over.
 func SplitSignature(signature []byte) (Signature, error) {
 	if len(signature) != SignatureLength {
-		return Signature{}, failure.Internal
+		return Signature{}, ErrInvalid
 	}
 	v := signature[64]
 	if v != 27 && v != 28 {
-		return Signature{}, failure.Internal
+		return Signature{}, ErrInvalid
 	}
 	return Signature{
 		V: v,
@@ -368,7 +379,7 @@ func EncodeData(u FeedUpdate, signature []byte) ([]byte, error) {
 		sig.V, sig.R, sig.S,
 	)
 	if err != nil {
-		return nil, failure.Internal
+		return nil, ErrInvalid
 	}
 	return data, nil
 }
@@ -379,12 +390,12 @@ func DecodeData(data []byte) (FeedUpdate, Signature, error) {
 	// expects, so a payload from a peer on a later layout must be rejected here
 	// rather than silently truncated.
 	if len(data) != DataLength {
-		return FeedUpdate{}, Signature{}, failure.Internal
+		return FeedUpdate{}, Signature{}, ErrMalformed
 	}
 
 	values, err := dataArgs.Unpack(data)
 	if err != nil || len(values) != 10 {
-		return FeedUpdate{}, Signature{}, failure.Internal
+		return FeedUpdate{}, Signature{}, ErrMalformed
 	}
 
 	// Copy rather than ten positional assertions: it matches on the argument
@@ -392,11 +403,11 @@ func DecodeData(data []byte) (FeedUpdate, Signature, error) {
 	// of a silently zeroed value.
 	var w wireData
 	if err := dataArgs.Copy(&w, values); err != nil {
-		return FeedUpdate{}, Signature{}, failure.Internal
+		return FeedUpdate{}, Signature{}, ErrMalformed
 	}
 
 	if w.ExtensionID == nil {
-		return FeedUpdate{}, Signature{}, failure.Internal
+		return FeedUpdate{}, Signature{}, ErrMalformed
 	}
 
 	return FeedUpdate{

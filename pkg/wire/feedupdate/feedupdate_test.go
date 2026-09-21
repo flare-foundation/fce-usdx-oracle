@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"math"
 	"math/big"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -306,5 +308,41 @@ func TestEncodeRejectsStoreSentinels(t *testing.T) {
 		if _, err := EncodeUpdate(u); err == nil {
 			t.Errorf("%s: expected rejection", tc.name)
 		}
+	}
+}
+
+// The GET_FEED message is an ABI-encoded FeedUpdateRequest: one static field,
+// so it encodes inline as a single word. Pinned to Solidity's bytes from
+// test/ConfigPayloadVector.t.sol; a sender that still dispatched the old
+// one-byte envelope would have every request refused as an unexpected payload.
+func TestFeedRequestMatchesSolidity(t *testing.T) {
+	text, err := os.ReadFile("../../../deploy/testdata/wire/feed-update-request.abi.hex")
+	if err != nil {
+		t.Fatalf("reading fixture: %v", err)
+	}
+	want, err := hex.DecodeString(strings.TrimSpace(string(text)))
+	if err != nil {
+		t.Fatalf("bad fixture hex: %v", err)
+	}
+
+	var feedID [21]byte
+	copy(feedID[:], common.FromHex("0x21555344582f555344000000000000000000000000"))
+	got, err := EncodeFeedRequest(feedID)
+	if err != nil {
+		t.Fatalf("EncodeFeedRequest: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("encoding differs from Solidity\n got %x\nwant %x", got, want)
+	}
+	if len(got) != RequestLength {
+		t.Errorf("length = %d, want %d", len(got), RequestLength)
+	}
+
+	back, err := DecodeFeedRequest(got)
+	if err != nil || back != feedID {
+		t.Fatalf("DecodeFeedRequest = %x, %v", back, err)
+	}
+	if _, err := EncodeFeedRequest([21]byte{}); err == nil {
+		t.Error("the zero feed id must be rejected")
 	}
 }

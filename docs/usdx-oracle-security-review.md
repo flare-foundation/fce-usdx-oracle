@@ -253,7 +253,7 @@ true on success.
 
 ### SR-21 · Low · S — readiness correlator is documented non-zero but not enforced
 
-**Where.** `internal/extension/readiness.go:19-24`, `internal/wire/readiness/readiness.go:85-93`.
+**Where.** `internal/extension/readiness.go:19-24`, `pkg/wire/readiness/readiness.go:85-93`.
 
 `EncodeBody` refuses a zero timestamp and a zero payload hash but not a zero
 `InstructionID`. A direct action with id `0x00…` yields a validly signed report bound to

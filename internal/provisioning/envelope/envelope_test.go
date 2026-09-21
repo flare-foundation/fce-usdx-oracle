@@ -383,7 +383,7 @@ func TestVerify_AllRejectionsAreIndistinguishable(t *testing.T) {
 	build := func(mutate func(*Envelope), sigCount int) []byte {
 		e := testEnvelope([]byte("c"))
 		mutate(&e)
-		var sigs [][]byte
+		sigs := make([][]byte, 0, sigCount)
 		for i := range sigCount {
 			sigs = append(sigs, sign(t, e, admins[i]))
 		}

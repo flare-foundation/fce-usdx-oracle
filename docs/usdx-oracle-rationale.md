@@ -360,7 +360,7 @@ this sum double-counts and the price is overstated.**
 
 ---
 
-## 7. The signed payload (`internal/wire/feedupdate`)
+## 7. The signed payload (`pkg/wire/feedupdate`)
 
 ```solidity
 struct PriceReport {
@@ -491,7 +491,7 @@ provisioning envelope.
 
 ---
 
-## 9. Provisioning (`internal/provisioning/envelope`, `internal/provisioning/store`)
+## 9. Provisioning (`pkg/wire/envelope`, `internal/provisioning/envelope`, `internal/provisioning/store`)
 
 Three things the extension needs are deliberately not compiled into the image:
 
@@ -862,7 +862,7 @@ advance.
 
 ### Why `pricereport` lives in `tools/`
 
-The wire layout is declared there rather than imported from `internal/wire/feedupdate`
+The wire layout is declared there rather than imported from `pkg/wire/feedupdate`
 so that `tools/` stays independent of any one implementation: it asserts on the
 *wire contract*, and must run unchanged against the Go, Python and TypeScript
 extensions alike (`docs/extension-contract.md`). It is a second, deliberate

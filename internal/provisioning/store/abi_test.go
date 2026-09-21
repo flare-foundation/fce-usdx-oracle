@@ -1,13 +1,13 @@
 package store
 
 import (
-	"bytes"
 	"encoding/hex"
 	"os"
 	"strings"
 	"testing"
 
 	"fce-usdx-oracle/internal/config"
+	"fce-usdx-oracle/pkg/wire/configpayload"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -19,10 +19,9 @@ import (
 //
 //	forge test --match-path test/ConfigPayloadVector.t.sol -vv
 //
-// These pin the decoder against Solidity rather than against this package's own
-// encoder — a round trip through EncodeEndpoints would pass even if both sides
-// were wrong in the same way, which is exactly the failure a wire-format change
-// invites.
+// These pin the decoder against Solidity rather than against the encoder: a
+// round trip would pass even if both sides were wrong in the same way, which is
+// exactly the failure a wire-format change invites.
 const (
 	vectorSalt       = "0xa05e334153147e75f3f416139b5109d1179cb56fef6a4ecb4c4cbc92a7c37b70"
 	vectorCommitment = "0x78ccb727d3a566d9f8dc3f5bb3cf1dbbe283b46b5c3533cbcf3ccb75d62692f8"
@@ -33,11 +32,9 @@ const (
 	vectorCashURL = "https://api.htdigitalassets.com/alm-stablecoin-db/restricted/metrics/current_cash_reserves_amount"
 )
 
-// The two payload blobs live in deploy/testdata/wire so this decoder and the
-// publisher's encoder in tools/pkg/oraclepayload assert against ONE copy of
-// Solidity's output. The packages are deliberately independent — tools/ is a
-// cross-check on the extension, not a mirror of it — and a shared fixture is
-// what keeps that independence from becoming divergence.
+// The two payload blobs live in deploy/testdata/wire, shared with the codec's
+// own tests in pkg/wire/configpayload: what is pinned here is that this
+// package's conversion and validation accept what Solidity produced.
 const (
 	vectorEndpointsFile = "../../../deploy/testdata/wire/endpoints-v7.abi.hex"
 	vectorAdminsFile    = "../../../deploy/testdata/wire/admins-v3.abi.hex"
@@ -70,7 +67,7 @@ func TestSaltMatchesSolidity(t *testing.T) {
 func TestCommitPrivateURLMatchesSolidity(t *testing.T) {
 	salt := common.HexToHash(vectorSalt)
 
-	got, err := CommitPrivateURL(PrivateURL{Salt: salt, Url: vectorCashURL})
+	got, err := configpayload.CommitPrivateURL(PrivateURL{Salt: salt, Url: vectorCashURL})
 	if err != nil {
 		t.Fatalf("CommitPrivateURL: %v", err)
 	}
@@ -79,20 +76,17 @@ func TestCommitPrivateURLMatchesSolidity(t *testing.T) {
 	}
 
 	// The salt is what makes publishing the commitment safe: without it the
-	// hash of a low-entropy URL is brute-forceable from chain data.
-	unsalted, err := CommitPrivateURL(PrivateURL{Salt: common.Hash{}, Url: vectorCashURL})
-	if err != nil {
-		t.Fatalf("CommitPrivateURL: %v", err)
-	}
-	if unsalted == got {
-		t.Fatal("commitment does not depend on the salt")
+	// hash of a low-entropy URL is brute-forceable from chain data, so the
+	// codec refuses to produce an unsalted one at all.
+	if _, err := configpayload.CommitPrivateURL(PrivateURL{Url: vectorCashURL}); err == nil {
+		t.Fatal("an unsalted commitment must be refused")
 	}
 }
 
 func TestDecodePrivateURLRoundTrip(t *testing.T) {
 	salt := common.HexToHash(vectorSalt)
 
-	preimage, err := EncodePrivateURL(PrivateURL{Salt: salt, Url: vectorCashURL})
+	preimage, err := configpayload.EncodePrivateURL(PrivateURL{Salt: salt, Url: vectorCashURL})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
@@ -177,35 +171,6 @@ func TestDecodeEndpointsMatchesSolidity(t *testing.T) {
 	}
 }
 
-// TestEncodeEndpointsMatchesSolidity pins the encoder the publishing tools will
-// use against the same bytes.
-func TestEncodeEndpointsMatchesSolidity(t *testing.T) {
-	commitment := common.HexToHash(vectorCommitment)
-
-	got, err := EncodeEndpoints(7, config.FeedID, []GroupSpec{
-		{Group: "flare", Threshold: 2, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://flare-api.flare.network/ext/C/rpc"},
-			{Kind: KindPublic, URL: "https://rpc.ankr.com/flare/{secret}", SecretRef: "ankr_flare_key"},
-		}},
-		{Group: "ethereum", Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://eth.example/rpc"},
-		}},
-		{Group: "songbird", Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://sgb.example/rpc"},
-		}},
-		{Group: "hex_cash", Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPrivate, URLHash: commitment, SecretRef: "hex_cash_url"},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("EncodeEndpoints: %v", err)
-	}
-
-	if want := mustFixture(t, vectorEndpointsFile); !bytes.Equal(got, want) {
-		t.Fatalf("encoding differs from Solidity\n got %x\nwant %x", got, want)
-	}
-}
-
 func TestDecodeAdminsMatchesSolidity(t *testing.T) {
 	payload := mustFixture(t, vectorAdminsFile)
 
@@ -242,52 +207,6 @@ func TestDecodeAdminsMatchesSolidity(t *testing.T) {
 	}
 }
 
-func TestEncodeAdminsMatchesSolidity(t *testing.T) {
-	got, err := EncodeAdmins(3, config.FeedID, []RoleSpec{
-		{Role: "backing", Threshold: 1, Admins: []common.Address{
-			common.HexToAddress("0x1111111111111111111111111111111111111111"),
-		}},
-		{Role: "providers", Threshold: 2, Admins: []common.Address{
-			common.HexToAddress("0x2222222222222222222222222222222222222222"),
-			common.HexToAddress("0x3333333333333333333333333333333333333333"),
-		}},
-	})
-	if err != nil {
-		t.Fatalf("EncodeAdmins: %v", err)
-	}
-
-	if want := mustFixture(t, vectorAdminsFile); !bytes.Equal(got, want) {
-		t.Fatalf("encoding differs from Solidity\n got %x\nwant %x", got, want)
-	}
-}
-
-// TestTagString covers what the contract lets through: any non-zero bytes32.
-func TestTagString(t *testing.T) {
-	if got, ok := tagString(tagBytes32("flare")); !ok || got != "flare" {
-		t.Errorf("tagString(flare) = %q, %v", got, ok)
-	}
-	if _, ok := tagString([32]byte{}); ok {
-		t.Error("the zero tag must be rejected")
-	}
-	// Non-printable bytes are a legal on-chain tag and must not become a name.
-	var binary [32]byte
-	binary[0] = 0x01
-	if _, ok := tagString(binary); ok {
-		t.Error("a non-printable tag must be rejected")
-	}
-}
-
-func TestNarrow(t *testing.T) {
-	if v, ok := narrow(3); !ok || v != 3 {
-		t.Errorf("narrow(3) = %d, %v", v, ok)
-	}
-	// The wire type is uint64 and every consumer is an int: an absurd threshold
-	// must be rejected rather than wrapped into a small one.
-	if _, ok := narrow(1 << 40); ok {
-		t.Error("an out-of-range threshold must be rejected")
-	}
-}
-
 // TestPayloadsAreBoundToThisFeed covers what multi-feed support introduced: one
 // sender publishes for every feed of the extension, so a machine serving one
 // feed can be handed a sibling's configuration. Applying it would install a
@@ -297,9 +216,10 @@ func TestPayloadsAreBoundToThisFeed(t *testing.T) {
 	other := config.FeedID
 	other[20] ^= 0x01
 
-	endpoints, err := EncodeEndpoints(1, other, []GroupSpec{
-		{Group: "flare", Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://flare.example/rpc"},
+	flare, _ := configpayload.Tag("flare")
+	endpoints, err := configpayload.EncodeEndpoints(1, other, []configpayload.Group{
+		{Group: flare, Threshold: 1, Endpoints: []configpayload.Endpoint{
+			{Kind: KindPublic, Url: "https://flare.example/rpc"},
 		}},
 	})
 	if err != nil {
@@ -317,9 +237,11 @@ func TestPayloadsAreBoundToThisFeed(t *testing.T) {
 		t.Error("endpoints for another feed must be rejected")
 	}
 
-	admins, err := EncodeAdmins(1, other, []RoleSpec{
-		{Role: "backing", Threshold: 1, Admins: []common.Address{{0x11}}},
-		{Role: "providers", Threshold: 2, Admins: []common.Address{{0x22}, {0x33}}},
+	backing, _ := configpayload.Tag("backing")
+	providers, _ := configpayload.Tag("providers")
+	admins, err := configpayload.EncodeAdmins(1, other, []configpayload.Role{
+		{Role: backing, Threshold: 1, Admins: []common.Address{{0x11}}},
+		{Role: providers, Threshold: 2, Admins: []common.Address{{0x22}, {0x33}}},
 	})
 	if err != nil {
 		t.Fatalf("EncodeAdmins: %v", err)

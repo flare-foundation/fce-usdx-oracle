@@ -14,8 +14,8 @@ import (
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/observation"
-	"fce-usdx-oracle/internal/wire/feedupdate"
 	"fce-usdx-oracle/pkg/types"
+	"fce-usdx-oracle/pkg/wire/feedupdate"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -389,7 +389,7 @@ type fakeObserver struct {
 
 	// readiness is returned verbatim as the signed payload would be; the
 	// handler's job is routing and envelope checking, not encoding, which
-	// internal/wire/readiness covers on its own.
+	// pkg/wire/readiness covers on its own.
 	readiness    []byte
 	readinessErr error
 

@@ -24,7 +24,7 @@ func TestDecodeRejectsAPayloadThatDoesNotMatchTheSignedHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := decode(swapped); err == nil {
+	if _, _, err := Decode(swapped); err == nil {
 		t.Fatal("a payload that does not hash to the signed commitment decoded")
 	}
 
@@ -32,7 +32,7 @@ func TestDecodeRejectsAPayloadThatDoesNotMatchTheSignedHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := decode(empty); err == nil {
+	if _, _, err := Decode(empty); err == nil {
 		t.Fatal("an empty payload decoded")
 	}
 
@@ -40,7 +40,7 @@ func TestDecodeRejectsAPayloadThatDoesNotMatchTheSignedHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := decode(genuine)
+	got, _, err := Decode(genuine)
 	if err != nil {
 		t.Fatalf("the genuine payload must decode: %v", err)
 	}

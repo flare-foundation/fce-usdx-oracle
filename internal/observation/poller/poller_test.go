@@ -10,7 +10,7 @@ import (
 
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/observation"
-	"fce-usdx-oracle/internal/wire/feedupdate"
+	"fce-usdx-oracle/pkg/wire/feedupdate"
 
 	"github.com/ethereum/go-ethereum/common"
 )

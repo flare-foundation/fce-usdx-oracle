@@ -63,7 +63,7 @@ redis              the proxy's action queue
 
 The split that matters: the root module is the extension, `tools/` operates it, and
 `contracts/` pins the wire formats both speak. `tools/pkg/feedupdate` deliberately re-declares
-the wire layout instead of importing `internal/wire/feedupdate`, so the tooling stays honest
+the wire layout instead of importing `pkg/wire/feedupdate`, so the tooling stays honest
 about the contract, and both are pinned to the same Solidity-generated fixtures in
 `deploy/testdata/wire`. The one import the tooling takes from the extension is the provisioning
 envelope, where identity with the enclave's encoder is the requirement.
@@ -76,16 +76,19 @@ Roughly bottom-up. "Flow" refers to §6.
 
 | Package | Owns | Key symbols | Used in |
 | --- | --- | --- | --- |
-| `internal/config` | **pinned facts**: op-type names, chain set + token addresses, Hex URLs, all deadlines, price decimals | `Chains`, `LookupChain`, `ObservationInterval`, `MaxObservationAge`, `BondsSource`/`CashSource` | everywhere |
+| `pkg/protocol` | **the protocol's facts**: op tags, feed id, credential refs, admin roles and their floors, chain set + token addresses | `OP*`, `FeedID`, `AdminPolicy`, `Chains`, `LookupChain` | everywhere, and `tools/` |
+| `internal/config` | **the extension's settings**: Hex URLs, all deadlines, price decimals, health keys; names the protocol's facts | `Chains`, `LookupChain`, `ObservationInterval`, `MaxObservationAge`, `BondsSource`/`CashSource` | everywhere |
 | `internal/failure` | the *closed* public error vocabulary | `Failure` (unexported fields, no constructor), `Class*`, `All` | everywhere |
 | `internal/observation/decimal` | exact money parsing (`"25,452,544.52"` → `*big.Rat`), validates comma grouping instead of stripping it | `ParseAmount` | C |
 | `internal/observation/price` | pure arithmetic, no I/O | `Compute`, `ComputeWithoutCash`, `Scale` | C |
 | `internal/observation/supply` | per-chain `totalSupply()` over N RPC providers with a quorum procedure | `Read` `:130`, `agreedBlock` `:183`, `agreedBlockTime` `:253`, `vote` `:374`, `Total` `:437` | C |
 | `internal/observation/backing` | Hex Trust HTTP reserve reads | `Source` iface, `New` `:82`, `Fetch` `:130` | C |
-| `internal/wire/feedupdate` | the signed **feed update** payload's ABI layout, and the `GET_FEED` request envelope | `EncodeFeedRequest`, `DecodeFeedRequest`, `EncodeUpdate`, `SigningMessage`, `EncodeData`, `DecodeData`, `Prefix` | D |
-| `internal/wire/readiness` | the signed **readiness** payload's ABI layout — a separate domain, so an answer can never be reinterpreted as a feed update | `EncodeBody`, `EncodeData`, `DecodeData`, `Domain` | D2 |
+| `pkg/wire/feedupdate` | the signed **feed update** payload's ABI layout, and the `GET_FEED` request envelope | `EncodeFeedRequest`, `DecodeFeedRequest`, `EncodeUpdate`, `SigningMessage`, `EncodeData`, `DecodeData`, `Prefix` | D |
+| `pkg/wire/readiness` | the signed **readiness** payload's ABI layout — a separate domain, so an answer can never be reinterpreted as a feed update | `EncodeBody`, `EncodeData`, `DecodeData`, `Domain` | D2 |
 | `internal/teenode` | HTTP client for tee-node's local `/sign` + `/decrypt` | `Sign` `:82`, `Decrypt` `:106`, `TeeID` `:184`, `NormalizeV` `:158` | B, D, D2 |
-| `internal/provisioning/envelope` | verifies M-of-N admin-signed provisioning envelopes | `Verifier.Verify` `:291`, `EncodeBody`, `AdminSet` | B |
+| `pkg/wire/envelope` | the **provisioning envelope**'s ABI layout: signed body, signatures, ciphertext, under its own domain | `EncodeBody`, `Encode`, `Decode` | B, `usdxprov` |
+| `pkg/wire/configpayload` | the **Endpoints** and **Admins** payloads and the hashes the sender publishes | `DecodeEndpoints`, `DecodeAdmins`, `EndpointsHash`, `AdminsHash` | B, `tools/` |
+| `internal/provisioning/envelope` | verifies M-of-N admin-signed provisioning envelopes against the installed sets | `Verifier.Verify`, `SetAdmins`, `AdminSet` | B |
 | `internal/provisioning/store` | the only mutable state: provider URLs, admin sets + credentials → `oracle.Config`; also the wire codec for the ABI-encoded configuration payloads | `ApplyEndpoints` `:166`, `ApplyAdmins` `:223`, `ApplySecret` `:406`, `Readiness` `:541`, `Resolve` `:588`, `validate` `:706` | A, A2, B, C |
 | `internal/observation` | orchestrates **one** observation: ordering, deadlines, health map | `Observe` `:124`, `Sign` `:219`, `readAllChains` `:276`, `readBacking` `:319`, `checkWindow` `:371` | C, D |
 | `internal/observation/poller` | runs `Observe` on a timer, caches the latest, enforces staleness, and answers readiness | `Poller.Run` `:76`, `Latest` `:133`, `Report` `:159`, `ReadinessReport` `:207` | C, D, D2 |
@@ -180,7 +183,7 @@ governance → TeeOracleInstructionsSender.setEndpoints(feedId, teeIds, groups, 
         store.ApplyEndpoints                           store.go:166
           ABI-decode Endpoints{version, feedId, groups}; feedId must be ours
           validate()  store.go:706
-            · chain name must be one of config.Chains, and ALL of them must be present
+            · chain name must be one of protocol.Chains, and ALL of them must be present
             · 1 ≤ threshold ≤ provider count
             · "hex_api_key" may NOT be used as a provider secret
             · https only; {secret} may not appear in scheme or host
@@ -213,7 +216,7 @@ governance → TeeOracleInstructionsSender.setAdmins(feedId, teeIds, roles, clai
           adminsHash = keccak256(payload AS RECEIVED)        ← never recomputed from the struct
 ```
 
-The payload carries **two** signer sets. `config.HexAPIKeyRef` is authorised by the
+The payload carries **two** signer sets. `protocol.HexAPIKeyRef` is authorised by the
 `backing` set (1-of-N allowed, because it authenticates a pinned endpoint by header);
 every other ref by the `providers` set (2-of-N minimum, because those credentials are
 substituted into URLs `SET_ENDPOINTS` chooses). The ref-to-set mapping is pinned at
@@ -503,7 +506,7 @@ than 10 minutes: publish nothing and let the on-chain timestamp age. A frozen fe
 the designed failure mode; a confidently wrong price is not recoverable downstream.
 **Consumers must check the timestamp.**
 
-**3. Pinned vs runtime.** Everything in `internal/config` is compiled in and therefore
+**3. Pinned vs runtime.** Everything in `pkg/protocol` and `internal/config` is compiled in and therefore
 covered by the registered code hash — chain set, token addresses, Hex URLs, every
 deadline. Only RPC provider URLs and credentials are configurable at runtime, and they
 arrive through Flows A and B respectively.
@@ -521,7 +524,7 @@ pkg/server/server.go            the whole dependency graph, 10 lines
 internal/extension/extension.go the HTTP surface and the router
 internal/observation/observation.go       one observation, start to finish
 internal/observation/poller/poller.go     why observing and signing are separate
-internal/wire/feedupdate/feedupdate.go       the FeedUpdate encoder + SignedPayload digest
+pkg/wire/feedupdate/feedupdate.go       the FeedUpdate encoder + SignedPayload digest
 tools/pkg/keeper/cycle.go          the relay, end to end
 ```
 

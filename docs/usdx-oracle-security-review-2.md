@@ -67,7 +67,7 @@ restored in the working tree.
 
 Five area passes, each reading the code rather than the documentation: the observation
 pipeline (`internal/observation/**`, `internal/config`), the extension surface and provisioning
-(`internal/extension`, `internal/provisioning`, `internal/wire`, `internal/teenode`,
+(`internal/extension`, `internal/provisioning`, `pkg/wire`, `internal/teenode`,
 `pkg/server`, `cmd/extension-tee`, `cmd/dev/start-tee`), the operator tooling (`tools/**`,
 `tools/cmd/usdxprov`), deployment and CI (`Dockerfile*`, `deploy/**`, `.gitlab-ci.yml`), and the
 on-chain protocol (the upstream store, sender, verification and manager contracts, and how the
@@ -157,7 +157,7 @@ Severity reflects impact on the feed under the actor model above. `[wrong]`, `[b
 
 **Where.** `internal/observation/supply/supply.go:308-324, 382-440` (quorum vote on
 `totalSupply` and `decimals`), `internal/observation/price/price.go:41-54` (no floor),
-`internal/wire/feedupdate/feedupdate.go:218-227` (`ValueFromBig(0)` accepted),
+`pkg/wire/feedupdate/feedupdate.go:218-227` (`ValueFromBig(0)` accepted),
 `internal/observation/poller/poller.go:112-131` (`record` overwrites without comparison),
 `internal/provisioning/store/store.go:708` (threshold floor is 1);
 `deploy/config/endpoints/public-only.json` and `coston2.json`: the `songbird` group has one
@@ -226,7 +226,7 @@ mismatches `down`.
 ### T-25 · Low · The digest does not bind the store address
 
 **Where.** `SignedPayload.sol:36-44`, `TeeOracleFeedStore.sol:536, 549-552`,
-`internal/wire/feedupdate/feedupdate.go:296-313`. A redeployed or second store for the same
+`pkg/wire/feedupdate/feedupdate.go:296-313`. A redeployed or second store for the same
 chain, extension and feed starts at `observedAt = 0` and accepts the oldest public update
 carrying the current configuration hashes until the first honest batch lands.
 **Fix.** Operational: land a fresh batch in the same deployment sequence. Contract-side, binding
@@ -561,7 +561,7 @@ publishes state and refuses every request as `internal error`.
 
 ### T-30 · Low · Readiness correlator may be zero
 
-**Where.** `internal/extension/readiness.go:21-25`, `internal/wire/readiness/readiness.go:85-93`.
+**Where.** `internal/extension/readiness.go:21-25`, `pkg/wire/readiness/readiness.go:85-93`.
 **Fix.** Refuse a zero correlator in both places.
 
 ### T-31 · Low · Handlers run on a background context past tee-node's budget

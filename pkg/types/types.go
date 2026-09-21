@@ -29,7 +29,7 @@ type Readiness struct {
 }
 
 // ReadinessReport is the JSON payload of a signed GET_READINESS answer — see
-// internal/wire/readiness. It is the machine's one account of itself: the
+// pkg/wire/readiness. It is the machine's one account of itself: the
 // provisioning block from the runtime configuration store and the observation
 // side from the poller, signed by the enclave and bound to the request.
 type ReadinessReport struct {

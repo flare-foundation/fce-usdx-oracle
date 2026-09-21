@@ -24,8 +24,8 @@ import (
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/observation"
-	"fce-usdx-oracle/internal/wire/readiness"
 	"fce-usdx-oracle/pkg/types"
+	"fce-usdx-oracle/pkg/wire/readiness"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -269,7 +269,11 @@ func (p *Poller) ReadinessReport(
 
 	// payload verbatim: the signature commits to these exact bytes, and
 	// re-serialising would not reproduce them.
-	return readiness.EncodeData(body, signature, payload)
+	data, err := readiness.EncodeData(body, signature, payload)
+	if err != nil {
+		return nil, failure.Coerce(err, failure.Internal)
+	}
+	return data, nil
 }
 
 // Stats reports the cumulative observation counters the readiness report carries.

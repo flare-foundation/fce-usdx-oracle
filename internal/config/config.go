@@ -2,20 +2,17 @@
 package config
 
 import (
-	"encoding/hex"
 	"fmt"
 	"math/big"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
 
-	"fce-usdx-oracle/internal/provisioning/envelope"
+	"fce-usdx-oracle/pkg/protocol"
 )
 
 const (
@@ -26,46 +23,28 @@ const (
 
 	// Direct-only, so nothing upstream defines its shape. Anything else is
 	// rejected rather than ignored, so no caller depends on a dropped field.
-	ReadinessRequestV1 = byte(0x01)
+	ReadinessRequestV1 = protocol.ReadinessRequestV1
 
 	// Pinned though the store accepts any scale: every consumer assumes 8. int32
-	// on the wire caps at ~21.47, and internal/wire/feedupdate fails closed out of range.
+	// on the wire caps at ~21.47, and pkg/wire/feedupdate fails closed out of range.
 	PriceDecimals int8 = 8
 )
 
-// The op type and commands as they travel: bytes32, the name's ASCII
-// right-padded with zeros. Defined as the hash because that is the only form
-// the handlers ever compare against, and building it here means no call site
-// can pad it differently.
-//
-// Must match the upstream sender's bytes32 constants exactly. One op type
-// covers every command, so the per-command action-type guards in extension.go
-// are the only fence between permissionless and governance-only commands.
+// The op type and commands, the extension's ids and the admin policy are the
+// protocol's, pinned in pkg/protocol and named here so the enclave's own code
+// keeps one vocabulary. Which channel each command is accepted over is enforced
+// in extension.go and internal/provisioning/store.
 var (
-	OPTypeTeeOracle = teeutils.ToHash("TEE_ORACLE")
-
-	// Instruction-only: the on-chain path is the permissionless one, and a
-	// fallback path is one nobody notices has broken. Enforced in extension.go.
-	OPCommandGetFeed = teeutils.ToHash("GET_FEED")
-
-	// Direct-only, no counterpart in the sender: a status answer is stale within
-	// minutes and not worth a fee. Enforced in extension.go.
-	OPCommandGetReadiness = teeutils.ToHash("GET_READINESS")
-
-	// SET_ENDPOINTS/SET_ADMINS are instruction-only: the direct channel would skip
-	// the sender's onlyGovernance check. SET_SECRET is direct-only: a ciphertext
-	// on-chain would be permanent and public. Enforced when a configuration is applied (internal/provisioning/store).
-	OPCommandSetEndpoints = teeutils.ToHash("SET_ENDPOINTS")
-	OPCommandSetAdmins    = teeutils.ToHash("SET_ADMINS")
-	OPCommandSetSecret    = teeutils.ToHash("SET_SECRET")
+	OPTypeTeeOracle       = protocol.OPTypeTeeOracle
+	OPCommandGetFeed      = protocol.OPCommandGetFeed
+	OPCommandGetReadiness = protocol.OPCommandGetReadiness
+	OPCommandSetEndpoints = protocol.OPCommandSetEndpoints
+	OPCommandSetAdmins    = protocol.OPCommandSetAdmins
+	OPCommandSetSecret    = protocol.OPCommandSetSecret
 )
 
-// OpName recovers the ASCII an op hash was built from, so a rejection can name
-// the command a machine understood rather than making an operator decode a
-// bytes32 by hand. The padding is zeros, so trimming them is exact.
-func OpName(h common.Hash) string {
-	return strings.TrimRight(string(h[:]), "\x00")
-}
+// OpName recovers the ASCII an op hash was built from.
+func OpName(h common.Hash) string { return protocol.OpName(h) }
 
 // Source health per upstream in the readiness report. Unknown is the zero value: a source
 // that has never been polled must not read as healthy.
@@ -152,10 +131,10 @@ const (
 
 	HTTPTimeout = 5 * time.Second
 
-	// Names, never values: the credential substituted into X-API-Key, and the
-	// provisioned entry carrying the cash endpoint's URL (see HexCashGroup).
-	HexAPIKeyRef  = "hex_api_key"
-	HexCashURLRef = "hex_cash_url"
+	// The credential refs are the protocol's (pkg/protocol); named here for the
+	// enclave's own code. Names, never values.
+	HexAPIKeyRef  = protocol.HexAPIKeyRef
+	HexCashURLRef = protocol.HexCashURLRef
 )
 
 // The bonds endpoint is pinned: redirecting it would hand whoever publishes
@@ -185,42 +164,18 @@ const (
 	HexCashGroup = HexCashName
 )
 
-// BackingRefs names the credentials the backing admin role governs. Pinned, never
-// read from a payload: a payload naming its own refs would let the weaker signer
-// set claim the stronger one's. Every other ref falls to the providers set.
-func BackingRefs() []string {
-	return []string{HexAPIKeyRef, HexCashURLRef}
-}
+// The admin policy — which refs the backing set governs and the least threshold
+// each set may be installed with — is the protocol's. The enclave's verifier is
+// built with it, and usdxprov applies the same rule before an envelope makes the
+// trip. See pkg/protocol for the decisions behind the floors.
+func BackingRefs() []string        { return protocol.BackingRefs() }
+func IsBackingRef(ref string) bool { return protocol.IsBackingRef(ref) }
+func AdminPolicy() protocol.Policy { return protocol.AdminPolicy() }
 
-// IsBackingRef reports whether ref is governed by the backing role.
-func IsBackingRef(ref string) bool {
-	return slices.Contains(BackingRefs(), ref)
-}
-
-// The admin signer-set policy. SET_ADMINS publishes two role-tagged sets, and a
-// SET_SECRET envelope must carry a threshold of signatures from the one that
-// governs its ref: the backing set for BackingRefs, the providers set for every
-// other ref. The floors are the least threshold a set may be installed with; the
-// contract validates neither, so they are the only guard.
-//
-// Backing is 1-of-N by decision. It authenticates the pinned reserve sources
-// (HexBondsURL above), so a wrong credential degrades the feed rather than
-// moving the price. Unpin the bonds URL and this floor must rise. A provider
-// credential is substituted into a URL the publisher chooses, hence 2.
 const (
-	MinBackingThreshold  = 1
-	MinProviderThreshold = 2
+	MinBackingThreshold  = protocol.MinBackingThreshold
+	MinProviderThreshold = protocol.MinProviderThreshold
 )
-
-// AdminPolicy is the pinned policy the envelope verifier is built with, and the
-// rule usdxprov applies before an envelope makes the trip.
-func AdminPolicy() envelope.Policy {
-	return envelope.Policy{
-		BackingRefs:  BackingRefs(),
-		MinBacking:   MinBackingThreshold,
-		MinProviders: MinProviderThreshold,
-	}
-}
 
 // ChainHealthKey and ProviderHealthKey name a chain and one of its RPC
 // providers in the sourceHealth map the readiness report carries.
@@ -237,44 +192,16 @@ func ProviderHealthKey(chain string, index int) string {
 	return fmt.Sprintf("rpc_%s_%d", chain, index)
 }
 
-// Chain is a pinned per-chain fact. Provider lists and agreement thresholds are
-// configured at runtime — see internal/provisioning/store.
-type Chain struct {
-	Name string
+// The chain set, the token on each and the home chain are the protocol's
+// (pkg/protocol). Provider lists and agreement thresholds are configured at
+// runtime; see internal/provisioning/store.
+type Chain = protocol.Chain
 
-	// Pinned: another ERC-20 here would let whoever set it publish any price.
-	Token string
+var Chains = protocol.Chains
 
-	// Refuses a supply read whose pinned block header is older than this. Pinned:
-	// the key that chooses the providers must not also choose this. Rationale §6.
-	MaxBlockAge time.Duration
-}
+const HomeChain = protocol.HomeChain
 
-// Pinned chain set. USDX is a native burn-and-mint OFT on each, so supply is a
-// plain sum; the pre-migration Ethereum contract is absent because Hex excludes it
-// from reserves. Each name doubles as the SET_ENDPOINTS group tag. Rationale §6.
-var Chains = []Chain{
-	{Name: "flare", Token: "0x4A771Cc1a39FDd8AA08B8EA51F7Fd412e73B3d2B", MaxBlockAge: 2 * time.Minute},
-	{Name: "ethereum", Token: "0xf8750b54d86BE7aE9e32b4A0C826811198D63313", MaxBlockAge: 3 * time.Minute},
-	{Name: "songbird", Token: "0x4A771Cc1a39FDd8AA08B8EA51F7Fd412e73B3d2B", MaxBlockAge: 2 * time.Minute},
-}
-
-// HomeChain's block header timestamp is the reading's own time
-// (Observation.ObservedAt): a mined block's instant, which the host cannot
-// move, rather than the enclave's wall clock. The signed update carries the
-// requesting instruction's block timestamp instead, and MaxObservationAge
-// bounds how far behind that the inputs may have been read.
-const HomeChain = "flare"
-
-// LookupChain returns the pinned policy for a chain name.
-func LookupChain(name string) (Chain, bool) {
-	for _, c := range Chains {
-		if c.Name == name {
-			return c, true
-		}
-	}
-	return Chain{}, false
-}
+func LookupChain(name string) (Chain, bool) { return protocol.LookupChain(name) }
 
 // ChainID is the chain every signed artefact is bound to, provisioning
 // envelopes and feed updates alike. It is tee-node's chain: both read the same
@@ -328,10 +255,8 @@ var (
 	extensionIDOnce sync.Once
 	extensionID     *big.Int
 
-	FeedID = mustFeedID()
-
-	// Custom-feed category 0x21, then "USDX/USD" zero-padded to twenty bytes.
-	feedIDHex = "0x21555344582f555344000000000000000000000000"
+	// The feed this build serves, as the protocol pins it.
+	FeedID = protocol.FeedID
 )
 
 func extensionIDFrom(env string) (*big.Int, error) {
@@ -369,24 +294,6 @@ func ExtensionIDEnv(raw string) (string, error) {
 		}
 	}
 	return common.BigToHash(ExtensionID()).Hex(), nil
-}
-
-// mustFeedID parses the 21-byte FTSO feed id: a category byte plus a 20-byte name.
-// The category must sit in [0x20, 0x40) or the store's initializer reverts
-// InvalidFeedCategory — catching it here fails at startup rather than at deploy.
-func mustFeedID() [21]byte {
-	var id [21]byte
-
-	raw, err := hex.DecodeString(strings.TrimPrefix(feedIDHex, "0x"))
-	if err != nil || len(raw) != 21 {
-		panic("config: feedIDHex must be 21 hex-encoded bytes, got " + feedIDHex)
-	}
-	if raw[0] < 0x20 || raw[0] >= 0x40 {
-		panic("config: feedIDHex category byte must be in [0x20, 0x40), got " + feedIDHex)
-	}
-
-	copy(id[:], raw)
-	return id
 }
 
 // Neither reserve source carries a freshness bound: Hex republishes on a mint or a
