@@ -236,7 +236,7 @@ echo
 # credential to a key this same proxy serves, so nothing runs until the chain
 # agrees the machine behind it is real and running an accepted build.
 mkdir -p "$BIN_DIR"
-( cd "$REPO_ROOT" && go build -o "$BIN_DIR/usdxprov" ./cmd/usdxprov ) \
+( cd "$REPO_ROOT/tools" && go build -o "$BIN_DIR/usdxprov" ./cmd/usdxprov ) \
   || die "could not build usdxprov"
 
 ATTESTED_TEE_ID=""
@@ -320,7 +320,7 @@ echo
 for ref in "${REFS[@]}"; do
   var="$(envVarFor "$ref")"
   [ -n "$var" ] || die "ref $ref does not map to a legal environment variable name; \
-upload it by hand with: USDXPROV_VALUE=… go run ./cmd/usdxprov build -ref $ref …"
+upload it by hand, from tools/: USDXPROV_VALUE=… go run ./cmd/usdxprov build -ref $ref …"
   ask_secret "$var" "Credential for $ref (hidden, or set $var)"
 done
 
@@ -365,7 +365,7 @@ for ref in "${REFS[@]}"; do
     echo "        kept at $OUT_DIR/$ref.json"
     echo "        Before the expiry printed above, the next admin runs this with"
     echo "        their own key in USDXPROV_KEY:"
-    echo "          go run ./cmd/usdxprov sign -in <file> && go run ./cmd/usdxprov submit -in <file> -url $PROXY_URL"
+    echo "          (cd tools && go run ./cmd/usdxprov sign -in <file> && go run ./cmd/usdxprov submit -in <file> -url $PROXY_URL)"
   }
 
   sigs="$(jq -r '.signatures | length' "$envelope")"

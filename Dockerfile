@@ -1,5 +1,5 @@
 #checkov:skip=CKV_DOCKER_2:HEALTHCHECK not applicable, container runs in GCP Confidential Space behind a proxy
-# tee-node's Dockerfile, with three differences: the package built (cmd/docker, the node with
+# tee-node's Dockerfile, with three differences: the package built (cmd/extension-tee, the node with
 # this extension embedded, into /app/extension-tee), the launch-policy label (this extension's
 # environment on top of tee-node's) and the command. Everything else is kept in step with
 # tee-node's so the two images are built, and therefore attested, the same way.
@@ -57,7 +57,7 @@ COPY --chmod=644 --chown=0:0 . .
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOFLAGS="-buildvcs=false" \
   go build -tags=netgo,osusergo -trimpath \
   -ldflags="-buildid= -s -w -linkmode=external -extldflags=-static" \
-  -o /app/extension-tee ./cmd/docker
+  -o /app/extension-tee ./cmd/extension-tee
 
 # NOTE:(@janezicmatej) buildkit's rewrite-timestamp only clamps mtimes down to SOURCE_DATE_EPOCH (moby/buildkit#3180)
 # files older than SOURCE_DATE_EPOCH are left at their original non-deterministic mtime

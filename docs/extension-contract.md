@@ -22,7 +22,7 @@ If you are adding a new language, this is the specification you are implementing
 
 Two shapes are equally valid. The contract is what is observable from *outside* the container; how you get there is your choice.
 
-**Single-process** — the extension embeds tee-node as a library and runs both in one binary. Only available to Go. This is what `Dockerfile` builds: `cmd/docker/main.go` calls `teeServer.StartServerExtension(configPort, signPort, extensionPort)` in a goroutine alongside the extension's own HTTP server. Produces the smallest, most reproducible image (distroless, static, single binary).
+**Single-process** — the extension embeds tee-node as a library and runs both in one binary. Only available to Go. This is what `Dockerfile` builds: `cmd/extension-tee/main.go` calls `teeServer.StartServerExtension(configPort, signPort, extensionPort)` in a goroutine alongside the extension's own HTTP server. Produces the smallest, most reproducible image (distroless, static, single binary).
 
 **Two-process** — a prebuilt tee-node `./cmd/extension` binary runs beside the extension runtime, joined so that the container dies if either child dies. This is what every non-Go language uses:
 

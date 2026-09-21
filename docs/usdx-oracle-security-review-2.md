@@ -68,8 +68,8 @@ restored in the working tree.
 Five area passes, each reading the code rather than the documentation: the observation
 pipeline (`internal/observation/**`, `internal/config`), the extension surface and provisioning
 (`internal/extension`, `internal/provisioning`, `internal/wire`, `internal/teenode`,
-`pkg/server`, `cmd/docker`, `cmd/dev/start-tee`), the operator tooling (`tools/**`,
-`cmd/usdxprov`), deployment and CI (`Dockerfile*`, `deploy/**`, `.gitlab-ci.yml`), and the
+`pkg/server`, `cmd/extension-tee`, `cmd/dev/start-tee`), the operator tooling (`tools/**`,
+`tools/cmd/usdxprov`), deployment and CI (`Dockerfile*`, `deploy/**`, `.gitlab-ci.yml`), and the
 on-chain protocol (the upstream store, sender, verification and manager contracts, and how the
 enclave and keeper use them). The highest-impact claims were then re-read independently. The
 three questions in the title were asked of every actor in the next section.
@@ -270,7 +270,7 @@ identical answers are in.
 is checked only between rounds), `:503-507` (the context is observed only while sleeping);
 `tools/pkg/keeper/readiness.go:151-159` (`http.DefaultClient.Do` on the keeper's signal-only
 context); `tools/pkg/fccutils/tee_calls.go:23, 30, 89, 105` (the same pattern in `register-tee`,
-`allow-tee-version`, `set-governance`, `verify-tee`, `retire-tee`); `cmd/usdxprov/main.go:506,
+`allow-tee-version`, `set-governance`, `verify-tee`, `retire-tee`); `tools/cmd/usdxprov/main.go:506,
 563, 586, 604`. Contrast `tools/pkg/fccutils/attested_state.go:42, 60`, which does it right.
 
 **Scenario.** The poll targets are the URLs the registry publishes, so any allowlisted machine
@@ -555,7 +555,7 @@ report.
 ### T-29 · Low · `EXTENSION_ID=0` accepted at startup, refused only at signing
 
 **Where.** `internal/config/config.go:317-321` (negatives rejected only),
-`cmd/docker/main.go:39-46`; refusal at `feedupdate.go:234`. The machine boots, observes,
+`cmd/extension-tee/main.go:39-46`; refusal at `feedupdate.go:234`. The machine boots, observes,
 publishes state and refuses every request as `internal error`.
 **Fix.** Reject `Sign() <= 0` in `extensionIDFrom`.
 
@@ -615,7 +615,7 @@ exec, and it runs with the hot key in its environment.
 
 ### T-40 · Low · `usdxprov -tee` optional; scheme unchecked
 
-**Where.** `cmd/usdxprov/main.go:207, 497-506, 586`. Without `-tee` the tool encrypts to
+**Where.** `tools/cmd/usdxprov/main.go:207, 497-506, 586`. Without `-tee` the tool encrypts to
 whatever `/info` served, over any scheme.
 **Fix.** Require `-tee` unless an explicit unpinned flag is given; refuse `http://` off loopback.
 

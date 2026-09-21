@@ -120,35 +120,49 @@ Both reviews of the repository, including the open findings, are in
 
 ## Running it
 
-[**deploy/**](deploy/README.md) covers running the oracle and deploying it: the test suites, the
-local simulation, a test deployment on a testnet, and the production flow for a machine a system
-administrator operates.
+Two directories are involved. [**tools/**](tools/README.md) is the module that operates the
+oracle: it registers machines, publishes configuration, installs credentials and runs the keeper
+that drives the feed. [**deploy/**](deploy/README.md) sequences those commands into the flows an
+operator runs, and covers the test suites, the local simulation, a test deployment on a testnet,
+and the production flow for a machine a system administrator operates.
 
 The oracle needs to be deployed as a docker image running inside a TEE machine on a GCP. The only entrypoint
 to the oracle, besides testing, is the main `Dockerfile` that builds a reproducible Docker image.
 
 ## Repository layout
 
-| Layer | Where | What |
-|---|---|---|
-| Observation | `internal/observation/{supply,backing,price,decimal}` | Quorum RPC reads, reserve reads, the arithmetic, exact money parsing |
-| Orchestration | `internal/observation`, `internal/observation/poller` | One observation start to finish; the timer, the cache and the staleness bound |
-| Provisioning | `internal/provisioning/{envelope,store}` | M-of-N envelope verification; the only mutable state in the process |
-| Wire formats | `internal/wire/{feedupdate,readiness}`, `internal/failure` | The signed payloads, and the closed public error vocabulary |
-| HTTP surface | `internal/extension` | `POST /action` routing; `GET /state` answers the empty state |
-| Image entry point | `cmd/docker` | tee-node and the extension in one process — the only binary the image ships |
-| Operator CLI | `cmd/usdxprov` | Build, sign and submit a `SET_SECRET` envelope |
-| Development binaries | `cmd/dev/` | The dev server, the tee-node stand-in and the host-process runner |
-| Tooling and keeper | `tools/` | Registration, configuration publication, the keeper cycle, preflight, fleet status |
-| Conformance | `deploy/testdata/conformance/` | Golden wire fixtures, asserted against any implementation |
+Four kinds of thing live here, and the split between them is the map.
+
+**The oracle** is the Go module at the repository root. It is what the image ships and what the
+code hash attests.
+
+| Where | What |
+|---|---|
+| `cmd/extension-tee` | tee-node and the extension in one process, the image's only binary |
+| `internal/observation` | one observation start to finish: quorum RPC reads, reserve reads, the arithmetic, the timer and the cache |
+| `internal/provisioning` | the M-of-N envelope verifier and the credential store, the only mutable state in the process |
+| `internal/wire`, `internal/failure` | the signed payloads and the closed public error vocabulary |
+| `internal/extension`, `pkg/server` | the HTTP surface tee-node drives, and the process that starts it |
+| `cmd/dev` | the dev server, the tee-node stand-in and the host-process runner, none of which the image ships |
+
+**Operating it** is [`tools/`](tools/README.md) and [`deploy/`](deploy/README.md). The oracle
+does nothing on its own: a machine must be registered, its configuration published, its
+credentials installed and its updates requested and relayed, and every one of those is a
+transaction or a signed message that somebody has to send. `tools/` is the Go module that sends
+them, with the keeper that drives the feed; `deploy/` is the compose stack, the configuration
+files and the scripts that sequence the tools into the flows an operator runs.
+
+**Documentation** is [`docs/`](docs/): the specification, the rationale, the findings, the
+security reviews and the operator guides, indexed below.
+
+**Testing** has no directory of its own. The Go tests sit beside the code in both modules,
+`contracts/` holds the Forge vectors that pin the wire formats in Solidity's own encoding, and
+`deploy/testdata/` holds those vectors and the conformance fixtures that any implementation of
+the extension is replayed against. [deploy/](deploy/README.md) says how to run each.
 
 The on-chain contracts are upstream's, in `flare-smart-contracts-v2`: the instructions sender is
 the entry point, and the feed store holds every guard that protects the feed and implements the
 FTSO custom-feed interface itself.
-
-The repository root is the Go module, so the extension is the repository. `tools/` is a separate
-module with no dependency on it, so the keeper and the deployment commands can be built without
-the enclave code.
 
 ## Documentation
 
@@ -162,7 +176,7 @@ the enclave code.
 
 **Operating it**
 
-- [deploy/](deploy/README.md) — running, testing and deploying · [Tooling reference](docs/usdx-oracle-tooling.md)
+- [tools/](tools/README.md) — the module that operates the oracle · [deploy/](deploy/README.md) — running, testing and deploying · [Tooling reference](docs/usdx-oracle-tooling.md)
 - [Production setup](docs/usdx-oracle-production-setup.md) · [Machine deployment](docs/deployment-steps.md) · [Machine lifecycle](docs/usdx-oracle-machine-lifecycle.md)
 - [Keeper specification](docs/usdx-oracle-keeper.md) · [Monitoring](docs/usdx-oracle-monitoring.md) · [Failure modes](docs/usdx-oracle-failure-modes.md) · [Source availability](docs/usdx-oracle-availability.md)
 - [Readiness query](docs/usdx-oracle-readiness-query.md) — what a signed self-report does and does not settle

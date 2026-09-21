@@ -8,15 +8,17 @@ stage and need the tool, or know the tool and need what it touches.
 
 Three families:
 
-| Family | What it is | Language-neutral? |
-| --- | --- | --- |
-| `deploy/scripts/*.sh` | orchestration — sequences the Go tools and Docker | yes |
-| `tools/cmd/*` | Go CLIs that talk to the chain and the proxy | **yes** — wire format only, no extension internals |
-| `cmd/*` | the extension binaries, plus `usdxprov` | no — this is the Go implementation |
+| Family | What it is |
+| --- | --- |
+| `deploy/scripts/*.sh` | orchestration — sequences the Go tools and Docker |
+| `tools/cmd/*` | Go CLIs that talk to the chain and the proxy, `usdxprov` among them |
+| `cmd/*` | the extension binaries: the image entry point and the development runners |
 
-`tools/` never imports `internal/`. It re-declares the wire layout instead, so it works
-against an extension written in any language — and so a bug in one cannot hide a bug in the
-other.
+`tools/` is its own module and depends on the extension in exactly one place: `usdxprov`
+imports the provisioning envelope package, so the body an admin signs is produced by the same
+encoder the enclave verifies with. Everything else in `tools/` re-declares the wire layout it
+speaks, so a bug in one side cannot hide a bug in the other, and both sides are pinned to the
+same Solidity-generated fixtures.
 
 ---
 
@@ -355,10 +357,10 @@ cannot help, because the siblings build's context root is `tee/`, not the repo.
 
 | Binary | For |
 | --- | --- |
-| `cmd/docker` | **production** — what the Dockerfile builds (tee-node + extension in one process) |
+| `cmd/extension-tee` | **production** — what the Dockerfile builds (tee-node + extension in one process) |
 | `cmd/` | `docker` (production entrypoint), `devserver` + `mocknode` (local dev), `start-tee` (host-process runner), `usdxprov` (provisioning CLI) |
 | `cmd/dev/devserver` · `cmd/dev/mocknode` · `cmd/dev/start-tee` | local dev |
-| `cmd/usdxprov` | ops: build / sign / submit a `SET_SECRET` envelope |
+| `tools/cmd/usdxprov` | ops: build / sign / submit a `SET_SECRET` envelope |
 
 ---
 

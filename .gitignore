@@ -50,11 +50,11 @@ tools/pkg/contracts/*/*.bin
 deploy/config/indexer/*/indexer-config.toml
 
 # Stray binaries from `go build ./cmd/<x>` without -o.
-/docker
+/extension-tee
 /mocknode
 /start-tee
 /devserver
-/usdxprov
+/tools/usdxprov
 
 # Operator-specific active admin sets (addresses only, but per-deployment like
 # .env); the tracked reference is admins/coston.example.json.

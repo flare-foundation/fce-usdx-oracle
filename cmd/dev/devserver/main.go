@@ -7,7 +7,7 @@
 //	./deploy/scripts/set-endpoints.sh deploy/config/endpoints/coston2.json
 //	./deploy/scripts/set-admins.sh deploy/config/admins/dev-wellknown-keys.json
 //
-// NOT a production entrypoint. Production is ./cmd/docker.
+// NOT a production entrypoint. Production is ./cmd/extension-tee.
 package main
 
 import (

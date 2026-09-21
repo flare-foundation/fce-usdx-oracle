@@ -286,7 +286,7 @@ unexplained literal. Handler contexts still come from `context.Background()`; th
 **Where.** `internal/config/config.go:98-107`.
 
 A typo in `EXTENSION_PORT` or `SIGN_PORT` falls back to the default without a log line.
-In `cmd/docker` both tee-node and the extension parse the same value, so they stay
+In `cmd/extension-tee` both tee-node and the extension parse the same value, so they stay
 consistent; in `cmd/dev/devserver` the extension may listen where nothing forwards.
 `CHAIN_ID` and `EXTENSION_ID` already panic when unset; the ports should fail the same way.
 
@@ -421,7 +421,7 @@ missing, instead of refusing the publication. Keep the `ApplySecret` direction a
 
 ### SR-13 · Medium · R — no tool can produce a `hex_cash_url` envelope
 
-**Where.** `cmd/usdxprov/main.go:104,145`, `cmd/usdxprov/flags.go:31-46`,
+**Where.** `tools/cmd/usdxprov/main.go:104,145`, `tools/cmd/usdxprov/flags.go:31-46`,
 `internal/provisioning/store/abi.go:88-95,112`, `tools/pkg/oraclepayload/oraclepayload.go:237`.
 
 The private URL's plaintext is `abi.encode(bytes32 salt, string url)`, which always
@@ -496,7 +496,7 @@ and one key outstanding, no price is produced.
 
 ### SR-33 · Low · S — `usdxprov -tee` is optional
 
-**Where.** `cmd/usdxprov/main.go:126-142`, `:422-423`.
+**Where.** `tools/cmd/usdxprov/main.go:126-142`, `:422-423`.
 
 Without `-tee`, the tool encrypts to whatever public key `/info` returns, fetched over plain
 HTTP by default. The scripts pass the attested id when `verify-tee` produced one; a run by
@@ -530,7 +530,7 @@ ref in `config.BackingRefs()`.
 
 ### SR-51 · Info — admins blind-sign a hash
 
-`cmd/usdxprov/main.go:223` signs `TextHash(keccak256(body))`. A hardware wallet shows an
+`tools/cmd/usdxprov/main.go:223` signs `TextHash(keccak256(body))`. A hardware wallet shows an
 opaque hash, so the signer cannot see ref, version or teeId. EIP-712 typed data would.
 
 ### SR-54 · Info — version burnt before install; dead trim
@@ -828,7 +828,7 @@ entirely and let the containers talk over the compose network; fix `.env.example
 ### SR-07 · Medium · R — the launch policy cannot supply `CHAIN_ID`
 
 **Where.** `Dockerfile:90`, `Dockerfile.siblings:78`; `internal/config/config.go:255-259`;
-`cmd/docker/main.go:39`; `deploy/docker-compose.yaml:46,51-52`.
+`cmd/extension-tee/main.go:39`; `deploy/docker-compose.yaml:46,51-52`.
 
 ```dockerfile
 LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,MODE,CONFIG_PORT,SIGN_PORT,EXTENSION_PORT"

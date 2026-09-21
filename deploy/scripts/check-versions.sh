@@ -5,8 +5,10 @@
 # The extension module and the tools module both pin tee-node and
 # go-flare-common; if they diverge, the node and the tooling disagree on
 # signature and ABI formats and the symptom is an opaque failure at runtime,
-# long after the build. tee-proxy is pinned twice as well: tools/go.mod and the
-# tag of tee-proxy's published image in deploy/docker-compose.yaml.
+# long after the build. Beyond those two, every module both files name is held
+# at one version, so the tooling is built against the same library bytes as the
+# enclave. tee-proxy is pinned twice as well: tools/go.mod and the tag of
+# tee-proxy's published image in deploy/docker-compose.yaml.
 #
 # Run standalone; full-setup.sh and post-build.sh do not invoke it.
 #
@@ -61,7 +63,28 @@ elif [[ -n "$EXT_COMMON" ]]; then
     log "go-flare-common $EXT_COMMON (extension == tools)"
 fi
 
-# --- 3. tee-proxy: tools/go.mod must match the image tag docker-compose.yaml runs ---
+# --- 3. every module both go.mod files name must be at one version ---
+# tools requires the extension module, so the two dependency sets overlap. The
+# resolver would quietly take the higher version wherever they differ, which
+# means the tooling and the enclave could be built against different bytes of
+# the same library without either file saying so. Held identical instead.
+DRIFT=0
+while read -r m; do
+    a="$(pin "$EXT_GOMOD" "$m")"; b="$(pin "$TOOLS_GOMOD" "$m")"
+    if [[ "$a" != "$b" ]]; then
+        [[ "$DRIFT" -eq 0 ]] && echo -e "${RED}  shared dependencies at different versions:${NC}" >&2
+        echo "    $m: extension $a, tools $b" >&2
+        DRIFT=1
+    fi
+done < <(comm -12 <(grep -E '^[[:space:]]+[^ ]+ v' "$EXT_GOMOD" | awk '{print $1}' | sort) \
+                  <(grep -E '^[[:space:]]+[^ ]+ v' "$TOOLS_GOMOD" | awk '{print $1}' | sort))
+if [[ "$DRIFT" -ne 0 ]]; then
+    FAILED=1
+else
+    log "shared modules  every module both files name is at one version"
+fi
+
+# --- 4. tee-proxy: tools/go.mod must match the image tag docker-compose.yaml runs ---
 TOOLS_PROXY="$(pin "$TOOLS_GOMOD" github.com/flare-foundation/tee-proxy)"
 if [[ -z "$TEE_PROXY_VERSION" ]]; then
     warn "no ghcr.io/flare-foundation/tee-proxy:<tag> in deploy/docker-compose.yaml — skipping cross-check"

@@ -8,8 +8,7 @@ single static binary on a distroless base, bit-for-bit reproducible across machi
 
 ```
 cmd/
-├── docker/         tee-node + extension in one process — the image entry point
-├── usdxprov/       build, sign and submit a SET_SECRET envelope
+├── extension-tee/  tee-node + extension in one process — the image entry point
 └── dev/            everything that is not shipped in the image
     ├── devserver/  real provisioning and observation, no chain
     ├── mocknode/   stand-in for tee-node's /sign, /decrypt and /info

@@ -38,7 +38,7 @@ ext-proxy (tee-proxy)
   :6663 internal   TEE machines poll here for queued actions
   :6664 external   PUBLIC — /info, /action/result/<id>, /direct
 
-extension-tee ──── one process, built from cmd/docker
+extension-tee ──── one process, built from cmd/extension-tee
   ├ tee-node       :5500 config · :7701 POST /sign, POST /decrypt
   │                polls proxy for actions → POSTs them to :7702/action
   │                polls GET :7702/state → folds it into attested state
@@ -56,15 +56,17 @@ redis              the proxy's action queue
 | --- | --- |
 | `cmd/`, `internal/`, `pkg/` | the extension implementation (the Go module at the repository root) |
 | `contracts/` | Foundry project that compiles the upstream `ITeeOracle*` interfaces straight out of a sibling flare-smart-contracts-v2 checkout — nothing is deployed from this repo |
-| `tools/` | deployment, registration and the keeper — **language-neutral**, talks wire format only |
+| `tools/` | deployment, registration, provisioning and the keeper — its own module, importing the extension only for the provisioning envelope |
 | `deploy/scripts/` | setup, start/stop, the three `oracle-*.sh` operator commands, and the two `upload-*.sh` credential uploads |
 | `contracts/test/` | Foundry wire-vector tests (the ABI encodings both Go codecs assert against) |
 | `docs/` | spec, rationale, findings, flows, deployment |
 
-The split that matters: the root module is one possible implementation, `tools/` and `contracts/`
-are the spine. `tools/pkg/feedupdate` deliberately re-declares the wire layout instead
-of importing `internal/wire/feedupdate`, so the tooling stays honest about the contract, and
-both are pinned to the same Solidity-generated fixtures in `deploy/testdata/wire`.
+The split that matters: the root module is the extension, `tools/` operates it, and
+`contracts/` pins the wire formats both speak. `tools/pkg/feedupdate` deliberately re-declares
+the wire layout instead of importing `internal/wire/feedupdate`, so the tooling stays honest
+about the contract, and both are pinned to the same Solidity-generated fixtures in
+`deploy/testdata/wire`. The one import the tooling takes from the extension is the provisioning
+envelope, where identity with the enclave's encoder is the requirement.
 
 ---
 
@@ -95,11 +97,11 @@ Roughly bottom-up. "Flow" refers to §6.
 
 | Binary | For |
 | --- | --- |
-| `cmd/docker` | **production** — what `Dockerfile` builds (tee-node + extension in one process) |
+| `cmd/extension-tee` | **production** — what `Dockerfile` builds (tee-node + extension in one process) |
 | `cmd/dev/devserver` | local dev: real provisioning + observation, no chain |
 | `cmd/dev/mocknode` | fake tee-node `/sign` `/decrypt` `/info` for local dev |
 | `cmd/dev/start-tee` | host-process runner behind `start-services.sh --local` |
-| `cmd/usdxprov` | ops CLI: `build` / `sign` / `submit` a `SET_SECRET` envelope |
+| `tools/cmd/usdxprov` | ops CLI: `build` / `sign` / `submit` a `SET_SECRET` envelope |
 
 ---
 
@@ -240,7 +242,7 @@ on `tools/cmd/verify-tee` first, and read every secret from the environment
 rather than argv, where `ps` would expose it.
 
 ```
-admin laptop (cmd/usdxprov)
+admin laptop (tools/cmd/usdxprov)
   usdxprov build    GET proxy/info → TEE public key; ciphertext = ECIES(pubkey, secret)
                     body = abi(domain, chainId, teeId, version, issuedAt, ref, payloadHash)
   usdxprov sign     admin #1, then admin #2   (refuses a duplicate signer)

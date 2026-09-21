@@ -29,7 +29,7 @@ ext-proxy (tee-proxy)
   :6663 internal → host 6673    TEE machines poll here for work
   :6664 external → host 6674    PUBLIC: /info, /action/result/<id>, /direct
 
-extension-tee ── one process, built from cmd/docker
+extension-tee ── one process, built from cmd/extension-tee
   tee-node       :5500 config, :7701 POST /sign + POST /decrypt
                  polls the proxy for actions → POSTs them to :7702
                  polls GET :7702/state → folds it into the attested state
@@ -50,12 +50,12 @@ redis            the proxy's action queue
 
 | Entrypoint | For | Notes |
 | --- | --- | --- |
-| `cmd/docker` | **production** | what `Dockerfile` builds |
+| `cmd/extension-tee` | **production** | what `Dockerfile` builds |
 | `cmd/` | `docker` in production; `devserver` + `mocknode` locally | no stub build exists; conformance is `TestConformance` in `internal/extension` |
 | `cmd/dev/devserver` | local dev | real provisioning + observation, no chain |
 | `cmd/dev/mocknode` | local dev | fake tee-node `/sign` `/decrypt` `/info` |
 | `cmd/dev/start-tee` | `start-services.sh --local` | no Docker |
-| `cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
+| `tools/cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
 | `tools/cmd/keeper` | ops | the relay timer (`-tee` names the target machines) |
 | `tools/cmd/send-endpoints` | ops | publish `SET_ENDPOINTS` to the extension's active machines (`-feedId`, `-config`) |
 | `tools/cmd/send-admins` | ops | publish `SET_ADMINS` to the fleet |

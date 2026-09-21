@@ -31,7 +31,7 @@ If you change a request or response shape, edit the fixture and let `TestConform
 
 ## The deployment tooling
 
-`tools/` is a standalone Go module with no dependency on any language implementation — which is what lets one deployment and test path serve Go, Python and TypeScript alike. It has its own tests.
+`tools/` is its own Go module. It imports the extension for one thing, the provisioning envelope `usdxprov` signs, and speaks the published wire format everywhere else. It has its own tests.
 
 | Layer | What it tests | How to run |
 |-------|--------------|------------|

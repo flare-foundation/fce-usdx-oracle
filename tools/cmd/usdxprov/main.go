@@ -8,8 +8,10 @@
 // envelope is safe to pass around: the credential inside is already ciphertext
 // only the target enclave can open.
 //
-// It lives in the extension's module so it imports internal/provisioning/envelope directly
-// — this and the verifier share one EncodeBody and cannot drift.
+// It imports the extension's own internal/provisioning/envelope, across the module
+// boundary: the body an admin signs is produced by the very encoder the enclave
+// verifies with, so the two cannot drift. That is the one place the tooling depends
+// on the extension; everywhere else it speaks the published wire format.
 package main
 
 import (

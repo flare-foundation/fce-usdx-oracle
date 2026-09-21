@@ -409,7 +409,7 @@ zero address.
 Found by auditing the call graph rather than by a failing test, which is why it
 is worth recording: every check was green while this was true.
 
-    cmd/docker/main.go
+    cmd/extension-tee/main.go
       -> extserver.StartExtension(port, signPort)
       -> extension.New(extensionPort, signPort)
       -> NewWithObserver(..., nil)          // observer == nil
@@ -439,7 +439,7 @@ monitoring in WP7 is designed to detect, and precisely the state it cannot see.
    outside, so a banner is not a defence. The one constructor,
    `extension.NewExtension`, **panics** on a nil observer
    (`TestNilObserverPanics`), and no stub constructor or stub binary exists.
-   `./cmd/docker` is production and is what `Dockerfile` builds.
+   `./cmd/extension-tee` is production and is what `Dockerfile` builds.
 
 **The conformance fixtures pin the production payload.** The stub binary and its
 JSON wire format are gone. `TestConformance` replays the fixtures against the real

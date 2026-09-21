@@ -160,7 +160,7 @@ fi
 # in-memory counter to zero.
 VERSION="${VERSION:-$(date +%s)}"
 
-( cd "$REPO_ROOT" && go build -o "$WORKDIR/usdxprov" ./cmd/usdxprov ) \
+( cd "$REPO_ROOT/tools" && go build -o "$WORKDIR/usdxprov" ./cmd/usdxprov ) \
   || die "could not build usdxprov"
 
 step "1/3  Verifying the machine"
