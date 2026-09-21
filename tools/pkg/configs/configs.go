@@ -103,7 +103,7 @@ func envOrDefault(key, fallback string) string {
 }
 
 const (
-	// The host-process port block, as cmd/start-tee binds it; clear of the e2e
+	// The host-process port block, as cmd/dev/start-tee binds it; clear of the e2e
 	// simulation's own processes (5500–5503, 6661–6668, 7701, 7702).
 	ExtConfigurationPort = 5521 // port on tee for setting the configurations (proxyURL, initialOwner, extensionID)
 	ExtProxyInternalPort = 6683 // internal port for tee to get actions from the queue from the proxy

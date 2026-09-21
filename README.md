@@ -124,6 +124,9 @@ Both reviews of the repository, including the open findings, are in
 local simulation, a test deployment on a testnet, and the production flow for a machine a system
 administrator operates.
 
+The oracle needs to be deployed as a docker image running inside a TEE machine on a GCP. The only entrypoint
+to the oracle, besides testing, is the main `Dockerfile` that builds a reproducible Docker image.
+
 ## Repository layout
 
 | Layer | Where | What |
@@ -133,7 +136,9 @@ administrator operates.
 | Provisioning | `internal/provisioning/{envelope,store}` | M-of-N envelope verification; the only mutable state in the process |
 | Wire formats | `internal/wire/{feedupdate,readiness}`, `internal/failure` | The signed payloads, and the closed public error vocabulary |
 | HTTP surface | `internal/extension` | `POST /action` routing; `GET /state` answers the empty state |
+| Image entry point | `cmd/docker` | tee-node and the extension in one process — the only binary the image ships |
 | Operator CLI | `cmd/usdxprov` | Build, sign and submit a `SET_SECRET` envelope |
+| Development binaries | `cmd/dev/` | The dev server, the tee-node stand-in and the host-process runner |
 | Tooling and keeper | `tools/` | Registration, configuration publication, the keeper cycle, preflight, fleet status |
 | Conformance | `deploy/testdata/conformance/` | Golden wire fixtures, asserted against any implementation |
 

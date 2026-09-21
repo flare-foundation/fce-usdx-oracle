@@ -52,9 +52,9 @@ redis            the proxy's action queue
 | --- | --- | --- |
 | `cmd/docker` | **production** | what `Dockerfile` builds |
 | `cmd/` | `docker` in production; `devserver` + `mocknode` locally | no stub build exists; conformance is `TestConformance` in `internal/extension` |
-| `cmd/devserver` | local dev | real provisioning + observation, no chain |
-| `cmd/mocknode` | local dev | fake tee-node `/sign` `/decrypt` `/info` |
-| `cmd/start-tee` | `start-services.sh --local` | no Docker |
+| `cmd/dev/devserver` | local dev | real provisioning + observation, no chain |
+| `cmd/dev/mocknode` | local dev | fake tee-node `/sign` `/decrypt` `/info` |
+| `cmd/dev/start-tee` | `start-services.sh --local` | no Docker |
 | `cmd/usdxprov` | ops | build / sign / submit a `SET_SECRET` envelope |
 | `tools/cmd/keeper` | ops | the relay timer (`-tee` names the target machines) |
 | `tools/cmd/send-endpoints` | ops | publish `SET_ENDPOINTS` to the extension's active machines (`-feedId`, `-config`) |

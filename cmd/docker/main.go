@@ -1,5 +1,5 @@
 // Package main is the container entrypoint: it starts the tee-node server and
-// the extension in one process. cmd/start-tee is the same pairing as a host
+// the extension in one process. cmd/dev/start-tee is the same pairing as a host
 // process, for `start-services.sh --local`. Docker sets PROXY_URL as an env var,
 // which tee-node reads directly via settings.init().
 package main

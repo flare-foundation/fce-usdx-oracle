@@ -90,7 +90,7 @@ const (
 // The Docker image's port pair, and so the default: the sign server tee-node
 // runs for the extension, and the extension's own /action + /state server, both
 // loopback. EXTENSION_PORT and SIGN_PORT in the environment override them (they
-// are in the image's launch-policy label for port collisions); cmd/start-tee,
+// are in the image's launch-policy label for port collisions); cmd/dev/start-tee,
 // the host-process stack, passes its own pair explicitly instead, clear of the
 // e2e simulation's ports.
 var (

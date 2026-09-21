@@ -96,9 +96,9 @@ Roughly bottom-up. "Flow" refers to §6.
 | Binary | For |
 | --- | --- |
 | `cmd/docker` | **production** — what `Dockerfile` builds (tee-node + extension in one process) |
-| `cmd/devserver` | local dev: real provisioning + observation, no chain |
-| `cmd/mocknode` | fake tee-node `/sign` `/decrypt` `/info` for local dev |
-| `cmd/start-tee` | host-process runner behind `start-services.sh --local` |
+| `cmd/dev/devserver` | local dev: real provisioning + observation, no chain |
+| `cmd/dev/mocknode` | fake tee-node `/sign` `/decrypt` `/info` for local dev |
+| `cmd/dev/start-tee` | host-process runner behind `start-services.sh --local` |
 | `cmd/usdxprov` | ops CLI: `build` / `sign` / `submit` a `SET_SECRET` envelope |
 
 ---

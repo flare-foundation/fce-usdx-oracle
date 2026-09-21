@@ -7,7 +7,7 @@
 // instance, which e2e reserves for an extension proxy.
 //
 // Ports are the host-process block of tools/pkg/configs: the proxy binds 6683
-// and 6684 directly, the TEE the ports fixed in cmd/start-tee, all clear of the
+// and 6684 directly, the TEE the ports fixed in cmd/dev/start-tee, all clear of the
 // e2e simulation's own processes. start-services.sh records the proxy URL for
 // the follow-up scripts. The TEE takes CHAIN_ID and EXTENSION_ID from the
 // environment this runner gives it.
@@ -140,7 +140,7 @@ func main() {
 	// --- Extension TEE: built from the module root, run as a child. ---
 	binary := filepath.Join(root, "out", "bin", "start-tee")
 	logger.Infof("building %s (%s)", binary, buildMode(root))
-	if err := run(root, "go", "build", "-o", binary, "./cmd/start-tee"); err != nil {
+	if err := run(root, "go", "build", "-o", binary, "./cmd/dev/start-tee"); err != nil {
 		logger.Fatalf("building start-tee: %v", err)
 	}
 
@@ -277,7 +277,7 @@ func renderProxyConfig(template, dst, redis string, chainID uint64, addresses ma
 	text = strings.ReplaceAll(text, `"host.docker.internal"`, `"localhost"`)
 
 	// The template carries the container's ports; the host stack binds its own
-	// block, the one cmd/start-tee points the node at.
+	// block, the one cmd/dev/start-tee points the node at.
 	if err := replace("internal", fmt.Sprintf("%q", fmt.Sprint(configs.ExtProxyInternalPort))); err != nil {
 		return "", err
 	}
@@ -292,7 +292,7 @@ func renderProxyConfig(template, dst, redis string, chainID uint64, addresses ma
 }
 
 // ownerAddress is INITIAL_OWNER, or the address of EXTENSION_OWNER_KEY, the
-// same derivation cmd/start-tee applies. It is also the default governance
+// same derivation cmd/dev/start-tee applies. It is also the default governance
 // signer, so it is resolved here rather than left to the child.
 func ownerAddress() (common.Address, error) {
 	if owner := os.Getenv("INITIAL_OWNER"); owner != "" {

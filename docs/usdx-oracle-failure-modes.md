@@ -236,7 +236,7 @@ The second is the one people expect to test first and the one that is currently 
 
 ### Where to run it
 
-Locally, `cmd/devserver` runs the real extension with real provisioning and no chain, so a mock
+Locally, `cmd/dev/devserver` runs the real extension with real provisioning and no chain, so a mock
 supply endpoint exercises the whole path without touching the feed.
 
 On a live machine it is contained to that machine — the others keep publishing par and will

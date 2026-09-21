@@ -19,7 +19,7 @@
 # so re-provisioning a running dev server needs a higher CONFIG_VERSION.
 #
 # Usage:
-#   go run ./cmd/mocknode &  go run ./cmd/devserver &
+#   go run ./cmd/dev/mocknode &  go run ./cmd/dev/devserver &
 #   ./deploy/scripts/set-config.sh endpoints deploy/config/endpoints/public-only.json
 #   ./deploy/scripts/set-config.sh admins    deploy/config/admins/dev-wellknown-keys.json
 #   CONFIG_VERSION=2 ./deploy/scripts/set-config.sh endpoints|admins [config] [port]

@@ -287,7 +287,7 @@ unexplained literal. Handler contexts still come from `context.Background()`; th
 
 A typo in `EXTENSION_PORT` or `SIGN_PORT` falls back to the default without a log line.
 In `cmd/docker` both tee-node and the extension parse the same value, so they stay
-consistent; in `cmd/devserver` the extension may listen where nothing forwards.
+consistent; in `cmd/dev/devserver` the extension may listen where nothing forwards.
 `CHAIN_ID` and `EXTENSION_ID` already panic when unset; the ports should fail the same way.
 
 ### SR-47 · Info — decode-error text reaches the public `Log`

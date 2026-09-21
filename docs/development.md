@@ -9,10 +9,11 @@ single static binary on a distroless base, bit-for-bit reproducible across machi
 ```
 cmd/
 ├── docker/         tee-node + extension in one process — the image entry point
-├── devserver/      real provisioning and observation, no chain
-├── mocknode/       stand-in for tee-node's /sign, /decrypt and /info
-├── start-tee/      host-process runner behind deploy/scripts/start-services.sh --local
-└── usdxprov/       build, sign and submit a SET_SECRET envelope
+├── usdxprov/       build, sign and submit a SET_SECRET envelope
+└── dev/            everything that is not shipped in the image
+    ├── devserver/  real provisioning and observation, no chain
+    ├── mocknode/   stand-in for tee-node's /sign, /decrypt and /info
+    └── start-tee/  host-process runner behind deploy/scripts/start-services.sh --local
 internal/
 ├── config/         pinned facts: op hashes, chains, endpoints, timing bounds, health keys
 ├── failure/        the closed public error vocabulary
@@ -49,7 +50,7 @@ go test ./... && (cd tools && go test ./...)
 ```
 
 The highest-value local check is a real observation against live sources, with no chain and no
-TEE: `./deploy/scripts/oracle-observe.sh` starts `cmd/mocknode` and `cmd/devserver`, provisions
+TEE: `./deploy/scripts/oracle-observe.sh` starts `cmd/dev/mocknode` and `cmd/dev/devserver`, provisions
 them, asks for a price and tears both down.
 
 ## Two constraints worth knowing before you edit a handler

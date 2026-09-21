@@ -2,8 +2,8 @@
 // SET_ENDPOINTS and SET_SECRET can be exercised before anything is deployed.
 // Only the delivery path is short-circuited — actions are POSTed at /action.
 //
-//	go run ./cmd/mocknode &
-//	go run ./cmd/devserver &
+//	go run ./cmd/dev/mocknode &
+//	go run ./cmd/dev/devserver &
 //	./deploy/scripts/set-endpoints.sh deploy/config/endpoints/coston2.json
 //	./deploy/scripts/set-admins.sh deploy/config/admins/dev-wellknown-keys.json
 //

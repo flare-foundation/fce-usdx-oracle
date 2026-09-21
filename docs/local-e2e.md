@@ -78,7 +78,7 @@ runner can also be run by hand with `(cd tools && go run ./cmd/local-stack)`, Ct
 both), waits for the proxy, records its URL in `deploy/config/stack.env` for every follow-up
 script and tool, and runs `post-build.sh` against it.
 
-`local-stack` builds `cmd/start-tee` from the module root (against the sibling tee-node when
+`local-stack` builds `cmd/dev/start-tee` from the module root (against the sibling tee-node when
 `start-services.sh` has written a `go.work`, else the pinned module), renders the local devnet
 proxy config into `out/` with the simulation's addresses and chain id, and uses the simulation's
 fourth redis (`:6382`, which e2e reserves for an extension proxy; `-redis` picks another). The

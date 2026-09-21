@@ -70,8 +70,8 @@ cd "$PROJECT_DIR"
 # Built rather than `go run`: go run execs the compiled binary as a CHILD, so
 # killing the go run process on exit would leave that child holding the port and
 # the next invocation would fail to bind.
-go build -o "$LOG_DIR/mocknode" ./cmd/mocknode
-go build -o "$LOG_DIR/devserver" ./cmd/devserver
+go build -o "$LOG_DIR/mocknode" ./cmd/dev/mocknode
+go build -o "$LOG_DIR/devserver" ./cmd/dev/devserver
 
 section "Starting mocknode (:$SIGN_PORT) and devserver (:$EXT_PORT)"
 SIGN_PORT="$SIGN_PORT" EXTENSION_PORT="$EXT_PORT" "$LOG_DIR/mocknode" >"$LOG_DIR/mocknode.log" 2>&1 &

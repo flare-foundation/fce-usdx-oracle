@@ -893,10 +893,10 @@ copy in every command that needs it.
   `deploy/config/stack.env`, read after `.env` and above the environment (the e2e scripts
   share that shell), so the commands after a start are the same for both. The tools' `-p`
   flag is the explicit override; on the testnets nothing is recorded and `.env` applies.
-- **`--local` mode is Go-only.** `cmd/start-tee` links the Go extension
+- **`--local` mode is Go-only.** `cmd/dev/start-tee` links the Go extension
   in-process, so it lives in the extension module; `tools/` must stay independent
   of any one language implementation so it can deploy and test all of them.
-- **`cmd/mocknode` is not secure and not for deployment.** Its key is derived
+- **`cmd/dev/mocknode` is not secure and not for deployment.** Its key is derived
   from a fixed seed so runs are reproducible, which is the opposite of what a real
   TEE guarantees. It exists so the provisioning flow can be exercised without
   Confidential Space: `SET_SECRET` carries a ciphertext that must be decrypted

@@ -161,11 +161,11 @@ observation, and tears both down.
 To run it by hand instead — three terminals, or background the first two:
 
 ```bash
-SIGN_PORT=9099 go run ./cmd/mocknode
+SIGN_PORT=9099 go run ./cmd/dev/mocknode
 ```
 
 ```bash
-EXTENSION_PORT=8099 SIGN_PORT=9099 go run ./cmd/devserver
+EXTENSION_PORT=8099 SIGN_PORT=9099 go run ./cmd/dev/devserver
 ```
 
 ```bash

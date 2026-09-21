@@ -68,7 +68,7 @@ restored in the working tree.
 Five area passes, each reading the code rather than the documentation: the observation
 pipeline (`internal/observation/**`, `internal/config`), the extension surface and provisioning
 (`internal/extension`, `internal/provisioning`, `internal/wire`, `internal/teenode`,
-`pkg/server`, `cmd/docker`, `cmd/start-tee`), the operator tooling (`tools/**`,
+`pkg/server`, `cmd/docker`, `cmd/dev/start-tee`), the operator tooling (`tools/**`,
 `cmd/usdxprov`), deployment and CI (`Dockerfile*`, `deploy/**`, `.gitlab-ci.yml`), and the
 on-chain protocol (the upstream store, sender, verification and manager contracts, and how the
 enclave and keeper use them). The highest-impact claims were then re-read independently. The
@@ -720,7 +720,7 @@ the comment beside it is wrong. Drop it before registering a hash, or document i
 - Decoder text reaches `Log` through the 400 bodies at `router.go:28, 45`; two critical sections
   in `feed.go`; `result.go:65` reports version `0.1.0` where tee-node's results say `1.0.0`;
   `envelope.go:398` burns the per-ref version before decrypt; admins sign a hash they cannot read.
-- `cmd/start-tee` falls back to a well-known Hardhat key for `INITIAL_OWNER` (development
+- `cmd/dev/start-tee` falls back to a well-known Hardhat key for `INITIAL_OWNER` (development
   stack); `lib/env.sh` exports every `.env` value to every child process; `use-chain.sh` reuses
   the deployer key as the first admin key; `sed -i ''` is BSD-only; unescaped `.env` values enter
   `sed` scripts in `start-services.sh:176-179` and `import-upstream-addresses.sh:115`.

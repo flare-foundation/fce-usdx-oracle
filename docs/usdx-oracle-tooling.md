@@ -314,11 +314,11 @@ most likely to meet are tabulated in
 
 | Tool | What it does |
 | --- | --- |
-| `cmd/devserver` | The extension with real provisioning and observation, no chain. |
-| `cmd/mocknode` | Stands in for tee-node: `/sign`, `/decrypt`, `/info`, key from a fixed seed. **Not secure, not for deployment.** |
-| `cmd/start-tee` | Host-process runner behind `start-services.sh --local`. |
+| `cmd/dev/devserver` | The extension with real provisioning and observation, no chain. |
+| `cmd/dev/mocknode` | Stands in for tee-node: `/sign`, `/decrypt`, `/info`, key from a fixed seed. **Not secure, not for deployment.** |
+| `cmd/dev/start-tee` | Host-process runner behind `start-services.sh --local`. |
 | `set-config.sh endpoints\|admins` | Posts a `SET_ENDPOINTS` or `SET_ADMINS` payload straight to a running extension's `/action`, no chain. |
-| `local-stack` | Runs the extension TEE and its proxy as host processes on the local simulation: the proxy in-process, `cmd/start-tee` as a child. No Docker; see [local-e2e.md](local-e2e.md). |
+| `local-stack` | Runs the extension TEE and its proxy as host processes on the local simulation: the proxy in-process, `cmd/dev/start-tee` as a child. No Docker; see [local-e2e.md](local-e2e.md). |
 | `full-setup-host.sh` | `full-setup.sh --chain local` with the stack as host processes: starts `local-stack` under `out/pids/`, then runs `post-build.sh` against it. |
 | `deploy-oracle.sh --chain local` | Deploys upstream's oracle contracts on the simulation through `contracts/script/DeployTeeOracle.s.sol`, deployer-governed (no production mode), reserves extension 1 and imports the addresses. |
 | `publish-local.sh` | Publishes endpoints or admin sets on the simulation: one transaction on a deployer-governed sender; record, real timelock and execute on a production-mode one. |
@@ -357,7 +357,7 @@ cannot help, because the siblings build's context root is `tee/`, not the repo.
 | --- | --- |
 | `cmd/docker` | **production** — what the Dockerfile builds (tee-node + extension in one process) |
 | `cmd/` | `docker` (production entrypoint), `devserver` + `mocknode` (local dev), `start-tee` (host-process runner), `usdxprov` (provisioning CLI) |
-| `cmd/devserver` · `cmd/mocknode` · `cmd/start-tee` | local dev |
+| `cmd/dev/devserver` · `cmd/dev/mocknode` · `cmd/dev/start-tee` | local dev |
 | `cmd/usdxprov` | ops: build / sign / submit a `SET_SECRET` envelope |
 
 ---
