@@ -52,7 +52,7 @@ func main() {
 	senderF := flag.String("instructionSender", "",
 		"TeeOracleInstructionsSender address; optional — when omitted it is derived "+
 			"from the store's instructionsSender() pointer")
-	feedIDF := flag.String("feedId", "0x21555344582f555344000000000000000000000000",
+	feedIDF := flag.String("feedId", configs.FeedID,
 		"feed id (bytes21 hex); defaults to USDX/USD")
 	storeF := flag.String("store", "",
 		"TeeOracleFeedStore address (default: the TeeOracleFeedStore entry in the addresses file)")

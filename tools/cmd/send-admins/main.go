@@ -31,10 +31,10 @@ import (
 	"strings"
 	"time"
 
+	"fce-usdx-oracle/pkg/wire/configpayload"
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
 	"fce-usdx-oracle/tools/pkg/keeper"
-	"fce-usdx-oracle/tools/pkg/oraclepayload"
 	"fce-usdx-oracle/tools/pkg/support"
 	instrutils "fce-usdx-oracle/tools/pkg/utils"
 
@@ -53,7 +53,7 @@ func main() {
 		"TeeOracleInstructionsSender address (default: the TeeOracleInstructionsSender "+
 			"entry in the addresses file)")
 	configF := flag.String("config", "", "admin set JSON file")
-	feedIDF := flag.String("feedId", "0x21555344582f555344000000000000000000000000",
+	feedIDF := flag.String("feedId", configs.FeedID,
 		"feed id (bytes21 hex); defaults to USDX/USD")
 	claimBackF := flag.String("claimBack", "",
 		"payer of record for the dispatched instruction, written on-chain for the reward "+
@@ -109,7 +109,7 @@ func main() {
 		if *versionF == 0 {
 			fccutils.FatalWithCause(errors.New("-encode needs -version (a dev server's store rejects version 0)"))
 		}
-		payload, err := oraclepayload.EncodeAdmins(*versionF, feedID, roles)
+		payload, err := configpayload.EncodeAdmins(*versionF, feedID, roles)
 		if err != nil {
 			fccutils.FatalWithCause(errors.Errorf("encoding Admins: %s", err))
 		}

@@ -102,7 +102,7 @@ func TestValidateAdmins(t *testing.T) {
 			payload: payload(`{"threshold":1,"admins":["`+a1+`"]}`, okProviders),
 		},
 		{
-			// Caught by oraclepayload.Threshold at parse time, before the per-role
+			// Caught by configpayload.Threshold at parse time, before the per-role
 			// range check in validateAdmins.
 			name:    "backing threshold of zero",
 			payload: payload(`{"threshold":0,"admins":["`+a1+`"]}`, okProviders),

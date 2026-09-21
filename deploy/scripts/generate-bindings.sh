@@ -9,16 +9,15 @@
 #
 #   tools/pkg/contracts/teeoraclesender   IITeeOracleInstructionsSender  keeper, provisioning CLIs
 #   tools/pkg/contracts/teeoraclestore    IITeeOracleFeedStore           keeper
-#   tools/pkg/contracts/teeoraclestructs  TeeOracleStructs               payload encoders
-#   pkg/contracts/teeoraclestructs        TeeOracleStructs               enclave payload decoders
+#   pkg/contracts/teeoraclestructs        TeeOracleStructs               payload codecs, both modules
 #
 # Every entry is an interface, so abigen runs without --bin and emits no Deploy
 # helper: there is nothing here to deploy. TeeOracleStructs is upstream's
 # ABI-only re-export of the payload wrappers (Endpoints, Admins,
 # FeedUpdateRequest). The contracts assemble those internally, so without it the
 # wrappers would appear in no ABI and the off-chain codecs would have to guess a
-# layout they cannot afford to get wrong. It is generated into both Go modules
-# because they are deliberately independent and cannot import one another.
+# layout they cannot afford to get wrong. It is generated once, into the
+# extension's module, which the tooling imports.
 #
 # Prerequisites: forge (Foundry), jq, and the flare-smart-contracts-v2 checkout
 # contracts/foundry.toml points at.
@@ -36,7 +35,7 @@ CONTRACTS_DIR="$PROJECT_DIR/contracts"
 CONTRACTS=(
     "IITeeOracleInstructionsSender.sol:IITeeOracleInstructionsSender:teeoraclesender:tools"
     "IITeeOracleFeedStore.sol:IITeeOracleFeedStore:teeoraclestore:tools"
-    "TeeOracleStructs.sol:TeeOracleStructs:teeoraclestructs:both"
+    "TeeOracleStructs.sol:TeeOracleStructs:teeoraclestructs:."
 )
 
 echo "=== Step 1: Compile the upstream interfaces ==="

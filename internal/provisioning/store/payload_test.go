@@ -3,6 +3,7 @@ package store
 import (
 	"fce-usdx-oracle/pkg/wire/configpayload"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -55,4 +56,19 @@ func EncodeAdmins(version uint64, feedID [21]byte, roles []RoleSpec) ([]byte, er
 		})
 	}
 	return configpayload.EncodeAdmins(version, feedID, w)
+}
+
+// EncodePrivateURL packs the commitment preimage WITHOUT the codec's salt check,
+// so a test can hand the enclave the unsalted blob a hostile sender might and
+// see it refused there. The layout is the codec's: abi.encode(salt, url).
+func EncodePrivateURL(u PrivateURL) ([]byte, error) {
+	salt, err := abi.NewType("bytes32", "", nil)
+	if err != nil {
+		return nil, err
+	}
+	url, err := abi.NewType("string", "", nil)
+	if err != nil {
+		return nil, err
+	}
+	return abi.Arguments{{Type: salt}, {Type: url}}.Pack(u.Salt, u.Url)
 }

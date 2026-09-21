@@ -31,7 +31,7 @@ If you change a request or response shape, edit the fixture and let `TestConform
 
 ## The deployment tooling
 
-`tools/` is its own Go module. It imports the extension for one thing, the provisioning envelope `usdxprov` signs, and speaks the published wire format everywhere else. It has its own tests.
+`tools/` is its own Go module. It imports the extension's wire packages rather than restating them, and adds the operator's half on top. It has its own tests.
 
 | Layer | What it tests | How to run |
 |-------|--------------|------------|

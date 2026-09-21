@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"fce-usdx-oracle/tools/pkg/oraclepayload"
+	"fce-usdx-oracle/pkg/wire/configpayload"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -26,10 +26,10 @@ func TestPublicationCalldataMatchesSenderABI(t *testing.T) {
 	}
 	feedID := [21]byte{0x20, 'U', 'S', 'D', 'X'}
 	claimBack := common.HexToAddress("0x000000000000000000000000000000000000dEaD")
-	groups := []oraclepayload.Group{{Group: tag("flare"), Threshold: 1, Endpoints: []oraclepayload.Endpoint{
-		{Kind: oraclepayload.KindPublic, Url: "https://flare.example/rpc"},
+	groups := []configpayload.Group{{Group: tag("flare"), Threshold: 1, Endpoints: []configpayload.Endpoint{
+		{Kind: configpayload.KindPublic, Url: "https://flare.example/rpc"},
 	}}}
-	roles := []oraclepayload.Role{{Role: tag("backing"), Threshold: 1, Admins: []common.Address{
+	roles := []configpayload.Role{{Role: tag("backing"), Threshold: 1, Admins: []common.Address{
 		common.HexToAddress("0x1111111111111111111111111111111111111111"),
 	}}}
 

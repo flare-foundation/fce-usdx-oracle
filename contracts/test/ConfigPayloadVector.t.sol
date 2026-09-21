@@ -12,8 +12,8 @@ import {
  *
  * The structs are IMPORTED from the upstream interface rather than re-declared,
  * so this fixture cannot drift from the ABI the bindings are generated off.
- * Both Go codecs — the enclave's in internal/provisioning/store and the publisher's
- * in tools/pkg/oraclepayload — assert against the bytes printed here.
+ * The Go codec in pkg/wire/configpayload, which the enclave decodes with and
+ * the publishing tools encode with, asserts against the bytes printed here.
  *
  * Endpoints and Admins are ABI-DYNAMIC, so there is no canonical encoding to
  * fall back on: two encoders can disagree and both look reasonable. That is the

@@ -406,10 +406,11 @@ data   = abi.encode(update, signature)      # ActionResult.data — 10 words, 32
 ```
 
 so the keeper ABI-decodes `result.data` into the update and its signature and hands them on as
-one `SignedFeedUpdate{feedUpdate, signature}` element of `submitFeedUpdates`. `feedupdate.Decode` in `tools/pkg/feedupdate` is exactly
-this — it restates the wire layout rather than importing the enclave's copy in
-`internal/wire/feedupdate`, so the relayer is an independent check on the machine instead of a mirror
-of it; both are pinned to the same Solidity-generated fixtures in `deploy/testdata/wire`.
+one `SignedFeedUpdate{feedUpdate, signature}` element of `submitFeedUpdates`. `feedupdate.Decode` in
+`tools/pkg/feedupdate` is exactly this: it decodes through the extension's own
+`pkg/wire/feedupdate`, so there is one layout, and adds what the enclave never does with its
+own output, recovering the machine that signed. The layout is pinned to Solidity's bytes in
+`deploy/testdata/wire`.
 
 **The old verbatim rule is retired for this payload.** Every `FeedUpdate` field is static, so
 its ABI encoding is canonical — exactly one valid byte string per set of values — and the store

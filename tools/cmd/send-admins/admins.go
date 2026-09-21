@@ -6,7 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"fce-usdx-oracle/tools/pkg/oraclepayload"
+	"fce-usdx-oracle/pkg/protocol"
+	"fce-usdx-oracle/pkg/wire/configpayload"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pkg/errors"
@@ -45,23 +46,18 @@ const (
 	maxThreshold         = 16
 )
 
-// hexAPIKeyRef is the one credential the backing set governs, stated here only so
-// the summary can name it. The mapping that matters is pinned in the extension
-// build and is NOT carried in this payload.
-const hexAPIKeyRef = "hex_api_key"
-
 // knownRoles must both be present. Which credentials each governs is pinned in
 // the extension build, not here; this tool only checks the shape.
 var knownRoles = []string{"backing", "providers"}
 
 // parseAdmins decodes the operator's JSON into the typed role list.
-func parseAdmins(raw []byte) ([]oraclepayload.Role, error) {
+func parseAdmins(raw []byte) ([]configpayload.Role, error) {
 	var a map[string]adminSetConfig
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return nil, errors.Errorf("payload is not a known admin set: %s", err)
 	}
 
-	roles := make([]oraclepayload.Role, 0, len(a))
+	roles := make([]configpayload.Role, 0, len(a))
 	for _, name := range sortedRoleKeys(a) {
 		role, err := buildRole(name, a[name])
 		if err != nil {
@@ -73,14 +69,14 @@ func parseAdmins(raw []byte) ([]oraclepayload.Role, error) {
 }
 
 // buildRole turns one config entry into a typed AdminRole, validating it.
-func buildRole(name string, sc adminSetConfig) (oraclepayload.Role, error) {
-	tag, err := oraclepayload.Tag(name)
+func buildRole(name string, sc adminSetConfig) (configpayload.Role, error) {
+	tag, err := configpayload.Tag(name)
 	if err != nil {
-		return oraclepayload.Role{}, errors.Errorf("role %q: %s", name, err)
+		return configpayload.Role{}, errors.Errorf("role %q: %s", name, err)
 	}
-	threshold, err := oraclepayload.Threshold(sc.Threshold)
+	threshold, err := configpayload.Threshold(sc.Threshold)
 	if err != nil {
-		return oraclepayload.Role{}, errors.Errorf("role %q: %s", name, err)
+		return configpayload.Role{}, errors.Errorf("role %q: %s", name, err)
 	}
 
 	admins := make([]common.Address, 0, len(sc.Admins))
@@ -90,23 +86,23 @@ func buildRole(name string, sc adminSetConfig) (oraclepayload.Role, error) {
 		// cannot parse, so a typo would install a signer nobody holds and quietly
 		// shrink the effective set.
 		if !common.IsHexAddress(text) {
-			return oraclepayload.Role{}, errors.Errorf("role %q: %q is not a hex address", name, raw)
+			return configpayload.Role{}, errors.Errorf("role %q: %q is not a hex address", name, raw)
 		}
 		admins = append(admins, common.HexToAddress(text))
 	}
 
-	return oraclepayload.Role{Role: tag, Threshold: threshold, Admins: admins}, nil
+	return configpayload.Role{Role: tag, Threshold: threshold, Admins: admins}, nil
 }
 
 // validateAdmins checks the role set against the rules the extension build pins.
-func validateAdmins(roles []oraclepayload.Role) error {
+func validateAdmins(roles []configpayload.Role) error {
 	if len(roles) == 0 {
 		return errors.New("no roles configured")
 	}
 
 	seen := make(map[string]bool, len(roles))
 	for _, r := range roles {
-		name := oraclepayload.TagName(r.Role)
+		name := configpayload.TagName(r.Role)
 		if seen[name] {
 			return errors.Errorf("role %q appears more than once", name)
 		}
@@ -130,7 +126,7 @@ func validateAdmins(roles []oraclepayload.Role) error {
 	return nil
 }
 
-func validateSet(name string, r oraclepayload.Role, floor int) error {
+func validateSet(name string, r configpayload.Role, floor int) error {
 	if len(r.Admins) == 0 || len(r.Admins) > maxAdmins {
 		return errors.Errorf("role %q admin count %d is not between 1 and %d",
 			name, len(r.Admins), maxAdmins)
@@ -163,13 +159,13 @@ func validateSet(name string, r oraclepayload.Role, floor int) error {
 // summarise renders what was actually parsed, so the operator sees the sets the
 // extension will see rather than the bytes they thought they wrote — including
 // which credentials each set governs, which is the part most easily got wrong.
-func summarise(roles []oraclepayload.Role) string {
+func summarise(roles []configpayload.Role) string {
 	var b strings.Builder
 	for _, r := range roles {
-		name := oraclepayload.TagName(r.Role)
+		name := configpayload.TagName(r.Role)
 		governs := "governs every other credential"
 		if name == "backing" {
-			governs = "governs " + hexAPIKeyRef + " only"
+			governs = "governs " + protocol.HexAPIKeyRef + " only"
 		}
 		b.WriteString(name + ": " + strconv.FormatUint(r.Threshold, 10) + "-of-" +
 			strconv.Itoa(len(r.Admins)) + " — " + governs + "\n")

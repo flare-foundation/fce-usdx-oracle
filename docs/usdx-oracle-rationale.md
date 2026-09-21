@@ -860,14 +860,17 @@ cannot drift from the instruction actually sent.
 internally via `getRandomTeeIds`, so the caller cannot know the tee id in
 advance.
 
-### Why `pricereport` lives in `tools/`
+### Why `feedupdate` lives in `tools/`
 
-The wire layout is declared there rather than imported from `pkg/wire/feedupdate`
-so that `tools/` stays independent of any one implementation: it asserts on the
-*wire contract*, and must run unchanged against the Go, Python and TypeScript
-extensions alike (`docs/extension-contract.md`). It is a second, deliberate
-declaration of the same layout — which is also why it is one package and not a
-copy in every command that needs it.
+The tooling decodes a signed update through the extension's own `pkg/wire/feedupdate`, so
+the layout is declared once and the tooling follows a change to it by construction. What
+`tools/pkg/feedupdate` adds is what the enclave never does with its own output: recovering
+the machine that signed, naming the feed, and rendering the value for a human. That is why it
+is one package rather than a copy in every command that needs it. The independent check on
+the layout is not a second Go declaration but Solidity's own encoding in
+`deploy/testdata/wire`, which the codec is tested against; `docs/extension-contract.md`
+remains the wire contract any other implementation of the extension is held to, and the
+tooling runs unchanged against one because it speaks that contract, not one binary's quirks.
 
 ---
 

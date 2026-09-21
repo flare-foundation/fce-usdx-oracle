@@ -3,6 +3,7 @@ package keeper
 import (
 	"context"
 	"encoding/json"
+	"fce-usdx-oracle/pkg/protocol"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,14 +12,13 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
-	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
 )
 
 // postDirectAction carries GET_READINESS and nothing else — a price is always an
 // on-chain instruction — so the readiness op pair is what these exercise.
 var (
-	testOPType    = teeutils.ToHash(opTypeTeeOracle)
-	testOPCommand = teeutils.ToHash(opCommandGetReadiness)
+	testOPType    = protocol.OPTypeTeeOracle
+	testOPCommand = protocol.OPCommandGetReadiness
 )
 
 // The direct wire shape is a DirectInstruction: three fields, payload under

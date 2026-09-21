@@ -19,6 +19,7 @@ import (
 	"math/big"
 	"strings"
 
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclesender"
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
 	"fce-usdx-oracle/tools/pkg/fccutils"
@@ -38,22 +39,12 @@ import (
 // matches the store's by construction (same deployment), and the signed update
 // names the same id, so this is a sanity check rather than a load-bearing one.
 //
-// It mirrors internal/config.FeedID; the two cannot share a definition because
+// It mirrors internal/protocol.FeedID; the two cannot share a definition because
 // tools/ is a separate module and internal/ is not importable from here.
-var feedID = mustFeedID("0x21555344582f555344000000000000000000000000")
+var feedID = protocol.FeedID
 
 // maxBatch is the store's ceiling on signatures per submission.
 const maxBatch = 32
-
-func mustFeedID(s string) [21]byte {
-	raw, err := hex.DecodeString(strings.TrimPrefix(s, "0x"))
-	if err != nil || len(raw) != 21 {
-		panic("keeper: invalid feed id " + s)
-	}
-	var id [21]byte
-	copy(id[:], raw)
-	return id
-}
 
 // Rejection is a batch the store will not accept, named by the guard that
 // rejects it. The name matters more than the message: StaleEndpoints needs a

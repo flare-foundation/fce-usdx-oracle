@@ -7,7 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"fce-usdx-oracle/tools/pkg/oraclepayload"
+	"fce-usdx-oracle/pkg/protocol"
+	"fce-usdx-oracle/pkg/wire/configpayload"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pkg/errors"
@@ -50,17 +51,7 @@ type endpointConfig struct {
 // secretPlaceholder is the token the enclave replaces at dial time.
 const secretPlaceholder = "{secret}"
 
-// hexAPIKeyRef authenticates the pinned backing source by header, and may not be
-// named as a provider secret: substituting it into a provider URL would deliver
-// the backing credential to a host of the URL author's choosing.
-const hexAPIKeyRef = "hex_api_key"
-
-// hexCashURLRef names the off-chain-provisioned URL for the PRIVATE hex_cash
-// endpoint. Pinned so the role governing the cash URL is not the publisher's
-// choice.
-const hexCashURLRef = "hex_cash_url"
-
-// knownGroups must match the tags the extension build pins (config.Chains plus
+// knownGroups must match the tags the extension build pins (protocol.Chains plus
 // hex_cash). A payload missing one undercounts supply, which OVERSTATES the price
 // — so a missing group is rejected rather than treated as "that chain is off".
 // An unknown group is likewise rejected: publisher and build disagreeing about
@@ -69,13 +60,13 @@ var knownGroups = []string{"flare", "ethereum", "songbird", "hex_cash"}
 
 // parseEndpoints decodes the operator's JSON into the typed group list, rejecting
 // unknown fields: they mean publisher and build disagree about the schema.
-func parseEndpoints(raw []byte) ([]oraclepayload.Group, error) {
+func parseEndpoints(raw []byte) ([]configpayload.Group, error) {
 	var e map[string]groupConfig
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return nil, errors.Errorf("payload is not a known configuration: %s", err)
 	}
 
-	groups := make([]oraclepayload.Group, 0, len(e))
+	groups := make([]configpayload.Group, 0, len(e))
 	for _, name := range sortedKeys(e) {
 		group, err := buildGroup(name, e[name])
 		if err != nil {
@@ -88,75 +79,75 @@ func parseEndpoints(raw []byte) ([]oraclepayload.Group, error) {
 
 // buildGroup turns one config entry into a typed EndpointGroup, validating the
 // shape along the way.
-func buildGroup(name string, gc groupConfig) (oraclepayload.Group, error) {
-	tag, err := oraclepayload.Tag(name)
+func buildGroup(name string, gc groupConfig) (configpayload.Group, error) {
+	tag, err := configpayload.Tag(name)
 	if err != nil {
-		return oraclepayload.Group{}, errors.Errorf("group %q: %s", name, err)
+		return configpayload.Group{}, errors.Errorf("group %q: %s", name, err)
 	}
-	threshold, err := oraclepayload.Threshold(gc.Threshold)
+	threshold, err := configpayload.Threshold(gc.Threshold)
 	if err != nil {
-		return oraclepayload.Group{}, errors.Errorf("group %q: %s", name, err)
+		return configpayload.Group{}, errors.Errorf("group %q: %s", name, err)
 	}
 
-	endpoints := make([]oraclepayload.Endpoint, 0, len(gc.Endpoints))
+	endpoints := make([]configpayload.Endpoint, 0, len(gc.Endpoints))
 	for i, ec := range gc.Endpoints {
 		endpoint, err := buildEndpoint(name, i, ec)
 		if err != nil {
-			return oraclepayload.Group{}, err
+			return configpayload.Group{}, err
 		}
 		endpoints = append(endpoints, endpoint)
 	}
 
-	return oraclepayload.Group{Group: tag, Threshold: threshold, Endpoints: endpoints}, nil
+	return configpayload.Group{Group: tag, Threshold: threshold, Endpoints: endpoints}, nil
 }
 
 // buildEndpoint classifies one endpoint as PUBLIC or PRIVATE by which fields it
 // carries, and validates it.
-func buildEndpoint(group string, i int, ec endpointConfig) (oraclepayload.Endpoint, error) {
+func buildEndpoint(group string, i int, ec endpointConfig) (configpayload.Endpoint, error) {
 	hasURL := ec.URL != ""
 	hasHash := ec.URLHash != ""
 
 	switch {
 	case hasURL && hasHash:
-		return oraclepayload.Endpoint{}, errors.Errorf(
+		return configpayload.Endpoint{}, errors.Errorf(
 			"group %q endpoint %d: url and urlHash are mutually exclusive — pick PUBLIC (url) or PRIVATE (urlHash)",
 			group, i+1)
 	case hasURL:
 		if err := checkURL(ec.URL, ec.Secret); err != nil {
-			return oraclepayload.Endpoint{}, errors.Errorf("group %q endpoint %d: %s", group, i+1, err)
+			return configpayload.Endpoint{}, errors.Errorf("group %q endpoint %d: %s", group, i+1, err)
 		}
-		if ec.Secret == hexAPIKeyRef {
-			return oraclepayload.Endpoint{}, errors.Errorf(
+		if ec.Secret == protocol.HexAPIKeyRef {
+			return configpayload.Endpoint{}, errors.Errorf(
 				"group %q endpoint %d: %q authenticates the backing source and may not be used as a provider secret",
-				group, i+1, hexAPIKeyRef)
+				group, i+1, protocol.HexAPIKeyRef)
 		}
-		return oraclepayload.Endpoint{
-			Kind:      oraclepayload.KindPublic,
+		return configpayload.Endpoint{
+			Kind:      configpayload.KindPublic,
 			Url:       ec.URL,
 			SecretRef: ec.Secret,
 		}, nil
 	case hasHash:
 		hash := common.HexToHash(ec.URLHash)
 		if hash == (common.Hash{}) {
-			return oraclepayload.Endpoint{}, errors.Errorf(
+			return configpayload.Endpoint{}, errors.Errorf(
 				"group %q endpoint %d: urlHash %q is not a non-zero 32-byte hash", group, i+1, ec.URLHash)
 		}
 		if ec.Secret == "" {
-			return oraclepayload.Endpoint{}, errors.Errorf(
+			return configpayload.Endpoint{}, errors.Errorf(
 				"group %q endpoint %d: a PRIVATE endpoint must name the secret ref that delivers the URL off-chain",
 				group, i+1)
 		}
 		if strings.Contains(ec.Secret, secretPlaceholder) {
-			return oraclepayload.Endpoint{}, errors.Errorf(
+			return configpayload.Endpoint{}, errors.Errorf(
 				"group %q endpoint %d: secretRef may not contain %s", group, i+1, secretPlaceholder)
 		}
-		return oraclepayload.Endpoint{
-			Kind:      oraclepayload.KindPrivate,
+		return configpayload.Endpoint{
+			Kind:      configpayload.KindPrivate,
 			UrlHash:   hash,
 			SecretRef: ec.Secret,
 		}, nil
 	default:
-		return oraclepayload.Endpoint{}, errors.Errorf(
+		return configpayload.Endpoint{}, errors.Errorf(
 			"group %q endpoint %d: needs either url (PUBLIC) or urlHash (PRIVATE)", group, i+1)
 	}
 }
@@ -164,14 +155,14 @@ func buildEndpoint(group string, i int, ec endpointConfig) (oraclepayload.Endpoi
 // validateEndpoints checks the group set against the rules the extension build
 // pins. Kept independent of the extension so a divergence surfaces here rather
 // than as a silently-applied subset.
-func validateEndpoints(groups []oraclepayload.Group) error {
+func validateEndpoints(groups []configpayload.Group) error {
 	if len(groups) == 0 {
 		return errors.New("no groups configured")
 	}
 
 	seen := make(map[string]bool, len(groups))
 	for _, g := range groups {
-		name := oraclepayload.TagName(g.Group)
+		name := configpayload.TagName(g.Group)
 		if seen[name] {
 			return errors.Errorf("group %q appears more than once", name)
 		}
@@ -209,7 +200,7 @@ func validateEndpoints(groups []oraclepayload.Group) error {
 // committed under the pinned secret ref. A PUBLIC entry would put the restricted
 // URL on-chain and let whoever publishes configuration point the numerator of the
 // price wherever they liked.
-func checkHexCash(g oraclepayload.Group) error {
+func checkHexCash(g configpayload.Group) error {
 	if len(g.Endpoints) != 1 {
 		return errors.Errorf("hex_cash must have exactly one endpoint, got %d", len(g.Endpoints))
 	}
@@ -217,11 +208,11 @@ func checkHexCash(g oraclepayload.Group) error {
 		return errors.Errorf("hex_cash threshold must be 1, got %d", g.Threshold)
 	}
 	ep := g.Endpoints[0]
-	if ep.Kind != oraclepayload.KindPrivate {
+	if ep.Kind != configpayload.KindPrivate {
 		return errors.New("hex_cash must be a PRIVATE endpoint (urlHash), not PUBLIC (url)")
 	}
-	if ep.SecretRef != hexCashURLRef {
-		return errors.Errorf("hex_cash must name secretRef %q, got %q", hexCashURLRef, ep.SecretRef)
+	if ep.SecretRef != protocol.HexCashURLRef {
+		return errors.Errorf("hex_cash must name secretRef %q, got %q", protocol.HexCashURLRef, ep.SecretRef)
 	}
 	return nil
 }
@@ -254,10 +245,10 @@ func checkURL(raw, secretRef string) error {
 // summarise describes what is about to be published: group names, thresholds,
 // endpoint kinds and credential refs. Never a URL or urlHash value beyond a
 // short prefix — this reaches terminals and logs.
-func summarise(groups []oraclepayload.Group) string {
+func summarise(groups []configpayload.Group) string {
 	var b strings.Builder
 	for _, g := range groups {
-		name := oraclepayload.TagName(g.Group)
+		name := configpayload.TagName(g.Group)
 		b.WriteString("  ")
 		b.WriteString(name)
 		b.WriteString(": ")
@@ -267,7 +258,7 @@ func summarise(groups []oraclepayload.Group) string {
 
 		var kinds, refs []string
 		for _, ep := range g.Endpoints {
-			if ep.Kind == oraclepayload.KindPrivate {
+			if ep.Kind == configpayload.KindPrivate {
 				kinds = append(kinds, "private")
 			} else {
 				kinds = append(kinds, "public")

@@ -1,53 +1,37 @@
 package feedupdate
 
 import (
-	"encoding/hex"
 	"math/big"
-	"os"
-	"strings"
 	"testing"
+
+	wire "fce-usdx-oracle/pkg/wire/feedupdate"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// From test/FeedUpdateVector.t.sol, shared with the enclave's encoder in
-// internal/wire/feedupdate. See deploy/testdata/wire/README.md for why both are pinned to
-// Solidity's output rather than to each other.
+// From test/FeedUpdateVector.t.sol. The encoding itself is the extension's and
+// is pinned there; this pins the digest this package hands to recovery.
 const (
 	vectorChainID = 114
 	vectorDigest  = "0x69cab05978fc8e14b84a1ef06c4fbffc91604cb27aee63cea454ad3c7974ed7c"
 	vectorPrefix  = "0x5445455f4f5241434c455f464545440000000000000000000000000000000000"
-
-	updateFile   = "../../../deploy/testdata/wire/feed-update.abi.hex"
-	preimageFile = "../../../deploy/testdata/wire/feed-update-payload-preimage.abi.hex"
 )
-
-func mustFixture(t *testing.T, path string) []byte {
-	t.Helper()
-	text, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading fixture: %v", err)
-	}
-	raw, err := hex.DecodeString(strings.TrimSpace(string(text)))
-	if err != nil {
-		t.Fatalf("bad fixture hex in %s: %v", path, err)
-	}
-	return raw
-}
 
 func vectorUpdate() Update {
 	var feedID [21]byte
 	copy(feedID[:], common.FromHex("0x21555344582f555344000000000000000000000000"))
 	return Update{
-		ExtensionID:   big.NewInt(66281),
-		FeedID:        feedID,
-		Value:         99950000,
-		Decimals:      8,
-		ObservedAt:    1787230941,
-		EndpointsHash: crypto.Keccak256Hash([]byte("endpoints")),
-		AdminsHash:    crypto.Keccak256Hash([]byte("admins")),
-		V:             28,
+		FeedUpdate: FeedUpdate{
+			ExtensionID:   big.NewInt(66281),
+			FeedID:        feedID,
+			Value:         99950000,
+			Decimals:      8,
+			ObservedAt:    1787230941,
+			EndpointsHash: crypto.Keccak256Hash([]byte("endpoints")),
+			AdminsHash:    crypto.Keccak256Hash([]byte("admins")),
+		},
+		Signature: Signature{V: 28},
 	}
 }
 
@@ -73,29 +57,26 @@ func TestDigestMatchesSolidity(t *testing.T) {
 	}
 }
 
-// The encoded body and the SignedPayload preimage must match Solidity's, since
-// the digest is built from them.
-func TestEncodingMatchesSolidity(t *testing.T) {
+// Decode reverses the extension's own encoding, field for field.
+func TestDecodeRoundTripsTheExtensionsEncoding(t *testing.T) {
 	u := vectorUpdate()
+	sig := make([]byte, 65)
+	copy(sig[:32], u.R.Bytes())
+	copy(sig[32:64], u.S.Bytes())
+	sig[64] = u.V
 
-	body, err := updateArgs.Pack(
-		u.ExtensionID, u.FeedID, u.Value, u.Decimals, u.ObservedAt,
-		u.EndpointsHash, u.AdminsHash,
-	)
+	data, err := wire.EncodeData(u.FeedUpdate, sig)
 	if err != nil {
-		t.Fatalf("packing update: %v", err)
+		t.Fatalf("EncodeData: %v", err)
 	}
-	if want := mustFixture(t, updateFile); string(body) != string(want) {
-		t.Errorf("feed update encoding differs\n got %x\nwant %x", body, want)
-	}
-
-	preimage, err := payloadArgs.Pack(
-		Prefix(), big.NewInt(vectorChainID), crypto.Keccak256Hash(body))
+	got, err := Decode(data)
 	if err != nil {
-		t.Fatalf("packing preimage: %v", err)
+		t.Fatalf("Decode: %v", err)
 	}
-	if want := mustFixture(t, preimageFile); string(preimage) != string(want) {
-		t.Errorf("signed payload encoding differs\n got %x\nwant %x", preimage, want)
+	if got.ExtensionID.Cmp(u.ExtensionID) != 0 || got.FeedID != u.FeedID || got.Value != u.Value ||
+		got.Decimals != u.Decimals || got.ObservedAt != u.ObservedAt ||
+		got.EndpointsHash != u.EndpointsHash || got.AdminsHash != u.AdminsHash || got.V != u.V {
+		t.Fatalf("round trip changed the update:\n got %+v\nwant %+v", got, u)
 	}
 }
 

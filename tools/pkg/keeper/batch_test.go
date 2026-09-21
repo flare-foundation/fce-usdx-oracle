@@ -24,10 +24,10 @@ var (
 // current commitments, so screening can recover it the way the store would.
 func signed(t *testing.T, key *ecdsa.PrivateKey, observedAt uint64, value int32) feedupdate.Update {
 	t.Helper()
-	u := feedupdate.Update{
+	u := feedupdate.Update{FeedUpdate: feedupdate.FeedUpdate{
 		ExtensionID: big.NewInt(1), FeedID: feedID, Value: value, Decimals: 8, ObservedAt: observedAt,
 		EndpointsHash: testEndpoints, AdminsHash: testAdmins,
-	}
+	}}
 	return resign(t, key, u)
 }
 
@@ -84,8 +84,8 @@ func guards(dropped []Dropped) []string {
 // An answer whose signature recovers to nobody is dropped by name; the rest go on.
 func TestScreenDropsAnUnsignedAnswerAndKeepsTheRest(t *testing.T) {
 	k := newKey(t)
-	unsigned := feedupdate.Update{ExtensionID: big.NewInt(1), FeedID: feedID, ObservedAt: 100,
-		EndpointsHash: testEndpoints, AdminsHash: testAdmins}
+	unsigned := feedupdate.Update{FeedUpdate: feedupdate.FeedUpdate{ExtensionID: big.NewInt(1), FeedID: feedID, ObservedAt: 100,
+		EndpointsHash: testEndpoints, AdminsHash: testAdmins}}
 
 	kept, dropped := screened(t, []*ecdsa.PrivateKey{k}, unsigned, signed(t, k, 100, 1))
 	if len(kept) != 1 || kept[0].signer != addr(k) {

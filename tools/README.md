@@ -5,12 +5,15 @@ configuration has to be published, its credentials have to be installed, and eve
 has to be requested and relayed to the store. Each of those is a transaction or a signed message
 that somebody sends, and this module is what sends them.
 
-It is a Go module of its own, `fce-usdx-oracle/tools`, so an operator builds it without building
-the enclave. It depends on the extension in exactly one place: `usdxprov` imports the provisioning
-envelope package, so the body an admin signs is produced by the same encoder the enclave verifies
-with. Everything else here speaks the published wire format and re-declares it, so a bug on one
-side cannot hide a bug on the other, and both sides are pinned to the same Solidity-generated
-fixtures in `deploy/testdata/wire`.
+It is a Go module of its own, `fce-usdx-oracle/tools`, and it depends on the extension's `pkg/`
+for what the two must agree on: the wire formats (the signed feed update, the readiness report,
+the configuration payloads, the provisioning envelope), the protocol's facts (the feed id, the op
+tags, the credential refs, the admin roles, the chain set) and the contract bindings. Each has one
+implementation, so the tooling follows a format change by construction; nothing under the
+extension's `internal/` is reachable from here.
+What this module adds is the operator's half: recovering who signed, predicting the hash a
+publication will record, and every transaction. The formats themselves are pinned to Solidity's
+own bytes in `deploy/testdata/wire`.
 
 ## The commands
 

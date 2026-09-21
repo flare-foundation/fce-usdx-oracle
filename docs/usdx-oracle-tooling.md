@@ -14,11 +14,11 @@ Three families:
 | `tools/cmd/*` | Go CLIs that talk to the chain and the proxy, `usdxprov` among them |
 | `cmd/*` | the extension binaries: the image entry point and the development runners |
 
-`tools/` is its own module and depends on the extension in exactly one place: `usdxprov`
-imports the provisioning envelope package, so the body an admin signs is produced by the same
-encoder the enclave verifies with. Everything else in `tools/` re-declares the wire layout it
-speaks, so a bug in one side cannot hide a bug in the other, and both sides are pinned to the
-same Solidity-generated fixtures.
+`tools/` is its own module and imports the extension's wire packages rather than restating
+them: the feed update, the readiness report, the configuration payloads, the provisioning
+envelope and the contract bindings each have one implementation, which the tooling follows by
+construction. The independent reference for every one of them is Solidity's own encoding in
+`deploy/testdata/wire`, which the codecs are tested against.
 
 ---
 
@@ -346,7 +346,7 @@ cannot help, because the siblings build's context root is `tee/`, not the repo.
 | Tool | What it does |
 | --- | --- |
 | `generate-bindings.sh` | Compiles the TEE oracle interfaces out of the sibling flare-smart-contracts-v2 checkout (`contracts/`) and regenerates the Go bindings. **Run when upstream moves.** |
-| `regen-wire-fixtures.sh` | Regenerates `deploy/testdata/wire/` from the Forge vector tests (the ABI ground truth both Go codecs assert against). |
+| `regen-wire-fixtures.sh` | Regenerates `deploy/testdata/wire/` from the Forge vector tests (the ABI ground truth the Go codecs assert against). |
 | `check-versions.sh` | Fails when the dependency pins drift apart. |
 | `go test ./...`, in the root and in `tools/` | A language implementation's unit tests, one module at a time. |
 | `go test ./internal/extension/ -run TestConformance` | Replays the wire fixtures in `deploy/testdata/conformance` against the extension, no chain and no tee-node; the check behind [extension-contract.md](extension-contract.md). |

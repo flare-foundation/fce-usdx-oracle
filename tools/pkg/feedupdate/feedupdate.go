@@ -6,12 +6,13 @@
 //	messageHash = keccak256(abi.encode(prefix, chainId, dataHash))
 //	digest      = keccak256("\x19Ethereum Signed Message:\n32" ‖ messageHash)
 //
-// This restates the layout rather than importing the enclave's copy in
-// internal/wire/feedupdate, so the relayer is an independent check on the machine
-// instead of a mirror of it. Both are pinned to the same Solidity-generated
-// fixtures in deploy/testdata/wire — see that directory's README.
+// The layout and the digest are the extension's, imported from
+// pkg/wire/feedupdate; both are pinned to Solidity's own bytes in
+// deploy/testdata/wire. What this package adds is what the enclave never does
+// with its own output: recover the signer, and render the update for an
+// operator.
 //
-// Recovering the signer here matters for one reason: when the store rejects an
+// Recovering the signer matters for one reason: when the store rejects an
 // update, the revert says WHAT was wrong (StaleEndpoints, NotNewer) but never
 // WHO signed it. A relayer that can name the machine turns a fleet-wide "someone
 // is misconfigured" into one machine to go and look at.
@@ -21,107 +22,48 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/ethereum/go-ethereum/accounts"
-	"github.com/ethereum/go-ethereum/accounts/abi"
+	wire "fce-usdx-oracle/pkg/wire/feedupdate"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/pkg/errors"
 )
 
-// PrefixName is the signed payload's domain tag. bytes32("TEE_ORACLE_FEED") —
-// the ASCII string right-padded with zeros, NOT keccak256 of it.
-const PrefixName = "TEE_ORACLE_FEED"
-
-// DataLength is abi.encode(FeedUpdate, Signature): seven static words then three.
-const DataLength = 10 * 32
+// PrefixName and DataLength are the extension's, restated by name only.
+const (
+	PrefixName = wire.PrefixName
+	DataLength = wire.DataLength
+)
 
 // Prefix returns bytes32(PrefixName).
-func Prefix() common.Hash {
-	var h common.Hash
-	copy(h[:], PrefixName)
-	return h
-}
+func Prefix() common.Hash { return wire.Prefix() }
 
-// Update is one decoded, signed feed update.
+// FeedUpdate and Signature are the extension's wire types, so a caller can
+// build an Update without importing the enclave's package by name.
+type (
+	FeedUpdate = wire.FeedUpdate
+	Signature  = wire.Signature
+)
+
+// Update is one decoded, signed feed update: the body and the signature over it,
+// with every field of both reachable directly.
 type Update struct {
-	ExtensionID   *big.Int
-	FeedID        [21]byte
-	Value         int32
-	Decimals      int8
-	ObservedAt    uint64
-	EndpointsHash common.Hash
-	AdminsHash    common.Hash
-
-	V uint8
-	R common.Hash
-	S common.Hash
-}
-
-// Every field is static, so the two structs encode inline and a flat argument
-// list is byte-identical to abi.encode(FeedUpdate, Signature).
-var dataArgs = mustArgs(
-	"uint256", "bytes21", "int32", "int8", "uint64", "bytes32", "bytes32",
-	"uint8", "bytes32", "bytes32",
-)
-
-var updateArgs = mustArgs(
-	"uint256", "bytes21", "int32", "int8", "uint64", "bytes32", "bytes32",
-)
-
-var payloadArgs = mustArgs("bytes32", "uint256", "bytes32")
-
-func mustArgs(types ...string) abi.Arguments {
-	args := make(abi.Arguments, len(types))
-	for i, t := range types {
-		ty, err := abi.NewType(t, "", nil)
-		if err != nil {
-			panic("feedupdate: invalid ABI type " + t + ": " + err.Error())
-		}
-		args[i] = abi.Argument{Type: ty}
-	}
-	return args
+	FeedUpdate
+	Signature
 }
 
 // Decode reads an ActionResult payload.
 func Decode(data []byte) (Update, error) {
-	// Length first: Unpack accepts a longer buffer and reads only the words it
-	// expects, so a payload from a machine on a later layout must be rejected
-	// here rather than silently truncated into a plausible-looking update.
+	// Length first, with the length in the message: the extension's decoder
+	// refuses a wrong length too, but says nothing about how wrong.
 	if len(data) != DataLength {
 		return Update{}, errors.Errorf("payload is %d bytes, want %d", len(data), DataLength)
 	}
-
-	values, err := dataArgs.Unpack(data)
-	if err != nil || len(values) != 10 {
-		return Update{}, errors.Errorf("payload is not an encoded feed update: %v", err)
+	u, sig, err := wire.DecodeData(data)
+	if err != nil {
+		return Update{}, errors.New("payload is not an encoded feed update")
 	}
-
-	extensionID, _ := values[0].(*big.Int)
-	if extensionID == nil {
-		return Update{}, errors.New("payload carries no extension id")
-	}
-	feedID, _ := values[1].([21]byte)
-	value, _ := values[2].(int32)
-	decimals, _ := values[3].(int8)
-	observedAt, _ := values[4].(uint64)
-	endpointsHash, _ := values[5].([32]byte)
-	adminsHash, _ := values[6].([32]byte)
-	v, _ := values[7].(uint8)
-	r, _ := values[8].([32]byte)
-	sig, _ := values[9].([32]byte)
-
-	return Update{
-		ExtensionID:   extensionID,
-		FeedID:        feedID,
-		Value:         value,
-		Decimals:      decimals,
-		ObservedAt:    observedAt,
-		EndpointsHash: common.Hash(endpointsHash),
-		AdminsHash:    common.Hash(adminsHash),
-		V:             v,
-		R:             common.Hash(r),
-		S:             common.Hash(sig),
-	}, nil
+	return Update{FeedUpdate: u, Signature: sig}, nil
 }
 
 // Digest recomputes what the store's ECDSA.recover is called with. chainID is
@@ -132,20 +74,14 @@ func (u Update) Digest(chainID *big.Int) (common.Hash, error) {
 	if chainID == nil || chainID.Sign() <= 0 {
 		return common.Hash{}, errors.New("chain id is required")
 	}
-
-	body, err := updateArgs.Pack(
-		u.ExtensionID, u.FeedID, u.Value, u.Decimals, u.ObservedAt,
-		u.EndpointsHash, u.AdminsHash,
-	)
-	if err != nil {
-		return common.Hash{}, errors.Errorf("encoding feed update: %s", err)
+	if !chainID.IsUint64() {
+		return common.Hash{}, errors.Errorf("chain id %s does not fit the signed payload", chainID)
 	}
-
-	message, err := payloadArgs.Pack(Prefix(), chainID, crypto.Keccak256Hash(body))
+	digest, err := wire.Digest(u.FeedUpdate, chainID.Uint64())
 	if err != nil {
-		return common.Hash{}, errors.Errorf("encoding signed payload: %s", err)
+		return common.Hash{}, errors.Errorf("computing the digest: %s", err)
 	}
-	return common.BytesToHash(accounts.TextHash(crypto.Keccak256(message))), nil
+	return digest, nil
 }
 
 // Signer recovers the TEE machine that signed this update.

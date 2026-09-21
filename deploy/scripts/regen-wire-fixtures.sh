@@ -2,11 +2,11 @@
 # regen-wire-fixtures.sh — Refresh deploy/testdata/wire from the Forge vector tests.
 #
 # The fixtures are Solidity's own encoding of the payloads that cross the
-# extension boundary. Two independent Go codecs assert against them: the
-# enclave's in internal/provisioning/store and the publisher's in
-# tools/pkg/oraclepayload. Keeping them independent is deliberate — tools/ is a
-# cross-check on the extension, not a mirror — and these files are what stops
-# that independence turning into divergence.
+# extension boundary. The Go codecs in pkg/wire assert against them, in
+# both directions: the enclave decodes what the contract dispatched and the
+# publishing tools encode to predict the hash it records. With one codec shared
+# by both sides, these files are the independent reference, and the only thing
+# that can catch an encoder that disagrees with the contract.
 #
 # Usage: ./deploy/scripts/regen-wire-fixtures.sh   (runs forge from contracts/)
 set -euo pipefail

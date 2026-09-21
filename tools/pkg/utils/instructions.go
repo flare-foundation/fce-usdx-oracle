@@ -10,10 +10,12 @@ package utils
 import (
 	"context"
 	"math/big"
+	"strings"
 
+	"fce-usdx-oracle/pkg/protocol"
+	"fce-usdx-oracle/pkg/wire/configpayload"
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclesender"
 	"fce-usdx-oracle/tools/pkg/fccutils"
-	"fce-usdx-oracle/tools/pkg/oraclepayload"
 	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -27,24 +29,20 @@ import (
 
 // The operation identifiers, PINNED rather than read off the chain.
 //
-// They used to be public getters on the sender, so the fee lookup could not
-// drift from what was actually dispatched. Upstream made them file-level
-// `bytes32 constant`s in ITeeOracleInstructionsSender — shared by every deployed
-// instance — so there is nothing left to read and this copy is now load-bearing.
-// It must match internal/config; a mismatch prices the wrong row and the
-// instruction is rejected for an underpaid fee.
-const (
-	OpTypeTeeOracle       = "TEE_ORACLE"
-	OpCommandGetFeed      = "GET_FEED"
-	OpCommandSetEndpoints = "SET_ENDPOINTS"
-	OpCommandSetAdmins    = "SET_ADMINS"
+// The op type and commands, as the extension pins them. They used to be public
+// getters on the sender; upstream made them file-level constants shared by every
+// deployed instance, so there is nothing left to read on chain. Taken from the
+// extension rather than restated, because a mismatch prices the wrong fee row
+// and the instruction is rejected for an underpaid fee.
+var (
+	OpTypeTeeOracle       = protocol.OPTypeTeeOracle
+	OpCommandGetFeed      = protocol.OPCommandGetFeed
+	OpCommandSetEndpoints = protocol.OPCommandSetEndpoints
+	OpCommandSetAdmins    = protocol.OPCommandSetAdmins
 )
 
-func b32(s string) [32]byte {
-	var out [32]byte
-	copy(out[:], s)
-	return out
-}
+// opName renders a bytes32 op tag as the ASCII name it was made from.
+func opName(tag common.Hash) string { return strings.TrimRight(string(tag[:]), "\x00") }
 
 func senderABI() (*abi.ABI, error) {
 	parsed, err := teeoraclesender.IITeeOracleInstructionsSenderMetaData.GetAbi()
@@ -63,13 +61,13 @@ func FeedUpdateFee(s *support.Support, teeIDs int) (*big.Int, error) {
 	return operationFee(s, OpCommandGetFeed, teeIDs)
 }
 
-func operationFee(s *support.Support, command string, teeIDs int) (*big.Int, error) {
+func operationFee(s *support.Support, command common.Hash, teeIDs int) (*big.Int, error) {
 	if teeIDs < 1 {
 		return nil, errors.New("at least one target machine is required")
 	}
 
 	opts := &bind.CallOpts{Context: context.Background()}
-	fee, err := s.TeeOperationFees.GetOperationFee(opts, b32(OpTypeTeeOracle), b32(command))
+	fee, err := s.TeeOperationFees.GetOperationFee(opts, [32]byte(OpTypeTeeOracle), [32]byte(command))
 	if err != nil {
 		return nil, errors.Errorf("reading operation fee: %s", err)
 	}
@@ -207,13 +205,13 @@ type Publication struct {
 // claimBack is the payer of record the sender writes into TeeInstructionsSent
 // for the off-chain reward calculation; the contract rejects the zero address.
 func EncodeSetEndpoints(
-	feedID [21]byte, groups []oraclepayload.Group, claimBack common.Address, version uint64,
+	feedID [21]byte, groups []configpayload.Group, claimBack common.Address, version uint64,
 ) (*Publication, error) {
 	if claimBack == (common.Address{}) {
 		return nil, errors.New("the claim-back address must be non-zero (the sender reverts ZeroClaimBackAddress)")
 	}
 
-	hash, err := oraclepayload.EndpointsHash(version, feedID, groups)
+	hash, err := configpayload.EndpointsHash(version, feedID, groups)
 	if err != nil {
 		return nil, err
 	}
@@ -232,13 +230,13 @@ func EncodeSetEndpoints(
 
 // EncodeSetAdmins is the same for the role-tagged admin signer sets.
 func EncodeSetAdmins(
-	feedID [21]byte, roles []oraclepayload.Role, claimBack common.Address, version uint64,
+	feedID [21]byte, roles []configpayload.Role, claimBack common.Address, version uint64,
 ) (*Publication, error) {
 	if claimBack == (common.Address{}) {
 		return nil, errors.New("the claim-back address must be non-zero (the sender reverts ZeroClaimBackAddress)")
 	}
 
-	hash, err := oraclepayload.AdminsHash(version, feedID, roles)
+	hash, err := configpayload.AdminsHash(version, feedID, roles)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +292,7 @@ func (p *Publication) Send(s *support.Support, senderAddress common.Address) (co
 //
 // An extension with no active machine is refused here: the sender would record
 // the publication without dispatching it, which is never what these tools mean.
-func (p *Publication) ResolveFee(s *support.Support, senderAddress common.Address, command string) error {
+func (p *Publication) ResolveFee(s *support.Support, senderAddress common.Address, command common.Hash) error {
 	caller, err := Sender(s, senderAddress)
 	if err != nil {
 		return err
@@ -310,7 +308,7 @@ func (p *Publication) ResolveFee(s *support.Support, senderAddress common.Addres
 	case OpCommandSetAdmins:
 		quote, err = caller.GetAdminsPublicationFee(opts)
 	default:
-		return errors.Errorf("%s is not a publication", command)
+		return errors.Errorf("%s is not a publication", opName(command))
 	}
 	if err != nil {
 		return errors.Errorf("reading the publication fee: %s", err)
@@ -373,9 +371,9 @@ func (p *Publication) Handoff(target common.Address, command string) (*Handoff, 
 // senderGroups and senderRoles retype the payload structs for the generated
 // binding. abigen emits its own copy of each nested struct into every package
 // that mentions one, so the identical EndpointGroup exists in both
-// teeoraclestructs (where oraclepayload takes it from) and teeoraclesender,
+// teeoraclestructs (where configpayload takes it from) and teeoraclesender,
 // as distinct named types Go will not convert between in a slice.
-func senderGroups(in []oraclepayload.Group) []teeoraclesender.ITeeOracleInstructionsSenderEndpointGroup {
+func senderGroups(in []configpayload.Group) []teeoraclesender.ITeeOracleInstructionsSenderEndpointGroup {
 	out := make([]teeoraclesender.ITeeOracleInstructionsSenderEndpointGroup, 0, len(in))
 	for _, g := range in {
 		endpoints := make([]teeoraclesender.ITeeOracleInstructionsSenderEndpoint, 0, len(g.Endpoints))
@@ -391,7 +389,7 @@ func senderGroups(in []oraclepayload.Group) []teeoraclesender.ITeeOracleInstruct
 	return out
 }
 
-func senderRoles(in []oraclepayload.Role) []teeoraclesender.ITeeOracleInstructionsSenderAdminRole {
+func senderRoles(in []configpayload.Role) []teeoraclesender.ITeeOracleInstructionsSenderAdminRole {
 	out := make([]teeoraclesender.ITeeOracleInstructionsSenderAdminRole, 0, len(in))
 	for _, r := range in {
 		out = append(out, teeoraclesender.ITeeOracleInstructionsSenderAdminRole{

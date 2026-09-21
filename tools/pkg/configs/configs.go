@@ -3,11 +3,13 @@ package configs
 import (
 	"crypto/ecdsa"
 	"encoding/json"
+	"fce-usdx-oracle/pkg/protocol"
 	"os"
 	"path/filepath"
 	"runtime"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/joho/godotenv"
 	"github.com/pkg/errors"
@@ -44,7 +46,8 @@ func init() {
 	ExtensionProxyURL = envOrDefault("EXT_PROXY_URL", "http://localhost:6674")
 	ChainNodeURL = envOrDefault("CHAIN_URL", chainRPC[Chain])
 	AddressesFile = rootRelative(root, envOrDefault("ADDRESSES_FILE", "deploy/config/"+Chain+"/deployed-addresses.json"))
-	ExtensionID = envOrDefault("EXTENSION_ID", "1")
+	// No default: the extension refuses to guess its id, and so does the tooling.
+	ExtensionID = os.Getenv("EXTENSION_ID")
 }
 
 // The chains the scripts know (deploy/scripts/lib/chains.sh), as far as the tools
@@ -167,3 +170,7 @@ func ResolveContract(explicit, addressesFile, name string) (common.Address, erro
 		"no %s entry in %s — pass the address explicitly with the -a/-store flag",
 		name, addressesFile)
 }
+
+// FeedID is the feed this extension serves, as the flags take it: the extension's
+// build fact rendered as hex, so a tool that names no feed names this one.
+var FeedID = hexutil.Encode(protocol.FeedID[:])

@@ -58,15 +58,15 @@ redis              the proxy's action queue
 | `contracts/` | Foundry project that compiles the upstream `ITeeOracle*` interfaces straight out of a sibling flare-smart-contracts-v2 checkout — nothing is deployed from this repo |
 | `tools/` | deployment, registration, provisioning and the keeper — its own module, importing the extension only for the provisioning envelope |
 | `deploy/scripts/` | setup, start/stop, the three `oracle-*.sh` operator commands, and the two `upload-*.sh` credential uploads |
-| `contracts/test/` | Foundry wire-vector tests (the ABI encodings both Go codecs assert against) |
+| `contracts/test/` | Foundry wire-vector tests (the ABI encodings the Go codecs assert against) |
 | `docs/` | spec, rationale, findings, flows, deployment |
 
 The split that matters: the root module is the extension, `tools/` operates it, and
-`contracts/` pins the wire formats both speak. `tools/pkg/feedupdate` deliberately re-declares
-the wire layout instead of importing `pkg/wire/feedupdate`, so the tooling stays honest
-about the contract, and both are pinned to the same Solidity-generated fixtures in
-`deploy/testdata/wire`. The one import the tooling takes from the extension is the provisioning
-envelope, where identity with the enclave's encoder is the requirement.
+`contracts/` pins the wire formats. Every format has one implementation, in the extension's
+`pkg/wire` packages, and every protocol fact one definition, in `pkg/protocol`; the tooling
+imports those and nothing under `internal/`: what the tooling adds on top is recovery
+of who signed and the transactions that carry the payloads. Solidity's own encoding in
+`deploy/testdata/wire` is the reference both are tested against.
 
 ---
 
@@ -482,8 +482,8 @@ flare-smart-contracts-v2 checkout (see `contracts/`).
 | --- | --- |
 | `pkg/support` | chain client, key, ABI/revert plumbing shared by every tool |
 | `pkg/configs` | env-var defaults so tools run flag-free from a sourced `.env` |
-| `pkg/feedupdate` | decodes the signed `FeedUpdate` and recovers the signer — the wire contract, re-declared independently |
-| `pkg/oraclepayload` | builds/predicts the ABI-encoded `Endpoints`/`Admins` payloads and their hashes |
+| `pkg/feedupdate` | decodes the signed `FeedUpdate` through the extension's wire package and recovers the signer |
+| (payloads) | the `Endpoints`/`Admins` payloads and their hashes come from the extension's `pkg/wire/configpayload` |
 | `pkg/keeper` | `Run` (timer) · `RunCycle` · `PollResult` · `Preflight` · `Record`/`Outcome` |
 | `pkg/utils/instructions.go` | `RequestFeedUpdate`, `EncodeSetEndpoints`/`EncodeSetAdmins` (+ `Publication`), fee reads (fees are **read**, never hard-coded) |
 | `pkg/fccutils` | FCC registration, governance, policy-consistency, revert decoding |

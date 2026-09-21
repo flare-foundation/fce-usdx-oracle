@@ -3,12 +3,11 @@ package keeper
 import (
 	"context"
 	"encoding/json"
+	"fce-usdx-oracle/pkg/wire/readiness"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"fce-usdx-oracle/tools/pkg/readinessreport"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -42,7 +41,7 @@ func readinessProxy(t *testing.T, wouldSign bool) *httptest.Server {
 
 	bodyArgs := mustReadinessArgs(t, "bytes32", "bytes32", "uint64", "bytes32")
 	body, err := bodyArgs.Pack(
-		readinessreport.Domain(),
+		readiness.Domain(),
 		testReadinessID,
 		uint64(1786952592),
 		crypto.Keccak256Hash(payload),

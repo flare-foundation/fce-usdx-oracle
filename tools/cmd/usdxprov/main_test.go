@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"fce-usdx-oracle/internal/config"
-	"fce-usdx-oracle/internal/provisioning/store"
+	"fce-usdx-oracle/pkg/protocol"
+	"fce-usdx-oracle/pkg/wire/configpayload"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -88,7 +88,7 @@ func TestBuildRefusesAKeyThatIsNotTheAttestedMachine(t *testing.T) {
 	t.Setenv("USDXPROV_VALUE", "a-real-credential")
 
 	err = build([]string{
-		"-url", srv.URL, "-chain-id", "114", "-ref", config.HexAPIKeyRef,
+		"-url", srv.URL, "-chain-id", "114", "-ref", protocol.HexAPIKeyRef,
 		"-tee", crypto.PubkeyToAddress(attested.PublicKey).Hex(), "-out", out,
 	})
 	if err == nil {
@@ -122,7 +122,7 @@ func TestBuildAcceptsTheAttestedMachine(t *testing.T) {
 	t.Setenv("USDXPROV_VALUE", "a-real-credential")
 
 	err = build([]string{
-		"-url", srv.URL, "-chain-id", "114", "-ref", config.HexAPIKeyRef,
+		"-url", srv.URL, "-chain-id", "114", "-ref", protocol.HexAPIKeyRef,
 		"-tee", teeID.Hex(), "-out", out,
 	})
 	if err != nil {
@@ -184,7 +184,7 @@ func TestBuildRefusesAValueForTheCashURL(t *testing.T) {
 	t.Setenv("HEX_CASH_SALT", testCashSalt)
 
 	err = build([]string{
-		"-url", srv.URL, "-chain-id", "114", "-ref", config.HexCashURLRef, "-out", out,
+		"-url", srv.URL, "-chain-id", "114", "-ref", protocol.HexCashURLRef, "-out", out,
 	})
 	if err == nil {
 		t.Fatal("build accepted a string value for the cash URL")
@@ -215,7 +215,7 @@ func TestBuildEncryptsTheCashURLPreimage(t *testing.T) {
 	t.Setenv("HEX_CASH_SALT", testCashSalt)
 
 	err = build([]string{
-		"-url", srv.URL, "-chain-id", "114", "-ref", config.HexCashURLRef,
+		"-url", srv.URL, "-chain-id", "114", "-ref", protocol.HexCashURLRef,
 		"-tee", crypto.PubkeyToAddress(key.PublicKey).Hex(), "-out", out,
 	})
 	if err != nil {
@@ -235,15 +235,15 @@ func TestBuildEncryptsTheCashURLPreimage(t *testing.T) {
 		t.Fatalf("the envelope does not decrypt with the served key: %v", err)
 	}
 
-	u := store.PrivateURL{Salt: common.HexToHash(testCashSalt), Url: testCashURL}
-	want, err := store.EncodePrivateURL(u)
+	u := configpayload.PrivateURL{Salt: common.HexToHash(testCashSalt), Url: testCashURL}
+	want, err := configpayload.EncodePrivateURL(u)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(plaintext, want) {
 		t.Fatalf("provisioned blob differs from the store's preimage:\n got %x\nwant %x", plaintext, want)
 	}
-	commitment, err := store.CommitPrivateURL(u)
+	commitment, err := configpayload.CommitPrivateURL(u)
 	if err != nil {
 		t.Fatal(err)
 	}

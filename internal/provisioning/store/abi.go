@@ -3,7 +3,6 @@ package store
 import (
 	"fce-usdx-oracle/pkg/wire/configpayload"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -64,19 +63,3 @@ func narrow(v uint64) (int, bool) { return configpayload.Narrow(v) }
 // CommitPrivateURL is the commitment a PRIVATE endpoint's provisioned URL must
 // reproduce, recomputed here from the blob the enclave was handed.
 func CommitPrivateURL(u PrivateURL) (common.Hash, error) { return configpayload.CommitPrivateURL(u) }
-
-// EncodePrivateURL returns the commitment preimage a PRIVATE endpoint's URL is
-// provisioned as, abi.encode(salt, url), the layout DecodePrivateURL reads. It
-// packs whatever it is given, so the store's refusal of an unsalted commitment
-// is exercised on decoding rather than pre-empted here.
-func EncodePrivateURL(u PrivateURL) ([]byte, error) {
-	salt, err := abi.NewType("bytes32", "", nil)
-	if err != nil {
-		return nil, err
-	}
-	url, err := abi.NewType("string", "", nil)
-	if err != nil {
-		return nil, err
-	}
-	return abi.Arguments{{Type: salt}, {Type: url}}.Pack(u.Salt, u.Url)
-}

@@ -10,26 +10,18 @@ import (
 	"strings"
 	"time"
 
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/tools/pkg/readinessreport"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
-	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
 	"github.com/pkg/errors"
 )
 
-// Declared here rather than read off the instruction sender: GET_READINESS is
-// the one command with no on-chain counterpart, so there is nothing to drift
-// from. These must match internal/config.
-const (
-	opTypeTeeOracle       = "TEE_ORACLE"
-	opCommandGetReadiness = "GET_READINESS"
-)
-
 // readinessRequestV1 is the pinned one-byte envelope, matching
-// config.ReadinessRequestV1. The registry rejects an empty message and the
+// protocol.ReadinessRequestV1. The registry rejects an empty message and the
 // extension rejects anything else.
 var readinessRequestV1 = []byte{0x01}
 
@@ -51,7 +43,7 @@ func QueryReadiness(
 	}
 
 	id, err := postDirectAction(ctx, proxyURL, apiKey,
-		teeutils.ToHash(opTypeTeeOracle), teeutils.ToHash(opCommandGetReadiness),
+		protocol.OPTypeTeeOracle, protocol.OPCommandGetReadiness,
 		readinessRequestV1)
 	if err != nil {
 		return readinessreport.Report{}, err

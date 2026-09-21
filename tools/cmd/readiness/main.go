@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/keeper"
 	"fce-usdx-oracle/tools/pkg/readinessreport"
@@ -34,7 +35,6 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
-	teeutils "github.com/flare-foundation/tee-node/pkg/utils"
 	"github.com/pkg/errors"
 )
 
@@ -96,10 +96,10 @@ func queryExtension(ctx context.Context, extensionURL string) (readinessreport.R
 	if _, err := rand.Read(id[:]); err != nil {
 		return readinessreport.Report{}, errors.Errorf("drawing an action id: %s", err)
 	}
-	// The pinned one-byte envelope, matching internal/config.ReadinessRequestV1.
+	// The pinned one-byte envelope, matching internal/protocol.ReadinessRequestV1.
 	di, err := json.Marshal(teetypes.DirectInstruction{
-		OPType:    teeutils.ToHash("TEE_ORACLE"),
-		OPCommand: teeutils.ToHash("GET_READINESS"),
+		OPType:    protocol.OPTypeTeeOracle,
+		OPCommand: protocol.OPCommandGetReadiness,
 		Message:   hexutil.Bytes{0x01},
 	})
 	if err != nil {

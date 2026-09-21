@@ -27,9 +27,9 @@ import (
 	"strings"
 	"time"
 
-	"fce-usdx-oracle/internal/config"
-	"fce-usdx-oracle/internal/provisioning/envelope"
-	"fce-usdx-oracle/internal/provisioning/store"
+	"fce-usdx-oracle/pkg/protocol"
+	"fce-usdx-oracle/pkg/wire/configpayload"
+	"fce-usdx-oracle/pkg/wire/envelope"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -87,7 +87,7 @@ proxy's /info serves, and -tee is what makes it refuse a substituted one; take t
 value from the attestation, with "verify-tee -print-tee-id". The upload scripts do
 this for you.
 
-The `+config.HexCashURLRef+` credential is not a string but abi.encode(salt, url), the
+The `+protocol.HexCashURLRef+` credential is not a string but abi.encode(salt, url), the
 preimage of the urlHash the hex_cash group publishes. build takes it from HEX_CASH_URL
 and HEX_CASH_SALT rather than from a value, and commit prints the matching urlHash
 from the same two variables.
@@ -96,9 +96,9 @@ The freshness window is `+envelope.Freshness.String()+`: sign and submit within 
 the envelope is rejected as stale.
 
 Two role-tagged signer sets are published per machine, and the ref decides which
-one applies: `+strings.Join(config.BackingRefs(), ", ")+`
-are authorised by the backing set (at least `+fmt.Sprint(config.MinBackingThreshold)+` signature), every other ref by
-the providers set (at least `+fmt.Sprint(config.MinProviderThreshold)+` DISTINCT signatures). The exact thresholds
+one applies: `+strings.Join(protocol.BackingRefs(), ", ")+`
+are authorised by the backing set (at least `+fmt.Sprint(protocol.MinBackingThreshold)+` signature), every other ref by
+the providers set (at least `+fmt.Sprint(protocol.MinProviderThreshold)+` DISTINCT signatures). The exact thresholds
 are whatever SET_ADMINS published, and only the target machine can tell you
 whether an envelope satisfies them.
 `)
@@ -108,23 +108,23 @@ whether an envelope satisfies them.
 // privateURL validates the cash URL and its salt as the store will see them.
 // The salt is what keeps the on-chain commitment from being brute-forced back
 // to the URL, so a zero or short one is refused here rather than published.
-func privateURL(rawURL, rawSalt string) (store.PrivateURL, error) {
+func privateURL(rawURL, rawSalt string) (configpayload.PrivateURL, error) {
 	if rawURL == "" || rawSalt == "" {
-		return store.PrivateURL{}, fmt.Errorf(
-			"HEX_CASH_URL and HEX_CASH_SALT are both required for %s", config.HexCashURLRef)
+		return configpayload.PrivateURL{}, fmt.Errorf(
+			"HEX_CASH_URL and HEX_CASH_SALT are both required for %s", protocol.HexCashURLRef)
 	}
 	if !strings.HasPrefix(rawURL, "https://") {
-		return store.PrivateURL{}, fmt.Errorf("HEX_CASH_URL must use https")
+		return configpayload.PrivateURL{}, fmt.Errorf("HEX_CASH_URL must use https")
 	}
 	saltBytes, err := hex.DecodeString(strings.TrimPrefix(strings.TrimPrefix(rawSalt, "0x"), "0X"))
 	if err != nil || len(saltBytes) != 32 {
-		return store.PrivateURL{}, fmt.Errorf("HEX_CASH_SALT must be 32 bytes of hex (openssl rand -hex 32)")
+		return configpayload.PrivateURL{}, fmt.Errorf("HEX_CASH_SALT must be 32 bytes of hex (openssl rand -hex 32)")
 	}
 	salt := common.BytesToHash(saltBytes)
 	if salt == (common.Hash{}) {
-		return store.PrivateURL{}, fmt.Errorf("HEX_CASH_SALT is zero")
+		return configpayload.PrivateURL{}, fmt.Errorf("HEX_CASH_SALT is zero")
 	}
-	return store.PrivateURL{Salt: salt, Url: rawURL}, nil
+	return configpayload.PrivateURL{Salt: salt, Url: rawURL}, nil
 }
 
 // --- commit ---
@@ -144,7 +144,7 @@ func commit(args []string) error {
 	if err != nil {
 		return err
 	}
-	h, err := store.CommitPrivateURL(u)
+	h, err := configpayload.CommitPrivateURL(u)
 	if err != nil {
 		return fmt.Errorf("committing the cash URL: %w", err)
 	}
@@ -166,7 +166,7 @@ func build(args []string) error {
 		"the teeId the ATTESTATION derived (verify-tee -print-tee-id); "+
 			"build refuses to encrypt if /info serves a key deriving to anything else")
 	cashURL := fs.secret("private-url", "HEX_CASH_URL",
-		"the restricted cash URL, the value of -ref "+config.HexCashURLRef)
+		"the restricted cash URL, the value of -ref "+protocol.HexCashURLRef)
 	cashSalt := fs.secret("salt", "HEX_CASH_SALT",
 		"32-byte hex salt of the cash URL commitment")
 	if err := fs.parse(); err != nil {
@@ -179,16 +179,16 @@ func build(args []string) error {
 	// here from the URL and the salt, and a value given for it is refused rather
 	// than encrypted as a string the enclave would reject.
 	var credential []byte
-	if *ref == config.HexCashURLRef {
+	if *ref == protocol.HexCashURLRef {
 		if value() != "" {
 			return fmt.Errorf("%s is derived from HEX_CASH_URL and HEX_CASH_SALT, not given as a value",
-				config.HexCashURLRef)
+				protocol.HexCashURLRef)
 		}
 		u, err := privateURL(cashURL(), cashSalt())
 		if err != nil {
 			return err
 		}
-		if credential, err = store.EncodePrivateURL(u); err != nil {
+		if credential, err = configpayload.EncodePrivateURL(u); err != nil {
 			return fmt.Errorf("encoding the cash URL: %w", err)
 		}
 	} else {
@@ -266,7 +266,7 @@ func build(args []string) error {
 		time.Unix(int64(env.IssuedAt), 0).Add(envelope.Freshness).UTC().Format(time.RFC3339),
 		envelope.Freshness)
 	fmt.Printf("\nRef %q is authorised by the %s set: at least %d distinct signature(s) —\n",
-		env.Ref, setNameFor(env.Ref), config.AdminPolicy().MinThresholdFor(env.Ref))
+		env.Ref, setNameFor(env.Ref), protocol.AdminPolicy().MinThresholdFor(env.Ref))
 	fmt.Printf("the published threshold for this machine may be higher. The credential is\n")
 	fmt.Printf("already encrypted, so this file is safe to send to the signers.\n")
 	return nil
@@ -357,7 +357,7 @@ func submit(args []string) error {
 	}
 	// The floor for the set this ref falls under, not the machine's actual threshold:
 	// fewer than this can never be accepted anywhere, so catch it before the trip.
-	floor := config.AdminPolicy().MinThresholdFor(f.Ref)
+	floor := protocol.AdminPolicy().MinThresholdFor(f.Ref)
 	if len(f.Signatures) < floor {
 		return fmt.Errorf("have %d signatures, need at least %d for the %s set",
 			len(f.Signatures), floor, setNameFor(f.Ref))
@@ -496,8 +496,8 @@ func fetchResult(url string) (teetypes.ActionResult, bool, error) {
 // returns the id of the action the proxy enqueued.
 func postDirect(proxyURL, apiKey string, message []byte) (common.Hash, error) {
 	payload := map[string]string{
-		"opType":    config.OPTypeTeeOracle.Hex(),
-		"opCommand": config.OPCommandSetSecret.Hex(),
+		"opType":    protocol.OPTypeTeeOracle.Hex(),
+		"opCommand": protocol.OPCommandSetSecret.Hex(),
 		"message":   "0x" + hex.EncodeToString(message),
 	}
 	raw, err := json.Marshal(payload)
@@ -542,8 +542,8 @@ func postDirect(proxyURL, apiKey string, message []byte) (common.Hash, error) {
 // DirectInstruction — what the proxy really sends — never a DataFixed.
 func postAction(actionURL string, message []byte) error {
 	di := map[string]any{
-		"opType":    config.OPTypeTeeOracle.Hex(),
-		"opCommand": config.OPCommandSetSecret.Hex(),
+		"opType":    protocol.OPTypeTeeOracle.Hex(),
+		"opCommand": protocol.OPCommandSetSecret.Hex(),
 		"message":   "0x" + hex.EncodeToString(message),
 	}
 	diRaw, err := json.Marshal(di)
@@ -640,9 +640,9 @@ func recoverSigner(body, sig []byte) (common.Address, bool) {
 }
 
 // setNameFor names the signer set governing a ref, for messages only. The
-// mapping is config.AdminPolicy, the same one the enclave is built with.
+// mapping is protocol.AdminPolicy, the same one the enclave is built with.
 func setNameFor(ref string) string {
-	return config.AdminPolicy().RoleFor(ref)
+	return protocol.AdminPolicy().RoleFor(ref)
 }
 
 // b32 renders Solidity's bytes32(s). The op identifiers passed to it come from

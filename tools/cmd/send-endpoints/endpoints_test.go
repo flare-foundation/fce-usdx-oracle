@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fce-usdx-oracle/tools/pkg/oraclepayload"
+	"fce-usdx-oracle/pkg/wire/configpayload"
 )
 
 // Every fixture the repo ships must survive the preflight. A failure means either a
@@ -106,7 +106,7 @@ func TestValidateRejects(t *testing.T) {
 			wants:   "is not between 1 and 1",
 		},
 		{
-			// Caught by oraclepayload.Threshold at parse time, before the
+			// Caught by configpayload.Threshold at parse time, before the
 			// per-group range check in validateEndpoints.
 			name:    "zero threshold",
 			payload: base("flare", `"flare":{"threshold":0,"endpoints":[{"url":"https://a/"}]}`),
@@ -216,26 +216,26 @@ func TestValidateRejects(t *testing.T) {
 // hand-built object can never reach the check. This builds the typed list
 // directly to exercise it.
 func TestValidateRejectsDuplicateGroup(t *testing.T) {
-	tag, err := oraclepayload.Tag("flare")
+	tag, err := configpayload.Tag("flare")
 	if err != nil {
 		t.Fatalf("Tag: %v", err)
 	}
 
 	// Two valid chains plus two flare entries.
-	ethereum, _ := oraclepayload.Tag("ethereum")
-	songbird, _ := oraclepayload.Tag("songbird")
-	hexCash, _ := oraclepayload.Tag("hex_cash")
+	ethereum, _ := configpayload.Tag("ethereum")
+	songbird, _ := configpayload.Tag("songbird")
+	hexCash, _ := configpayload.Tag("hex_cash")
 
-	ep := oraclepayload.Endpoint{Kind: oraclepayload.KindPublic, Url: "https://a/"}
-	privEp := oraclepayload.Endpoint{Kind: oraclepayload.KindPrivate, SecretRef: "hex_cash_url"}
+	ep := configpayload.Endpoint{Kind: configpayload.KindPublic, Url: "https://a/"}
+	privEp := configpayload.Endpoint{Kind: configpayload.KindPrivate, SecretRef: "hex_cash_url"}
 	privEp.UrlHash = [32]byte{0xab}
 
-	groups := []oraclepayload.Group{
-		{Group: tag, Threshold: 1, Endpoints: []oraclepayload.Endpoint{ep}},
-		{Group: tag, Threshold: 1, Endpoints: []oraclepayload.Endpoint{ep}}, // duplicate
-		{Group: ethereum, Threshold: 1, Endpoints: []oraclepayload.Endpoint{ep}},
-		{Group: songbird, Threshold: 1, Endpoints: []oraclepayload.Endpoint{ep}},
-		{Group: hexCash, Threshold: 1, Endpoints: []oraclepayload.Endpoint{privEp}},
+	groups := []configpayload.Group{
+		{Group: tag, Threshold: 1, Endpoints: []configpayload.Endpoint{ep}},
+		{Group: tag, Threshold: 1, Endpoints: []configpayload.Endpoint{ep}}, // duplicate
+		{Group: ethereum, Threshold: 1, Endpoints: []configpayload.Endpoint{ep}},
+		{Group: songbird, Threshold: 1, Endpoints: []configpayload.Endpoint{ep}},
+		{Group: hexCash, Threshold: 1, Endpoints: []configpayload.Endpoint{privEp}},
 	}
 
 	err = validateEndpoints(groups)

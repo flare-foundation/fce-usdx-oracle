@@ -49,7 +49,7 @@ go test ./... && (cd tools && go test ./...) && (cd contracts && forge test)
 | Suite | Covers |
 | --- | --- |
 | `go test ./...` at the root and in `tools/` | The quorum procedure, price arithmetic, decimal parsing, the provisioning verifier, the wire encodings and the keeper cycle |
-| `forge test` in `contracts/` | Solidity's own encoding of the payloads that cross the extension boundary, written to `testdata/wire/` and asserted against by both Go codecs |
+| `forge test` in `contracts/` | Solidity's own encoding of the payloads that cross the extension boundary, written to `testdata/wire/` and asserted against by the Go codecs |
 | `TestConformance` in `internal/extension` | Replays the golden fixtures in `testdata/conformance/` against a running extension and diffs the responses. This is the acceptance test for an implementation in another language |
 
 [docs/testing.md](../docs/testing.md) covers what each layer proves, how to drive the feed end to
