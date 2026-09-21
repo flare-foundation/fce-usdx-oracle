@@ -1,6 +1,6 @@
 // Package types holds the JSON shapes the extension shares with its tooling:
-// the provisioning readiness block, the signed readiness report, and the
-// envelope tee-node reads from GET /state.
+// the provisioning readiness block, the signed readiness report with its
+// source-health vocabulary, and the envelope tee-node reads from GET /state.
 //
 // Everything here is public on the wire. Nothing may carry raw supply figures,
 // reserve components, API responses, credentials or endpoint URLs.

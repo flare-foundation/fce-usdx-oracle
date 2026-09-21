@@ -33,16 +33,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-// feedID is the one feed this keeper serves. Pinned here because the store has
-// no feedId getter — it is checked at init and never read again — so a preflight
-// that wanted it would have to trust the caller. The keeper's configured feed
-// matches the store's by construction (same deployment), and the signed update
-// names the same id, so this is a sanity check rather than a load-bearing one.
-//
-// It mirrors internal/protocol.FeedID; the two cannot share a definition because
-// tools/ is a separate module and internal/ is not importable from here.
-var feedID = protocol.FeedID
-
 // maxBatch is the store's ceiling on signatures per submission.
 const maxBatch = 32
 
@@ -108,21 +98,21 @@ func readCommitments(ctx context.Context, s *support.Support, storeAddr common.A
 
 	// The configuration hashes are feed-level: one latest published generation,
 	// which every machine's update must carry.
-	latestEndpoints, err := sender.LatestEndpointsHash(opts, feedID)
+	latestEndpoints, err := sender.LatestEndpointsHash(opts, protocol.FeedID)
 	if err != nil {
 		return commitments{}, reject("SenderUnavailable", "reading latestEndpointsHash: %s", err)
 	}
 	if common.Hash(latestEndpoints) == (common.Hash{}) {
 		return commitments{}, reject("NoEndpointsPublished",
-			"no endpoint configuration has been published for feed %#x — run send-endpoints first", feedID)
+			"no endpoint configuration has been published for feed %#x — run send-endpoints first", protocol.FeedID)
 	}
-	latestAdmins, err := sender.LatestAdminsHash(opts, feedID)
+	latestAdmins, err := sender.LatestAdminsHash(opts, protocol.FeedID)
 	if err != nil {
 		return commitments{}, reject("SenderUnavailable", "reading latestAdminsHash: %s", err)
 	}
 	if common.Hash(latestAdmins) == (common.Hash{}) {
 		return commitments{}, reject("NoAdminsPublished",
-			"no admin set has been published for feed %#x — run send-admins first", feedID)
+			"no admin set has been published for feed %#x — run send-admins first", protocol.FeedID)
 	}
 	return commitments{
 		extensionID: extensionID,
@@ -175,11 +165,11 @@ func screenUpdates(
 		case u.ExtensionID == nil || u.ExtensionID.Cmp(want.extensionID) != 0:
 			drop("WrongExtensionId", "%s names extension %s, the store accepts %s",
 				signer.Hex(), u.ExtensionID, want.extensionID)
-		case u.FeedID != feedID:
+		case u.FeedID != protocol.FeedID:
 			// feedId has no getter on the store (it is checked at init and never
 			// read again), so this compares against the keeper's pinned id; a
 			// divergence means a deployment error, not a stale configuration.
-			drop("WrongFeedId", "%s names feed %#x, this keeper serves %#x", signer.Hex(), u.FeedID, feedID)
+			drop("WrongFeedId", "%s names feed %#x, this keeper serves %#x", signer.Hex(), u.FeedID, protocol.FeedID)
 		case u.EndpointsHash != want.endpoints:
 			drop("StaleEndpoints", "%s computed its update under endpoints %s but the feed's latest is %s; "+
 				"the machine never applied the published configuration, or a newer one was sent",

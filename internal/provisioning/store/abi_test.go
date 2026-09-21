@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fce-usdx-oracle/internal/config"
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/wire/configpayload"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -67,7 +67,7 @@ func TestSaltMatchesSolidity(t *testing.T) {
 func TestCommitPrivateURLMatchesSolidity(t *testing.T) {
 	salt := common.HexToHash(vectorSalt)
 
-	got, err := configpayload.CommitPrivateURL(PrivateURL{Salt: salt, Url: vectorCashURL})
+	got, err := configpayload.CommitPrivateURL(configpayload.PrivateURL{Salt: salt, Url: vectorCashURL})
 	if err != nil {
 		t.Fatalf("CommitPrivateURL: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestCommitPrivateURLMatchesSolidity(t *testing.T) {
 	// The salt is what makes publishing the commitment safe: without it the
 	// hash of a low-entropy URL is brute-forceable from chain data, so the
 	// codec refuses to produce an unsalted one at all.
-	if _, err := configpayload.CommitPrivateURL(PrivateURL{Url: vectorCashURL}); err == nil {
+	if _, err := configpayload.CommitPrivateURL(configpayload.PrivateURL{Url: vectorCashURL}); err == nil {
 		t.Fatal("an unsalted commitment must be refused")
 	}
 }
@@ -86,11 +86,11 @@ func TestCommitPrivateURLMatchesSolidity(t *testing.T) {
 func TestDecodePrivateURLRoundTrip(t *testing.T) {
 	salt := common.HexToHash(vectorSalt)
 
-	preimage, err := configpayload.EncodePrivateURL(PrivateURL{Salt: salt, Url: vectorCashURL})
+	preimage, err := configpayload.EncodePrivateURL(configpayload.PrivateURL{Salt: salt, Url: vectorCashURL})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
-	got, ok := decodePrivateURL(preimage)
+	got, ok := configpayload.DecodePrivateURL(preimage)
 	if !ok {
 		t.Fatal("decodePrivateURL rejected its own encoding")
 	}
@@ -98,7 +98,7 @@ func TestDecodePrivateURLRoundTrip(t *testing.T) {
 		t.Fatalf("round trip changed (salt, url): %s %q", got.Salt.Hex(), got.Url)
 	}
 
-	if _, ok := decodePrivateURL([]byte("not abi")); ok {
+	if _, ok := configpayload.DecodePrivateURL([]byte("not abi")); ok {
 		t.Error("garbage must not decode")
 	}
 }
@@ -123,8 +123,8 @@ func TestDecodeEndpointsMatchesSolidity(t *testing.T) {
 	if e.Version != 7 {
 		t.Errorf("version = %d, want 7", e.Version)
 	}
-	if e.FeedID != config.FeedID {
-		t.Errorf("feed id = %#x, want %#x", e.FeedID, config.FeedID)
+	if e.FeedID != protocol.FeedID {
+		t.Errorf("feed id = %#x, want %#x", e.FeedID, protocol.FeedID)
 	}
 	if len(e.Groups) != 4 {
 		t.Fatalf("groups = %d, want 4", len(e.Groups))
@@ -138,7 +138,7 @@ func TestDecodeEndpointsMatchesSolidity(t *testing.T) {
 		t.Errorf("flare = threshold %d, %d endpoints; want 2, 2", flare.Threshold, len(flare.Endpoints))
 	}
 	if flare.Endpoints[0].URL != "https://flare-api.flare.network/ext/C/rpc" ||
-		flare.Endpoints[0].Kind != KindPublic || flare.Endpoints[0].SecretRef != "" {
+		flare.Endpoints[0].Kind != configpayload.KindPublic || flare.Endpoints[0].SecretRef != "" {
 		t.Errorf("flare[0] = %+v", flare.Endpoints[0])
 	}
 	if flare.Endpoints[1].URL != "https://rpc.ankr.com/flare/{secret}" ||
@@ -154,7 +154,7 @@ func TestDecodeEndpointsMatchesSolidity(t *testing.T) {
 		t.Fatalf("hex_cash endpoints = %d, want 1", len(cash.Endpoints))
 	}
 	ep := cash.Endpoints[0]
-	if ep.Kind != KindPrivate || ep.URL != "" {
+	if ep.Kind != configpayload.KindPrivate || ep.URL != "" {
 		t.Errorf("hex_cash endpoint is not PRIVATE: %+v", ep)
 	}
 	if ep.URLHash.Hex() != vectorCommitment {
@@ -182,7 +182,7 @@ func TestDecodeAdminsMatchesSolidity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeAdmins: %v", err)
 	}
-	version, sets, err := convertAdmins(wire, config.AdminPolicy())
+	version, sets, err := convertAdmins(wire, protocol.AdminPolicy())
 	if err != nil {
 		t.Fatalf("convertAdmins: %v", err)
 	}
@@ -213,13 +213,13 @@ func TestDecodeAdminsMatchesSolidity(t *testing.T) {
 // provider set this feed's price is then computed from, and every update would
 // afterwards carry a hash this feed's store rejects.
 func TestPayloadsAreBoundToThisFeed(t *testing.T) {
-	other := config.FeedID
+	other := protocol.FeedID
 	other[20] ^= 0x01
 
 	flare, _ := configpayload.Tag("flare")
 	endpoints, err := configpayload.EncodeEndpoints(1, other, []configpayload.Group{
 		{Group: flare, Threshold: 1, Endpoints: []configpayload.Endpoint{
-			{Kind: KindPublic, Url: "https://flare.example/rpc"},
+			{Kind: configpayload.KindPublic, Url: "https://flare.example/rpc"},
 		}},
 	})
 	if err != nil {
@@ -250,7 +250,7 @@ func TestPayloadsAreBoundToThisFeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeAdmins: %v", err)
 	}
-	if _, _, err := convertAdmins(adminsWire, config.AdminPolicy()); err == nil {
+	if _, _, err := convertAdmins(adminsWire, protocol.AdminPolicy()); err == nil {
 		t.Error("admins for another feed must be rejected")
 	}
 }

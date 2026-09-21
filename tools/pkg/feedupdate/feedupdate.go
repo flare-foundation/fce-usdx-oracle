@@ -29,35 +29,19 @@ import (
 	"github.com/pkg/errors"
 )
 
-// PrefixName and DataLength are the extension's, restated by name only.
-const (
-	PrefixName = wire.PrefixName
-	DataLength = wire.DataLength
-)
-
-// Prefix returns bytes32(PrefixName).
-func Prefix() common.Hash { return wire.Prefix() }
-
-// FeedUpdate and Signature are the extension's wire types, so a caller can
-// build an Update without importing the enclave's package by name.
-type (
-	FeedUpdate = wire.FeedUpdate
-	Signature  = wire.Signature
-)
-
 // Update is one decoded, signed feed update: the body and the signature over it,
 // with every field of both reachable directly.
 type Update struct {
-	FeedUpdate
-	Signature
+	wire.FeedUpdate
+	wire.Signature
 }
 
 // Decode reads an ActionResult payload.
 func Decode(data []byte) (Update, error) {
 	// Length first, with the length in the message: the extension's decoder
 	// refuses a wrong length too, but says nothing about how wrong.
-	if len(data) != DataLength {
-		return Update{}, errors.Errorf("payload is %d bytes, want %d", len(data), DataLength)
+	if len(data) != wire.DataLength {
+		return Update{}, errors.Errorf("payload is %d bytes, want %d", len(data), wire.DataLength)
 	}
 	u, sig, err := wire.DecodeData(data)
 	if err != nil {

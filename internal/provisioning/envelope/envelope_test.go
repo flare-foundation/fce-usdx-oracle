@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"fce-usdx-oracle/internal/failure"
+	"fce-usdx-oracle/pkg/protocol"
+	wire "fce-usdx-oracle/pkg/wire/envelope"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -38,16 +40,16 @@ func newAdmins(t *testing.T, n int) []admin {
 }
 
 // testBackingRefs are the refs the backing role governs in these tests. Mirrors
-// config.BackingRefs() without importing it — provision is deliberately
+// protocol.BackingRefs() without importing it — provision is deliberately
 // independent of the pinned policy: it takes the mapping, it does not own it.
 var testBackingRefs = []string{"hex_api_key"}
-var testPolicy = Policy{BackingRefs: testBackingRefs, MinBacking: 1, MinProviders: 2}
+var testPolicy = protocol.Policy{BackingRefs: testBackingRefs, MinBacking: 1, MinProviders: 2}
 
 // roleSets is the two-role map SetAdmins now takes. The tests still think in
 // terms of "the backing set" and "the providers set"; the role TAGS are what
 // changed, not the policy.
 func roleSets(backing, providers AdminSet) map[string]AdminSet {
-	return map[string]AdminSet{RoleBacking: backing, RoleProviders: providers}
+	return map[string]AdminSet{protocol.RoleBacking: backing, protocol.RoleProviders: providers}
 }
 
 // newTestVerifier installs a generated set as the PROVIDERS set through the real
@@ -79,8 +81,8 @@ func adminSet(admins []admin, threshold int) AdminSet {
 	return AdminSet{Admins: addrs, Threshold: threshold}
 }
 
-func testEnvelope(payload []byte) Envelope {
-	return Envelope{
+func testEnvelope(payload []byte) wire.Envelope {
+	return wire.Envelope{
 		ChainID:  testChainID,
 		TeeID:    testTeeID,
 		Version:  1,
@@ -92,9 +94,9 @@ func testEnvelope(payload []byte) Envelope {
 }
 
 // sign produces an EIP-191 personal-sign signature, as a hardware wallet would.
-func sign(t *testing.T, e Envelope, a admin) []byte {
+func sign(t *testing.T, e wire.Envelope, a admin) []byte {
 	t.Helper()
-	body, err := EncodeBody(e)
+	body, err := wire.EncodeBody(e)
 	if err != nil {
 		t.Fatalf("EncodeBody: %v", err)
 	}
@@ -106,9 +108,9 @@ func sign(t *testing.T, e Envelope, a admin) []byte {
 	return sig
 }
 
-func encode(t *testing.T, e Envelope, sigs [][]byte) []byte {
+func encode(t *testing.T, e wire.Envelope, sigs [][]byte) []byte {
 	t.Helper()
-	msg, err := Encode(e, sigs)
+	msg, err := wire.Encode(e, sigs)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -117,7 +119,7 @@ func encode(t *testing.T, e Envelope, sigs [][]byte) []byte {
 
 // signedMessage is encode+sign for the common case: one envelope, signed by each
 // of the given admins in turn.
-func signedMessage(t *testing.T, e Envelope, signers []admin) []byte {
+func signedMessage(t *testing.T, e wire.Envelope, signers []admin) []byte {
 	t.Helper()
 	sigs := make([][]byte, 0, len(signers))
 	for _, a := range signers {
@@ -207,7 +209,7 @@ func TestVerify_RejectsGarbageSignatures(t *testing.T) {
 	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
-	junk := make([]byte, SignatureLength)
+	junk := make([]byte, wire.SignatureLength)
 	msg := encode(t, e, [][]byte{junk, junk})
 
 	if _, err := v.Verify(msg); !errors.Is(err, failure.ProvisionRejected) {
@@ -222,14 +224,14 @@ func TestVerify_RejectsWrongBinding(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		mutate func(*Envelope)
+		mutate func(*wire.Envelope)
 	}{
-		{"another chain", func(e *Envelope) { e.ChainID = big.NewInt(1) }},
-		{"another machine", func(e *Envelope) {
+		{"another chain", func(e *wire.Envelope) { e.ChainID = big.NewInt(1) }},
+		{"another machine", func(e *wire.Envelope) {
 			e.TeeID = common.HexToAddress("0x00000000000000000000000000000000000000BB")
 		}},
-		{"empty ref", func(e *Envelope) { e.Ref = "" }},
-		{"over-long ref", func(e *Envelope) { e.Ref = string(make([]byte, 100)) }},
+		{"empty ref", func(e *wire.Envelope) { e.Ref = "" }},
+		{"over-long ref", func(e *wire.Envelope) { e.Ref = string(make([]byte, 100)) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -270,7 +272,7 @@ func TestVerify_RejectsStaleEnvelope(t *testing.T) {
 	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
-	e.IssuedAt = uint64(time.Now().UTC().Add(-Freshness - time.Minute).Unix())
+	e.IssuedAt = uint64(time.Now().UTC().Add(-wire.Freshness - time.Minute).Unix())
 	msg := encode(t, e, [][]byte{sign(t, e, admins[0]), sign(t, e, admins[1])})
 
 	if _, err := v.Verify(msg); !errors.Is(err, failure.ProvisionRejected) {
@@ -356,13 +358,13 @@ func TestVerify_RejectsForeignDomain(t *testing.T) {
 	e := testEnvelope([]byte("c"))
 	sigs := [][]byte{sign(t, e, admins[0]), sign(t, e, admins[1])}
 
-	msg, err := Encode(e, sigs)
+	msg, err := wire.Encode(e, sigs)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
 	// Corrupt the domain word inside the encoded body.
 	for i := range msg {
-		if msg[i] == Domain().Bytes()[0] {
+		if msg[i] == wire.Domain().Bytes()[0] {
 			msg[i] ^= 0xFF
 			break
 		}
@@ -380,7 +382,7 @@ func TestVerify_RejectsForeignDomain(t *testing.T) {
 func TestVerify_AllRejectionsAreIndistinguishable(t *testing.T) {
 	admins := newAdmins(t, 3)
 
-	build := func(mutate func(*Envelope), sigCount int) []byte {
+	build := func(mutate func(*wire.Envelope), sigCount int) []byte {
 		e := testEnvelope([]byte("c"))
 		mutate(&e)
 		sigs := make([][]byte, 0, sigCount)
@@ -391,10 +393,10 @@ func TestVerify_AllRejectionsAreIndistinguishable(t *testing.T) {
 	}
 
 	messages := [][]byte{
-		build(func(e *Envelope) { e.ChainID = big.NewInt(1) }, 2),
-		build(func(e *Envelope) { e.TeeID = common.Address{} }, 2),
-		build(func(e *Envelope) { e.IssuedAt = 1 }, 2),
-		build(func(e *Envelope) {}, 1),
+		build(func(e *wire.Envelope) { e.ChainID = big.NewInt(1) }, 2),
+		build(func(e *wire.Envelope) { e.TeeID = common.Address{} }, 2),
+		build(func(e *wire.Envelope) { e.IssuedAt = 1 }, 2),
+		build(func(e *wire.Envelope) {}, 1),
 		[]byte("not even abi"),
 	}
 
@@ -418,8 +420,8 @@ func TestVerify_BoundsSignatureCount(t *testing.T) {
 	v := newTestVerifier(t, admins)
 
 	e := testEnvelope([]byte("c"))
-	sigs := make([][]byte, 0, MaxSignatures+10)
-	for range MaxSignatures + 10 {
+	sigs := make([][]byte, 0, wire.MaxSignatures+10)
+	for range wire.MaxSignatures + 10 {
 		sigs = append(sigs, sign(t, e, admins[0]))
 	}
 
@@ -430,12 +432,12 @@ func TestVerify_BoundsSignatureCount(t *testing.T) {
 
 func FuzzVerify(f *testing.F) {
 	admins := newAdmins(&testing.T{}, 3)
-	e := Envelope{
+	e := wire.Envelope{
 		ChainID: testChainID, TeeID: testTeeID, Version: 1,
 		IssuedAt: uint64(time.Now().Unix()), Ref: "k",
 		Payload: []byte("c"),
 	}
-	if msg, err := Encode(e, [][]byte{make([]byte, 65)}); err == nil {
+	if msg, err := wire.Encode(e, [][]byte{make([]byte, 65)}); err == nil {
 		f.Add(msg)
 	}
 	f.Add([]byte("garbage"))
@@ -498,7 +500,7 @@ func TestSetAdmins_RejectsUnusableSets(t *testing.T) {
 		// hold the threshold, but Verify drops an envelope carrying more than
 		// MaxSignatures before it counts signers, so nothing could ever reach it.
 		{"providers threshold above the signature cap", adminSet(admins[:1], 1),
-			adminSet(newAdmins(t, MaxThreshold+4), MaxThreshold+1)},
+			adminSet(newAdmins(t, protocol.MaxThreshold+4), protocol.MaxThreshold+1)},
 		{"duplicate provider admin", adminSet(admins[:1], 1),
 			AdminSet{Admins: []common.Address{admins[0].addr, admins[0].addr}, Threshold: 2}},
 		{"zero address", adminSet(admins[:1], 1),
@@ -541,23 +543,23 @@ func TestSetAdmins_BackingAllowsSingleSigner(t *testing.T) {
 // only an operator collecting signatures would find out.
 func TestSetAdmins_ThresholdStopsAtTheSignatureCap(t *testing.T) {
 	backing := newAdmins(t, 1)
-	providers := newAdmins(t, MaxAdmins)
+	providers := newAdmins(t, protocol.MaxAdmins)
 
 	v := NewVerifier(testChainID, testTeeID, testPolicy)
-	if err := v.SetAdmins(roleSets(adminSet(backing, 1), adminSet(providers, MaxThreshold))); err != nil {
-		t.Fatalf("%d-of-%d must be installable: %v", MaxThreshold, MaxAdmins, err)
+	if err := v.SetAdmins(roleSets(adminSet(backing, 1), adminSet(providers, protocol.MaxThreshold))); err != nil {
+		t.Fatalf("%d-of-%d must be installable: %v", protocol.MaxThreshold, protocol.MaxAdmins, err)
 	}
 
 	v2 := NewVerifier(testChainID, testTeeID, testPolicy)
-	if err := v2.SetAdmins(roleSets(adminSet(backing, 1), adminSet(providers, MaxThreshold+1))); err == nil {
-		t.Fatalf("%d-of-%d is unsatisfiable and must be rejected", MaxThreshold+1, MaxAdmins)
+	if err := v2.SetAdmins(roleSets(adminSet(backing, 1), adminSet(providers, protocol.MaxThreshold+1))); err == nil {
+		t.Fatalf("%d-of-%d is unsatisfiable and must be rejected", protocol.MaxThreshold+1, protocol.MaxAdmins)
 	}
 
 	// The bound belongs on the threshold, not on the set: a large set with a
 	// small threshold is ordinary M-of-N and must keep working.
 	v3 := NewVerifier(testChainID, testTeeID, testPolicy)
 	if err := v3.SetAdmins(roleSets(adminSet(backing, 1), adminSet(providers, 3))); err != nil {
-		t.Fatalf("3-of-%d must stay installable: %v", MaxAdmins, err)
+		t.Fatalf("3-of-%d must stay installable: %v", protocol.MaxAdmins, err)
 	}
 }
 

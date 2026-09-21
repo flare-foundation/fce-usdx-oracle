@@ -61,7 +61,7 @@ func EncodeAdmins(version uint64, feedID [21]byte, roles []RoleSpec) ([]byte, er
 // EncodePrivateURL packs the commitment preimage WITHOUT the codec's salt check,
 // so a test can hand the enclave the unsalted blob a hostile sender might and
 // see it refused there. The layout is the codec's: abi.encode(salt, url).
-func EncodePrivateURL(u PrivateURL) ([]byte, error) {
+func EncodePrivateURL(u configpayload.PrivateURL) ([]byte, error) {
 	salt, err := abi.NewType("bytes32", "", nil)
 	if err != nil {
 		return nil, err

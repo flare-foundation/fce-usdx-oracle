@@ -153,17 +153,17 @@ func TestReadinessReport_StaleObservationWouldNotSign(t *testing.T) {
 func TestReadinessReport_HealthIsACopy(t *testing.T) {
 	p := stubPoller(t, &fakeSigner{})
 	obs := observationAt(1_800_000_000 - 10)
-	obs.Health = map[string]string{"rpc_flare_1": config.HealthOK}
+	obs.Health = map[string]string{"rpc_flare_1": types.HealthOK}
 	p.record(obs, nil)
 
 	rep := decodeReadiness(t, mustReadiness(t, p))
-	if rep.SourceHealth["rpc_flare_1"] != config.HealthOK {
+	if rep.SourceHealth["rpc_flare_1"] != types.HealthOK {
 		t.Fatalf("health not carried: %v", rep.SourceHealth)
 	}
 
 	// Mutating the source map must not be visible in an already-emitted report.
-	obs.Health["rpc_flare_1"] = config.HealthDown
-	if rep.SourceHealth["rpc_flare_1"] != config.HealthOK {
+	obs.Health["rpc_flare_1"] = types.HealthDown
+	if rep.SourceHealth["rpc_flare_1"] != types.HealthOK {
 		t.Error("the report aliased the observation's health map")
 	}
 }

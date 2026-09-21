@@ -22,7 +22,7 @@ func vectorUpdate() Update {
 	var feedID [21]byte
 	copy(feedID[:], common.FromHex("0x21555344582f555344000000000000000000000000"))
 	return Update{
-		FeedUpdate: FeedUpdate{
+		FeedUpdate: wire.FeedUpdate{
 			ExtensionID:   big.NewInt(66281),
 			FeedID:        feedID,
 			Value:         99950000,
@@ -31,15 +31,15 @@ func vectorUpdate() Update {
 			EndpointsHash: crypto.Keccak256Hash([]byte("endpoints")),
 			AdminsHash:    crypto.Keccak256Hash([]byte("admins")),
 		},
-		Signature: Signature{V: 28},
+		Signature: wire.Signature{V: 28},
 	}
 }
 
 func TestPrefixMatchesSolidity(t *testing.T) {
-	if got := Prefix().Hex(); got != vectorPrefix {
+	if got := wire.Prefix().Hex(); got != vectorPrefix {
 		t.Fatalf("prefix = %s, want %s", got, vectorPrefix)
 	}
-	if Prefix() == crypto.Keccak256Hash([]byte(PrefixName)) {
+	if wire.Prefix() == crypto.Keccak256Hash([]byte(wire.PrefixName)) {
 		t.Fatal("prefix must not be a keccak of the name")
 	}
 }
@@ -144,8 +144,8 @@ func TestDecodeRejectsWrongLength(t *testing.T) {
 		data []byte
 	}{
 		{"empty", nil},
-		{"short", make([]byte, DataLength-32)},
-		{"long", make([]byte, DataLength+32)},
+		{"short", make([]byte, wire.DataLength-32)},
+		{"long", make([]byte, wire.DataLength+32)},
 	} {
 		if _, err := Decode(tc.data); err == nil {
 			t.Errorf("%s: expected rejection", tc.name)

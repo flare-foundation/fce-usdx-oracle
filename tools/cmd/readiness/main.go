@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"fce-usdx-oracle/pkg/protocol"
+	"fce-usdx-oracle/pkg/types"
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/keeper"
 	"fce-usdx-oracle/tools/pkg/readinessreport"
@@ -43,7 +44,7 @@ import (
 type output struct {
 	Signer        string `json:"signer"`
 	InstructionID string `json:"instructionId"`
-	readinessreport.Payload
+	types.ReadinessReport
 }
 
 func main() {
@@ -78,9 +79,9 @@ func main() {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(output{
-		Signer:        report.Signer.Hex(),
-		InstructionID: report.InstructionID.Hex(),
-		Payload:       report.Payload,
+		Signer:          report.Signer.Hex(),
+		InstructionID:   report.InstructionID.Hex(),
+		ReadinessReport: report.Payload,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "readiness: writing the report:", err)
 		os.Exit(1)

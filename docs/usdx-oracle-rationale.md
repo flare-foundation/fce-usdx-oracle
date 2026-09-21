@@ -536,7 +536,7 @@ which one authorises it:
 
 | set | governs | floor |
 |---|---|---|
-| `backing` | `config.HexAPIKeyRef` only | 1 signer |
+| `backing` | `protocol.HexAPIKeyRef` only | 1 signer |
 | `providers` | every other ref | 2 distinct signers |
 
 The split follows the exposure, which is genuinely asymmetric:
@@ -672,7 +672,7 @@ stops matching.
 The `{secret}` placeholder must sit after the authority, so a credential can
 never change the host.
 
-Separately, `config.HexAPIKeyRef` may not be used as a provider secret. That
+Separately, `protocol.HexAPIKeyRef` may not be used as a provider secret. That
 credential authenticates the **pinned** Hex endpoint, by header. Without the
 check, a payload author could name it as a provider secret and have it
 substituted into a path on a host of their choosing — receiving it on the next

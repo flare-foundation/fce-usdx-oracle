@@ -15,6 +15,7 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/observation"
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/types"
 	"fce-usdx-oracle/pkg/wire/feedupdate"
 
@@ -67,7 +68,7 @@ func (o *conformanceObserver) Report(context.Context, uint64) (observation.Obser
 		ObservedAt: conformanceObservedAt,
 		Binding: observation.Binding{
 			ExtensionID:   config.ExtensionID(),
-			FeedID:        config.FeedID,
+			FeedID:        protocol.FeedID,
 			EndpointsHash: common.HexToHash("0x9f3c"),
 			AdminsHash:    common.HexToHash("0x5e21"),
 		},
@@ -96,7 +97,7 @@ func conformancePayload(t *testing.T) []byte {
 
 	data, err := feedupdate.EncodeData(feedupdate.FeedUpdate{
 		ExtensionID:   config.ExtensionID(),
-		FeedID:        config.FeedID,
+		FeedID:        protocol.FeedID,
 		Value:         conformanceValue,
 		Decimals:      conformanceDecimals,
 		ObservedAt:    conformanceObservedAt,

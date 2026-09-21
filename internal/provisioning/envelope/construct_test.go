@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"fce-usdx-oracle/internal/provisioning/envelope"
+	"fce-usdx-oracle/pkg/protocol"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -21,5 +22,5 @@ func TestNewVerifierRejectsZeroTeeID(t *testing.T) {
 		}
 	}()
 	envelope.NewVerifier(big.NewInt(114), common.Address{},
-		envelope.Policy{BackingRefs: []string{"hex_api_key"}, MinBacking: 1, MinProviders: 2})
+		protocol.Policy{BackingRefs: []string{"hex_api_key"}, MinBacking: 1, MinProviders: 2})
 }

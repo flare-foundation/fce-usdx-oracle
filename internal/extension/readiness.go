@@ -3,8 +3,8 @@ package extension
 import (
 	"context"
 
-	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
+	"fce-usdx-oracle/pkg/protocol"
 
 	"github.com/ethereum/go-ethereum/common"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
@@ -20,7 +20,7 @@ import (
 func (e *Extension) processGetReadiness(di *teetypes.DirectInstruction, correlator common.Hash) outcome {
 	// The pinned envelope or nothing, and neither the length nor the content is
 	// echoed back into the public log.
-	if len(di.Message) != 1 || di.Message[0] != config.ReadinessRequestV1 {
+	if len(di.Message) != 1 || di.Message[0] != protocol.ReadinessRequestV1 {
 		return refuse(failure.UnexpectedPayload)
 	}
 

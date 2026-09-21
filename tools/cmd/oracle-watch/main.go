@@ -24,10 +24,10 @@ import (
 	"syscall"
 	"time"
 
+	"fce-usdx-oracle/pkg/types"
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
 	"fce-usdx-oracle/tools/pkg/keeper"
-	"fce-usdx-oracle/tools/pkg/readinessreport"
 
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"github.com/pkg/errors"
@@ -40,8 +40,8 @@ type sample struct {
 	At    time.Time `json:"at"`
 	Proxy string    `json:"proxy"`
 
-	Readiness      *readinessreport.Payload `json:"readiness,omitempty"`
-	ReadinessError string                   `json:"readinessError,omitempty"`
+	Readiness      *types.ReadinessReport `json:"readiness,omitempty"`
+	ReadinessError string                 `json:"readinessError,omitempty"`
 	// Signer is the machine the signature recovers to; the report is bound to
 	// the request that asked, so it is this machine's answer to this poll.
 	Signer string `json:"signer,omitempty"`

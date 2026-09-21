@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
+	oracletypes "fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -580,8 +580,8 @@ func TestRead_StalledProviderDoesNotFailAQuorateRead(t *testing.T) {
 	if want := "20620459.685024"; got.Amount.FloatString(6) != want {
 		t.Errorf("amount = %s, want %s", got.Amount.FloatString(6), want)
 	}
-	if got := got.Providers["rpc_test_c"]; got != config.HealthDown {
-		t.Errorf("silent provider health = %q, want %q", got, config.HealthDown)
+	if got := got.Providers["rpc_test_c"]; got != oracletypes.HealthDown {
+		t.Errorf("silent provider health = %q, want %q", got, oracletypes.HealthDown)
 	}
 }
 
@@ -644,8 +644,8 @@ func TestRead_OverclaimedHeadDoesNotDenyTheRound(t *testing.T) {
 	if want := "20620459.685024"; got.Amount.FloatString(6) != want {
 		t.Errorf("amount = %s, want the honest figure %s", got.Amount.FloatString(6), want)
 	}
-	if h := got.Providers["rpc_test_c"]; h != config.HealthDisagree {
-		t.Errorf("overclaiming provider = %q, want %q", h, config.HealthDisagree)
+	if h := got.Providers["rpc_test_c"]; h != oracletypes.HealthDisagree {
+		t.Errorf("overclaiming provider = %q, want %q", h, oracletypes.HealthDisagree)
 	}
 }
 
@@ -661,9 +661,9 @@ func TestRead_ProviderDisplacedByAnOverclaimIsNotBlamed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if h := got.Providers["rpc_test_b"]; h != config.HealthOK {
+	if h := got.Providers["rpc_test_b"]; h != oracletypes.HealthOK {
 		t.Errorf("displaced provider = %q, want %q — it served the block finally read",
-			h, config.HealthOK)
+			h, oracletypes.HealthOK)
 	}
 }
 

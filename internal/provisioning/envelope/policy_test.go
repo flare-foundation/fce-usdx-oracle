@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"fce-usdx-oracle/internal/provisioning/envelope"
+	"fce-usdx-oracle/pkg/protocol"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -14,10 +15,10 @@ import (
 // never install a set must be refused where it is built, not at the first
 // SET_ADMINS.
 func TestNewVerifierRefusesAnUnusablePolicy(t *testing.T) {
-	for name, p := range map[string]envelope.Policy{
+	for name, p := range map[string]protocol.Policy{
 		"zero backing floor":                {MinBacking: 0, MinProviders: 2},
 		"zero providers floor":              {MinBacking: 1, MinProviders: 0},
-		"floor above envelope.MaxThreshold": {MinBacking: 1, MinProviders: envelope.MaxThreshold + 1},
+		"floor above protocol.MaxThreshold": {MinBacking: 1, MinProviders: protocol.MaxThreshold + 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			defer func() {
@@ -35,12 +36,12 @@ func TestNewVerifierRefusesAnUnusablePolicy(t *testing.T) {
 // A ref the policy does not name falls under the stronger set, and the floor
 // follows the set — the rule usdxprov applies before an envelope is sent.
 func TestPolicyRoutesRefsToTheirSet(t *testing.T) {
-	p := envelope.Policy{BackingRefs: []string{"hex_api_key"}, MinBacking: 1, MinProviders: 3}
-	if got := p.RoleFor("hex_api_key"); got != envelope.RoleBacking {
-		t.Errorf("hex_api_key → %q, want %q", got, envelope.RoleBacking)
+	p := protocol.Policy{BackingRefs: []string{"hex_api_key"}, MinBacking: 1, MinProviders: 3}
+	if got := p.RoleFor("hex_api_key"); got != protocol.RoleBacking {
+		t.Errorf("hex_api_key → %q, want %q", got, protocol.RoleBacking)
 	}
-	if got := p.RoleFor("never_heard_of_it"); got != envelope.RoleProviders {
-		t.Errorf("unknown ref → %q, want the stronger set %q", got, envelope.RoleProviders)
+	if got := p.RoleFor("never_heard_of_it"); got != protocol.RoleProviders {
+		t.Errorf("unknown ref → %q, want the stronger set %q", got, protocol.RoleProviders)
 	}
 	if got := p.MinThresholdFor("hex_api_key"); got != 1 {
 		t.Errorf("backing floor = %d, want 1", got)

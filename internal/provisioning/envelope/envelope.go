@@ -29,37 +29,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// The wire format is pkg/wire/envelope's and the admin policy pkg/protocol's;
-// what remains here is verification against the installed signer sets. The
-// names below keep this package's callers and tests on one vocabulary.
-type (
-	Envelope = wire.Envelope
-	Policy   = protocol.Policy
-)
-
-const (
-	DomainName      = wire.DomainName
-	Freshness       = wire.Freshness
-	ClockSkew       = wire.ClockSkew
-	SignatureLength = wire.SignatureLength
-	MaxSignatures   = wire.MaxSignatures
-
-	RoleBacking   = protocol.RoleBacking
-	RoleProviders = protocol.RoleProviders
-	MaxAdmins     = protocol.MaxAdmins
-	MaxThreshold  = protocol.MaxThreshold
-)
-
-func Domain() common.Hash { return wire.Domain() }
-func Roles() []string     { return protocol.Roles() }
-
-func EncodeBody(e Envelope) ([]byte, error)            { return wire.EncodeBody(e) }
-func Encode(e Envelope, sigs [][]byte) ([]byte, error) { return wire.Encode(e, sigs) }
-
-// decode is the wire package's Decode; Verify reports any failure as
-// ProvisionRejected, so the detail never leaves this package.
-func decode(message []byte) (Envelope, [][]byte, error) { return wire.Decode(message) }
-
 // AdminSet is one signer set and the number of distinct members that must sign.
 type AdminSet struct {
 	Admins    []common.Address
@@ -83,7 +52,7 @@ type Verifier struct {
 	sets map[string]AdminSet
 
 	// Pinned at construction, never read from a payload.
-	policy Policy
+	policy protocol.Policy
 
 	now func() time.Time
 }
@@ -91,7 +60,7 @@ type Verifier struct {
 // HasAdmins reports whether every role's signer set has been installed. All or
 // nothing, so a machine cannot provision one class of credential and not the other.
 func (v *Verifier) HasAdmins() bool {
-	for _, role := range Roles() {
+	for _, role := range protocol.Roles() {
 		if !v.sets[role].installed() {
 			return false
 		}
@@ -99,14 +68,14 @@ func (v *Verifier) HasAdmins() bool {
 	return true
 }
 
-// setFor selects the signer set governing a ref. See Policy.RoleFor: anything
+// setFor selects the signer set governing a ref. See protocol.Policy.RoleFor: anything
 // not named as a backing ref falls under the STRONGER set.
 func (v *Verifier) setFor(ref string) AdminSet {
 	return v.sets[v.policy.RoleFor(ref)]
 }
 
 // Policy returns the pinned policy the verifier was built with.
-func (v *Verifier) Policy() Policy {
+func (v *Verifier) Policy() protocol.Policy {
 	p := v.policy
 	p.BackingRefs = append([]string(nil), p.BackingRefs...)
 	return p
@@ -119,7 +88,7 @@ func (v *Verifier) SetAdmins(sets map[string]AdminSet) error {
 	// Validated into a fresh map before anything is installed, so a payload that
 	// is good for one role and bad for another leaves the live sets untouched.
 	installed := make(map[string]AdminSet, len(sets))
-	for _, role := range Roles() {
+	for _, role := range protocol.Roles() {
 		set, ok := sets[role]
 		if !ok {
 			return fmt.Errorf("provision: %s set: missing", role)
@@ -143,10 +112,10 @@ func (v *Verifier) SetAdmins(sets map[string]AdminSet) error {
 }
 
 func checkSet(s AdminSet, floor int) error {
-	if len(s.Admins) == 0 || len(s.Admins) > MaxAdmins {
+	if len(s.Admins) == 0 || len(s.Admins) > protocol.MaxAdmins {
 		return errors.New("admin set size out of range")
 	}
-	if s.Threshold < floor || s.Threshold > len(s.Admins) || s.Threshold > MaxThreshold {
+	if s.Threshold < floor || s.Threshold > len(s.Admins) || s.Threshold > protocol.MaxThreshold {
 		return errors.New("admin threshold out of range")
 	}
 
@@ -168,7 +137,7 @@ func checkSet(s AdminSet, floor int) error {
 // NewVerifier builds a verifier with no admin sets installed. The policy is
 // pinned in the build, never read from a payload; an unusable one is a build
 // error and is refused here rather than at the first SET_ADMINS.
-func NewVerifier(chainID *big.Int, teeID common.Address, policy Policy) *Verifier {
+func NewVerifier(chainID *big.Int, teeID common.Address, policy protocol.Policy) *Verifier {
 	// A zero teeID would match the zero address an envelope carries when its
 	// machine binding was never filled in, so every such envelope would pass the
 	// one check that ties a credential to one enclave.
@@ -191,62 +160,62 @@ func NewVerifier(chainID *big.Int, teeID common.Address, policy Policy) *Verifie
 
 // Verify decodes and validates a wire message. Every failure returns
 // failure.ProvisionRejected and nothing else.
-func (v *Verifier) Verify(message []byte) (Envelope, error) {
+func (v *Verifier) Verify(message []byte) (wire.Envelope, error) {
 	// Reported as the same rejection as everything else, so the endpoint does
 	// not reveal whether a machine has been told who its admins are.
 	if !v.HasAdmins() {
-		return Envelope{}, failure.ProvisionRejected
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 
-	e, sigs, err := decode(message)
+	e, sigs, err := wire.Decode(message)
 	if err != nil {
-		return Envelope{}, failure.ProvisionRejected
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 
-	if len(sigs) > MaxSignatures {
-		return Envelope{}, failure.ProvisionRejected
+	if len(sigs) > wire.MaxSignatures {
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 
 	set := v.setFor(e.Ref)
 	if len(sigs) < set.Threshold {
-		return Envelope{}, failure.ProvisionRejected
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 
 	// Binding checks first: cheap, and they avoid signature recovery for an
 	// envelope that could never apply.
 	if v.chainID == nil || e.ChainID == nil || e.ChainID.Cmp(v.chainID) != 0 {
-		return Envelope{}, failure.ProvisionRejected
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 	// Bound to one machine, so a captured envelope cannot be redirected.
 	if e.TeeID != v.teeID {
-		return Envelope{}, failure.ProvisionRejected
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 	if e.Ref == "" || len(e.Ref) > 64 {
-		return Envelope{}, failure.ProvisionRejected
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 	now := v.now()
 	issued := time.Unix(int64(e.IssuedAt), 0).UTC()
 	if e.IssuedAt == 0 {
-		return Envelope{}, failure.ProvisionRejected
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
-	if now.Sub(issued) > Freshness {
-		return Envelope{}, failure.ProvisionRejected
+	if now.Sub(issued) > wire.Freshness {
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
-	if issued.Sub(now) > ClockSkew {
-		return Envelope{}, failure.ProvisionRejected
+	if issued.Sub(now) > wire.ClockSkew {
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 
 	// Strictly increasing per ref, for the life of the process.
 	if e.Version <= v.lastVersion[e.Ref] {
-		return Envelope{}, failure.ProvisionRejected
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 
-	body, err := EncodeBody(e)
+	body, err := wire.EncodeBody(e)
 	if err != nil {
-		return Envelope{}, failure.ProvisionRejected
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 	if !hasThreshold(body, sigs, set) {
-		return Envelope{}, failure.ProvisionRejected
+		return wire.Envelope{}, failure.ProvisionRejected
 	}
 
 	v.lastVersion[e.Ref] = e.Version
@@ -279,11 +248,11 @@ func isAdmin(admins []common.Address, a common.Address) bool {
 // recoverSigner accepts v as 27/28, the standard produced by personal-sign
 // tooling and hardware wallets.
 func recoverSigner(digest []byte, sig []byte) (common.Address, bool) {
-	if len(sig) != SignatureLength {
+	if len(sig) != wire.SignatureLength {
 		return common.Address{}, false
 	}
 
-	normalised := make([]byte, SignatureLength)
+	normalised := make([]byte, wire.SignatureLength)
 	copy(normalised, sig)
 
 	switch normalised[64] {

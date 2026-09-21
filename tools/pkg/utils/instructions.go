@@ -10,7 +10,6 @@ package utils
 import (
 	"context"
 	"math/big"
-	"strings"
 
 	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/wire/configpayload"
@@ -34,15 +33,6 @@ import (
 // deployed instance, so there is nothing left to read on chain. Taken from the
 // extension rather than restated, because a mismatch prices the wrong fee row
 // and the instruction is rejected for an underpaid fee.
-var (
-	OpTypeTeeOracle       = protocol.OPTypeTeeOracle
-	OpCommandGetFeed      = protocol.OPCommandGetFeed
-	OpCommandSetEndpoints = protocol.OPCommandSetEndpoints
-	OpCommandSetAdmins    = protocol.OPCommandSetAdmins
-)
-
-// opName renders a bytes32 op tag as the ASCII name it was made from.
-func opName(tag common.Hash) string { return strings.TrimRight(string(tag[:]), "\x00") }
 
 func senderABI() (*abi.ABI, error) {
 	parsed, err := teeoraclesender.IITeeOracleInstructionsSenderMetaData.GetAbi()
@@ -58,7 +48,7 @@ func senderABI() (*abi.ABI, error) {
 // Read, never hard-coded: it is governance-settable, and the default applies
 // until the TEE_ORACLE rows are set.
 func FeedUpdateFee(s *support.Support, teeIDs int) (*big.Int, error) {
-	return operationFee(s, OpCommandGetFeed, teeIDs)
+	return operationFee(s, protocol.OPCommandGetFeed, teeIDs)
 }
 
 func operationFee(s *support.Support, command common.Hash, teeIDs int) (*big.Int, error) {
@@ -67,7 +57,7 @@ func operationFee(s *support.Support, command common.Hash, teeIDs int) (*big.Int
 	}
 
 	opts := &bind.CallOpts{Context: context.Background()}
-	fee, err := s.TeeOperationFees.GetOperationFee(opts, [32]byte(OpTypeTeeOracle), [32]byte(command))
+	fee, err := s.TeeOperationFees.GetOperationFee(opts, [32]byte(protocol.OPTypeTeeOracle), [32]byte(command))
 	if err != nil {
 		return nil, errors.Errorf("reading operation fee: %s", err)
 	}
@@ -303,12 +293,12 @@ func (p *Publication) ResolveFee(s *support.Support, senderAddress common.Addres
 		Fee    *big.Int
 	}
 	switch command {
-	case OpCommandSetEndpoints:
+	case protocol.OPCommandSetEndpoints:
 		quote, err = caller.GetEndpointsPublicationFee(opts)
-	case OpCommandSetAdmins:
+	case protocol.OPCommandSetAdmins:
 		quote, err = caller.GetAdminsPublicationFee(opts)
 	default:
-		return errors.Errorf("%s is not a publication", opName(command))
+		return errors.Errorf("%s is not a publication", protocol.OpName(command))
 	}
 	if err != nil {
 		return errors.Errorf("reading the publication fee: %s", err)

@@ -13,6 +13,7 @@ import (
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/observation/backing"
 	"fce-usdx-oracle/internal/observation/supply"
+	oracletypes "fce-usdx-oracle/pkg/types"
 	"fce-usdx-oracle/pkg/wire/feedupdate"
 
 	"github.com/ethereum/go-ethereum"
@@ -492,8 +493,8 @@ func TestObserve_HealthSeededForEverySource(t *testing.T) {
 			t.Errorf("source %q missing from health; absence reads as healthy", name)
 			continue
 		}
-		if status != config.HealthOK {
-			t.Errorf("source %q = %q, want %q", name, status, config.HealthOK)
+		if status != oracletypes.HealthOK {
+			t.Errorf("source %q = %q, want %q", name, status, oracletypes.HealthOK)
 		}
 	}
 }
@@ -511,11 +512,11 @@ func TestObserve_HealthReportedOnFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a failure")
 	}
-	if got.Health["hex_bonds"] != config.HealthDown {
-		t.Errorf("hex_bonds = %q, want %q", got.Health["hex_bonds"], config.HealthDown)
+	if got.Health["hex_bonds"] != oracletypes.HealthDown {
+		t.Errorf("hex_bonds = %q, want %q", got.Health["hex_bonds"], oracletypes.HealthDown)
 	}
-	if got.Health["hex_cash"] != config.HealthOK {
-		t.Errorf("hex_cash = %q, want %q", got.Health["hex_cash"], config.HealthOK)
+	if got.Health["hex_cash"] != oracletypes.HealthOK {
+		t.Errorf("hex_cash = %q, want %q", got.Health["hex_cash"], oracletypes.HealthOK)
 	}
 }
 
@@ -626,11 +627,11 @@ func TestObserve_WithoutCash_ReportsNotConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if h := got.Health[config.HexCashName]; h != config.HealthNotConfigured {
-		t.Errorf("health[%s] = %q, want %q", config.HexCashName, h, config.HealthNotConfigured)
+	if h := got.Health[config.HexCashName]; h != oracletypes.HealthNotConfigured {
+		t.Errorf("health[%s] = %q, want %q", config.HexCashName, h, oracletypes.HealthNotConfigured)
 	}
-	if h := got.Health["hex_bonds"]; h != config.HealthOK {
-		t.Errorf("health[hex_bonds] = %q, want %q", h, config.HealthOK)
+	if h := got.Health["hex_bonds"]; h != oracletypes.HealthOK {
+		t.Errorf("health[hex_bonds] = %q, want %q", h, oracletypes.HealthOK)
 	}
 }
 
@@ -646,8 +647,8 @@ func TestObserve_CashDownReportsDownNotAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if h := got.Health["hex_cash"]; h != config.HealthDown {
-		t.Errorf("health[hex_cash] = %q, want %q", h, config.HealthDown)
+	if h := got.Health["hex_cash"]; h != oracletypes.HealthDown {
+		t.Errorf("health[hex_cash] = %q, want %q", h, oracletypes.HealthDown)
 	}
 }
 

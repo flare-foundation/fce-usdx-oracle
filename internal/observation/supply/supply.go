@@ -34,8 +34,8 @@ import (
 	"sync"
 	"time"
 
-	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
+	oracletypes "fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -68,7 +68,7 @@ type Provider struct {
 
 // ChainSource is one chain, opened and ready to read: the pinned facts it was
 // built from, the agreement policy, and the RPC providers to ask. Built per
-// observation from config.Chain plus the published endpoints — it holds live
+// observation from protocol.Chain plus the published endpoints — it holds live
 // clients, so it is not configuration and outlives nothing.
 type ChainSource struct {
 	Name  string
@@ -153,7 +153,7 @@ func Read(ctx context.Context, ch ChainSource) (Reading, error) {
 	// providerHeads contacts every provider before anything else can fail.
 	health := make(map[string]string, len(ch.Providers))
 	for _, p := range ch.Providers {
-		health[p.Name] = config.HealthOK
+		health[p.Name] = oracletypes.HealthOK
 	}
 	failed := func(err error) (Reading, error) {
 		return Reading{Chain: ch.Name, Providers: health}, err
@@ -287,7 +287,7 @@ func providerHeads(
 	answered := 0
 	for i, c := range claims {
 		if !c.ok {
-			health[ch.Providers[i].Name] = config.HealthDown
+			health[ch.Providers[i].Name] = oracletypes.HealthDown
 			continue
 		}
 		answered++
@@ -335,8 +335,8 @@ func pinCandidateBlocks(claims []headClaim, quorum int) []uint64 {
 // shape a provider takes when it tries to rewind the observation.
 func markLagging(ch ChainSource, claims []headClaim, pinned uint64, health map[string]string) {
 	for i, c := range claims {
-		if c.ok && c.n < pinned && health[ch.Providers[i].Name] == config.HealthOK {
-			health[ch.Providers[i].Name] = config.HealthLagging
+		if c.ok && c.n < pinned && health[ch.Providers[i].Name] == oracletypes.HealthOK {
+			health[ch.Providers[i].Name] = oracletypes.HealthLagging
 		}
 	}
 }
@@ -525,11 +525,11 @@ func vote(ch ChainSource, answers [][]byte, health map[string]string) (best []by
 			// A lagging provider is expected to fail here — it does not hold the
 			// pinned block. Keeping "lagging" names the actual cause; "down"
 			// would send someone looking for an outage that is not there.
-			if health[name] != config.HealthLagging {
-				health[name] = config.HealthDown
+			if health[name] != oracletypes.HealthLagging {
+				health[name] = oracletypes.HealthDown
 			}
-		case string(a) != string(best) && health[name] == config.HealthOK:
-			health[name] = config.HealthDisagree
+		case string(a) != string(best) && health[name] == oracletypes.HealthOK:
+			health[name] = oracletypes.HealthDisagree
 		}
 	}
 

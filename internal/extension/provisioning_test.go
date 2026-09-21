@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -56,7 +56,7 @@ func (f *fakeProvisioner) Readiness() types.Readiness { return f.readiness }
 // DataFixed for an instruction, a DirectInstruction for a direct action. Building both
 // as DataFixed hid that the extension could not read a real direct payload.
 func configAction(command common.Hash, actionType teetypes.ActionType, payload []byte) teetypes.Action {
-	opType, opCommand := config.OPTypeTeeOracle, command
+	opType, opCommand := protocol.OPTypeTeeOracle, command
 
 	if actionType == teetypes.Direct {
 		return buildDirectAction(opType, opCommand, payload)
@@ -84,7 +84,7 @@ func TestSetSecret_DirectEnvelopeDeliversThePayload(t *testing.T) {
 
 	envelope := []byte("the-signed-envelope")
 	status, body := e.processAction(
-		configAction(config.OPCommandSetSecret, teetypes.Direct, envelope))
+		configAction(protocol.OPCommandSetSecret, teetypes.Direct, envelope))
 	result := mustResult(t, status, body)
 
 	if result.Status != 1 {
@@ -103,7 +103,7 @@ func TestSetSecret_DirectEnvelopeDeliversThePayload(t *testing.T) {
 func TestGetPrice_RejectedOverDirectChannel(t *testing.T) {
 	e := newTestExtension()
 
-	action := buildDirectAction(config.OPTypeTeeOracle, config.OPCommandGetFeed,
+	action := buildDirectAction(protocol.OPTypeTeeOracle, protocol.OPCommandGetFeed,
 		feedRequest(t))
 	status, body := e.processAction(action)
 	result := mustResult(t, status, body)
@@ -123,7 +123,7 @@ func TestSetEndpoints_RejectedOverDirectChannel(t *testing.T) {
 	e := newProvisionedExtension(p)
 
 	status, body := e.processAction(
-		configAction(config.OPCommandSetEndpoints, teetypes.Direct, []byte(`{}`)))
+		configAction(protocol.OPCommandSetEndpoints, teetypes.Direct, []byte(`{}`)))
 	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
@@ -145,7 +145,7 @@ func TestSetAdmins_RejectedOverDirectChannel(t *testing.T) {
 	e := newProvisionedExtension(p)
 
 	status, body := e.processAction(
-		configAction(config.OPCommandSetAdmins, teetypes.Direct, []byte(`{}`)))
+		configAction(protocol.OPCommandSetAdmins, teetypes.Direct, []byte(`{}`)))
 	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
@@ -166,7 +166,7 @@ func TestSetSecret_RejectedOverInstructionChannel(t *testing.T) {
 	e := newProvisionedExtension(p)
 
 	status, body := e.processAction(
-		configAction(config.OPCommandSetSecret, teetypes.Instruction, []byte("envelope")))
+		configAction(protocol.OPCommandSetSecret, teetypes.Instruction, []byte("envelope")))
 	result := mustResult(t, status, body)
 
 	if result.Status != 0 {
@@ -187,11 +187,11 @@ func TestConfig_AcceptsOverCorrectChannel(t *testing.T) {
 		actionType teetypes.ActionType
 		calls      func(*fakeProvisioner) int
 	}{
-		{"endpoints by instruction", config.OPCommandSetEndpoints, teetypes.Instruction,
+		{"endpoints by instruction", protocol.OPCommandSetEndpoints, teetypes.Instruction,
 			func(p *fakeProvisioner) int { return p.endpointCall }},
-		{"admins by instruction", config.OPCommandSetAdmins, teetypes.Instruction,
+		{"admins by instruction", protocol.OPCommandSetAdmins, teetypes.Instruction,
 			func(p *fakeProvisioner) int { return p.adminsCall }},
-		{"secret by direct", config.OPCommandSetSecret, teetypes.Direct,
+		{"secret by direct", protocol.OPCommandSetSecret, teetypes.Direct,
 			func(p *fakeProvisioner) int { return p.secretCall }},
 	}
 	for _, c := range cases {
@@ -229,7 +229,7 @@ func TestConfig_ReturnsNoDataOnAnyPath(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			e := newProvisionedExtension(c.p)
-			_, body := e.processAction(configAction(config.OPCommandSetSecret, c.typ, []byte("x")))
+			_, body := e.processAction(configAction(protocol.OPCommandSetSecret, c.typ, []byte("x")))
 
 			var result teetypes.ActionResult
 			if err := json.Unmarshal(body, &result); err != nil {
@@ -248,7 +248,7 @@ func TestSetSecret_AllRejectionsLookTheSame(t *testing.T) {
 	logs := make([]string, 0, 3)
 	for range 3 {
 		e := newProvisionedExtension(&fakeProvisioner{secretErr: failure.ProvisionRejected})
-		_, body := e.processAction(configAction(config.OPCommandSetSecret, teetypes.Direct, []byte("x")))
+		_, body := e.processAction(configAction(protocol.OPCommandSetSecret, teetypes.Direct, []byte("x")))
 		var result teetypes.ActionResult
 		_ = json.Unmarshal(body, &result)
 		logs = append(logs, result.Log)
@@ -269,7 +269,7 @@ func TestSetSecret_DoesNotEchoEnvelope(t *testing.T) {
 	e := newProvisionedExtension(&fakeProvisioner{secretErr: failure.ProvisionRejected})
 
 	_, body := e.processAction(
-		configAction(config.OPCommandSetSecret, teetypes.Direct, []byte(sentinel)))
+		configAction(protocol.OPCommandSetSecret, teetypes.Direct, []byte(sentinel)))
 
 	if strings.Contains(string(body), sentinel) {
 		t.Errorf("the result echoes the submitted envelope: %s", body)
@@ -288,7 +288,7 @@ func TestGetPrice_NotConfiguredBeforeProvisioning(t *testing.T) {
 
 	// A provisioner without an observer is the real unprovisioned state.
 	status, body := e.processAction(
-		configAction(config.OPCommandSetSecret, teetypes.Instruction, []byte("x")))
+		configAction(protocol.OPCommandSetSecret, teetypes.Instruction, []byte("x")))
 	result := mustResult(t, status, body)
 	if result.Status != 0 {
 		t.Error("expected a rejection over the wrong channel")
@@ -299,7 +299,7 @@ func TestConfig_WithoutProvisionerIsNotConfigured(t *testing.T) {
 	e := newTestExtension() // provisioner nil
 
 	status, body := e.processAction(
-		configAction(config.OPCommandSetSecret, teetypes.Direct, []byte("x")))
+		configAction(protocol.OPCommandSetSecret, teetypes.Direct, []byte("x")))
 	result := mustResult(t, status, body)
 
 	if result.Status != 0 {

@@ -13,6 +13,9 @@ import (
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/provisioning/envelope"
+	"fce-usdx-oracle/pkg/protocol"
+	"fce-usdx-oracle/pkg/wire/configpayload"
+	wire "fce-usdx-oracle/pkg/wire/envelope"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -39,7 +42,7 @@ var testChainID = big.NewInt(114)
 func newStore(t *testing.T) *Store {
 	t.Helper()
 	return New(
-		envelope.NewVerifier(testChainID, testTeeID, config.AdminPolicy()),
+		envelope.NewVerifier(testChainID, testTeeID, protocol.AdminPolicy()),
 		&fakeNode{teeID: testTeeID},
 	)
 }
@@ -52,7 +55,7 @@ func testCashSalt() common.Hash { return crypto.Keccak256Hash([]byte("test-salt"
 
 func testCashCommitment(t *testing.T) common.Hash {
 	t.Helper()
-	c, err := CommitPrivateURL(PrivateURL{Salt: testCashSalt(), Url: testCashURL})
+	c, err := configpayload.CommitPrivateURL(configpayload.PrivateURL{Salt: testCashSalt(), Url: testCashURL})
 	if err != nil {
 		t.Fatalf("CommitPrivateURL: %v", err)
 	}
@@ -61,7 +64,7 @@ func testCashCommitment(t *testing.T) common.Hash {
 
 func testCashBlob(t *testing.T) []byte {
 	t.Helper()
-	blob, err := EncodePrivateURL(PrivateURL{Salt: testCashSalt(), Url: testCashURL})
+	blob, err := EncodePrivateURL(configpayload.PrivateURL{Salt: testCashSalt(), Url: testCashURL})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
@@ -75,19 +78,19 @@ func testGroups(t *testing.T) []GroupSpec {
 	t.Helper()
 	return []GroupSpec{
 		{Group: "flare", Threshold: 2, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://flare-api.flare.network/ext/C/rpc"},
-			{Kind: KindPublic, URL: "https://rpc.ankr.com/flare/{secret}", SecretRef: "ankr_flare_key"},
-			{Kind: KindPublic, URL: "https://flare-mainnet.g.alchemy.com/v2/{secret}", SecretRef: "alchemy_flare_key"},
+			{Kind: configpayload.KindPublic, URL: "https://flare-api.flare.network/ext/C/rpc"},
+			{Kind: configpayload.KindPublic, URL: "https://rpc.ankr.com/flare/{secret}", SecretRef: "ankr_flare_key"},
+			{Kind: configpayload.KindPublic, URL: "https://flare-mainnet.g.alchemy.com/v2/{secret}", SecretRef: "alchemy_flare_key"},
 		}},
 		{Group: "ethereum", Threshold: 2, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://ethereum-rpc.publicnode.com"},
-			{Kind: KindPublic, URL: "https://rpc.ankr.com/eth/{secret}", SecretRef: "ankr_eth_key"},
+			{Kind: configpayload.KindPublic, URL: "https://ethereum-rpc.publicnode.com"},
+			{Kind: configpayload.KindPublic, URL: "https://rpc.ankr.com/eth/{secret}", SecretRef: "ankr_eth_key"},
 		}},
 		{Group: "songbird", Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://songbird-api.flare.network/ext/C/rpc"},
+			{Kind: configpayload.KindPublic, URL: "https://songbird-api.flare.network/ext/C/rpc"},
 		}},
 		{Group: config.HexCashGroup, Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPrivate, URLHash: testCashCommitment(t), SecretRef: config.HexCashURLRef},
+			{Kind: configpayload.KindPrivate, URLHash: testCashCommitment(t), SecretRef: protocol.HexCashURLRef},
 		}},
 	}
 }
@@ -132,8 +135,8 @@ var devAdmins = []common.Address{
 // envelope helpers sign with keys 1 and 2 regardless of ref.
 func testRoles() []RoleSpec {
 	return []RoleSpec{
-		{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
-		{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
+		{Role: protocol.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+		{Role: protocol.RoleProviders, Threshold: 2, Admins: devAdmins},
 	}
 }
 
@@ -148,7 +151,7 @@ func setAdmins(t *testing.T, s *Store, version uint64) {
 }
 
 func applyAdmins(s *Store, version uint64, roles []RoleSpec) error {
-	raw, err := EncodeAdmins(version, config.FeedID, roles)
+	raw, err := EncodeAdmins(version, protocol.FeedID, roles)
 	if err != nil {
 		return err
 	}
@@ -158,7 +161,7 @@ func applyAdmins(s *Store, version uint64, roles []RoleSpec) error {
 // setEndpoints encodes and applies, exercising the same decode path a real
 // SET_ENDPOINTS instruction takes.
 func setEndpoints(s *Store, version uint64, groups []GroupSpec) error {
-	raw, err := EncodeEndpoints(version, config.FeedID, groups)
+	raw, err := EncodeEndpoints(version, protocol.FeedID, groups)
 	if err != nil {
 		return err
 	}
@@ -182,11 +185,11 @@ func provisioned(t *testing.T) *Store {
 	}
 	setAdmins(t, s, 1)
 	for _, ref := range []string{
-		config.HexAPIKeyRef, "ankr_flare_key", "ankr_eth_key", "alchemy_flare_key",
+		protocol.HexAPIKeyRef, "ankr_flare_key", "ankr_eth_key", "alchemy_flare_key",
 	} {
 		setSecret(t, s, ref, []byte("value-"+ref))
 	}
-	setSecret(t, s, config.HexCashURLRef, testCashBlob(t))
+	setSecret(t, s, protocol.HexCashURLRef, testCashBlob(t))
 	return s
 }
 
@@ -200,11 +203,11 @@ func TestPinnedPolicyIsUsed(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	if len(cfg.Chains) != len(config.Chains) {
-		t.Fatalf("chains = %d, want %d", len(cfg.Chains), len(config.Chains))
+	if len(cfg.Chains) != len(protocol.Chains) {
+		t.Fatalf("chains = %d, want %d", len(cfg.Chains), len(protocol.Chains))
 	}
 	for i, ch := range cfg.Chains {
-		pinned := config.Chains[i]
+		pinned := protocol.Chains[i]
 		if ch.Name != pinned.Name {
 			t.Errorf("chain %d name = %q, want %q", i, ch.Name, pinned.Name)
 		}
@@ -288,7 +291,7 @@ func TestAnyHostIsAccepted(t *testing.T) {
 	s := newStore(t)
 	groups := withGroup(t, "songbird", GroupSpec{
 		Group: "songbird", Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://whatever.example/rpc"},
+			{Kind: configpayload.KindPublic, URL: "https://whatever.example/rpc"},
 		},
 	})
 	if err := setEndpoints(s, 1, groups); err != nil {
@@ -320,7 +323,7 @@ func TestSetEndpoints_RejectsUnknownGroup(t *testing.T) {
 	s := newStore(t)
 	groups := append(testGroups(t), GroupSpec{
 		Group: "bitcoin", Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://btc.example/rpc"},
+			{Kind: configpayload.KindPublic, URL: "https://btc.example/rpc"},
 		},
 	})
 	if err := setEndpoints(s, 1, groups); err == nil {
@@ -336,7 +339,7 @@ func TestSetEndpoints_RejectsPublicCashEndpoint(t *testing.T) {
 	s := newStore(t)
 	groups := withGroup(t, config.HexCashGroup, GroupSpec{
 		Group: config.HexCashGroup, Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://evil.example/cash"},
+			{Kind: configpayload.KindPublic, URL: "https://evil.example/cash"},
 		},
 	})
 	if err := setEndpoints(s, 1, groups); err == nil {
@@ -350,7 +353,7 @@ func TestSetEndpoints_RejectsCashEndpointWithWrongRef(t *testing.T) {
 	s := newStore(t)
 	groups := withGroup(t, config.HexCashGroup, GroupSpec{
 		Group: config.HexCashGroup, Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPrivate, URLHash: testCashCommitment(t), SecretRef: "something_else"},
+			{Kind: configpayload.KindPrivate, URLHash: testCashCommitment(t), SecretRef: "something_else"},
 		}})
 	if err := setEndpoints(s, 1, groups); err == nil {
 		t.Fatal("hex_cash naming another ref must be rejected")
@@ -359,7 +362,7 @@ func TestSetEndpoints_RejectsCashEndpointWithWrongRef(t *testing.T) {
 
 func TestSetEndpoints_RejectsMultipleCashEndpoints(t *testing.T) {
 	s := newStore(t)
-	ep := Endpoint{Kind: KindPrivate, URLHash: testCashCommitment(t), SecretRef: config.HexCashURLRef}
+	ep := Endpoint{Kind: configpayload.KindPrivate, URLHash: testCashCommitment(t), SecretRef: protocol.HexCashURLRef}
 	groups := withGroup(t, config.HexCashGroup, GroupSpec{
 		Group: config.HexCashGroup, Threshold: 1, Endpoints: []Endpoint{ep, ep},
 	})
@@ -376,10 +379,10 @@ func TestSetEndpoints_RejectsInconsistentKind(t *testing.T) {
 		ep   Endpoint
 	}{
 		{"private with a url", Endpoint{
-			Kind: KindPrivate, URL: "https://x.example", URLHash: common.HexToHash("0x01"),
-			SecretRef: config.HexCashURLRef}},
+			Kind: configpayload.KindPrivate, URL: "https://x.example", URLHash: common.HexToHash("0x01"),
+			SecretRef: protocol.HexCashURLRef}},
 		{"private without a commitment", Endpoint{
-			Kind: KindPrivate, SecretRef: config.HexCashURLRef}},
+			Kind: configpayload.KindPrivate, SecretRef: protocol.HexCashURLRef}},
 		{"unknown kind", Endpoint{Kind: 7, URL: "https://x.example"}},
 	} {
 		s := newStore(t)
@@ -411,7 +414,7 @@ func TestSetEndpoints_RejectsThresholdAboveEndpointCount(t *testing.T) {
 	s := newStore(t)
 	groups := withGroup(t, "songbird", GroupSpec{
 		Group: "songbird", Threshold: 2, Endpoints: []Endpoint{
-			{Kind: KindPublic, URL: "https://songbird-api.flare.network/ext/C/rpc"},
+			{Kind: configpayload.KindPublic, URL: "https://songbird-api.flare.network/ext/C/rpc"},
 		},
 	})
 	if err := setEndpoints(s, 1, groups); err == nil {
@@ -424,7 +427,7 @@ func TestSetEndpoints_RejectsBadThreshold(t *testing.T) {
 		s := newStore(t)
 		groups := withGroup(t, "songbird", GroupSpec{
 			Group: "songbird", Threshold: threshold, Endpoints: []Endpoint{
-				{Kind: KindPublic, URL: "https://songbird-api.flare.network/ext/C/rpc"},
+				{Kind: configpayload.KindPublic, URL: "https://songbird-api.flare.network/ext/C/rpc"},
 			},
 		})
 		if err := setEndpoints(s, 1, groups); err == nil {
@@ -487,11 +490,11 @@ func TestSetEndpoints_RejectedPublicationKeepsPreviousSnapshot(t *testing.T) {
 // Without this a payload author could name a backing credential as a chain
 // provider's secret and have it substituted into a host of their choosing.
 func TestSetEndpoints_RejectsBackingCredentialAsProviderSecret(t *testing.T) {
-	for _, ref := range config.BackingRefs() {
+	for _, ref := range protocol.BackingRefs() {
 		s := newStore(t)
 		groups := withGroup(t, "songbird", GroupSpec{
 			Group: "songbird", Threshold: 1, Endpoints: []Endpoint{
-				{Kind: KindPublic, URL: "https://evil.example/rpc/{secret}", SecretRef: ref},
+				{Kind: configpayload.KindPublic, URL: "https://evil.example/rpc/{secret}", SecretRef: ref},
 			},
 		})
 		if err := setEndpoints(s, 1, groups); err == nil {
@@ -521,11 +524,11 @@ func TestPrivateURL_MismatchIsRejectedOnSecret(t *testing.T) {
 	}
 	setAdmins(t, s, 1)
 
-	wrong, err := EncodePrivateURL(PrivateURL{Salt: testCashSalt(), Url: "https://evil.example/cash"})
+	wrong, err := EncodePrivateURL(configpayload.PrivateURL{Salt: testCashSalt(), Url: "https://evil.example/cash"})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
-	if err := s.ApplySecret(context.Background(), envelopeFor(t, config.HexCashURLRef, wrong, 1)); err == nil {
+	if err := s.ApplySecret(context.Background(), envelopeFor(t, protocol.HexCashURLRef, wrong, 1)); err == nil {
 		t.Fatal("a URL that does not match its commitment must be rejected")
 	}
 }
@@ -535,11 +538,11 @@ func TestPrivateURL_MismatchIsRejectedOnEndpoints(t *testing.T) {
 	setAdmins(t, s, 1)
 
 	// The URL arrives first, before any configuration names it.
-	wrong, err := EncodePrivateURL(PrivateURL{Salt: testCashSalt(), Url: "https://evil.example/cash"})
+	wrong, err := EncodePrivateURL(configpayload.PrivateURL{Salt: testCashSalt(), Url: "https://evil.example/cash"})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
-	if err := s.ApplySecret(context.Background(), envelopeFor(t, config.HexCashURLRef, wrong, 1)); err != nil {
+	if err := s.ApplySecret(context.Background(), envelopeFor(t, protocol.HexCashURLRef, wrong, 1)); err != nil {
 		t.Fatalf("with no configuration to check against, it must be accepted: %v", err)
 	}
 
@@ -553,7 +556,7 @@ func TestPrivateURL_UnsaltedCommitmentIsRejected(t *testing.T) {
 	s := newStore(t)
 	setAdmins(t, s, 1)
 
-	blob, err := EncodePrivateURL(PrivateURL{Salt: common.Hash{}, Url: testCashURL})
+	blob, err := EncodePrivateURL(configpayload.PrivateURL{Salt: common.Hash{}, Url: testCashURL})
 	if err != nil {
 		t.Fatalf("EncodePrivateURL: %v", err)
 	}
@@ -561,14 +564,14 @@ func TestPrivateURL_UnsaltedCommitmentIsRejected(t *testing.T) {
 
 	groups := withGroup(t, config.HexCashGroup, GroupSpec{
 		Group: config.HexCashGroup, Threshold: 1, Endpoints: []Endpoint{
-			{Kind: KindPrivate, URLHash: commitment, SecretRef: config.HexCashURLRef},
+			{Kind: configpayload.KindPrivate, URLHash: commitment, SecretRef: protocol.HexCashURLRef},
 		}})
 	if err := setEndpoints(s, 1, groups); err != nil {
 		t.Fatalf("SetEndpoints: %v", err)
 	}
 	// The commitment matches, but a zero salt makes it brute-forceable from
 	// chain data, so it is refused anyway.
-	if err := s.ApplySecret(context.Background(), envelopeFor(t, config.HexCashURLRef, blob, 1)); err == nil {
+	if err := s.ApplySecret(context.Background(), envelopeFor(t, protocol.HexCashURLRef, blob, 1)); err == nil {
 		t.Fatal("an unsalted commitment must be rejected")
 	}
 }
@@ -583,19 +586,19 @@ func TestPrivateURL_ShapeIsChecked(t *testing.T) {
 		s := newStore(t)
 		setAdmins(t, s, 1)
 
-		blob, err := EncodePrivateURL(PrivateURL{Salt: testCashSalt(), Url: bad})
+		blob, err := EncodePrivateURL(configpayload.PrivateURL{Salt: testCashSalt(), Url: bad})
 		if err != nil {
 			t.Fatalf("EncodePrivateURL: %v", err)
 		}
 		commitment := crypto.Keccak256Hash(blob)
 		groups := withGroup(t, config.HexCashGroup, GroupSpec{
 			Group: config.HexCashGroup, Threshold: 1, Endpoints: []Endpoint{
-				{Kind: KindPrivate, URLHash: commitment, SecretRef: config.HexCashURLRef},
+				{Kind: configpayload.KindPrivate, URLHash: commitment, SecretRef: protocol.HexCashURLRef},
 			}})
 		if err := setEndpoints(s, 1, groups); err != nil {
 			t.Fatalf("SetEndpoints: %v", err)
 		}
-		if err := s.ApplySecret(context.Background(), envelopeFor(t, config.HexCashURLRef, blob, 1)); err == nil {
+		if err := s.ApplySecret(context.Background(), envelopeFor(t, protocol.HexCashURLRef, blob, 1)); err == nil {
 			t.Errorf("private url %q must be rejected", bad)
 		}
 	}
@@ -623,12 +626,12 @@ func TestStore_HexKeyIsAlwaysRequired(t *testing.T) {
 
 	var found bool
 	for _, ref := range s.Readiness().MissingRefs {
-		if ref == config.HexAPIKeyRef {
+		if ref == protocol.HexAPIKeyRef {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("%q must always be listed as required", config.HexAPIKeyRef)
+		t.Errorf("%q must always be listed as required", protocol.HexAPIKeyRef)
 	}
 }
 
@@ -642,12 +645,12 @@ func TestStore_CashURLIsRequired(t *testing.T) {
 
 	var found bool
 	for _, ref := range s.Readiness().MissingRefs {
-		if ref == config.HexCashURLRef {
+		if ref == protocol.HexCashURLRef {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("%q must be listed as required", config.HexCashURLRef)
+		t.Errorf("%q must be listed as required", protocol.HexCashURLRef)
 	}
 }
 
@@ -662,7 +665,7 @@ func TestOpen_WithoutHexKeyYieldsNoCashSource(t *testing.T) {
 	for _, ref := range []string{"ankr_flare_key", "ankr_eth_key", "alchemy_flare_key"} {
 		setSecret(t, s, ref, []byte("value"))
 	}
-	setSecret(t, s, config.HexCashURLRef, testCashBlob(t))
+	setSecret(t, s, protocol.HexCashURLRef, testCashBlob(t))
 
 	cfg, _, err := s.Open()
 	if err != nil {
@@ -683,7 +686,7 @@ func TestOpen_WithoutCashURLYieldsNoCashSource(t *testing.T) {
 	for _, ref := range []string{"ankr_flare_key", "ankr_eth_key", "alchemy_flare_key"} {
 		setSecret(t, s, ref, []byte("value"))
 	}
-	setSecret(t, s, config.HexAPIKeyRef, []byte("key"))
+	setSecret(t, s, protocol.HexAPIKeyRef, []byte("key"))
 
 	cfg, _, err := s.Open()
 	if err != nil {
@@ -713,8 +716,8 @@ func TestOpen_CarriesTheFeedBinding(t *testing.T) {
 	if binding.ExtensionID == nil || binding.ExtensionID.Cmp(config.ExtensionID()) != 0 {
 		t.Errorf("extension id = %v, want %v", binding.ExtensionID, config.ExtensionID())
 	}
-	if binding.FeedID != config.FeedID {
-		t.Errorf("feed id = %x, want %x", binding.FeedID, config.FeedID)
+	if binding.FeedID != protocol.FeedID {
+		t.Errorf("feed id = %x, want %x", binding.FeedID, protocol.FeedID)
 	}
 }
 
@@ -739,7 +742,7 @@ func TestOpen_CarriesTheConfigHashes(t *testing.T) {
 func TestApply_HashesThePayloadAsReceived(t *testing.T) {
 	s := newStore(t)
 
-	endpoints, err := EncodeEndpoints(1, config.FeedID, testGroups(t))
+	endpoints, err := EncodeEndpoints(1, protocol.FeedID, testGroups(t))
 	if err != nil {
 		t.Fatalf("EncodeEndpoints: %v", err)
 	}
@@ -747,7 +750,7 @@ func TestApply_HashesThePayloadAsReceived(t *testing.T) {
 		t.Fatalf("ApplyEndpoints: %v", err)
 	}
 
-	admins, err := EncodeAdmins(1, config.FeedID, testRoles())
+	admins, err := EncodeAdmins(1, protocol.FeedID, testRoles())
 	if err != nil {
 		t.Fatalf("EncodeAdmins: %v", err)
 	}
@@ -770,7 +773,7 @@ func TestReadiness_ExposesNoSecrets(t *testing.T) {
 
 	blob := fmt.Sprintf("%+v", r)
 	for _, secret := range []string{
-		"value-" + config.HexAPIKeyRef, "value-ankr_flare_key", testCashURL,
+		"value-" + protocol.HexAPIKeyRef, "value-ankr_flare_key", testCashURL,
 	} {
 		if strings.Contains(blob, secret) {
 			t.Errorf("readiness leaked a value: %q", secret)
@@ -813,40 +816,40 @@ func TestApplyAdmins_RejectsBadPayloads(t *testing.T) {
 		roles []RoleSpec
 	}{
 		{"missing backing", []RoleSpec{
-			{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
+			{Role: protocol.RoleProviders, Threshold: 2, Admins: devAdmins},
 		}},
 		{"missing providers", []RoleSpec{
-			{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+			{Role: protocol.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
 		}},
 		{"unknown role", append(testRoles(), RoleSpec{
 			Role: "auditors", Threshold: 1, Admins: devAdmins[:1],
 		})},
 		{"duplicate role", append(testRoles(), RoleSpec{
-			Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1],
+			Role: protocol.RoleBacking, Threshold: 1, Admins: devAdmins[:1],
 		})},
 		{"providers below the floor", []RoleSpec{
-			{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
-			{Role: envelope.RoleProviders, Threshold: 1, Admins: devAdmins},
+			{Role: protocol.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+			{Role: protocol.RoleProviders, Threshold: 1, Admins: devAdmins},
 		}},
 		{"threshold above the set", []RoleSpec{
-			{Role: envelope.RoleBacking, Threshold: 2, Admins: devAdmins[:1]},
-			{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
+			{Role: protocol.RoleBacking, Threshold: 2, Admins: devAdmins[:1]},
+			{Role: protocol.RoleProviders, Threshold: 2, Admins: devAdmins},
 		}},
 		{"zero threshold", []RoleSpec{
-			{Role: envelope.RoleBacking, Threshold: 0, Admins: devAdmins[:1]},
-			{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
+			{Role: protocol.RoleBacking, Threshold: 0, Admins: devAdmins[:1]},
+			{Role: protocol.RoleProviders, Threshold: 2, Admins: devAdmins},
 		}},
 		{"empty admin list", []RoleSpec{
-			{Role: envelope.RoleBacking, Threshold: 1},
-			{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
+			{Role: protocol.RoleBacking, Threshold: 1},
+			{Role: protocol.RoleProviders, Threshold: 2, Admins: devAdmins},
 		}},
 		{"zero admin address", []RoleSpec{
-			{Role: envelope.RoleBacking, Threshold: 1, Admins: []common.Address{{}}},
-			{Role: envelope.RoleProviders, Threshold: 2, Admins: devAdmins},
+			{Role: protocol.RoleBacking, Threshold: 1, Admins: []common.Address{{}}},
+			{Role: protocol.RoleProviders, Threshold: 2, Admins: devAdmins},
 		}},
 		{"duplicate admin", []RoleSpec{
-			{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
-			{Role: envelope.RoleProviders, Threshold: 2, Admins: []common.Address{
+			{Role: protocol.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+			{Role: protocol.RoleProviders, Threshold: 2, Admins: []common.Address{
 				devAdmins[0], devAdmins[0], devAdmins[1],
 			}},
 		}},
@@ -861,17 +864,17 @@ func TestApplyAdmins_RejectsBadPayloads(t *testing.T) {
 // A threshold above the signature cap installs cleanly and is then
 // unsatisfiable forever, so it is refused at publication.
 func TestApplyAdmins_ThresholdStopsAtTheSignatureCap(t *testing.T) {
-	admins := make([]common.Address, envelope.MaxThreshold+1)
+	admins := make([]common.Address, protocol.MaxThreshold+1)
 	for i := range admins {
 		admins[i] = common.BigToAddress(big.NewInt(int64(i + 1)))
 	}
 
 	s := newStore(t)
 	if err := applyAdmins(s, 1, []RoleSpec{
-		{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
-		{Role: envelope.RoleProviders, Threshold: uint64(envelope.MaxThreshold + 1), Admins: admins},
+		{Role: protocol.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+		{Role: protocol.RoleProviders, Threshold: uint64(protocol.MaxThreshold + 1), Admins: admins},
 	}); err == nil {
-		t.Fatalf("a threshold above %d must be rejected", envelope.MaxThreshold)
+		t.Fatalf("a threshold above %d must be rejected", protocol.MaxThreshold)
 	}
 }
 
@@ -895,8 +898,8 @@ func TestApplyAdmins_RejectedRotationKeepsTheWorkingSet(t *testing.T) {
 	before := s.Readiness().AdminsHash
 
 	if err := applyAdmins(s, 2, []RoleSpec{
-		{Role: envelope.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
-		{Role: envelope.RoleProviders, Threshold: 9, Admins: devAdmins},
+		{Role: protocol.RoleBacking, Threshold: 1, Admins: devAdmins[:1]},
+		{Role: protocol.RoleProviders, Threshold: 9, Admins: devAdmins},
 	}); err == nil {
 		t.Fatal("expected rejection")
 	}
@@ -909,7 +912,7 @@ func TestApplyAdmins_RejectedRotationKeepsTheWorkingSet(t *testing.T) {
 		t.Fatalf("SetEndpoints: %v", err)
 	}
 	if err := s.ApplySecret(context.Background(),
-		envelopeFor(t, config.HexAPIKeyRef, []byte("k"), 1)); err != nil {
+		envelopeFor(t, protocol.HexAPIKeyRef, []byte("k"), 1)); err != nil {
 		t.Errorf("the previous admin set must still work: %v", err)
 	}
 }
@@ -989,7 +992,7 @@ func TestApplySecret_IsSafeUnderConcurrency(t *testing.T) {
 func envelopeFor(t *testing.T, ref string, payload []byte, version uint64) []byte {
 	t.Helper()
 
-	env := envelope.Envelope{
+	env := wire.Envelope{
 		ChainID:  testChainID,
 		TeeID:    testTeeID,
 		Version:  version,
@@ -998,7 +1001,7 @@ func envelopeFor(t *testing.T, ref string, payload []byte, version uint64) []byt
 		Payload:  payload,
 	}
 
-	body, err := envelope.EncodeBody(env)
+	body, err := wire.EncodeBody(env)
 	if err != nil {
 		t.Fatalf("EncodeBody: %v", err)
 	}
@@ -1021,7 +1024,7 @@ func envelopeFor(t *testing.T, ref string, payload []byte, version uint64) []byt
 		signatures = append(signatures, sig)
 	}
 
-	message, err := envelope.Encode(env, signatures)
+	message, err := wire.Encode(env, signatures)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}

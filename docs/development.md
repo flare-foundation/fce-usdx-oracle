@@ -14,7 +14,7 @@ cmd/
     ├── mocknode/   stand-in for tee-node's /sign, /decrypt and /info
     └── start-tee/  host-process runner behind deploy/scripts/start-services.sh --local
 internal/
-├── config/         the extension's settings: reserve endpoints, timing bounds, health keys; names the protocol's facts
+├── config/         the extension's settings: reserve endpoints, ports, timing bounds, the ids read from the environment
 ├── failure/        the closed public error vocabulary
 ├── extension/      the HTTP surface: extension.go, router.go, result.go, one file per command
 ├── observation/    Sources, Binding, Observe, Sign — one observation start to finish
@@ -35,7 +35,7 @@ pkg/                what the tooling imports; nothing under internal/ is reachab
 │   ├── configpayload/ the Endpoints and Admins payloads and their published hashes
 │   └── envelope/      the SET_SECRET envelope: body, signatures, ciphertext
 ├── server/         StartExtension: resolves the TEE identity, then starts the poller and the server
-├── types/          the readiness payload shapes and the empty GET /state envelope
+├── types/          the readiness report's shapes and source-health vocabulary, and the empty GET /state envelope
 └── contracts/      abigen bindings for the upstream TeeOracleStructs ABI
 ```
 

@@ -27,6 +27,8 @@ import (
 	"fce-usdx-oracle/internal/observation/backing"
 	"fce-usdx-oracle/internal/observation/price"
 	"fce-usdx-oracle/internal/observation/supply"
+	"fce-usdx-oracle/pkg/protocol"
+	"fce-usdx-oracle/pkg/types"
 	"fce-usdx-oracle/pkg/wire/feedupdate"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -261,7 +263,7 @@ func signPayload(ctx context.Context, signer Signer, obs Observation, observedAt
 // reads as older than everything and rejects as NotNewer — after the fee.
 func homeBlockTime(supplies []supply.Reading) (uint64, error) {
 	for _, r := range supplies {
-		if r.Chain != config.HomeChain {
+		if r.Chain != protocol.HomeChain {
 			continue
 		}
 		if r.BlockTime.IsZero() {
@@ -292,7 +294,7 @@ func readAllChains(ctx context.Context, src Sources, health map[string]string) (
 
 	var firstErr error
 	for i, err := range errs {
-		name := config.ChainHealthKey(src.Chains[i].Name)
+		name := types.ChainHealthKey(src.Chains[i].Name)
 
 		// Reported whether or not the chain read succeeded. Quorum lets a chain
 		// stay "ok" while one of its providers is dead, dissenting or lagging,
@@ -300,13 +302,13 @@ func readAllChains(ctx context.Context, src Sources, health map[string]string) (
 		maps.Copy(health, readings[i].Providers)
 
 		if err != nil {
-			health[name] = config.HealthDown
+			health[name] = types.HealthDown
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
-		health[name] = config.HealthOK
+		health[name] = types.HealthOK
 	}
 	if firstErr != nil {
 		return nil, failure.Coerce(firstErr, failure.SupplyUnavailable)
@@ -341,7 +343,7 @@ func readBacking(
 	} else {
 		// Distinct from "down": an outage and a missing SET_SECRET need
 		// different responses from whoever reads the readiness report.
-		health[config.HexCashName] = config.HealthNotConfigured
+		health[config.HexCashName] = types.HealthNotConfigured
 	}
 
 	if bondsErr != nil {
@@ -352,9 +354,9 @@ func readBacking(
 
 func healthOf(err error) string {
 	if err != nil {
-		return config.HealthDown
+		return types.HealthDown
 	}
-	return config.HealthOK
+	return types.HealthOK
 }
 
 // checkWindow rejects observations whose inputs are too far apart in time.
@@ -397,21 +399,21 @@ func checkWindow(window time.Duration, supplies []supply.Reading, readings ...ba
 func newHealth(src Sources) map[string]string {
 	h := make(map[string]string, len(src.Chains)*3+2)
 	for _, ch := range src.Chains {
-		h[config.ChainHealthKey(ch.Name)] = config.HealthUnknown
+		h[types.ChainHealthKey(ch.Name)] = types.HealthUnknown
 		// Seeded so a provider that was never reached still appears. An absent
 		// key reads as "fine" to anything consuming the report, which is the one
 		// thing this map must never do.
 		for _, p := range ch.Providers {
-			h[p.Name] = config.HealthUnknown
+			h[p.Name] = types.HealthUnknown
 		}
 	}
 	if src.Bonds != nil {
-		h[src.Bonds.Name()] = config.HealthUnknown
+		h[src.Bonds.Name()] = types.HealthUnknown
 	}
 	if src.Cash != nil {
-		h[src.Cash.Name()] = config.HealthUnknown
+		h[src.Cash.Name()] = types.HealthUnknown
 	} else {
-		h[config.HexCashName] = config.HealthNotConfigured
+		h[config.HexCashName] = types.HealthNotConfigured
 	}
 	return h
 }

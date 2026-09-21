@@ -14,6 +14,7 @@ import (
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
 	"fce-usdx-oracle/internal/observation"
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/types"
 	"fce-usdx-oracle/pkg/wire/feedupdate"
 
@@ -36,7 +37,7 @@ func toHash(s string) common.Hash { return teeutils.ToHash(s) }
 // serves — abi.encode(FeedUpdateRequest{feedId}).
 func feedRequest(t *testing.T) []byte {
 	t.Helper()
-	return encodeFeedRequest(t, config.FeedID)
+	return encodeFeedRequest(t, protocol.FeedID)
 }
 
 func encodeFeedRequest(t *testing.T, feedID [21]byte) []byte {
@@ -136,7 +137,7 @@ func buildDirectAction(opType, opCommand common.Hash, message []byte) teetypes.A
 // FeedUpdateRequest for this build's feed, exactly as requestFeedUpdate() emits it.
 func getFeedAction(t *testing.T) teetypes.Action {
 	t.Helper()
-	return buildTestAction(config.OPTypeTeeOracle, config.OPCommandGetFeed,
+	return buildTestAction(protocol.OPTypeTeeOracle, protocol.OPCommandGetFeed,
 		feedRequest(t))
 }
 
@@ -169,7 +170,7 @@ func mustResult(t *testing.T, status int, body []byte) teetypes.ActionResult {
 
 func TestProcessAction_UnknownOPType(t *testing.T) {
 	e := newTestExtension()
-	action := buildTestAction(toHash("UNKNOWN_TYPE"), config.OPCommandGetFeed, nil)
+	action := buildTestAction(toHash("UNKNOWN_TYPE"), protocol.OPCommandGetFeed, nil)
 
 	status, body := e.processAction(action)
 
@@ -184,17 +185,17 @@ func TestProcessAction_UnknownOPType(t *testing.T) {
 	if receivedHash := toHash("UNKNOWN_TYPE").Hex(); !contains(bodyStr, receivedHash) {
 		t.Errorf("expected body to contain received hash %s", receivedHash)
 	}
-	if expectedHash := config.OPTypeTeeOracle.Hex(); !contains(bodyStr, expectedHash) {
+	if expectedHash := protocol.OPTypeTeeOracle.Hex(); !contains(bodyStr, expectedHash) {
 		t.Errorf("expected body to contain expected hash %s", expectedHash)
 	}
-	if !contains(bodyStr, config.OpName(config.OPTypeTeeOracle)) {
-		t.Errorf("expected body to contain %q", config.OPTypeTeeOracle)
+	if !contains(bodyStr, protocol.OpName(protocol.OPTypeTeeOracle)) {
+		t.Errorf("expected body to contain %q", protocol.OPTypeTeeOracle)
 	}
 }
 
 func TestProcessAction_UnknownOPCommand(t *testing.T) {
 	e := newTestExtension()
-	action := buildTestAction(config.OPTypeTeeOracle, toHash("UNKNOWN_COMMAND"), nil)
+	action := buildTestAction(protocol.OPTypeTeeOracle, toHash("UNKNOWN_COMMAND"), nil)
 
 	status, body := e.processAction(action)
 
@@ -209,11 +210,11 @@ func TestProcessAction_UnknownOPCommand(t *testing.T) {
 	if receivedHash := toHash("UNKNOWN_COMMAND").Hex(); !contains(bodyStr, receivedHash) {
 		t.Errorf("expected body to contain received hash %s", receivedHash)
 	}
-	if cmdHash := config.OPCommandGetFeed.Hex(); !contains(bodyStr, cmdHash) {
-		t.Errorf("expected body to contain hash for %s: %s", config.OPCommandGetFeed, cmdHash)
+	if cmdHash := protocol.OPCommandGetFeed.Hex(); !contains(bodyStr, cmdHash) {
+		t.Errorf("expected body to contain hash for %s: %s", protocol.OPCommandGetFeed, cmdHash)
 	}
-	if !contains(bodyStr, config.OpName(config.OPCommandGetFeed)) {
-		t.Errorf("expected body to contain command name %q", config.OPCommandGetFeed)
+	if !contains(bodyStr, protocol.OpName(protocol.OPCommandGetFeed)) {
+		t.Errorf("expected body to contain command name %q", protocol.OPCommandGetFeed)
 	}
 }
 
@@ -231,8 +232,8 @@ func TestProcessGetFeed_RejectsPayload(t *testing.T) {
 	payload := []byte(`{"` + sentinel + `":"` + sentinel + `"}`)
 
 	action := buildTestAction(
-		config.OPTypeTeeOracle,
-		config.OPCommandGetFeed,
+		protocol.OPTypeTeeOracle,
+		protocol.OPCommandGetFeed,
 		payload,
 	)
 
@@ -265,7 +266,7 @@ func TestProcessGetFeed_RequiresTheRequestEnvelope(t *testing.T) {
 	// A request for a DIFFERENT feed of the same extension: well-formed, and
 	// refused. One sender serves every feed now, so this is the case the old
 	// one-byte envelope could not even express.
-	otherFeed := config.FeedID
+	otherFeed := protocol.FeedID
 	otherFeed[20] ^= 0x01
 
 	cases := []struct {
@@ -286,7 +287,7 @@ func TestProcessGetFeed_RequiresTheRequestEnvelope(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e := newTestExtension()
 			action := buildTestAction(
-				config.OPTypeTeeOracle, config.OPCommandGetFeed, c.payload)
+				protocol.OPTypeTeeOracle, protocol.OPCommandGetFeed, c.payload)
 
 			status, body := e.processAction(action)
 			result := mustResult(t, status, body)
@@ -439,7 +440,7 @@ func TestProcessGetFeed_UsesObserverResult(t *testing.T) {
 		Decimals:   8,
 		ObservedAt: 1_700_000_123,
 		Data:       []byte{0xAB, 0xCD},
-		Health:     map[string]string{"hex_bonds": config.HealthOK},
+		Health:     map[string]string{"hex_bonds": types.HealthOK},
 	}
 	o := &fakeObserver{obs: obs}
 	e := newTestExtension()
@@ -461,7 +462,7 @@ func TestProcessGetFeed_UsesObserverResult(t *testing.T) {
 func TestProcessGetFeed_ObserverFailureFailsClosed(t *testing.T) {
 	o := &fakeObserver{
 		err: failure.BackingUnavailable,
-		obs: observation.Observation{Health: map[string]string{"hex_bonds": config.HealthDown}},
+		obs: observation.Observation{Health: map[string]string{"hex_bonds": types.HealthDown}},
 	}
 	e := newTestExtension()
 	e.observer = o

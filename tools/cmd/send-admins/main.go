@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/wire/configpayload"
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fce-usdx-oracle/tools/pkg/fccutils"
@@ -159,7 +160,7 @@ func main() {
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("encoding setAdmins: %s", err))
 	}
-	if err := publication.ResolveFee(testSupport, instructionSenderAddress, instrutils.OpCommandSetAdmins); err != nil {
+	if err := publication.ResolveFee(testSupport, instructionSenderAddress, protocol.OPCommandSetAdmins); err != nil {
 		fccutils.FatalWithCause(errors.Errorf("resolving the fee: %s", err))
 	}
 

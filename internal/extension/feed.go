@@ -3,8 +3,8 @@ package extension
 import (
 	"context"
 
-	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/wire/feedupdate"
 
 	"github.com/flare-foundation/go-flare-common/pkg/tee/instruction"
@@ -25,7 +25,7 @@ func (e *Extension) processGetFeed(df *instruction.DataFixed) outcome {
 	// Refused here rather than observed and signed. An update naming another feed
 	// would be rejected by that feed's store anyway, but only after this machine
 	// had spent an observation on it and published the answer to a public log.
-	if feedID != config.FeedID {
+	if feedID != protocol.FeedID {
 		return refuse(failure.UnexpectedPayload)
 	}
 

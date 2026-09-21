@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-
-	"fce-usdx-oracle/pkg/protocol"
 )
 
 const (
@@ -21,49 +19,9 @@ const (
 	// GET_FEED carries an ABI-encoded FeedUpdateRequest naming the feed (see
 	// feedupdate.DecodeFeedRequest); this extension refuses any feed but its own.
 
-	// Direct-only, so nothing upstream defines its shape. Anything else is
-	// rejected rather than ignored, so no caller depends on a dropped field.
-	ReadinessRequestV1 = protocol.ReadinessRequestV1
-
 	// Pinned though the store accepts any scale: every consumer assumes 8. int32
 	// on the wire caps at ~21.47, and pkg/wire/feedupdate fails closed out of range.
 	PriceDecimals int8 = 8
-)
-
-// The op type and commands, the extension's ids and the admin policy are the
-// protocol's, pinned in pkg/protocol and named here so the enclave's own code
-// keeps one vocabulary. Which channel each command is accepted over is enforced
-// in extension.go and internal/provisioning/store.
-var (
-	OPTypeTeeOracle       = protocol.OPTypeTeeOracle
-	OPCommandGetFeed      = protocol.OPCommandGetFeed
-	OPCommandGetReadiness = protocol.OPCommandGetReadiness
-	OPCommandSetEndpoints = protocol.OPCommandSetEndpoints
-	OPCommandSetAdmins    = protocol.OPCommandSetAdmins
-	OPCommandSetSecret    = protocol.OPCommandSetSecret
-)
-
-// OpName recovers the ASCII an op hash was built from.
-func OpName(h common.Hash) string { return protocol.OpName(h) }
-
-// Source health per upstream in the readiness report. Unknown is the zero value: a source
-// that has never been polled must not read as healthy.
-const (
-	HealthUnknown = "unknown"
-	HealthOK      = "ok"
-	HealthDown    = "down"
-
-	// Answered but lost the agreement vote: a WRONG value is a different problem
-	// from no value.
-	HealthDisagree = "disagree"
-
-	// Head below the pinned block. Tolerated, but recorded: it is also how a
-	// rewind looks.
-	HealthLagging = "lagging"
-
-	// Never provisioned, as opposed to broken: "down" pages someone,
-	// "not_configured" tells them to send a SET_SECRET.
-	HealthNotConfigured = "not_configured"
 )
 
 // The Docker image's port pair, and so the default: the sign server tee-node
@@ -130,11 +88,6 @@ const (
 	ObservationWindow = 30 * time.Second
 
 	HTTPTimeout = 5 * time.Second
-
-	// The credential refs are the protocol's (pkg/protocol); named here for the
-	// enclave's own code. Names, never values.
-	HexAPIKeyRef  = protocol.HexAPIKeyRef
-	HexCashURLRef = protocol.HexCashURLRef
 )
 
 // The bonds endpoint is pinned: redirecting it would hand whoever publishes
@@ -163,45 +116,6 @@ const (
 	// Enforced in internal/provisioning/store.
 	HexCashGroup = HexCashName
 )
-
-// The admin policy — which refs the backing set governs and the least threshold
-// each set may be installed with — is the protocol's. The enclave's verifier is
-// built with it, and usdxprov applies the same rule before an envelope makes the
-// trip. See pkg/protocol for the decisions behind the floors.
-func BackingRefs() []string        { return protocol.BackingRefs() }
-func IsBackingRef(ref string) bool { return protocol.IsBackingRef(ref) }
-func AdminPolicy() protocol.Policy { return protocol.AdminPolicy() }
-
-const (
-	MinBackingThreshold  = protocol.MinBackingThreshold
-	MinProviderThreshold = protocol.MinProviderThreshold
-)
-
-// ChainHealthKey and ProviderHealthKey name a chain and one of its RPC
-// providers in the sourceHealth map the readiness report carries.
-//
-// Both live here because both are public surface and they have to agree: the
-// keys were formerly built in two packages that did not know of each other, so
-// changing the prefix in one would have left the map with two naming schemes.
-//
-// Positional, never operator-supplied: a provider is "rpc_flare_1", so nothing
-// written into a SET_ENDPOINTS payload can reach a world-readable surface.
-func ChainHealthKey(chain string) string { return "rpc_" + chain }
-
-func ProviderHealthKey(chain string, index int) string {
-	return fmt.Sprintf("rpc_%s_%d", chain, index)
-}
-
-// The chain set, the token on each and the home chain are the protocol's
-// (pkg/protocol). Provider lists and agreement thresholds are configured at
-// runtime; see internal/provisioning/store.
-type Chain = protocol.Chain
-
-var Chains = protocol.Chains
-
-const HomeChain = protocol.HomeChain
-
-func LookupChain(name string) (Chain, bool) { return protocol.LookupChain(name) }
 
 // ChainID is the chain every signed artefact is bound to, provisioning
 // envelopes and feed updates alike. It is tee-node's chain: both read the same
@@ -239,7 +153,7 @@ func chainIDFrom(env string) (uint64, error) {
 // ExtensionID names the extension in every signed update, where the store,
 // GET_FEED, SET_ENDPOINTS and SET_ADMINS check it. Like ChainID it is
 // tee-node's value, read from the same EXTENSION_ID and mandatory for the same
-// reason. FeedID is a build fact of this extension (feedIDHex).
+// reason. The feed id is a build fact of this extension (protocol.FeedID).
 func ExtensionID() *big.Int {
 	extensionIDOnce.Do(func() {
 		v, err := extensionIDFrom(os.Getenv("EXTENSION_ID"))
@@ -254,9 +168,6 @@ func ExtensionID() *big.Int {
 var (
 	extensionIDOnce sync.Once
 	extensionID     *big.Int
-
-	// The feed this build serves, as the protocol pins it.
-	FeedID = protocol.FeedID
 )
 
 func extensionIDFrom(env string) (*big.Int, error) {

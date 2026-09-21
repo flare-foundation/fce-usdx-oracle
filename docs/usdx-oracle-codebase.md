@@ -77,7 +77,7 @@ Roughly bottom-up. "Flow" refers to §6.
 | Package | Owns | Key symbols | Used in |
 | --- | --- | --- | --- |
 | `pkg/protocol` | **the protocol's facts**: op tags, feed id, credential refs, admin roles and their floors, chain set + token addresses | `OP*`, `FeedID`, `AdminPolicy`, `Chains`, `LookupChain` | everywhere, and `tools/` |
-| `internal/config` | **the extension's settings**: Hex URLs, all deadlines, price decimals, health keys; names the protocol's facts | `Chains`, `LookupChain`, `ObservationInterval`, `MaxObservationAge`, `BondsSource`/`CashSource` | everywhere |
+| `internal/config` | **the extension's settings**: Hex URLs, ports, all deadlines, price decimals, the ids read from the environment | `Chains`, `LookupChain`, `ObservationInterval`, `MaxObservationAge`, `BondsSource`/`CashSource` | everywhere |
 | `internal/failure` | the *closed* public error vocabulary | `Failure` (unexported fields, no constructor), `Class*`, `All` | everywhere |
 | `internal/observation/decimal` | exact money parsing (`"25,452,544.52"` → `*big.Rat`), validates comma grouping instead of stripping it | `ParseAmount` | C |
 | `internal/observation/price` | pure arithmetic, no I/O | `Compute`, `ComputeWithoutCash`, `Scale` | C |
@@ -93,7 +93,7 @@ Roughly bottom-up. "Flow" refers to §6.
 | `internal/observation` | orchestrates **one** observation: ordering, deadlines, health map | `Observe` `:124`, `Sign` `:219`, `readAllChains` `:276`, `readBacking` `:319`, `checkWindow` `:371` | C, D |
 | `internal/observation/poller` | runs `Observe` on a timer, caches the latest, enforces staleness, and answers readiness | `Poller.Run` `:76`, `Latest` `:133`, `Report` `:159`, `ReadinessReport` `:207` | C, D, D2 |
 | `internal/extension` | HTTP surface + action routing | `processAction` `:185`, `processTeeOracle` `:206`, `processGetFeed` `:268`, `processGetReadiness` `:318`, `processSetEndpoints`/`processSetAdmins`/`processSetSecret` (provisioning.go), `stateHandler` `:125` | A, B, D, D2 |
-| `pkg/types` | the readiness payload shapes and the empty `/state` envelope | `Readiness`, `ReadinessReport`, `StateResponse` | D, D2 |
+| `pkg/types` | the readiness report's shapes and its source-health vocabulary, and the empty `/state` envelope | `Readiness`, `ReadinessReport`, `Health*`, `ChainHealthKey`, `StateResponse` | C, D, D2 |
 | `pkg/server` | wires everything together | `StartExtension` `:25` | boot |
 
 ### Binaries (`cmd/`)

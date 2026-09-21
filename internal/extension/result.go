@@ -7,6 +7,7 @@ import (
 
 	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
+	"fce-usdx-oracle/pkg/protocol"
 
 	"github.com/ethereum/go-ethereum/common"
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
@@ -59,7 +60,7 @@ func buildResult(
 		ID:            a.Data.ID,
 		SubmissionTag: a.Data.SubmissionTag,
 		Version:       config.Version,
-		OPType:        config.OPTypeTeeOracle,
+		OPType:        protocol.OPTypeTeeOracle,
 		OPCommand:     opCommand,
 		Data:          data,
 		Status:        status,

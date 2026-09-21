@@ -34,7 +34,9 @@ import (
 	"fce-usdx-oracle/internal/observation/backing"
 	"fce-usdx-oracle/internal/observation/supply"
 	"fce-usdx-oracle/internal/provisioning/envelope"
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/types"
+	"fce-usdx-oracle/pkg/wire/configpayload"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -253,10 +255,10 @@ func (s *Store) ApplyAdmins(payload []byte) error {
 // feed's commitment and rejects. Refusing here turns a silent, permanent
 // StaleEndpoints into a rejected instruction that names the reason.
 func checkFeedID(feedID [21]byte) error {
-	if feedID != config.FeedID {
+	if feedID != protocol.FeedID {
 		return fmt.Errorf(
 			"store: payload names feed %#x, this machine serves %#x",
-			feedID, config.FeedID)
+			feedID, protocol.FeedID)
 	}
 	return nil
 }
@@ -264,7 +266,7 @@ func checkFeedID(feedID [21]byte) error {
 // convertEndpoints turns the wire form into the tag-keyed form, rejecting
 // anything the contract's shape rules let through: a tag that is not printable
 // ASCII, a duplicate after tag decoding, or a threshold too large to narrow.
-func convertEndpoints(w wireEndpoints) (Endpoints, error) {
+func convertEndpoints(w configpayload.Endpoints) (Endpoints, error) {
 	e := Endpoints{
 		Version: w.Version,
 		FeedID:  w.FeedId,
@@ -272,7 +274,7 @@ func convertEndpoints(w wireEndpoints) (Endpoints, error) {
 	}
 
 	for _, g := range w.Groups {
-		tag, ok := tagString(g.Group)
+		tag, ok := configpayload.TagString(g.Group)
 		if !ok {
 			// Not echoed: an unprintable tag is attacker-chosen bytes.
 			return Endpoints{}, errors.New("store: endpoint group tag is not a printable name")
@@ -281,7 +283,7 @@ func convertEndpoints(w wireEndpoints) (Endpoints, error) {
 			return Endpoints{}, fmt.Errorf("store: duplicate endpoint group %q", tag)
 		}
 
-		threshold, ok := narrow(g.Threshold)
+		threshold, ok := configpayload.Narrow(g.Threshold)
 		if !ok {
 			return Endpoints{}, fmt.Errorf("store: group %q threshold is out of range", tag)
 		}
@@ -304,7 +306,7 @@ func convertEndpoints(w wireEndpoints) (Endpoints, error) {
 // convertAdmins turns the wire form into the role-keyed sets the verifier
 // takes. Role semantics are pinned here; the contract enforces only that role
 // tags are non-zero and unique.
-func convertAdmins(w wireAdmins, policy envelope.Policy) (uint64, map[string]envelope.AdminSet, error) {
+func convertAdmins(w configpayload.Admins, policy protocol.Policy) (uint64, map[string]envelope.AdminSet, error) {
 	// Zero is the "never applied" sentinel for adminsVersion, so it could never
 	// be accepted; saying so here beats a confusing version comparison.
 	if w.Version == 0 {
@@ -316,7 +318,7 @@ func convertAdmins(w wireAdmins, policy envelope.Policy) (uint64, map[string]env
 
 	sets := make(map[string]envelope.AdminSet, len(w.Roles))
 	for _, r := range w.Roles {
-		tag, ok := tagString(r.Role)
+		tag, ok := configpayload.TagString(r.Role)
 		if !ok {
 			return 0, nil, errors.New("store: admin role tag is not a printable name")
 		}
@@ -340,7 +342,7 @@ func convertAdmins(w wireAdmins, policy envelope.Policy) (uint64, map[string]env
 
 	// The sets may overlap — one person can hold both roles — so no disjointness
 	// check. What matters is that each envelope is verified against exactly one.
-	for _, role := range envelope.Roles() {
+	for _, role := range protocol.Roles() {
 		if _, ok := sets[role]; !ok {
 			return 0, nil, fmt.Errorf("store: admin role %q is missing", role)
 		}
@@ -348,22 +350,22 @@ func convertAdmins(w wireAdmins, policy envelope.Policy) (uint64, map[string]env
 	return w.Version, sets, nil
 }
 
-func parseAdminSet(role string, in wireAdminRole, floor int) (envelope.AdminSet, error) {
-	if len(in.Admins) == 0 || len(in.Admins) > envelope.MaxAdmins {
+func parseAdminSet(role string, in configpayload.Role, floor int) (envelope.AdminSet, error) {
+	if len(in.Admins) == 0 || len(in.Admins) > protocol.MaxAdmins {
 		return envelope.AdminSet{}, fmt.Errorf(
 			"store: %s admin count %d is not between 1 and %d",
-			role, len(in.Admins), envelope.MaxAdmins)
+			role, len(in.Admins), protocol.MaxAdmins)
 	}
 
-	threshold, ok := narrow(in.Threshold)
+	threshold, ok := configpayload.Narrow(in.Threshold)
 	if !ok {
 		return envelope.AdminSet{}, fmt.Errorf("store: %s admin threshold is out of range", role)
 	}
-	// The ceiling is the smaller of the set size and envelope.MaxThreshold:
+	// The ceiling is the smaller of the set size and protocol.MaxThreshold:
 	// beyond the latter the verifier drops the envelope before it counts
 	// signers, so a higher threshold would install here and then reject every
 	// SET_SECRET that follows, with only an opaque rejection to go on.
-	ceiling := min(len(in.Admins), envelope.MaxThreshold)
+	ceiling := min(len(in.Admins), protocol.MaxThreshold)
 	if threshold < floor || threshold > ceiling {
 		return envelope.AdminSet{}, fmt.Errorf(
 			"store: %s admin threshold %d is not between %d and %d",
@@ -443,7 +445,7 @@ func (s *Store) ApplySecret(ctx context.Context, message []byte) error {
 // A ref the configuration does not mention is accepted as-is: it may be the
 // pinned backing credential, or one a later publication will name.
 func verifySecret(e *Endpoints, ref string, value []byte) error {
-	if ref == config.HexAPIKeyRef {
+	if ref == protocol.HexAPIKeyRef {
 		return checkCredential(ref, value)
 	}
 
@@ -453,7 +455,7 @@ func verifySecret(e *Endpoints, ref string, value []byte) error {
 				continue
 			}
 
-			if ep.Kind == KindPrivate {
+			if ep.Kind == configpayload.KindPrivate {
 				if _, err := resolvePrivateURL(ep, value); err != nil {
 					return fmt.Errorf("store: group %q: %w", tag, err)
 				}
@@ -486,7 +488,7 @@ func checkCredential(ref string, value []byte) error {
 // to publish: a bare hash of a low-entropy URL is brute-forceable from chain
 // data.
 func resolvePrivateURL(ep Endpoint, value []byte) (string, error) {
-	blob, ok := decodePrivateURL(value)
+	blob, ok := configpayload.DecodePrivateURL(value)
 	if !ok {
 		return "", errors.New("private endpoint value is not an encoded (salt, url)")
 	}
@@ -494,7 +496,7 @@ func resolvePrivateURL(ep Endpoint, value []byte) (string, error) {
 		return "", errors.New("private endpoint commitment is unsalted")
 	}
 
-	commitment, err := CommitPrivateURL(blob)
+	commitment, err := configpayload.CommitPrivateURL(blob)
 	if err != nil {
 		return "", errors.New("private endpoint value could not be committed to")
 	}
@@ -547,7 +549,7 @@ func (s *Store) required() []string {
 	// Listed even though Open will resolve without it: Ready means fully
 	// provisioned rather than able to answer, so an operator can see that a
 	// machine is running cash-less.
-	refs := []string{config.HexAPIKeyRef}
+	refs := []string{protocol.HexAPIKeyRef}
 	if s.endpoints == nil {
 		return refs
 	}
@@ -589,7 +591,7 @@ func (s *Store) Open() (observation.Sources, observation.Binding, error) {
 	// missing either is the same operational state.
 	var cash backing.Source
 	if url, ok := s.cashURL(); ok {
-		if cashKey := string(s.secrets[config.HexAPIKeyRef]); cashKey != "" {
+		if cashKey := string(s.secrets[protocol.HexAPIKeyRef]); cashKey != "" {
 			cash, err = newBacking(config.CashSource(url, cashKey))
 			if err != nil {
 				return observation.Sources{}, observation.Binding{}, failure.Internal
@@ -597,8 +599,8 @@ func (s *Store) Open() (observation.Sources, observation.Binding, error) {
 		}
 	}
 
-	chains := make([]supply.ChainSource, 0, len(config.Chains))
-	for _, pinned := range config.Chains {
+	chains := make([]supply.ChainSource, 0, len(protocol.Chains))
+	for _, pinned := range protocol.Chains {
 		g, ok := s.endpoints.Groups[pinned.Name]
 		if !ok {
 			// A missing chain undercounts supply, which OVERSTATES the price.
@@ -616,7 +618,7 @@ func (s *Store) Open() (observation.Sources, observation.Binding, error) {
 				return observation.Sources{}, observation.Binding{}, failure.NotConfigured
 			}
 			providers = append(providers, supply.Provider{
-				Name:   config.ProviderHealthKey(pinned.Name, i+1),
+				Name:   types.ProviderHealthKey(pinned.Name, i+1),
 				Client: client,
 			})
 		}
@@ -641,7 +643,7 @@ func (s *Store) Open() (observation.Sources, observation.Binding, error) {
 
 	binding := observation.Binding{
 		ExtensionID:   config.ExtensionID(),
-		FeedID:        config.FeedID,
+		FeedID:        protocol.FeedID,
 		EndpointsHash: s.endpointsHash,
 		AdminsHash:    s.adminsHash,
 	}
@@ -651,7 +653,7 @@ func (s *Store) Open() (observation.Sources, observation.Binding, error) {
 // endpointURL resolves one endpoint to a dialable URL. Callers hold at least
 // the read lock.
 func (s *Store) endpointURL(ep Endpoint) (string, error) {
-	if ep.Kind == KindPrivate {
+	if ep.Kind == configpayload.KindPrivate {
 		return resolvePrivateURL(ep, s.secrets[ep.SecretRef])
 	}
 	return resolveURL(ep.URL, ep.SecretRef, string(s.secrets[ep.SecretRef]))
@@ -699,7 +701,7 @@ func validate(e Endpoints) error {
 	for _, tag := range sortedTags(e.Groups) {
 		g := e.Groups[tag]
 
-		_, isChain := config.LookupChain(tag)
+		_, isChain := protocol.LookupChain(tag)
 		if !isChain && tag != config.HexCashGroup {
 			return fmt.Errorf("store: unknown endpoint group %q", tag)
 		}
@@ -724,7 +726,7 @@ func validate(e Endpoints) error {
 		}
 	}
 
-	for _, c := range config.Chains {
+	for _, c := range protocol.Chains {
 		if _, ok := e.Groups[c.Name]; !ok {
 			return fmt.Errorf("store: endpoint group %q is missing", c.Name)
 		}
@@ -747,21 +749,21 @@ func validateCashGroup(g Group) error {
 			"store: group %q must hold exactly one endpoint at threshold 1", config.HexCashGroup)
 	}
 	ep := g.Endpoints[0]
-	if ep.Kind != KindPrivate {
+	if ep.Kind != configpayload.KindPrivate {
 		return fmt.Errorf("store: group %q must be PRIVATE", config.HexCashGroup)
 	}
 	// Pinned so the role that governs the cash URL is not the publisher's
-	// choice — see config.AdminPolicy.
-	if ep.SecretRef != config.HexCashURLRef {
+	// choice — see protocol.AdminPolicy.
+	if ep.SecretRef != protocol.HexCashURLRef {
 		return fmt.Errorf(
-			"store: group %q must name secret %q", config.HexCashGroup, config.HexCashURLRef)
+			"store: group %q must name secret %q", config.HexCashGroup, protocol.HexCashURLRef)
 	}
 	return nil
 }
 
 func validateEndpoint(tag string, isChain bool, ep Endpoint) error {
 	switch ep.Kind {
-	case KindPrivate:
+	case configpayload.KindPrivate:
 		// Mirrors the contract's kind-consistency rule. Re-checked because a
 		// decoder that let a malformed pair through would otherwise dial a URL
 		// nobody committed to.
@@ -771,7 +773,7 @@ func validateEndpoint(tag string, isChain bool, ep Endpoint) error {
 		if ep.SecretRef == "" {
 			return fmt.Errorf("store: group %q: private endpoint needs a secret ref", tag)
 		}
-	case KindPublic:
+	case configpayload.KindPublic:
 		if ep.URL == "" || ep.URLHash != (common.Hash{}) {
 			return fmt.Errorf("store: group %q: public endpoint must carry only a url", tag)
 		}
@@ -786,7 +788,7 @@ func validateEndpoint(tag string, isChain bool, ep Endpoint) error {
 
 	// Without this a payload author could name a backing credential as a chain
 	// provider's secret and have it substituted into a host of their choosing.
-	if isChain && config.IsBackingRef(ep.SecretRef) {
+	if isChain && protocol.IsBackingRef(ep.SecretRef) {
 		return fmt.Errorf(
 			"store: group %q: %q governs the backing sources and may not be used here",
 			tag, ep.SecretRef)

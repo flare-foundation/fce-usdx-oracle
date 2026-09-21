@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"fce-usdx-oracle/internal/config"
 	"fce-usdx-oracle/internal/failure"
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/types"
 
 	teetypes "github.com/flare-foundation/tee-node/pkg/types"
@@ -16,9 +16,9 @@ import (
 // which is the only one it is valid on.
 func readinessAction() teetypes.Action {
 	return buildDirectAction(
-		config.OPTypeTeeOracle,
-		config.OPCommandGetReadiness,
-		[]byte{config.ReadinessRequestV1},
+		protocol.OPTypeTeeOracle,
+		protocol.OPCommandGetReadiness,
+		[]byte{protocol.ReadinessRequestV1},
 	)
 }
 
@@ -81,9 +81,9 @@ func TestGetReadiness_RejectsInstructionChannel(t *testing.T) {
 	e := readinessExtension(o, &fakeProvisioner{})
 
 	action := buildTestAction(
-		config.OPTypeTeeOracle,
-		config.OPCommandGetReadiness,
-		[]byte{config.ReadinessRequestV1},
+		protocol.OPTypeTeeOracle,
+		protocol.OPCommandGetReadiness,
+		[]byte{protocol.ReadinessRequestV1},
 	)
 
 	status, body := e.processAction(action)
@@ -104,15 +104,15 @@ func TestGetReadiness_RejectsUnexpectedPayload(t *testing.T) {
 	}{
 		{"empty", nil},
 		{"wrong version", []byte{0x02}},
-		{"too long", []byte{config.ReadinessRequestV1, 0x00}},
+		{"too long", []byte{protocol.ReadinessRequestV1, 0x00}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := &fakeObserver{}
 			e := readinessExtension(o, &fakeProvisioner{})
 
 			action := buildDirectAction(
-				config.OPTypeTeeOracle,
-				config.OPCommandGetReadiness,
+				protocol.OPTypeTeeOracle,
+				protocol.OPCommandGetReadiness,
 				tc.payload,
 			)
 

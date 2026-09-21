@@ -26,12 +26,9 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Payload is the JSON the machine emits, the extension's own shape.
-type Payload = types.ReadinessReport
-
 // Report is a decoded, signature-checked readiness answer.
 type Report struct {
-	Payload Payload
+	Payload types.ReadinessReport
 
 	// Signer is recovered from the signature. The machine is identified by this
 	// and nothing else: there is no teeId field to disagree with it.
@@ -77,7 +74,7 @@ func Decode(data []byte) (Report, error) {
 		return Report{}, err
 	}
 
-	var p Payload
+	var p types.ReadinessReport
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return Report{}, errors.Errorf("payload is not readiness JSON: %s", err)
 	}
