@@ -1,0 +1,199 @@
+# The keeper and its records page, as one pod.
+#
+# Two containers of the same image. `keeper` drives the feed and appends one JSON
+# record per cycle to a file; `records` serves that file, and the page that reads
+# it, on 8080. The file is the whole interface between them, which is why they
+# share a volume and nothing else: only the keeper is given KEEPER_KEY, and the
+# container facing the network has no way to reach it.
+#
+#   kubectl apply -f deploy/k8s/usdx-keeper.yaml
+#   kubectl port-forward svc/usdx-keeper-coston 8080:80      # then open http://localhost:8080
+#
+# The secret is not in here. Create it once, from the env file that already holds
+# these values (one line, and it keeps the key out of your shell history):
+#
+#   kubectl create secret generic usdx-keeper-coston --from-env-file=/opt/usdx/keeper.env
+#
+# It must carry KEEPER_KEY, DIRECT_API_KEY, CHAIN_URL and EXT_PROXY_URL.
+# ADDRESSES_FILE and FLARE_CHAIN are baked into the image and are not needed here.
+#
+# Replicas: the keeper's own design says run at least two, on the understanding
+# that their submissions collide harmlessly and exactly one wins each cycle. Two
+# replicas of THIS deployment is not that — both would carry the same keeperId
+# and the same key, so their transactions would fight over one nonce instead of
+# racing cleanly. Run a second keeper as a second Deployment with its own key and
+# its own -keeperId; this one stays at one replica.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: usdx-keeper-coston-records
+  labels:
+    app.kubernetes.io/name: usdx-keeper
+    app.kubernetes.io/instance: coston
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      # Far more than the records need — about 100 KB a day at -interval 10m, so
+      # 36 MB a year — but 10 Gi is the floor a GCE persistent disk is sold in,
+      # and the claim would be rounded up to it anyway. At that rate the file
+      # needs no rotation policy: cycles-web serves the last -max records however
+      # long it grows, and reads only the tail of it.
+      storage: 10Gi
+  # No storageClassName: the cluster's default, standard-rwo, is what this wants —
+  # pd.csi.storage.gke.io, bound on first use so the disk lands in the pod's zone.
+  # Its reclaim policy is Delete, which is the thing to know about this claim:
+  # deleting it deletes the disk, and the history with it. Renaming it in a
+  # Terraform run does exactly that.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usdx-keeper-coston
+  labels:
+    app.kubernetes.io/name: usdx-keeper
+    app.kubernetes.io/instance: coston
+spec:
+  replicas: 1
+  # Never two keepers with one key: the old pod must be gone before the new one
+  # starts, or both broadcast from the same address and one of them wastes a
+  # nonce. A cycle is cheap to lose; a stuck nonce blocks every cycle behind it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: usdx-keeper
+      app.kubernetes.io/instance: coston
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: usdx-keeper
+        app.kubernetes.io/instance: coston
+    spec:
+      # SIGTERM cancels the cycle in flight, which unwinds at its next checkpoint
+      # and exits 0. The default 30s would send the second, killing signal to a
+      # process that was winding down cleanly.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # A claim rather than an emptyDir, so the history survives a restart. With
+        # an emptyDir every rollout — every image bump — starts the record over,
+        # and the page comes back showing one cycle, which is exactly when an
+        # operator most wants the ones before it.
+        #
+        # What this costs: the volume is ReadWriteOnce, so the pod is pinned to
+        # its zone and a rollout has to detach the disk from the old pod before
+        # the new one can attach it. The Recreate strategy above already sequences
+        # that, for its own reason. A second keeper needs its own claim.
+        - name: records
+          persistentVolumeClaim:
+            claimName: usdx-keeper-coston-records
+      containers:
+        - name: keeper
+          image: europe-west1-docker.pkg.dev/flare-network-staging/containers/fce-usdx-keeper:v0.1.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - -tee
+            - 0x962d1D7264A2385d083B64a58eC18052470232bD,0x708f515f87da98E424c352030Cce4f9DdF0db5ab
+            - -interval
+            - 10m
+            # Writing records to a file rather than stdout is what gives the page
+            # something to serve. The keeper's human log lines still go to stdout,
+            # so `kubectl logs` is unchanged.
+            - -records
+            - /var/log/usdx/cycles.jsonl
+            # Records are attributed to the instance that produced them, and the
+            # default is the hostname — a fresh pod name on every restart.
+            - -keeperId
+            - coston-1
+          envFrom:
+            - secretRef:
+                name: usdx-keeper-coston
+          volumeMounts:
+            - name: records
+              mountPath: /var/log/usdx
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          # No probes. The keeper listens on nothing, and a cycle that fails is
+          # not a process that should be restarted — it logs, records and waits
+          # for the next tick. What says it is healthy is the age of observedAt
+          # on chain, which is a monitoring job outside this pod's failure domain.
+
+        - name: records
+          image: europe-west1-docker.pkg.dev/flare-network-staging/containers/fce-usdx-keeper:v0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/cycles-web"]
+          args:
+            - -addr
+            - :8080
+            - -records
+            - /var/log/usdx/cycles.jsonl
+            - -max
+            - "2000"
+          # Deliberately no envFrom: this container faces the network and has no
+          # business holding the keeper's key.
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: records
+              mountPath: /var/log/usdx
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: usdx-keeper-coston
+  labels:
+    app.kubernetes.io/name: usdx-keeper
+    app.kubernetes.io/instance: coston
+spec:
+  # ClusterIP, so reaching the page means port-forward or an Ingress you put in
+  # front of it deliberately. The records are public chain facts and hold no
+  # secret, but the page has no authentication of its own, and "the keeper's
+  # balance and its cycle history" is not something to publish by accident.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: usdx-keeper
+    app.kubernetes.io/instance: coston
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
