@@ -22,7 +22,7 @@ var testReadinessID = common.HexToHash("0xabc")
 // readinessProxy serves a machine answering GET_READINESS with a genuinely signed
 // report. Signed for real because Decode recovers the signer and checks the payload
 // hash, so a hand-rolled blob would be rejected before wouldRefuse saw it.
-func readinessProxy(t *testing.T, wouldSign bool) *httptest.Server {
+func readinessProxy(t *testing.T, wouldSign bool, sources map[string]string) (*httptest.Server, common.Address) {
 	t.Helper()
 
 	key, err := crypto.GenerateKey()
@@ -35,6 +35,7 @@ func readinessProxy(t *testing.T, wouldSign bool) *httptest.Server {
 		"observationAge": 900,
 		"lastErrorClass": "source_unavailable",
 		"readiness":      map[string]any{"ready": true},
+		"sourceHealth":   sources,
 	})
 	if err != nil {
 		t.Fatalf("encoding the payload: %v", err)
@@ -63,7 +64,7 @@ func readinessProxy(t *testing.T, wouldSign bool) *httptest.Server {
 		t.Fatalf("packing the payload: %v", err)
 	}
 
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			encodeJSON(t, w, teetypes.Action{
 				Data: teetypes.ActionData{
@@ -78,6 +79,7 @@ func readinessProxy(t *testing.T, wouldSign bool) *httptest.Server {
 			Result: teetypes.ActionResult{Status: direct.StatusSucceeded, Data: data},
 		})
 	}))
+	return server, crypto.PubkeyToAddress(key.PublicKey)
 }
 
 func mustReadinessArgs(t *testing.T, types ...string) abi.Arguments {
@@ -96,9 +98,9 @@ func mustReadinessArgs(t *testing.T, types ...string) abi.Arguments {
 // An on-chain instruction is routed to a machine the registry picks, so one machine's
 // staleness must not speak for the fleet. A single willing machine means it goes out.
 func TestWouldRefuse_OneWillingMachineIsEnoughToRequest(t *testing.T) {
-	stale := readinessProxy(t, false)
+	stale, _ := readinessProxy(t, false, nil)
 	defer stale.Close()
-	willing := readinessProxy(t, true)
+	willing, _ := readinessProxy(t, true, nil)
 	defer willing.Close()
 
 	cfg := Config{
@@ -115,9 +117,9 @@ func TestWouldRefuse_OneWillingMachineIsEnoughToRequest(t *testing.T) {
 // Unanimous refusal is the one case that predicts the outcome, and the only one
 // where skipping actually saves a fee.
 func TestWouldRefuse_SkipsOnlyWhenEveryMachineRefuses(t *testing.T) {
-	a := readinessProxy(t, false)
+	a, _ := readinessProxy(t, false, nil)
 	defer a.Close()
-	b := readinessProxy(t, false)
+	b, _ := readinessProxy(t, false, nil)
 	defer b.Close()
 
 	cfg := Config{
@@ -139,7 +141,7 @@ func TestWouldRefuse_SkipsOnlyWhenEveryMachineRefuses(t *testing.T) {
 // build, an unreachable proxy — may still answer a price perfectly well, so the
 // keeper requests anyway rather than turning a diagnostic into an outage.
 func TestWouldRefuse_UnreadableMachineRequestsAnyway(t *testing.T) {
-	stale := readinessProxy(t, false)
+	stale, _ := readinessProxy(t, false, nil)
 	defer stale.Close()
 
 	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -168,5 +170,61 @@ func TestWouldRefuse_WithoutKeyOrTargetRequestsAnyway(t *testing.T) {
 		if skip, _, _ := wouldRefuse(context.Background(), cfg); skip {
 			t.Errorf("%s: expected the request to go ahead", name)
 		}
+	}
+}
+
+// The record has to say which machine saw which source fail: two machines read
+// the same providers independently and routinely disagree about one of them, so
+// a single flat map would name a fault without saying whose it was — and, by
+// stopping at the first willing machine, would usually never look at the other.
+func TestWouldRefuse_ReportsEveryMachinesSourceHealth(t *testing.T) {
+	lagging, laggingID := readinessProxy(t, true, map[string]string{"rpc_flare_3": "lagging"})
+	defer lagging.Close()
+	healthy, healthyID := readinessProxy(t, true, map[string]string{"rpc_flare_3": "ok"})
+	defer healthy.Close()
+
+	cfg := Config{
+		DirectAPIKey:  "k",
+		Proxy:         lagging.URL,
+		ResultProxies: []string{healthy.URL},
+	}
+
+	skip, _, health := wouldRefuse(context.Background(), cfg)
+	if skip {
+		t.Fatal("a willing machine must not be skipped")
+	}
+	if len(health) != 2 {
+		t.Fatalf("health covers %d machine(s), want both", len(health))
+	}
+	if got := health[laggingID.Hex()]["rpc_flare_3"]; got != "lagging" {
+		t.Errorf("%s reported rpc_flare_3 = %q, want lagging", laggingID.Hex(), got)
+	}
+	if got := health[healthyID.Hex()]["rpc_flare_3"]; got != "ok" {
+		t.Errorf("%s reported rpc_flare_3 = %q, want ok", healthyID.Hex(), got)
+	}
+}
+
+// A machine that cannot be read is absent from the map rather than present and
+// empty, which would read as "asked, saw nothing wrong".
+func TestWouldRefuse_UnreadableMachineIsAbsentFromHealth(t *testing.T) {
+	willing, willingID := readinessProxy(t, true, map[string]string{"rpc_flare_1": "ok"})
+	defer willing.Close()
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not implemented", http.StatusNotImplemented)
+	}))
+	defer silent.Close()
+
+	cfg := Config{
+		DirectAPIKey:  "k",
+		Proxy:         willing.URL,
+		ResultProxies: []string{silent.URL},
+	}
+
+	_, _, health := wouldRefuse(context.Background(), cfg)
+	if len(health) != 1 {
+		t.Fatalf("health covers %d machine(s), want only the one that answered", len(health))
+	}
+	if _, ok := health[willingID.Hex()]; !ok {
+		t.Errorf("the machine that answered is missing from %v", health)
 	}
 }

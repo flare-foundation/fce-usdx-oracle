@@ -3,6 +3,7 @@ package keeper
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"fce-usdx-oracle/pkg/protocol"
@@ -75,11 +76,19 @@ func QueryReadiness(
 }
 
 // wouldRefuse reports whether EVERY machine that could serve the request says it
-// would refuse to sign, and why. All of them, because the request goes to every
+// would refuse to sign, and why, and brings back each machine's own view of its
+// sources for the cycle record. All of them, because the request goes to every
 // listed machine and any one of them signing is enough. Every uncertainty
-// answers false: "not known" is not "do not try". The source health of the
-// first machine that answered comes back alongside, for the cycle record.
-func wouldRefuse(ctx context.Context, cfg Config) (skip bool, why string, health map[string]string) {
+// answers false: "not known" is not "do not try".
+//
+// Every machine is asked, concurrently, rather than stopping at the first that
+// would sign. A readiness query costs no fee and no gas, so asking them all
+// costs one round trip's latency instead of the slowest sum — and it is the only
+// way the record can say which machine saw which source fail. A machine that
+// cannot be read is absent from the health map rather than reported as healthy.
+func wouldRefuse(
+	ctx context.Context, cfg Config,
+) (skip bool, why string, health map[string]map[string]string) {
 	if cfg.DirectAPIKey == "" {
 		return false, "", nil
 	}
@@ -91,27 +100,57 @@ func wouldRefuse(ctx context.Context, cfg Config) (skip bool, why string, health
 		return false, "", nil
 	}
 
-	// Returns on the first machine that would sign or cannot be read, so the healthy
-	// path costs one round trip. Only a unanimously refusing fleet pays for them all.
+	type answer struct {
+		report readinessreport.Report
+		err    error
+	}
+	answers := make([]answer, len(targets))
+	var wg sync.WaitGroup
+	for i, proxy := range targets {
+		wg.Go(func() {
+			report, err := QueryReadiness(ctx, proxy, cfg.DirectAPIKey, readinessPreflightTimeout)
+			answers[i] = answer{report: report, err: err}
+		})
+	}
+	wg.Wait()
+
+	// Keyed by the machine that signed the report rather than by the proxy it
+	// came from: a proxy is an address, the teeId is who answered, and two
+	// proxies can front the same machine.
+	health = map[string]map[string]string{}
+	var unreadable, willing bool
 	var first string
-	for _, proxy := range targets {
-		report, err := QueryReadiness(ctx, proxy, cfg.DirectAPIKey, readinessPreflightTimeout)
-		if err != nil {
+	for i, a := range answers {
+		if a.err != nil {
 			logger.Debugf("[%s] readiness preflight unavailable at %s, requesting anyway: %s",
-				cfg.KeeperID, proxy, err)
-			return false, "", health
+				cfg.KeeperID, targets[i], a.err)
+			unreadable = true
+			continue
 		}
-		if health == nil {
-			health = report.Payload.SourceHealth
+
+		// Present with an empty map means the machine answered and has observed
+		// nothing yet; absent means it did not answer at all.
+		sources := a.report.Payload.SourceHealth
+		if sources == nil {
+			sources = map[string]string{}
 		}
-		if report.Payload.WouldSign {
-			return false, "", health
+		health[a.report.Signer.Hex()] = sources
+
+		if a.report.Payload.WouldSign {
+			willing = true
+			continue
 		}
 		if first == "" {
 			first = fmt.Sprintf("%s reports observation %ds old, class %q, ready=%t",
-				proxy, report.Payload.ObservationAge, report.Payload.LastErrorClass,
-				report.Payload.Readiness.Ready)
+				targets[i], a.report.Payload.ObservationAge, a.report.Payload.LastErrorClass,
+				a.report.Payload.Readiness.Ready)
 		}
+	}
+	if len(health) == 0 {
+		health = nil
+	}
+	if unreadable || willing {
+		return false, "", health
 	}
 
 	return true, fmt.Sprintf(

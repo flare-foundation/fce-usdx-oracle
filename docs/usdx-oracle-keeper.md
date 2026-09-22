@@ -269,8 +269,24 @@ predictable failure — one willing machine is enough to make the request worth 
 
 Every uncertainty resolves to "request anyway": no API key, no reachable machine, a failed query.
 "Not known" is not "do not try", and a preflight that suppressed real requests would be worse
-than the fee it saves. It returns on the first machine that would sign, so the healthy path costs
-one round trip.
+than the fee it saves.
+
+Every machine is asked, concurrently, rather than stopping at the first that would sign. A
+readiness query costs no fee and no gas, so asking them all costs one round trip's latency
+instead of the slowest sum — and it is the only way the cycle record can say *which* machine saw
+a source fail. Two machines read the same providers independently and routinely disagree about
+one of them, so `sourceHealth` is a map per machine, keyed by teeId:
+
+```json
+"sourceHealth": {
+  "0x708f515f87da98E424c352030Cce4f9DdF0db5ab": { "rpc_flare_3": "lagging", "...": "ok" },
+  "0x962d1D7264A2385d083B64a58eC18052470232bD": { "rpc_flare_3": "ok",      "...": "ok" }
+}
+```
+
+A machine present with an empty map answered but has observed nothing yet; one that is absent
+could not be asked at all, which is never the same as healthy. Records written before this
+change carry a single flat map, which was whichever machine happened to answer first.
 
 ---
 
@@ -580,7 +596,7 @@ owes it is one **cycle record per tick**, emitted regardless of outcome — impl
 | `requestTxStatus` (`mined` / `failed`), `instructionId` | step 1 |
 | `resultStatus` (`1` / `0` / `timeout`), `errorClass` | step 2 |
 | `proxy` — the first machine to answer; `teeIds`, `prices`, `observedAt` — who made the batch and what each signed | steps 2–3 |
-| `sourceHealth` | step 2, from proxy `GET /info` |
+| `sourceHealth` | step 1, the readiness preflight — one map per machine, keyed by teeId |
 | `dropped` — the answers left out of the batch, each with the store guard it would have failed | step 3 |
 | `submitOutcome` (`accepted` / revert name / not attempted) | step 3 |
 | `storeObservedAtAfter` | step 3 |

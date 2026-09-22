@@ -2,9 +2,10 @@ package keeper
 
 import (
 	"encoding/json"
-	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"io"
 	"time"
+
+	"github.com/flare-foundation/go-flare-common/pkg/logger"
 )
 
 // Outcome is the terminal classification of one cycle. "No price landed" has
@@ -95,10 +96,13 @@ type Record struct {
 	// closed vocabulary, which is the alert key.
 	ErrorClass string `json:"errorClass,omitempty"`
 
-	// From the readiness preflight, the first machine that answered. Best-effort:
-	// a missing map means no machine could be asked (no key, none reachable),
-	// never that the sources are healthy.
-	SourceHealth map[string]string `json:"sourceHealth,omitempty"`
+	// Every machine's own view of its sources, from the readiness preflight,
+	// keyed by teeId: health is per machine, and two machines reading the same
+	// provider can disagree about it. A machine present with an empty map
+	// answered but has observed nothing yet; one that is absent could not be
+	// asked. Best-effort throughout — a missing map means no machine could be
+	// asked (no key, none reachable), never that the sources are healthy.
+	SourceHealth map[string]map[string]string `json:"sourceHealth,omitempty"`
 
 	// SubmitOutcome is "accepted", a named store guard, or "not_attempted".
 	SubmitOutcome string `json:"submitOutcome,omitempty"`
@@ -124,6 +128,7 @@ type Record struct {
 	// Non-zero when transactions are broadcast but not mined. A stuck one blocks
 	// every later transaction behind its nonce.
 	PendingNonceGap uint64 `json:"pendingNonceGap,omitempty"`
+
 	// KeeperBalance is what the paying account held at the start of the cycle,
 	// in wei as a decimal string. Emitted so the monitoring layer can see the
 	// wallet draining before it empties; the keeper itself only warns.
