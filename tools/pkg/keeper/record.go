@@ -124,6 +124,10 @@ type Record struct {
 	// Non-zero when transactions are broadcast but not mined. A stuck one blocks
 	// every later transaction behind its nonce.
 	PendingNonceGap uint64 `json:"pendingNonceGap,omitempty"`
+	// KeeperBalance is what the paying account held at the start of the cycle,
+	// in wei as a decimal string. Emitted so the monitoring layer can see the
+	// wallet draining before it empties; the keeper itself only warns.
+	KeeperBalance string `json:"keeperBalance,omitempty"`
 
 	// Human-readable. Never parsed; route on Outcome and ErrorClass instead.
 	Detail string `json:"detail,omitempty"`

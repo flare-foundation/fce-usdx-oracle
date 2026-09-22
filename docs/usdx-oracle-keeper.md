@@ -137,6 +137,8 @@ somewhere other than stdout.
 | `-interval` | `10m` | How often a cycle starts. Match the source refresh; faster costs a fee per cycle and buys nothing. |
 | `-pollTimeout` | `5m` | How long to wait for the machines' terminal `ActionResult`s. The wait ends early once every addressed machine has answered; a machine that never answers costs the whole timeout, and the cycle goes on with the answers it has. |
 | `-submitTimeout` | `3m` | How long to wait for the `submitFeedUpdates` receipt. |
+| `-requestTimeout` | `2m` | How long to wait for the `requestFeedUpdate` receipt. Cycles are single-flight, so this is the bound that keeps an unmined trigger from stopping the keeper rather than costing it one cycle. |
+| `-minBalance` | `5` | Warn each cycle when the paying account falls below this many coins. `0` disables it. A keeper that runs dry keeps cycling and failing at the request, which reads like a chain fault rather than an empty wallet. |
 | `-directApiKey` | `$DIRECT_API_KEY` | Key for the `GET_READINESS` preflight. Without it every cycle pays the fee unasked. |
 | `-p` | `$EXT_PROXY_URL` | Where the result is looked for first, and the machine the readiness preflight asks. Given explicitly, overrides *every* machine's registered url (right only with one machine); otherwise each machine is reached at its own registered url and this is the fallback when the registry lists none. `oracle-cycle.sh` passes it only when `PROXY_OVERRIDE` is set. |
 
@@ -503,8 +505,66 @@ It is reported, not retried into: the fix is operational.
 | Target machines | The `-tee` list — named explicitly in every request. |
 | Proxy URLs | Read from the registry per machine, for `/action/result/<id>`. `EXT_PROXY_URL` is looked at first and is the fallback when the registry lists none; `-p` (the wrapper's `PROXY_OVERRIDE`) overrides all of them. |
 | Chain RPC | The keeper's own endpoint — a failure here is cause 2, distinct from the extension's supply RPCs. |
-| Hot wallet key | Low-value, monitored, funded. Compromise costs gas, not correctness. |
+| Hot wallet key | `KEEPER_KEY`: low-value, monitored, funded. Both of the keeper's transactions are permissionless and the store verifies TEE signatures against the machine registry itself, so this address has no authority at all — compromise costs the gas on it. Falling back to `EXTENSION_OWNER_KEY` works and is warned about; that key can also configure the extension, which nothing here needs. |
 | `keeperId` | Stable identifier, so cross-keeper correlation and dedup can tell instances apart. |
+
+---
+
+## Running it unattended
+
+Everything a system administrator needs to run the keeper as a service. It is a long-running
+process that holds one key, keeps no state and listens on nothing.
+
+**What to install.** One binary, `go build ./cmd/keeper` from `tools/`, and one file from the
+repository: `deploy/config/<chain>/deployed-addresses.json`, which is the only repository file it
+reads. Nothing else from the tree is needed at runtime.
+
+**Environment.** Two secrets and three settings:
+
+| Variable | |
+| --- | --- |
+| `KEEPER_KEY` | the only secret the process requires. Both of its transactions are permissionless and the store verifies TEE signatures against the machine registry itself, so this address has no authority: it holds gas and nothing else. Without it the keeper falls back to `EXTENSION_OWNER_KEY` and warns — that key can also configure the extension, and no part of this process needs to. |
+| `DIRECT_API_KEY` | optional. Buys the readiness preflight; without it every cycle pays the registry fee without asking the machines first whether they would sign. |
+| `CHAIN_URL` | the chain node, as an absolute URL. |
+| `ADDRESSES_FILE` | absolute path to the addresses JSON. The compiled-in default resolves against the source tree as it stood at **build** time, which does not exist on a server, so this must be set explicitly. |
+| `EXT_PROXY_URL` | where results are looked for first, and the machine the preflight asks. Each machine is otherwise reached at the URL it registered. |
+
+`-tee` is the one required argument: the machines to request from. `-keeperId` defaults to the
+hostname and only matters when two keepers run.
+
+**Network.** Outbound HTTPS to the chain node and to each machine's proxy. No inbound ports, no
+listening socket.
+
+**Logs.** Everything goes to **stdout** — the human log lines and the JSON cycle records
+together, interleaved. Anything that parses the records should therefore be given `-records
+<file>`, which writes them to a file of their own (roughly 100 KB a day at a ten-minute
+interval, and it needs rotating); otherwise a consumer has to select the lines beginning with
+`{`. The log level is DEBUG and there is no flag to change it.
+
+**Stopping and restarting.** SIGTERM cancels the cycle in flight, which unwinds at its next
+checkpoint and exits **0**; a second SIGTERM kills a process still winding down, so allow around
+90 seconds before sending it. A startup misconfiguration — an unreadable addresses file, a
+missing `-tee`, a chain node that does not answer — exits **1** before any cycle runs, and
+restarting will not fix it; the log line above the exit names the cause.
+
+A restart is always safe: cycles are stateless, `observedAt` on chain is a ratchet, and a
+duplicate submission is rejected rather than harmful. So a supervisor that restarts on exit is
+right. A failed cycle is not an exit — the process logs it, records it and waits for the next
+tick.
+
+**Funds.** The keeper spends and never tops itself up. Every cycle records `keeperBalance` in wei
+and warns below `-minBalance` (default 5 coins). At the measured ~0.2 CFLR per cycle on Coston, a
+ten-minute interval is about 29 CFLR a day.
+
+**Why it does not hang.** Every wait is bounded: the chain client caps each request at 30 s —
+`ethclient.Dial` leaves that unbounded, which is the default `support.DialChain` deliberately
+replaces — and the trigger, the result poll and the submission each carry their own deadline. A
+node that stops answering mid-call, or a transaction that is broadcast and never mined, costs one
+cycle rather than the process.
+
+**What to alert on**, from the records rather than from the process: `pendingNonceGap` above zero
+for more than a cycle or two, `keeperBalance` approaching the floor, and — the only one that
+matters to consumers — the age of `observedAt` on chain.
 
 ---
 

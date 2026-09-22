@@ -47,16 +47,16 @@ func senderABI() (*abi.ABI, error) {
 // FeedUpdateFee is the registry's current fee for one GET_FEED instruction.
 // Read, never hard-coded: it is governance-settable, and the default applies
 // until the TEE_ORACLE rows are set.
-func FeedUpdateFee(s *support.Support, teeIDs int) (*big.Int, error) {
-	return operationFee(s, protocol.OPCommandGetFeed, teeIDs)
+func FeedUpdateFee(ctx context.Context, s *support.Support, teeIDs int) (*big.Int, error) {
+	return operationFee(ctx, s, protocol.OPCommandGetFeed, teeIDs)
 }
 
-func operationFee(s *support.Support, command common.Hash, teeIDs int) (*big.Int, error) {
+func operationFee(ctx context.Context, s *support.Support, command common.Hash, teeIDs int) (*big.Int, error) {
 	if teeIDs < 1 {
 		return nil, errors.New("at least one target machine is required")
 	}
 
-	opts := &bind.CallOpts{Context: context.Background()}
+	opts := &bind.CallOpts{Context: ctx}
 	fee, err := s.TeeOperationFees.GetOperationFee(opts, [32]byte(protocol.OPTypeTeeOracle), [32]byte(command))
 	if err != nil {
 		return nil, errors.Errorf("reading operation fee: %s", err)
@@ -82,7 +82,8 @@ func operationFee(s *support.Support, command common.Hash, teeIDs int) (*big.Int
 // already have endpoints AND admins published for the feed, or the call reverts
 // TeeIdNotConfigured. Use IsTeeIdConfigured to check before spending gas.
 func RequestFeedUpdate(
-	s *support.Support, senderAddress common.Address, feedID [21]byte, teeIDs []common.Address,
+	ctx context.Context, s *support.Support, senderAddress common.Address,
+	feedID [21]byte, teeIDs []common.Address,
 ) (common.Hash, common.Hash, error) {
 	if len(teeIDs) == 0 {
 		return common.Hash{}, common.Hash{}, errors.New("at least one target machine is required")
@@ -97,7 +98,8 @@ func RequestFeedUpdate(
 	if err != nil {
 		return common.Hash{}, common.Hash{}, errors.Errorf("creating transactor: %s", err)
 	}
-	fee, err := FeedUpdateFee(s, len(teeIDs))
+	opts.Context = ctx
+	fee, err := FeedUpdateFee(ctx, s, len(teeIDs))
 	if err != nil {
 		return common.Hash{}, common.Hash{}, err
 	}
@@ -118,7 +120,7 @@ func RequestFeedUpdate(
 		})
 	}
 
-	receipt, err := waitMined(s, tx)
+	receipt, err := waitMined(ctx, s, tx)
 	if err != nil {
 		return common.Hash{}, common.Hash{}, err
 	}
@@ -249,7 +251,7 @@ func EncodeSetAdmins(
 // switches the proxies over, so on any real deployment this reverts and the
 // calldata has to go through the timelock instead. Kept for local and test
 // deployments, where the deployer holds governance and the round trip is noise.
-func (p *Publication) Send(s *support.Support, senderAddress common.Address) (common.Hash, error) {
+func (p *Publication) Send(ctx context.Context, s *support.Support, senderAddress common.Address) (common.Hash, error) {
 	fee := p.Fee
 	if fee == nil {
 		return common.Hash{}, errors.New("publication has no fee; call ResolveFee first")
@@ -259,6 +261,7 @@ func (p *Publication) Send(s *support.Support, senderAddress common.Address) (co
 	if err != nil {
 		return common.Hash{}, errors.Errorf("creating transactor: %s", err)
 	}
+	opts.Context = ctx
 	opts.Value = fee
 
 	contract := bind.NewBoundContract(senderAddress, abi.ABI{}, s.ChainClient, s.ChainClient, s.ChainClient)
@@ -267,7 +270,7 @@ func (p *Publication) Send(s *support.Support, senderAddress common.Address) (co
 		return common.Hash{}, decorateRevert(s, senderAddress, fee, err, func() []byte { return p.Calldata })
 	}
 
-	receipt, err := waitMined(s, tx)
+	receipt, err := waitMined(ctx, s, tx)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -402,10 +405,15 @@ func Sender(s *support.Support, senderAddress common.Address) (*teeoraclesender.
 
 // --- shared plumbing ---
 
-func waitMined(s *support.Support, tx *types.Transaction) (*types.Receipt, error) {
-	receipt, err := bind.WaitMined(context.Background(), s.ChainClient, tx)
+// waitMined polls for a receipt until ctx is done. The caller's deadline is the
+// only thing that ends it otherwise: a transaction that is broadcast and never
+// mined — underpriced for a rising base fee, or queued behind a stuck nonce —
+// never produces one, and an unbounded wait here stops a keeper dead without
+// logging anything.
+func waitMined(ctx context.Context, s *support.Support, tx *types.Transaction) (*types.Receipt, error) {
+	receipt, err := bind.WaitMined(ctx, s.ChainClient, tx)
 	if err != nil {
-		return nil, errors.Errorf("waiting for transaction: %s", err)
+		return nil, errors.Errorf("waiting for transaction %s: %s", tx.Hash().Hex(), err)
 	}
 	if receipt.Status != 1 {
 		return nil, errors.Errorf("transaction %s failed with status %d", tx.Hash().Hex(), receipt.Status)

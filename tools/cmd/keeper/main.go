@@ -17,14 +17,20 @@
 // spent on a machine with a stale observation buys a predictable failure.
 //
 // The keeper holds no authority, so a compromised one costs gas, not
-// correctness. Run at least two: their submissions collide harmlessly, exactly
-// one wins each cycle and the rest record race_lost. It does not alert — paging
-// on the records, and on on-chain feed age, is the monitoring layer's job.
+// correctness. requestFeedUpdate and submitFeedUpdates are both permissionless,
+// and the store verifies every TEE signature against the machine registry
+// itself, so the address here only ever spends its own gas: give it KEEPER_KEY,
+// a funded key and nothing more. Run at least two keepers: their submissions
+// collide harmlessly, exactly one wins each cycle and the rest record
+// race_lost. It does not alert — paging on the records, and on on-chain feed
+// age, is the monitoring layer's job.
 package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"flag"
+	"math/big"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -39,6 +45,8 @@ import (
 	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/params"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"github.com/pkg/errors"
 )
@@ -70,6 +78,10 @@ func main() {
 	recordsF := flag.String("records", "",
 		"append JSON cycle records to this file (default: stdout)")
 	onceF := flag.Bool("once", false, "run a single cycle and exit — useful for a cron-driven keeper")
+	requestF := flag.Duration("requestTimeout", keeper.DefaultRequestTimeout,
+		"how long to wait for the requestFeedUpdate receipt before giving up on the cycle")
+	minBalanceF := flag.String("minBalance", "5",
+		"warn when the paying account falls below this many coins; 0 disables the check")
 	dryRunF := flag.Bool("dry-run", false,
 		"run the cycle through the on-chain preflight and stop before submitting; the request is still sent and paid for")
 	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
@@ -92,7 +104,22 @@ func main() {
 			"first whether they would sign — pass -directApiKey or set DIRECT_API_KEY")
 	}
 
-	s, err := support.DefaultSupport(*af, *cf)
+	minBalance, err := parseCoins(*minBalanceF)
+	if err != nil {
+		fccutils.FatalWithCause(err)
+	}
+
+	// Resolved before the client, so a keeper can run with KEEPER_KEY alone and
+	// no EXTENSION_OWNER_KEY anywhere on the machine.
+	prv, keySource, err := keeperKey()
+	if err != nil {
+		fccutils.FatalWithCause(err)
+	}
+	// Logged before the client is opened: when a node is unreachable the first
+	// question is which address was about to pay.
+	logger.Infof("paying from %s (%s)", crypto.PubkeyToAddress(prv.PublicKey).Hex(), keySource)
+
+	s, err := support.SupportWithKey(*af, *cf, prv)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
@@ -152,16 +179,18 @@ func main() {
 
 	cfg := keeper.LoopConfig{
 		Config: keeper.Config{
-			KeeperID:      *keeperIDF,
-			Sender:        senderAddr,
-			Store:         storeAddr,
-			FeedID:        feed,
-			TeeIDs:        teeIDs,
-			Proxy:         *pf,
-			DirectAPIKey:  *apiKeyF,
-			PollTimeout:   *pollF,
-			SubmitTimeout: *submitF,
-			DryRun:        *dryRunF,
+			KeeperID:       *keeperIDF,
+			Sender:         senderAddr,
+			Store:          storeAddr,
+			FeedID:         feed,
+			TeeIDs:         teeIDs,
+			Proxy:          *pf,
+			DirectAPIKey:   *apiKeyF,
+			PollTimeout:    *pollF,
+			SubmitTimeout:  *submitF,
+			RequestTimeout: *requestF,
+			MinBalance:     minBalance,
+			DryRun:         *dryRunF,
 		},
 		Interval:      *intervalF,
 		ProxyOverride: proxyOverride,
@@ -172,6 +201,13 @@ func main() {
 	// than being killed mid-submission.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Restoring the default behaviour once the first signal has landed: a second
+	// one then kills a process that is still winding down, instead of being
+	// swallowed by the handler that is no longer listening for anything.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 
 	if *onceF {
 		rec, err := keeper.RunOnce(ctx, s, cfg)
@@ -186,6 +222,41 @@ func main() {
 	if err := keeper.Run(ctx, s, cfg); err != nil {
 		fccutils.FatalWithCause(err)
 	}
+}
+
+// keeperKey resolves the key the keeper pays with. KEEPER_KEY first, because
+// relaying needs no authority at all: both of the keeper's transactions are
+// permissionless, so this address can be a throwaway that holds nothing but
+// gas, and a server that is compromised loses exactly that. Falling back to
+// EXTENSION_OWNER_KEY keeps existing deployments running, and says what it is
+// doing — that key can also configure the extension and allow code hashes, none
+// of which this process ever needs.
+func keeperKey() (*ecdsa.PrivateKey, string, error) {
+	key, err := fccutils.OverrideKey("KEEPER_KEY")
+	if err != nil {
+		return nil, "", err
+	}
+	if key != nil {
+		return key, "KEEPER_KEY", nil
+	}
+
+	key, err = support.DefaultPrivateKey()
+	if err != nil {
+		return nil, "", err
+	}
+	logger.Warnf("KEEPER_KEY is not set, so this keeper signs with EXTENSION_OWNER_KEY — " +
+		"a key that also owns the extension, on a host that only needs to pay gas")
+	return key, "EXTENSION_OWNER_KEY", nil
+}
+
+// parseCoins reads a balance floor given in whole coins into wei.
+func parseCoins(s string) (*big.Int, error) {
+	amount, ok := new(big.Float).SetString(strings.TrimSpace(s))
+	if !ok || amount.Sign() < 0 {
+		return nil, errors.Errorf("-minBalance %q is not a non-negative number of coins", s)
+	}
+	wei, _ := new(big.Float).Mul(amount, big.NewFloat(params.Ether)).Int(nil)
+	return wei, nil
 }
 
 // openRecords defaults to stdout, which a process supervisor captures.

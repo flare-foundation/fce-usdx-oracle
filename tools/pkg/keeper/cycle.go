@@ -15,6 +15,7 @@ package keeper
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -75,8 +76,33 @@ type Config struct {
 	PollTimeout   time.Duration
 	SubmitTimeout time.Duration
 
+	// RequestTimeout bounds the trigger: sending requestFeedUpdate and waiting
+	// for its receipt. A transaction that is broadcast and never mined produces
+	// no receipt at all, and cycles are single-flight, so an unbounded wait here
+	// stops the keeper entirely rather than costing it one cycle. Zero means
+	// DefaultRequestTimeout.
+	RequestTimeout time.Duration
+
+	// MinBalance warns when the paying account falls below it. Zero disables the
+	// check. A keeper that runs dry keeps cycling and failing at the request,
+	// which reads like a chain problem rather than an empty wallet.
+	MinBalance *big.Int
+
 	// DryRun stops after preflight, sending no transaction.
 	DryRun bool
+}
+
+// DefaultRequestTimeout bounds the trigger when a caller sets none. Generous
+// against a congested chain, short enough that a stuck transaction costs one
+// cycle rather than every cycle after it.
+const DefaultRequestTimeout = 2 * time.Minute
+
+// requestTimeout is RequestTimeout, or the default when unset.
+func (c Config) requestTimeout() time.Duration {
+	if c.RequestTimeout > 0 {
+		return c.RequestTimeout
+	}
+	return DefaultRequestTimeout
 }
 
 // RunCycle performs one complete keeper cycle. It never exits the process on an
@@ -106,6 +132,17 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) ([]feedupdate.
 	// acted on: the fix is operational, not something to retry into.
 	rec.PendingNonceGap = pendingNonceGap(ctx, s)
 
+	// Both the balance and the gap are diagnostics on the record: the keeper
+	// spends but never tops itself up, and an empty account fails at the request
+	// with an error that says nothing about funds.
+	if balance := keeperBalance(ctx, s); balance != nil {
+		rec.KeeperBalance = balance.String()
+		if cfg.MinBalance != nil && cfg.MinBalance.Sign() > 0 && balance.Cmp(cfg.MinBalance) < 0 {
+			logger.Warnf("[%s] balance %s wei is below the %s wei floor — top up %s or the feed stops",
+				cfg.KeeperID, balance, cfg.MinBalance, crypto.PubkeyToAddress(s.Prv.PublicKey).Hex())
+		}
+	}
+
 	fail := func(out Outcome, err error) ([]feedupdate.Update, Record, error) {
 		rec, err = finish(ctx, s, cfg, rec, out, err)
 		return nil, rec, err
@@ -127,7 +164,9 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) ([]feedupdate.
 		return fail(OutcomeRequestSkipped, errors.New(why))
 	}
 
-	actionID, _, err := instrutils.RequestFeedUpdate(s, cfg.Sender, cfg.FeedID, cfg.TeeIDs)
+	reqCtx, cancelRequest := context.WithTimeout(ctx, cfg.requestTimeout())
+	actionID, _, err := instrutils.RequestFeedUpdate(reqCtx, s, cfg.Sender, cfg.FeedID, cfg.TeeIDs)
+	cancelRequest()
 	if err != nil {
 		rec.RequestTxStatus = "failed"
 		return fail(OutcomeRequestFailed, err)
@@ -557,6 +596,16 @@ func storeObservedAt(ctx context.Context, s *support.Support, storeAddr common.A
 		return 0
 	}
 	return observedAt
+}
+
+// keeperBalance is what the paying account holds now, or nil if it cannot be
+// read. Best-effort: a diagnostic on the record, never a control input.
+func keeperBalance(ctx context.Context, s *support.Support) *big.Int {
+	balance, err := s.ChainClient.BalanceAt(ctx, crypto.PubkeyToAddress(s.Prv.PublicKey), nil)
+	if err != nil {
+		return nil
+	}
+	return balance
 }
 
 // pendingNonceGap is how many of this keeper's transactions are broadcast but

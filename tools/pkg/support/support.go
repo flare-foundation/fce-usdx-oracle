@@ -9,6 +9,7 @@ import (
 	"fce-usdx-oracle/tools/pkg/configs"
 	"fmt"
 	"math/big"
+	"net/http"
 	"os"
 	"reflect"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/fdc2/fdc2hub"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/system"
 	"github.com/flare-foundation/go-flare-common/pkg/contracts/tee/extensiongovernance"
@@ -70,7 +72,41 @@ type Addresses struct {
 	FlareTeeManager common.Address `json:"FlareTeeManager"`
 }
 
+// chainRequestTimeout bounds one request to the chain node. ethclient.Dial
+// leaves the HTTP client's own timeout at zero, so without this a node that
+// accepts the connection and then never answers holds a call for as long as the
+// socket stays open — and a command running unattended has no way back out of
+// it. Every call still carries its context; this is the floor underneath them,
+// including the ones that pass context.Background().
+const chainRequestTimeout = 30 * time.Second
+
+// DialChain opens the chain client with its requests bounded. Only http(s) is
+// wrapped: a websocket or IPC endpoint has a connection lifecycle of its own
+// that a per-request deadline would cut.
+func DialChain(chainNodeURL string) (*ethclient.Client, error) {
+	if !strings.HasPrefix(chainNodeURL, "http://") && !strings.HasPrefix(chainNodeURL, "https://") {
+		return ethclient.Dial(chainNodeURL)
+	}
+	client, err := rpc.DialOptions(context.Background(), chainNodeURL,
+		rpc.WithHTTPClient(&http.Client{Timeout: chainRequestTimeout}))
+	if err != nil {
+		return nil, errors.Errorf("%s", err)
+	}
+	return ethclient.NewClient(client), nil
+}
+
 func DefaultSupport(AddressesFilePath, chainNodeURL string) (*Support, error) {
+	privKey, err := DefaultPrivateKey()
+	if err != nil {
+		return nil, err
+	}
+	return SupportWithKey(AddressesFilePath, chainNodeURL, privKey)
+}
+
+// SupportWithKey is DefaultSupport for a command that resolves its own signing
+// key. The keeper is the reason it exists: relaying needs no authority, so it
+// must be able to run without the extension owner's key present at all.
+func SupportWithKey(AddressesFilePath, chainNodeURL string, prv *ecdsa.PrivateKey) (*Support, error) {
 	addr := &Addresses{}
 	err := configs.ReadAddresses(AddressesFilePath, addr)
 	if err != nil {
@@ -80,17 +116,12 @@ func DefaultSupport(AddressesFilePath, chainNodeURL string) (*Support, error) {
 		}
 	}
 
-	cc, err := ethclient.Dial(chainNodeURL)
-	if err != nil {
-		return nil, errors.Errorf("%s", err)
-	}
-
-	privKey, err := DefaultPrivateKey()
+	cc, err := DialChain(chainNodeURL)
 	if err != nil {
 		return nil, err
 	}
 
-	return NewSupport(privKey, cc, addr)
+	return NewSupport(prv, cc, addr)
 }
 
 func DefaultPrivateKey() (*ecdsa.PrivateKey, error) {
@@ -113,6 +144,14 @@ func DefaultPrivateKey() (*ecdsa.PrivateKey, error) {
 	}
 
 	if privKeyString == "" {
+		// The dev key has funds on a local devnet and nothing anywhere else, so
+		// on a live chain it buys a series of failures that read as anything but
+		// a missing variable. Refused there rather than warned about.
+		if configs.Chain != "local" {
+			return nil, errors.Errorf(
+				"EXTENSION_OWNER_KEY is not set and the chain is %s — refusing to fall back to the "+
+					"hardcoded dev key, which has funds only on a local devnet", configs.Chain)
+		}
 		fmt.Fprintln(os.Stderr, "WARNING: EXTENSION_OWNER_KEY not set — using hardcoded Hardhat dev key")
 		fmt.Fprintln(os.Stderr, "         This key only has funds on local devnets (Hardhat/Anvil)")
 		return configs.PrvWithFunds, nil

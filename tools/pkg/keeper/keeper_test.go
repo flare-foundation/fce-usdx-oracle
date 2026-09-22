@@ -127,3 +127,15 @@ func TestNilEmitterIsSafe(t *testing.T) {
 	var e *Emitter
 	e.Emit(Record{Outcome: OutcomeAccepted})
 }
+
+// A caller that sets no request timeout still gets one: the wait for a receipt
+// is the place a single-flight keeper can stop forever, so the default is part
+// of the contract rather than something every call site has to remember.
+func TestRequestTimeoutFallsBackToTheDefault(t *testing.T) {
+	if got := (Config{}).requestTimeout(); got != DefaultRequestTimeout {
+		t.Errorf("unset request timeout = %s, want the %s default", got, DefaultRequestTimeout)
+	}
+	if got := (Config{RequestTimeout: time.Second}).requestTimeout(); got != time.Second {
+		t.Errorf("configured request timeout = %s, want it honoured", got)
+	}
+}

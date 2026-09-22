@@ -48,7 +48,7 @@ every command reads `../.env` for the chain, the addresses file and the keys.
 
 | Command | Does |
 | --- | --- |
-| `keeper` | one cycle or a loop of them: request, collect every machine's signed update, preflight, submit |
+| `keeper` | one cycle or a loop of them: request, collect every machine's signed update, preflight, submit. Runs unattended — see [running it unattended](../docs/usdx-oracle-keeper.md#running-it-unattended) |
 | `readiness` | one machine's signed account of itself: configuration, secrets, observation age, source health |
 | `fleet-status` | every machine of the extension against what the chain says it should be running |
 | `oracle-watch` | the readiness report on a timer, with each change printed |
@@ -70,6 +70,7 @@ Commands sign with the role's key, taken from `.env`:
 | `EXTENSION_OWNER_KEY` | the extension owner, and the default for everything that names no other role |
 | `MACHINE_OWNER_KEY` | the machines' owner, for registration, production and pausing, where it is not the extension owner |
 | `ADMIN_KEY` | one admin of a signer set, for signing a `SET_SECRET` envelope; the upload scripts take several as `ADMIN_KEYS` |
+| `KEEPER_KEY` | the keeper's gas, and nothing else: its two transactions are permissionless, so this is a funded throwaway rather than a role. Falls back to `EXTENSION_OWNER_KEY` with a warning |
 | `DIRECT_API_KEY` | not a signing key: the proxy's gate for the direct channel, which readiness queries and `SET_SECRET` use |
 
 ## Where to go from here

@@ -46,6 +46,9 @@ import (
 	"github.com/pkg/errors"
 )
 
+// sendTimeout bounds the wait for the publication's receipt.
+const sendTimeout = 5 * time.Minute
+
 func main() {
 	af := flag.String("a", configs.AddressesFile, "file with deployed addresses")
 	cf := flag.String("c", configs.ChainNodeURL, "chain node url")
@@ -203,7 +206,12 @@ func main() {
 	// Direct submission: works only while the caller is governance (before
 	// switchToProductionMode). On a real deployment this reverts with the
 	// governance guard; the calldata then has to go through executeGovernanceCall.
-	txHash, err := publication.Send(testSupport, instructionSenderAddress)
+	// Bounded: a transaction that is broadcast and never mined produces no
+	// receipt, and an unbounded wait would leave the command hanging with the
+	// publication already sent.
+	sendCtx, cancelSend := context.WithTimeout(context.Background(), sendTimeout)
+	defer cancelSend()
+	txHash, err := publication.Send(sendCtx, testSupport, instructionSenderAddress)
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("publishing admins: %s", err))
 	}
