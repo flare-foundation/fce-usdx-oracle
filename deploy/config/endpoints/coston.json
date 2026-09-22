@@ -1,0 +1,56 @@
+{
+  "flare": {
+    "threshold": 2,
+    "endpoints": [
+      {
+        "url": "https://flare-api.flare.network/ext/C/rpc"
+      },
+      {
+        "url": "https://flare.rpc.aflabs.net/ext/bc/C/rpc?apikey={secret}",
+        "secret": "aflabs_key"
+      },
+      {
+        "url": "https://flare.drpc.org"
+      }
+    ]
+  },
+  "ethereum": {
+    "threshold": 2,
+    "endpoints": [
+      {
+        "url": "https://ethereum-rpc.publicnode.com"
+      },
+      {
+        "url": "https://eth.drpc.org"
+      },
+      {
+        "url": "https://ethereum.rpc.aflabs.net/?apikey={secret}",
+        "secret": "aflabs_key"
+      }
+    ]
+  },
+  "songbird": {
+    "threshold": 2,
+    "endpoints": [
+      {
+        "url": "https://songbird-api.flare.network/ext/C/rpc"
+      },
+      {
+        "url": "https://rpc.au.cc/songbird"
+      },
+      {
+        "url": "https://songbird.rpc.aflabs.net/ext/bc/C/rpc?apikey={secret}",
+        "secret": "aflabs_key"
+      }
+    ]
+  },
+  "hex_cash": {
+    "threshold": 1,
+    "endpoints": [
+      {
+        "urlHash": "0x2d6701ff42b8f4495cc3c1916fed9f2ddf54c4354d7b541616ac16f3afeb9955",
+        "secret": "hex_cash_url"
+      }
+    ]
+  }
+}
