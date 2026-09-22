@@ -1,0 +1,31 @@
+# The build context for Dockerfile.keeper, which BuildKit reads instead of
+# .dockerignore because it is named after that Dockerfile.
+#
+# The keeper is built from two modules — tools/, and the extension's own sources
+# that tools/go.mod replaces in from ../ — so the context is wider than the
+# extension image's. It stays a listed set even so: the extension image's context
+# is filtered for reproducibility, this one to keep .env files, keys and build
+# output from ever being reachable in a layer.
+
+# ignore everything
+*
+
+# the extension module, as far as the tooling's replace directive reaches into it:
+# pkg/ and the two manifests. internal/ and cmd/ are not imported from tools/.
+!go.mod
+!go.sum
+!pkg/
+
+# the tooling module, which is what is built here
+!tools/
+
+# the deployed addresses, the one repository file the keeper reads at runtime;
+# the CHAIN build arg picks which chain's is baked in
+!deploy/config/*/deployed-addresses.json
+
+# nothing generated, and nothing holding a secret, from any of the above
+**/*_test.go
+**/testdata/
+.env*
+*.env
+out/
