@@ -46,6 +46,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# lib/env.sh reads PROJECT_DIR; the two names are the same directory.
+PROJECT_DIR="$REPO_ROOT"
 
 # hex_api_key is the other script's job: it is the one ref the backing set
 # governs, and signing it with provider keys would produce an envelope no
