@@ -236,7 +236,7 @@ LOG_LEVEL=DEBUG docker compose up -d
 
 ## Deploying to a live chain
 
-The live-chain flow lives in [deploy/README.md](../deploy/README.md#testing-on-a-testnet-coston-coston2)
+The live-chain flow lives in [deploy/README.md](../deploy/README.md#testing-on-a-testnet-coston_local-coston2)
 rather than being repeated here, with every point that needs your input marked; "A remote
 machine" there is the deployment. In outline, with `<chain>` any of them:
 
