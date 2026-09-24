@@ -21,6 +21,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"errors"
@@ -69,7 +70,7 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeContent(w, r, "index.html", buildTime(), newBytesReader(page))
+		http.ServeContent(w, r, "index.html", buildTime(), bytes.NewReader(page))
 	})
 
 	// The records. no-store because the page polls this: a cached answer would
@@ -128,10 +129,10 @@ func main() {
 	logger.Infof("stopped")
 }
 
-// tail returns the last max complete records of the file, oldest first, and how
+// tail returns the last limit complete records of the file, oldest first, and how
 // many it found. A missing file is not an error: the keeper writes it at the end
 // of its first cycle, and until then an empty answer is the truth.
-func tail(path string, max int) ([]byte, int, error) {
+func tail(path string, limit int) ([]byte, int, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, 0, nil
@@ -161,7 +162,7 @@ func tail(path string, max int) ([]byte, int, error) {
 	// A seek into the middle of the file lands mid-record; that first partial
 	// line is not a record and must not be served as one.
 	if offset > 0 {
-		if nl := indexByte(buf, '\n'); nl >= 0 {
+		if nl := bytes.IndexByte(buf, '\n'); nl >= 0 {
 			buf = buf[nl+1:]
 		} else {
 			buf = nil
@@ -169,8 +170,8 @@ func tail(path string, max int) ([]byte, int, error) {
 	}
 
 	lines := splitLines(buf)
-	if len(lines) > max {
-		lines = lines[len(lines)-max:]
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
 	}
 
 	out := make([]byte, 0, len(buf))
@@ -186,74 +187,17 @@ func tail(path string, max int) ([]byte, int, error) {
 // between the record and its newline.
 func splitLines(buf []byte) [][]byte {
 	var lines [][]byte
-	start := 0
-	for i := 0; i < len(buf); i++ {
-		if buf[i] != '\n' {
-			continue
-		}
-		if line := trimCR(buf[start:i]); len(line) > 0 {
+	for line := range bytes.SplitSeq(buf, []byte("\n")) {
+		if line = bytes.TrimSuffix(line, []byte("\r")); len(line) > 0 {
 			lines = append(lines, line)
 		}
-		start = i + 1
 	}
 	return lines
 }
 
-func trimCR(b []byte) []byte {
-	if n := len(b); n > 0 && b[n-1] == '\r' {
-		return b[:n-1]
-	}
-	return b
-}
-
-func indexByte(b []byte, c byte) int {
-	for i := 0; i < len(b); i++ {
-		if b[i] == c {
-			return i
-		}
-	}
-	return -1
-}
-
-// newBytesReader and buildTime keep http.ServeContent happy: it wants a
-// ReadSeeker and a modification time, and an embedded page has neither. The
-// binary's own mtime is the closest true answer — the page changed when the
-// image was built.
-func newBytesReader(b []byte) io.ReadSeeker { return &sliceReader{b: b} }
-
-type sliceReader struct {
-	b   []byte
-	pos int64
-}
-
-func (r *sliceReader) Read(p []byte) (int, error) {
-	if r.pos >= int64(len(r.b)) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b[r.pos:])
-	r.pos += int64(n)
-	return n, nil
-}
-
-func (r *sliceReader) Seek(offset int64, whence int) (int64, error) {
-	var abs int64
-	switch whence {
-	case io.SeekStart:
-		abs = offset
-	case io.SeekCurrent:
-		abs = r.pos + offset
-	case io.SeekEnd:
-		abs = int64(len(r.b)) + offset
-	default:
-		return 0, errors.New("invalid whence")
-	}
-	if abs < 0 {
-		return 0, errors.New("negative position")
-	}
-	r.pos = abs
-	return abs, nil
-}
-
+// buildTime keeps http.ServeContent happy: it wants a modification time, and an
+// embedded page has none. The binary's own mtime is the closest true answer —
+// the page changed when the image was built.
 func buildTime() time.Time {
 	exe, err := os.Executable()
 	if err != nil {
