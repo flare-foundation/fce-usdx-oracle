@@ -1,4 +1,4 @@
-# The build context for Dockerfile.keeper, which BuildKit reads instead of
+# The build context for keeper.Dockerfile, which BuildKit reads instead of
 # .dockerignore because it is named after that Dockerfile.
 #
 # The keeper is built from two modules — tools/, and the extension's own sources

@@ -19,16 +19,27 @@
 #
 # Build, from the repository root:
 #
-#   docker build -f Dockerfile.keeper -t usdx-keeper:latest .
+#   docker build -f keeper.Dockerfile -t usdx-keeper:latest .
 #
 # The context is the root because tools/ is a module of its own that replaces
 # fce-usdx-oracle => ../, so the build needs both modules' sources. The root
-# .dockerignore admits only the extension module's, and widening it would perturb
-# the attested image's COPY layer, so this build brings its own ignore file:
-# Dockerfile.keeper.dockerignore, which BuildKit prefers over .dockerignore when it
-# sits beside the named Dockerfile. BuildKit is docker's default builder since 23;
-# under the legacy builder the root .dockerignore applies instead and the build
-# fails at `COPY tools/` rather than producing a wrong image.
+# .dockerignore admits only the extension module's — and the attested image copies
+# the whole context with `COPY . .`, so widening it would change that image's
+# layers and with them the code hash a machine registers. This build therefore
+# brings its own ignore file, keeper.Dockerfile.dockerignore, which BuildKit
+# prefers over .dockerignore when it sits beside the named Dockerfile. BuildKit is
+# docker's default builder since 23; under the legacy builder the root
+# .dockerignore applies instead and the build fails at `COPY tools/` rather than
+# producing a wrong image.
+#
+# The name is keeper.Dockerfile and not Dockerfile.keeper because CI lints every
+# tracked path whose basename starts with "Dockerfile" — the regex is
+# `(^|/)\.?[Dd]ockerfile[^/]*$` — which swept up the .dockerignore beside it, and
+# hadolint cannot parse one of those. An ignore file must be named after its
+# Dockerfile, so the Dockerfile is what had to move out of the way. The cost is
+# that hadolint no longer sees this file either: it is clean as of this commit,
+# and `docker run --rm -i hadolint/hadolint hadolint - < keeper.Dockerfile` keeps
+# it so.
 
 # Not pinned by digest, unlike the extension image: this one is not attested, and a
 # long-running keeper is better off taking the base's security fixes on a rebuild.

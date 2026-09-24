@@ -122,9 +122,9 @@ fi
 
 step "Build"
 
-# BuildKit is not optional here. Dockerfile.keeper needs a wider context than the
+# BuildKit is not optional here. keeper.Dockerfile needs a wider context than the
 # extension image — tools/ is a module of its own that replaces fce-usdx-oracle in
-# from ../ — and it gets one through Dockerfile.keeper.dockerignore, which only
+# from ../ — and it gets one through keeper.Dockerfile.dockerignore, which only
 # BuildKit reads. The legacy builder would apply the root .dockerignore, which
 # admits no tools/, and the build would fail at COPY.
 export DOCKER_BUILDKIT=1
@@ -141,7 +141,7 @@ docker build \
     --label "org.opencontainers.image.revision=$COMMIT" \
     --label "usdx.keeper.chain=$CHAIN" \
     -t "$IMAGE" \
-    -f "$PROJECT_DIR/Dockerfile.keeper" \
+    -f "$PROJECT_DIR/keeper.Dockerfile" \
     "$PROJECT_DIR" \
     || die "build failed"
 
