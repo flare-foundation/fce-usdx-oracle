@@ -289,14 +289,16 @@ record-images:
     - 'case "$KEEPER_DIGEST" in sha256:?*) ;; *) echo "bad digest for $KEEPER_IMAGE:$TAG [$KEEPER_DIGEST]"; exit 1 ;; esac'
     # The manifest by digest, so what is read is what was just checked above. The
     # component builds without attestations, so it is a single image manifest
-    # and not an index; anything else fails the shape check below.
+    # and not an index; anything else fails the shape check below. The pipeliner
+    # image has no jq, so the digest is cut out of the manifest's config object.
     - REGISTRY_HOST="${REGISTRY%%/*}"
     - REPO_PATH="${IMAGE#*/}"
     - >-
       CONFIG_DIGEST="$(curl -fsSL
       -H "Authorization: Bearer $(gcloud auth print-access-token)"
       -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
-      "https://$REGISTRY_HOST/v2/$REPO_PATH/manifests/$DIGEST" | jq -r '.config.digest // empty')"
+      "https://$REGISTRY_HOST/v2/$REPO_PATH/manifests/$DIGEST"
+      | tr -d ' \n\r\t' | grep -o '"config":{[^}]*}' | grep -o 'sha256:[0-9a-f]\{64\}' || true)"
     - 'case "$CONFIG_DIGEST" in sha256:?*) ;; *) echo "no config digest in the manifest of $IMAGE@$DIGEST [$CONFIG_DIGEST]"; exit 1 ;; esac'
     # Absolute path: artifact paths are relative to CI_PROJECT_DIR, not cwd.
     - |
