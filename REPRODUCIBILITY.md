@@ -41,7 +41,9 @@ the two Go modules and of the proxy image drift apart.
   bytes. Adapted from
   [reproducible-containers/repro-sources-list.sh](https://github.com/reproducible-containers/repro-sources-list.sh/blob/master/alternative/Dockerfile.debian-13)
 - CI uses BuildKit's [`rewrite-timestamp=true`](https://github.com/moby/buildkit/pull/4057)
-  exporter option to normalize layer timestamps
+  exporter option to normalize layer timestamps, and on every tag offers a
+  manual `verify-reproducible` job that rebuilds the published image cold and
+  compares code hashes
 
 ## Build context
 
@@ -93,7 +95,8 @@ git checkout "$TAG"
 
 docker buildx build --builder moby-buildkit --platform linux/amd64 --no-cache --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) --output "type=docker,rewrite-timestamp=true" -t local/fce-usdx-oracle:verify --load -f Dockerfile .
 
-# The image this extension is published at — substitute the real registry path.
+# Where CI publishes it (.gitlab-ci.yml); the ID below is the code hash registered on chain.
+REGISTRY_IMAGE=europe-west1-docker.pkg.dev/flare-network-staging/containers/tee-usdx
 docker pull --platform linux/amd64 "$REGISTRY_IMAGE:$TAG"
 
 docker inspect --format='{{.Id}}' local/fce-usdx-oracle:verify

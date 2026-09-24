@@ -6,10 +6,16 @@
 # flare-smart-contracts-v2 that CI has no access to; its wire vectors reach CI
 # as the fixtures the Go conformance test replays.
 #
-# The private image component at the end publishes the extension image the way
-# tee-node's pipeline does; the kaniko job before it only proves that the
-# Dockerfile builds, without pushing. The proxy is tee-proxy's own published
-# image, pulled by the compose stack, not built here.
+# Two images are published, after flare-mixer's pipeline: the extension TEE
+# image (./Dockerfile, the one a Confidential Space VM attests) and the keeper
+# (keeper.Dockerfile). Both go through flarenetwork's release-image component to
+# Flare's Artifact Registry, on tag pipelines only:
+#
+#   europe-west1-docker.pkg.dev/flare-network-staging/containers/tee-usdx
+#   europe-west1-docker.pkg.dev/flare-network-staging/containers/fce-usdx-keeper
+#
+# No other pipeline builds an image. The proxy is tee-proxy's own published image, pulled by the compose stack, not
+# built here.
 
 variables:
   # tools/go.mod needs 1.25.8; the minor tag tracks the latest patch.
@@ -20,6 +26,24 @@ variables:
   FLARE_CI_DISABLE_LGTM: true
   FLARE_CI_DISABLE_TEST_GO: true
   FLARE_CI_DISABLE_LINT_GO: true
+  # The generic component would publish one image per Dockerfile with kaniko,
+  # which cannot build ./Dockerfile; the release-image jobs below replace it.
+  FLARE_CI_DISABLE_RELEASE_IMAGE: true
+  REGISTRY: europe-west1-docker.pkg.dev/flare-network-staging/containers
+  IMAGE: $REGISTRY/tee-usdx
+  KEEPER_IMAGE: $REGISTRY/fce-usdx-keeper
+  # The chain whose deployed-addresses.json the keeper image bakes in.
+  KEEPER_CHAIN: coston
+  # WIF lives in flare-network-shared even though the images land in -staging.
+  GCP_PROJECT: flare-network-shared
+  GCP_PROJECT_NUMBER: '940168819002'
+  # Read-only digest lookups use the unprotected identity: it is the lesser
+  # privilege, and the one the component itself uses for every non-release push.
+  UNPROTECTED_SERVICE_ACCOUNT_EMAIL: cr-oidc-cntnr-img-bldr@flare-network-shared.iam.gserviceaccount.com
+  # Kept in sync with the component's `buildkit_image` default, so
+  # verify-reproducible rebuilds with the BuildKit the published build used.
+  BUILDKIT_IMAGE: europe-west1-docker.pkg.dev/flare-network-shared/ci-tools/buildkit-gcloud:v1.0.2
+  PIPELINER_IMAGE: europe-west1-docker.pkg.dev/flare-network-shared/ci-tools/gcloud-pipeliner:v1.0.1
 
 default:
   tags:
@@ -46,7 +70,8 @@ workflow:
 stages:
   - build
   - test
-  - image
+  - release-images
+  - publish
 
 .gocache:
   variables:
@@ -129,50 +154,203 @@ scripts:
     - for f in deploy/scripts/*.sh deploy/scripts/lib/*.sh; do bash -n "$f"; done
     - ./deploy/scripts/check-versions.sh
 
-# ── images ────────────────────────────────────────────────────────────────────
+# ── publish ───────────────────────────────────────────────────────────────────
 
-# The extension image is reproducible from SOURCE_DATE_EPOCH, the commit's
-# timestamp; kaniko's image has no git, so the value is taken here and handed
-# on as a dotenv artifact.
-epoch:
-  stage: build
-  needs: []
-  extends: .run
-  image: golang:${GOLANG_VERSION}
-  script:
-    - echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" > build.env
-  artifacts:
-    reports:
-      dotenv: build.env
-
-.kaniko:
-  extends: .run
-  stage: image
-  image:
-    name: registry.gitlab.com/flarenetwork/infra-public/pipeliner/kaniko-executor-stbl:v1.23.2-debug
-    entrypoint: [""]
-  script:
-    - >-
-      args="--context ${CI_PROJECT_DIR}
-        --dockerfile ${CI_PROJECT_DIR}/${DOCKERFILE}
-        ${BUILD_ARGS}
-        --registry-mirror mirror.gcr.io
-        --compressed-caching=false
-        --snapshot-mode=redo
-        --no-push"
-    - /kaniko/executor $args
-
-# The extension TEE image, the one a Confidential Space VM runs.
-image-extension:
-  extends: .kaniko
-  needs: [build, epoch]
-  variables:
-    DOCKERFILE: "Dockerfile"
-    BUILD_ARGS: "--build-arg SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
-
-# Publication of the extension image, as tee-node's pipeline does it.
+# Every build here is BuildKit, not kaniko: kaniko supports neither
+# `RUN --mount=type=cache` (Dockerfile) nor the rewrite-timestamp exporter option
+# REPRODUCIBILITY.md depends on, and it does not read
+# keeper.Dockerfile.dockerignore.
+#
+# The two component jobs repeat the same input block. A YAML anchor would be
+# the obvious fix, but GitLab resolves `include` in its own pass, so anchors are
+# not dependable there — keep the lists in sync by hand. What they share, and why:
+#
+#   registry_auth: gcp       Workload Identity against Artifact Registry.
+#   *_registry               all three point at the SAME staging path. The
+#                            component routes stable tags to
+#                            `production_registry` and only pre-release tags to
+#                            staging, so pointing every tier at staging is what
+#                            keeps `v1.2.3` out of the production registry while
+#                            still letting it publish.
+#   push_to_sandbox: false   those registries are one identical string, so
+#                            leaving sandbox on would push the same destination
+#                            twice.
+#   enable_signing/sbom      off for now: both need GCP KMS and Dependency Track
+#                            access first.
+#
+# And where the extension differs from the keeper:
+#
+#   source_labels_enabled    off for the extension: OCI source labels land in the
+#                            image config, whose digest is the code hash, and the
+#                            verify command in REPRODUCIBILITY.md adds none, so
+#                            the hashes would never match. On for the keeper,
+#                            which nothing attests.
+#   enable_kaniko_cache      off: the component never uses a cache for a stable
+#                            release anyway, and for the extension a warm cache
+#                            could hide a reproducibility regression.
+#
+# The jobs run on tags only (the component's default rules_condition,
+# $CI_COMMIT_TAG) and keep its commit_provenance check: releases are cut from
+# main, which is $CI_DEFAULT_BRANCH, so a tag on any other branch is refused.
+# The jobs name no `needs`, so they wait for every earlier stage — nothing is
+# published from a commit whose tests failed.
 include:
+  # Lint, hadolint and shellcheck for the whole repository; its own image
+  # publication is switched off (FLARE_CI_DISABLE_RELEASE_IMAGE above).
   - component: gitlab.com/flarenetwork/ci-components-private/component@2
     inputs:
       image_name: "fce-usdx-oracle"
       runner_tags: ["flarenetwork-md"]
+
+  # The release-image component pulls this in internally, but depending on that
+  # is depending on its internals. Included explicitly because record-images uses
+  # its `.gcp-wif-pipeliner-*` anchors to authenticate to Artifact Registry.
+  - project: flarenetwork/ci-components-private
+    ref: main
+    file: templates/shared/common.yml
+
+  ### EXTENSION TEE ###########################################################
+  - component: gitlab.com/flarenetwork/ci-components-private/release-image@main
+    inputs:
+      job_name_suffix: "-extension-tee"
+      image_name: tee-usdx
+      image_tag_source: commit_tag
+      registry_auth: gcp
+      sandbox_registry: $REGISTRY
+      staging_registry: $REGISTRY
+      production_registry: $REGISTRY
+      push_to_sandbox: false
+      build_with_buildkit: true
+      build_context: "."
+      dockerfile_path: Dockerfile
+      source_labels_enabled: false
+      enable_kaniko_cache: false
+      enable_signing: false
+      enable_sbom: false
+
+  ### KEEPER ##################################################################
+  - component: gitlab.com/flarenetwork/ci-components-private/release-image@main
+    inputs:
+      job_name_suffix: "-keeper"
+      image_name: fce-usdx-keeper
+      image_tag_source: commit_tag
+      registry_auth: gcp
+      sandbox_registry: $REGISTRY
+      staging_registry: $REGISTRY
+      production_registry: $REGISTRY
+      push_to_sandbox: false
+      build_with_buildkit: true
+      build_context: "."
+      # keeper.Dockerfile.dockerignore beside it is read in place of .dockerignore.
+      dockerfile_path: keeper.Dockerfile
+      source_labels_enabled: true
+      enable_kaniko_cache: false
+      enable_signing: false
+      enable_sbom: false
+      build_args_enabled: true
+      build_args: "CHAIN=$KEEPER_CHAIN"
+
+# Reads both images back from the registry to prove the pushes landed, and
+# exports what the rest of the flow consumes, under the names build-image.sh and
+# build-keeper-image.sh write to out/images/: TEE_IMAGE and EXPECTED_CODE_HASH
+# for the upload scripts and allow-tee-version, KEEPER_IMAGE_DIGEST for a server
+# to pin. The code hash is the image's config digest — what Confidential Space
+# reports as image_id — which the component does not expose, so it is read from
+# the pushed manifest here.
+record-images:
+  stage: publish
+  extends: .gcp-wif-pipeliner-base
+  image:
+    name: $PIPELINER_IMAGE
+    entrypoint: [""]
+  rules:
+    - if: $CI_COMMIT_TAG
+  needs:
+    - release-images-extension-tee
+    - release-images-keeper
+  variables:
+    GOOGLE_APPLICATION_CREDENTIALS: $CI_PROJECT_DIR/.gcp
+  before_script:
+    - !reference [.gcp-wif-pipeliner-fetch-token, script]
+    # Read-only, so the unprotected identity is both sufficient and the lesser grant.
+    - gcp_wif_auth --is_protected false
+  script:
+    - TAG="$CI_COMMIT_TAG"
+    - DIGEST="$(gcloud artifacts docker images describe "$IMAGE:$TAG" --format='value(image_summary.digest)')"
+    - 'case "$DIGEST" in sha256:?*) ;; *) echo "bad digest for $IMAGE:$TAG [$DIGEST]"; exit 1 ;; esac'
+    - KEEPER_DIGEST="$(gcloud artifacts docker images describe "$KEEPER_IMAGE:$TAG" --format='value(image_summary.digest)')"
+    - 'case "$KEEPER_DIGEST" in sha256:?*) ;; *) echo "bad digest for $KEEPER_IMAGE:$TAG [$KEEPER_DIGEST]"; exit 1 ;; esac'
+    # The manifest by digest, so what is read is what was just checked above. The
+    # component builds without attestations, so it is a single image manifest
+    # and not an index; anything else fails the shape check below.
+    - REGISTRY_HOST="${REGISTRY%%/*}"
+    - REPO_PATH="${IMAGE#*/}"
+    - >-
+      CONFIG_DIGEST="$(curl -fsSL
+      -H "Authorization: Bearer $(gcloud auth print-access-token)"
+      -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+      "https://$REGISTRY_HOST/v2/$REPO_PATH/manifests/$DIGEST" | jq -r '.config.digest // empty')"
+    - 'case "$CONFIG_DIGEST" in sha256:?*) ;; *) echo "no config digest in the manifest of $IMAGE@$DIGEST [$CONFIG_DIGEST]"; exit 1 ;; esac'
+    # Absolute path: artifact paths are relative to CI_PROJECT_DIR, not cwd.
+    - |
+      {
+        echo "TEE_IMAGE=$IMAGE@$DIGEST"
+        echo "EXPECTED_CODE_HASH=0x${CONFIG_DIGEST#sha256:}"
+        echo "IMAGE_COMMIT=$CI_COMMIT_SHA"
+        echo "KEEPER_IMAGE=$KEEPER_IMAGE:$TAG"
+        echo "KEEPER_IMAGE_DIGEST=$KEEPER_IMAGE@$KEEPER_DIGEST"
+        echo "KEEPER_IMAGE_CHAIN=$KEEPER_CHAIN"
+      } | tee "$CI_PROJECT_DIR/deploy.env"
+  artifacts:
+    reports:
+      dotenv: deploy.env
+
+# Rebuilds the extension cold and compares code hashes, so REPRODUCIBILITY.md's
+# claim is actually checked. Deliberately not a component job: it verifies the
+# component's output instead of trusting it, and a fresh pod means no BuildKit
+# cache. It compares the config digest — the code hash — rather than the
+# manifest digest, since that is what gets registered, and so needs no push.
+# The buildctl invocation mirrors release-image.sh's BuildKit path exactly — same
+# frontend, the one build arg, rewrite-timestamp, no source labels — because any
+# extra option would change the digest and make the comparison meaningless.
+# Manual and allow_failure: on NOT REPRODUCIBLE, do not register that code hash
+# on chain.
+verify-reproducible:
+  stage: publish
+  image:
+    name: $BUILDKIT_IMAGE
+    entrypoint: [""]
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: manual
+      allow_failure: true
+  needs:
+    - job: record-images
+      artifacts: true
+  variables:
+    # Rootless BuildKit: flarenetwork's runners permit no privileged containers.
+    # The annotation selects the buildkit-rootless AppArmor profile they preload.
+    BUILDKITD_FLAGS: "--oci-worker-no-process-sandbox"
+    KUBERNETES_POD_ANNOTATIONS_1: "container.apparmor.security.beta.kubernetes.io/build=localhost/buildkit-rootless"
+  script:
+    # record-images' dotenv sets EXPECTED_CODE_HASH to the published hash.
+    - PUBLISHED="$EXPECTED_CODE_HASH"
+    # The image runs as uid 1000 over a checkout the root runner helper made.
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+    - SOURCE_DATE_EPOCH="$(git -C "$CI_PROJECT_DIR" log -1 --format=%ct)"
+    - >-
+      buildctl-daemonless.sh build
+      --frontend dockerfile.v0
+      --local "context=$CI_PROJECT_DIR"
+      --local "dockerfile=$CI_PROJECT_DIR"
+      --opt filename=Dockerfile
+      --opt "build-arg:SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+      --metadata-file /tmp/verify-metadata.json
+      --output "type=image,name=verify,push=false,rewrite-timestamp=true"
+    - CONFIG_DIGEST="$(jq -r '."containerimage.config.digest" // empty' /tmp/verify-metadata.json)"
+    - 'case "$CONFIG_DIGEST" in sha256:?*) ;; *) echo "buildkit metadata has no containerimage.config.digest"; exit 1 ;; esac'
+    - REBUILT="0x${CONFIG_DIGEST#sha256:}"
+    # Quoted: a bare `: ` in a plain YAML scalar parses as a mapping, not a string.
+    - 'echo "published: $PUBLISHED ($TEE_IMAGE)"'
+    - 'echo "rebuilt:   $REBUILT"'
+    - test -n "$PUBLISHED" && test "$PUBLISHED" = "$REBUILT" || { echo "NOT REPRODUCIBLE — code hashes differ"; exit 1; }
