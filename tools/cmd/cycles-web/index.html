@@ -1,0 +1,1607 @@
+<title>USDX Keeper Cycles</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --plane: #f9f9f7;
+    --surface: #fcfcfb;
+    --surface-sunk: #f2f1ed;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --hairline: rgba(11, 11, 11, 0.10);
+    --series: #2a78d6;
+    --series-soft: rgba(42, 120, 214, 0.13);
+    --good: #0ca30c;
+    --warning: #fab219;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+    --neutral: #898781;
+    --good-ink: #006300;
+    --shadow: 0 1px 2px rgba(11, 11, 11, 0.05);
+    --radius: 10px;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    color-scheme: light;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --plane: #0d0d0d;
+      --surface: #1a1a19;
+      --surface-sunk: #131312;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --ink-muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --hairline: rgba(255, 255, 255, 0.10);
+      --series: #3987e5;
+      --series-soft: rgba(57, 135, 229, 0.18);
+      --good-ink: #0ca30c;
+      --shadow: none;
+      color-scheme: dark;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --plane: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-sunk: #131312;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --ink-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --hairline: rgba(255, 255, 255, 0.10);
+    --series: #3987e5;
+    --series-soft: rgba(57, 135, 229, 0.18);
+    --good-ink: #0ca30c;
+    --shadow: none;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding-inline: 16px;
+    padding-block: 6px 56px;
+  }
+
+  /* ---------- header ---------- */
+
+  header.top {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 30;
+    background: var(--plane);
+    background: color-mix(in srgb, var(--plane) 92%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .top-inner {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding-inline: 16px;
+    padding-block: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 14px;
+  }
+
+  h1 {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+
+  .feed-id {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-muted);
+  }
+
+  .top-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  button, .btn {
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ink-2);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 7px;
+    padding: 6px 11px;
+    cursor: pointer;
+  }
+
+  button:hover, .btn:hover { color: var(--ink); border-color: var(--axis); }
+  button:focus-visible, .btn:focus-visible, select:focus-visible, input:focus-visible,
+  .tick:focus-visible, .row-head:focus-visible {
+    outline: 2px solid var(--series);
+    outline-offset: 2px;
+  }
+
+  .source-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-2);
+    background: var(--surface-sunk);
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    padding: 4px 10px;
+  }
+
+  .source-chip .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--series);
+  }
+
+  .source-chip.is-live .dot {
+    background: var(--good);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .source-chip.is-live .dot { animation: none; }
+  }
+
+  .parse-note {
+    margin: 16px 2px 0;
+    font-size: 12px;
+    color: var(--ink-muted);
+  }
+
+  .parse-note.is-bad { color: var(--critical); }
+
+  /* ---------- tiles ---------- */
+
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }
+
+  .tile {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    padding: 14px 15px 13px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .tile.is-alert { border-color: color-mix(in srgb, var(--critical) 55%, var(--hairline)); }
+  .tile.is-warn { border-color: color-mix(in srgb, var(--warning) 55%, var(--hairline)); }
+
+  .tile-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+
+  .tile-value {
+    font-family: var(--mono);
+    font-size: 26px;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin-top: 4px;
+  }
+
+  .tile-value .unit {
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--ink-2);
+    margin-left: 3px;
+  }
+
+  .tile-sub {
+    font-size: 12px;
+    color: var(--ink-2);
+    margin-top: 3px;
+  }
+
+  .tile-sub .status-word { font-weight: 600; }
+  .status-good { color: var(--good-ink); }
+  .status-warning { color: #8a6000; }
+  .status-serious { color: #a2462a; }
+  .status-critical { color: var(--critical); }
+
+  :root[data-theme="dark"] .status-warning { color: var(--warning); }
+  :root[data-theme="dark"] .status-serious { color: var(--serious); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .status-warning { color: var(--warning); }
+    :root:not([data-theme="light"]) .status-serious { color: var(--serious); }
+  }
+
+  .spark { display: block; margin-top: 8px; width: 100%; height: 30px; }
+
+  /* ---------- cards ---------- */
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    margin-top: 12px;
+    box-shadow: var(--shadow);
+  }
+
+  .card-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 12px;
+    padding: 14px 15px 0;
+  }
+
+  .card-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .card-note {
+    font-size: 12px;
+    color: var(--ink-muted);
+  }
+
+  .card-body { padding: 8px 15px 15px; }
+
+  .chart-holder { position: relative; }
+
+  svg.chart { display: block; width: 100%; height: 232px; touch-action: pan-y; }
+
+  /* SVG presentation attributes do not resolve var(), so every chart colour is
+     applied through these classes instead. */
+  .chart .grid-line { stroke: var(--grid); stroke-width: 1; shape-rendering: crispEdges; }
+  .chart .axis-text { fill: var(--ink-muted); font: 400 10.5px var(--mono); }
+  .chart .note-text { fill: var(--ink-muted); font: 400 13px var(--sans); }
+  .chart .series-area { fill: var(--series-soft); }
+  .chart .series-line { fill: none; stroke: var(--series); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .end-dot { fill: var(--series); stroke: var(--surface); stroke-width: 2; }
+  .chart .end-label { fill: var(--ink); font: 500 12px var(--mono); }
+  .chart .crosshair { stroke: var(--axis); stroke-width: 1; stroke-dasharray: 3 3; }
+  .spark .spark-line { fill: none; stroke: var(--series); stroke-width: 2; stroke-linejoin: round; }
+
+  .tip {
+    position: absolute;
+    z-index: 12;
+    pointer-events: none;
+    min-width: 140px;
+    background: var(--surface);
+    border: 1px solid var(--axis);
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-shadow: 0 4px 14px rgba(11, 11, 11, 0.16);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .tip-time {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-muted);
+    display: block;
+  }
+
+  .tip-value {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 500;
+    display: block;
+    margin-top: 2px;
+  }
+
+  .tip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-2);
+  }
+
+  /* ---------- outcome strip ---------- */
+
+  .strip-scroll { overflow-x: auto; }
+
+  .strip-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 5px 0;
+  }
+
+  .strip-name {
+    flex: 0 0 auto;
+    min-width: 96px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .ticks { display: flex; gap: 2px; align-items: stretch; }
+
+  .tick {
+    width: 9px;
+    height: 26px;
+    border: 0;
+    border-radius: 2px;
+    padding: 0;
+    cursor: pointer;
+    background: var(--neutral);
+  }
+
+  .tick[data-cls="good"] { background: var(--good); }
+  .tick[data-cls="warning"] { background: var(--warning); }
+  .tick[data-cls="serious"] { background: var(--serious); }
+  .tick[data-cls="critical"] { background: var(--critical); }
+  .tick[data-cls="neutral"] { background: var(--neutral); }
+  .tick.is-dim { opacity: 0.22; }
+  .tick:hover { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    padding: 10px 0 2px;
+  }
+
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--ink-2);
+    background: none;
+    border: 0;
+    padding: 2px 0;
+    cursor: pointer;
+  }
+
+  .legend-item.is-off { opacity: 0.4; }
+
+  .swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex: 0 0 auto;
+  }
+
+  .legend-count {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-muted);
+  }
+
+  /* ---------- filters ---------- */
+
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  select, input[type="search"] {
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 7px;
+    padding: 6px 10px;
+  }
+
+  input[type="search"] { flex: 1 1 200px; min-width: 0; font-family: var(--mono); font-size: 12px; }
+
+  .filters label {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+
+  /* ---------- table ---------- */
+
+  .table-scroll { overflow-x: auto; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+
+  th {
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    padding: 0 10px 8px 0;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--grid);
+  }
+
+  th.num, td.num { text-align: right; }
+
+  td {
+    padding: 7px 10px 7px 0;
+    border-bottom: 1px solid var(--grid);
+    vertical-align: top;
+    white-space: nowrap;
+  }
+
+  tbody tr.row-head { cursor: pointer; }
+  tbody tr.row-head:hover td { background: var(--surface-sunk); }
+
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    border-radius: 999px;
+    padding: 2px 9px 2px 7px;
+    border: 1px solid var(--hairline);
+    background: var(--surface-sunk);
+    color: var(--ink);
+  }
+
+  .pill .swatch { width: 7px; height: 7px; border-radius: 50%; }
+
+  a { color: var(--series); text-decoration-color: color-mix(in srgb, var(--series) 40%, transparent); }
+  a:hover { text-decoration-thickness: 2px; }
+
+  .detail-cell { padding: 0 0 12px; border-bottom: 1px solid var(--grid); }
+
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+    background: var(--surface-sunk);
+    border-radius: 8px;
+    padding: 12px 14px;
+    white-space: normal;
+  }
+
+  .detail-block h4 {
+    margin: 0 0 4px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+
+  .kv {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    padding: 1px 0;
+  }
+
+  .kv span:first-child { color: var(--ink-2); }
+  .kv span:last-child { text-align: right; word-break: break-all; }
+
+  pre.raw {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--ink-2);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    padding: 8px 10px;
+    max-height: 210px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .empty {
+    padding: 28px 4px;
+    text-align: center;
+    color: var(--ink-muted);
+    font-size: 13px;
+  }
+
+  footer.legalese {
+    margin-top: 22px;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--ink-muted);
+  }
+
+  footer.legalese code {
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  @media (max-width: 560px) {
+    .tile-value { font-size: 22px; }
+    .strip-name { min-width: 0; flex-basis: 74px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<header class="top">
+  <div class="top-inner">
+    <h1>USDX Keeper Cycles</h1>
+    <span class="feed-id">USDX/USD &middot; category 0x21 &middot; Coston</span>
+    <div class="top-actions">
+      <span class="source-chip" id="source-chip"><span class="dot"></span><span id="source-name">connecting</span></span>
+      <button type="button" id="theme-toggle" aria-label="Switch between light and dark">Theme</button>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <p class="parse-note" id="parse-note"></p>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2 class="card-title">Price on the feed</h2>
+      <span class="card-note" id="price-note"></span>
+    </div>
+    <div class="card-body">
+      <div class="chart-holder" id="price-holder">
+        <svg class="chart" id="price-chart" role="img" aria-label="Median signed USDX/USD price per cycle over time"></svg>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2 class="card-title">Cycle outcomes</h2>
+      <span class="card-note">One tick per cycle, oldest first. Click a tick to open its row; click a legend entry to filter.</span>
+    </div>
+    <div class="card-body">
+      <div class="strip-scroll" id="strip"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+  </section>
+
+  <div class="filters">
+    <label for="keeper">Keeper</label>
+    <select id="keeper"><option value="all">all</option></select>
+    <label for="q">Find</label>
+    <input type="search" id="q" placeholder="outcome, tx, machine, guard, detail">
+    <button type="button" id="reset">Reset filters</button>
+  </div>
+
+  <section class="card">
+    <div class="card-head">
+      <h2 class="card-title">Cycles</h2>
+      <span class="card-note" id="table-note"></span>
+    </div>
+    <div class="card-body">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Cycle started</th>
+              <th>Keeper</th>
+              <th>Outcome</th>
+              <th class="num">Price</th>
+              <th class="num">Machines</th>
+              <th class="num">Took</th>
+              <th>Submit</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty" hidden>No cycle matches these filters.</div>
+    </div>
+  </section>
+
+  <footer class="legalese">
+    Served beside a keeper, this page reads <code>/cycles.jsonl</code> &mdash; the file that keeper is
+    writing &mdash; every 30 seconds, and renders it in your browser; nothing is sent anywhere else.
+    Each machine signs a value at its own scale and the keeper records it rendered, so a price here is
+    the number the machine signed; the page reads the precision off the record rather than assuming
+    it. The store takes the median of the contributors, which is what the chart plots, and each
+    contributor's own price stays in the row's detail. <code>race_lost</code> counts as a
+    cycle that advanced the feed &mdash; with two or more keepers exactly one submission wins, and the rest
+    are correct behaviour, not failures. Feed age is measured from <code>storeObservedAtAfter</code>, the
+    store's own reading at the end of a cycle. Transaction and address links go to the Coston explorer.
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var EXPLORER = "https://coston-explorer.flare.network";
+
+  // How many decimal places to render a price at. The record does not carry the
+  // feed's decimals, but it does not need to: the keeper writes each price
+  // through Update.Price(), which renders the signed int32 at its own scale
+  // ("1.00000000" at the extension's PriceDecimals = 8). So the strings say what
+  // scale they are at, and this is read back off them rather than assumed.
+  var priceDP = 8;
+  var MIN_BALANCE_COINS = 5;      // keeper -minBalance default
+  var FRESH_MIN = 20;             // minutes: two cycles at the default interval
+  var STALE_MIN = 45;
+
+  // Outcome vocabulary, straight from tools/pkg/keeper/record.go. "cls" is the
+  // status colour; "note" is why an operator should or should not care.
+  var OUTCOMES = {
+    accepted:         { cls: "good",     note: "our submission landed" },
+    race_lost:        { cls: "good",     note: "another keeper won the cycle — a success" },
+    dry_run:          { cls: "neutral",  note: "passed the rehearsal, stopped before submitting" },
+    request_skipped:  { cls: "neutral",  note: "machines would not have signed, so no fee was paid" },
+    stale_submission: { cls: "warning",  note: "we relayed something older than the store held" },
+    no_result:        { cls: "warning",  note: "the poll expired with no terminal status" },
+    not_mined:        { cls: "warning",  note: "submitted, no receipt inside the deadline" },
+    rejected:         { cls: "serious",  note: "the store refused the report" },
+    extension_failed: { cls: "serious",  note: "the extension declined to publish" },
+    request_failed:   { cls: "critical", note: "the trigger transaction never landed" },
+    internal:         { cls: "critical", note: "the keeper itself failed" }
+  };
+  var CLS_ORDER = { good: 0, neutral: 1, warning: 2, serious: 3, critical: 4 };
+
+  // Set when the page is served beside the keeper's records file by cycles-web.
+  var live = { ok: false, error: "", timer: null, lastAt: null, signature: "" };
+
+  var state = {
+    records: [],
+    hiddenOutcomes: {},
+    keeper: "all",
+    q: "",
+    open: {}
+  };
+
+  // ---------- helpers ----------
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function short(addr) {
+    if (!addr) return "";
+    return addr.length > 14 ? addr.slice(0, 6) + "…" + addr.slice(-4) : addr;
+  }
+  function clock(d) {
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+  function stamp(d) {
+    return d.toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+  function duration(ms) {
+    if (ms == null) return "—";
+    var s = Math.abs(ms) / 1000;
+    if (s < 90) return s.toFixed(1) + " s";
+    var m = s / 60;
+    if (m < 90) return m.toFixed(0) + " min";
+    var h = m / 60;
+    if (h < 48) return h.toFixed(1) + " h";
+    return (h / 24).toFixed(1) + " d";
+  }
+  function weiToCoins(wei) {
+    if (!wei) return null;
+    var big;
+    try { big = BigInt(wei); } catch (e) { return null; }
+    var whole = big / 1000000000000000000n;
+    var frac = big % 1000000000000000000n;
+    if (frac < 0n) frac = -frac;
+    return Number(whole) + Number(frac) / 1e18;
+  }
+  function median(nums) {
+    if (!nums.length) return null;
+    var s = nums.slice().sort(function (a, b) { return a - b; });
+    var mid = s.length >> 1;
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  }
+  function cycleFrom(r) {
+    var t = Date.parse(r.cycleStartedAt);
+    return isNaN(t) ? null : new Date(t);
+  }
+  function priceOf(r) {
+    if (!r.prices || !r.prices.length) return null;
+    var nums = [];
+    for (var i = 0; i < r.prices.length; i++) {
+      var v = Number(r.prices[i]);
+      if (isFinite(v)) nums.push(v);
+    }
+    return median(nums);
+  }
+
+  // The scale the machines signed at, read off the strings themselves, so a feed
+  // with different decimals renders at its own precision rather than at one
+  // hard-coded here.
+  function readPriceDP(records) {
+    for (var i = records.length - 1; i >= 0; i--) {
+      var p = records[i].prices;
+      if (!p || !p.length) continue;
+      var s = String(p[0]);
+      var dot = s.indexOf(".");
+      return dot < 0 ? 0 : s.length - dot - 1;
+    }
+    return 8;
+  }
+
+  function formatPrice(v) {
+    return v == null ? "—" : v.toFixed(priceDP);
+  }
+  function outcomeMeta(o) {
+    return OUTCOMES[o] || { cls: "neutral", note: "outcome not in the keeper's vocabulary" };
+  }
+  function advanced(o) { return o === "accepted" || o === "race_lost"; }
+  function txLink(hash) {
+    var a = el("a", "mono", short(hash));
+    a.href = EXPLORER + "/tx/" + hash;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.title = hash;
+    return a;
+  }
+  function addrLink(addr) {
+    var a = el("a", "mono", short(addr));
+    a.href = EXPLORER + "/address/" + addr;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.title = addr;
+    return a;
+  }
+
+  // ---------- parsing ----------
+
+  // Records are one JSON object per line, but they share stdout with the keeper's
+  // own log lines, and `kubectl logs --timestamps` prefixes every line. So: find
+  // the first brace, try from there, and keep only what looks like a cycle.
+  function parseRecords(text) {
+    var lines = String(text).split(/\r?\n/);
+    var out = [], skipped = 0, malformed = 0;
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var at = line.indexOf("{");
+      if (at < 0) { if (line.trim()) skipped++; continue; }
+      var obj;
+      try { obj = JSON.parse(line.slice(at)); } catch (e) { malformed++; continue; }
+      if (obj && typeof obj === "object" && obj.outcome && obj.cycleStartedAt) out.push(obj);
+      else malformed++;
+    }
+    out.sort(function (a, b) { return Date.parse(a.cycleStartedAt) - Date.parse(b.cycleStartedAt); });
+    return { records: out, skipped: skipped, malformed: malformed };
+  }
+
+  function setRecords(result) {
+    state.records = result.records;
+    state.open = {};
+    paintStatus();
+    render();
+  }
+
+  // The header says whether the page is reading the keeper's file and when it
+  // last managed to. There is nothing else to report: one source, and it is
+  // either answering or it is not.
+  function paintStatus() {
+    var chip = $("source-chip");
+    chip.className = "source-chip" + (live.ok ? " is-live" : "");
+    $("source-name").textContent = live.ok
+      ? "live · " + (live.lastAt ? clock(live.lastAt) : "connecting")
+      : "not connected";
+
+    var note = $("parse-note");
+    if (!live.ok) {
+      note.hidden = false;
+      note.className = "parse-note is-bad";
+      note.textContent = "Cannot read /cycles.jsonl" + (live.error ? " (" + live.error + ")" : "")
+        + ". Retrying every 30 seconds.";
+    } else if (!state.records.length) {
+      note.hidden = false;
+      note.className = "parse-note";
+      note.textContent = "Connected to the keeper's records file, which has no cycles in it yet. "
+        + "The first one lands when the first cycle ends.";
+    } else {
+      note.hidden = true;
+    }
+  }
+
+  // ---------- derived ----------
+
+  function filtered() {
+    var q = state.q.trim().toLowerCase();
+    return state.records.filter(function (r) {
+      if (state.hiddenOutcomes[r.outcome]) return false;
+      if (state.keeper !== "all" && r.keeperId !== state.keeper) return false;
+      if (!q) return true;
+      return JSON.stringify(r).toLowerCase().indexOf(q) >= 0;
+    });
+  }
+
+  function metrics(rows) {
+    var m = {
+      count: rows.length,
+      advanced: 0,
+      latest: null,
+      newestStoreObserved: 0,
+      balance: null,
+      balanceSeries: [],
+      nonceGap: 0,
+      dropped: 0,
+      burnPerCycle: null,
+      intervalMs: null
+    };
+    var gaps = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (advanced(r.outcome)) m.advanced++;
+      if (r.storeObservedAtAfter && r.storeObservedAtAfter > m.newestStoreObserved) {
+        m.newestStoreObserved = r.storeObservedAtAfter;
+      }
+      if (r.pendingNonceGap && r.pendingNonceGap > m.nonceGap) m.nonceGap = r.pendingNonceGap;
+      if (r.dropped) m.dropped += r.dropped.length;
+      var coins = weiToCoins(r.keeperBalance);
+      if (coins != null) {
+        var t = cycleFrom(r);
+        if (t) m.balanceSeries.push({ t: t.getTime(), v: coins });
+      }
+      if (i > 0) {
+        var prev = cycleFrom(rows[i - 1]), cur = cycleFrom(r);
+        if (prev && cur) gaps.push(cur.getTime() - prev.getTime());
+      }
+    }
+    m.latest = rows.length ? rows[rows.length - 1] : null;
+    if (m.balanceSeries.length) m.balance = m.balanceSeries[m.balanceSeries.length - 1].v;
+    if (gaps.length) m.intervalMs = median(gaps);
+    // Burn is measured, not assumed: the drop across the window over the cycles
+    // that one keeper actually paid for.
+    if (m.balanceSeries.length > 3) {
+      var first = m.balanceSeries[0], last = m.balanceSeries[m.balanceSeries.length - 1];
+      var spent = first.v - last.v;
+      var n = m.balanceSeries.length - 1;
+      if (spent > 0 && n > 0) m.burnPerCycle = spent / n;
+    }
+    return m;
+  }
+
+  // ---------- tiles ----------
+
+  function tile(label, value, unit, subNode, flag) {
+    var t = el("div", "tile" + (flag ? " is-" + flag : ""));
+    t.appendChild(el("div", "tile-label", label));
+    var v = el("div", "tile-value", value);
+    if (unit) {
+      var u = el("span", "unit", unit);
+      v.appendChild(u);
+    }
+    t.appendChild(v);
+    if (subNode) {
+      var s = el("div", "tile-sub");
+      if (typeof subNode === "string") s.textContent = subNode;
+      else s.appendChild(subNode);
+      t.appendChild(s);
+    }
+    return t;
+  }
+
+  function statusWord(text, cls) {
+    var w = el("span", "status-word status-" + cls, text);
+    return w;
+  }
+
+  function renderTiles(rows, m) {
+    var host = $("tiles");
+    host.textContent = "";
+    if (!rows.length) return;
+
+    // 1. Feed age — the one signal that matters to a consumer of the feed.
+    var ageMin = null, ageFlag = "", ageSub;
+    if (m.newestStoreObserved) {
+      ageMin = (Date.now() / 1000 - m.newestStoreObserved) / 60;
+      var word = ageMin <= FRESH_MIN ? ["fresh", "good"] : ageMin <= STALE_MIN ? ["ageing", "warning"] : ["stale", "critical"];
+      ageFlag = ageMin <= FRESH_MIN ? "" : ageMin <= STALE_MIN ? "warn" : "alert";
+      ageSub = el("span");
+      ageSub.appendChild(statusWord(word[0], word[1]));
+      ageSub.appendChild(document.createTextNode(
+        " · stored " + stamp(new Date(m.newestStoreObserved * 1000))));
+    }
+    host.appendChild(tile(
+      "Feed age now",
+      ageMin == null ? "—" : (ageMin < 90 ? ageMin.toFixed(0) : (ageMin / 60).toFixed(1)),
+      ageMin == null ? "" : (ageMin < 90 ? "min" : "h"),
+      ageSub || "no storeObservedAtAfter in the window",
+      ageFlag));
+
+    // 2. Advanced share — accepted plus race_lost, exactly as Outcome.Advanced().
+    var pct = m.count ? (m.advanced / m.count) * 100 : 0;
+    host.appendChild(tile(
+      "Cycles that advanced",
+      pct.toFixed(0), "%",
+      m.advanced + " of " + m.count + " left a newer price on chain",
+      pct >= 90 ? "" : pct >= 70 ? "warn" : "alert"));
+
+    // 3. Gas, with the measured burn rather than a quoted figure.
+    var balSub = el("span");
+    if (m.balance == null) {
+      balSub.textContent = "no keeperBalance in the window";
+    } else if (m.burnPerCycle && m.intervalMs) {
+      var cyclesLeft = (m.balance - MIN_BALANCE_COINS) / m.burnPerCycle;
+      var msLeft = cyclesLeft * m.intervalMs;
+      balSub.appendChild(document.createTextNode(m.burnPerCycle.toFixed(3) + " per cycle · "));
+      if (cyclesLeft > 0) {
+        balSub.appendChild(document.createTextNode("hits the " + MIN_BALANCE_COINS + " floor in " + duration(msLeft)));
+      } else {
+        balSub.appendChild(statusWord("below the " + MIN_BALANCE_COINS + " floor", "critical"));
+      }
+    } else {
+      balSub.textContent = "floor is " + MIN_BALANCE_COINS + " by default";
+    }
+    var balFlag = m.balance == null ? "" : m.balance <= MIN_BALANCE_COINS ? "alert"
+      : (m.burnPerCycle && m.balance - MIN_BALANCE_COINS < m.burnPerCycle * 24) ? "warn" : "";
+    var balTile = tile("Keeper balance", m.balance == null ? "—" : m.balance.toFixed(2), "CFLR", balSub, balFlag);
+    if (m.balanceSeries.length > 1) balTile.appendChild(sparkline(m.balanceSeries));
+    host.appendChild(balTile);
+
+    // 4. What the monitoring doc says to alert on, other than feed age.
+    var stuck = m.nonceGap > 0;
+    var trouble = el("span");
+    if (stuck) {
+      trouble.appendChild(statusWord("a transaction is stuck", "critical"));
+      trouble.appendChild(document.createTextNode(" · everything behind its nonce waits"));
+    } else if (m.dropped) {
+      trouble.textContent = m.dropped + " answer" + (m.dropped === 1 ? "" : "s") + " dropped by a store guard";
+    } else {
+      trouble.textContent = "no stuck transactions, no dropped answers";
+    }
+    host.appendChild(tile(
+      "Pending nonce gap",
+      String(m.nonceGap), m.nonceGap === 1 ? "tx" : "txs",
+      trouble,
+      stuck ? "alert" : ""));
+  }
+
+  function sparkline(series) {
+    var w = 220, h = 30, pad = 2;
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "spark");
+    svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("aria-hidden", "true");
+    var vals = series.map(function (p) { return p.v; });
+    var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+    if (hi - lo < 1e-9) { hi = lo + 1; }
+    var pts = series.map(function (p, i) {
+      var x = pad + (i / Math.max(1, series.length - 1)) * (w - pad * 2);
+      var y = h - pad - ((p.v - lo) / (hi - lo)) * (h - pad * 2);
+      return x.toFixed(2) + "," + y.toFixed(2);
+    });
+    var line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    line.setAttribute("points", pts.join(" "));
+    line.setAttribute("class", "spark-line");
+    line.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(line);
+    return svg;
+  }
+
+  // ---------- price chart ----------
+
+  function renderPrice(rows) {
+    var svg = $("price-chart");
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    var holder = $("price-holder");
+    var old = holder.querySelector(".tip");
+    if (old) old.remove();
+
+    var pts = [];
+    for (var i = 0; i < rows.length; i++) {
+      var p = priceOf(rows[i]);
+      var t = rows[i].observedAt ? new Date(rows[i].observedAt * 1000) : cycleFrom(rows[i]);
+      if (p != null && t) pts.push({ t: t.getTime(), v: p, r: rows[i] });
+    }
+    pts.sort(function (a, b) { return a.t - b.t; });
+
+    var note = $("price-note");
+    if (pts.length < 2) {
+      note.textContent = pts.length ? "one priced cycle in this window" : "no priced cycles in this window";
+      var msg = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      msg.setAttribute("x", "50%");
+      msg.setAttribute("y", "50%");
+      msg.setAttribute("text-anchor", "middle");
+      msg.setAttribute("class", "note-text");
+      msg.textContent = "A cycle carries prices only when machines answered.";
+      svg.appendChild(msg);
+      return;
+    }
+
+    var lo = pts[0].v, hi = pts[0].v;
+    for (var j = 1; j < pts.length; j++) {
+      if (pts[j].v < lo) lo = pts[j].v;
+      if (pts[j].v > hi) hi = pts[j].v;
+    }
+    var span = hi - lo;
+    if (span < 1e-8) { lo -= 0.00005; hi += 0.00005; span = hi - lo; }
+    else { lo -= span * 0.18; hi += span * 0.18; span = hi - lo; }
+
+    note.textContent = pts.length + " priced cycles · median of the contributors, the value the store takes";
+
+    // The viewBox is the element's real pixel box, so one unit is one pixel and
+    // nothing is stretched — a non-uniform scale would distort the tick text.
+    var W = Math.max(320, Math.round(holder.clientWidth || 900));
+    var H = 232, L = 66, R = 14, T = 14, B = 26;
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.removeAttribute("preserveAspectRatio");
+    var t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+    var tSpan = Math.max(1, t1 - t0);
+    function X(t) { return L + ((t - t0) / tSpan) * (W - L - R); }
+    function Y(v) { return T + (1 - (v - lo) / span) * (H - T - B); }
+
+    function svgEl(name, attrs) {
+      var n = document.createElementNS("http://www.w3.org/2000/svg", name);
+      for (var k in attrs) if (Object.prototype.hasOwnProperty.call(attrs, k)) n.setAttribute(k, attrs[k]);
+      return n;
+    }
+
+    // grid + value ticks
+    for (var g = 0; g <= 4; g++) {
+      var v = lo + (span * g) / 4;
+      var y = Y(v);
+      svg.appendChild(svgEl("line", {
+        x1: L, y1: y.toFixed(1), x2: W - R, y2: y.toFixed(1), "class": "grid-line"
+      }));
+      var lab = svgEl("text", {
+        x: L - 8, y: (y + 3.5).toFixed(1), "text-anchor": "end", "class": "axis-text"
+      });
+      lab.textContent = formatPrice(v);
+      svg.appendChild(lab);
+    }
+
+    // time ticks
+    var steps = Math.min(5, pts.length);
+    for (var s = 0; s < steps; s++) {
+      var tt = t0 + (tSpan * s) / Math.max(1, steps - 1);
+      var x = X(tt);
+      var anchor = s === 0 ? "start" : s === steps - 1 ? "end" : "middle";
+      var tl = svgEl("text", {
+        x: x.toFixed(1), y: H - 8, "text-anchor": anchor, "class": "axis-text"
+      });
+      tl.textContent = clock(new Date(tt)).replace(/:\d\d$/, "");
+      svg.appendChild(tl);
+    }
+
+    var d = "", area = "";
+    for (var k = 0; k < pts.length; k++) {
+      var px = X(pts[k].t).toFixed(2), py = Y(pts[k].v).toFixed(2);
+      d += (k ? " L" : "M") + px + " " + py;
+    }
+    area = d + " L" + X(pts[pts.length - 1].t).toFixed(2) + " " + (H - B) + " L" + X(pts[0].t).toFixed(2) + " " + (H - B) + " Z";
+    svg.appendChild(svgEl("path", { d: area, "class": "series-area" }));
+    svg.appendChild(svgEl("path", { d: d, "class": "series-line" }));
+
+    // emphasised endpoint, direct-labelled
+    var last = pts[pts.length - 1];
+    svg.appendChild(svgEl("circle", {
+      cx: X(last.t).toFixed(2), cy: Y(last.v).toFixed(2), r: "4", "class": "end-dot"
+    }));
+    var endLab = svgEl("text", {
+      x: (X(last.t) - 8).toFixed(1), y: (Y(last.v) - 10).toFixed(1),
+      "text-anchor": "end", "class": "end-label"
+    });
+    endLab.textContent = formatPrice(last.v);
+    svg.appendChild(endLab);
+
+    // crosshair + tooltip
+    var cross = svgEl("line", { x1: 0, y1: T, x2: 0, y2: H - B, "class": "crosshair", opacity: "0" });
+    var dot = svgEl("circle", { cx: 0, cy: 0, r: "4.5", "class": "end-dot", opacity: "0" });
+    svg.appendChild(cross);
+    svg.appendChild(dot);
+
+    var tip = el("div", "tip");
+    tip.hidden = true;
+    holder.appendChild(tip);
+
+    function nearest(clientX) {
+      var box = svg.getBoundingClientRect();
+      var ratio = (clientX - box.left) / box.width;
+      var target = t0 + ratio * tSpan;
+      var best = 0, bestD = Infinity;
+      for (var i2 = 0; i2 < pts.length; i2++) {
+        var dd = Math.abs(pts[i2].t - target);
+        if (dd < bestD) { bestD = dd; best = i2; }
+      }
+      return best;
+    }
+
+    function move(ev) {
+      var idx = nearest(ev.clientX);
+      var p = pts[idx];
+      var box = svg.getBoundingClientRect();
+      var xPix = (X(p.t) / W) * box.width;
+      cross.setAttribute("x1", X(p.t).toFixed(2));
+      cross.setAttribute("x2", X(p.t).toFixed(2));
+      cross.setAttribute("opacity", "1");
+      dot.setAttribute("cx", X(p.t).toFixed(2));
+      dot.setAttribute("cy", Y(p.v).toFixed(2));
+      dot.setAttribute("opacity", "1");
+      tip.textContent = "";
+      var time = el("span", "tip-time", stamp(new Date(p.t)) + " · observedAt");
+      var val = el("span", "tip-value", formatPrice(p.v));
+      tip.appendChild(time);
+      tip.appendChild(val);
+      var meta = outcomeMeta(p.r.outcome);
+      var row1 = el("div", "tip-row");
+      row1.appendChild(el("span", null, "outcome"));
+      row1.appendChild(el("span", "status-" + (meta.cls === "neutral" ? "" : meta.cls), p.r.outcome));
+      tip.appendChild(row1);
+      var row2 = el("div", "tip-row");
+      row2.appendChild(el("span", null, "machines"));
+      row2.appendChild(el("span", null, String((p.r.teeIds || []).length)));
+      tip.appendChild(row2);
+      tip.hidden = false;
+      var tw = tip.offsetWidth;
+      var left = Math.max(0, Math.min(box.width - tw, xPix - tw / 2));
+      tip.style.left = left + "px";
+      tip.style.top = "6px";
+    }
+
+    function leave() {
+      cross.setAttribute("opacity", "0");
+      dot.setAttribute("opacity", "0");
+      tip.hidden = true;
+    }
+
+    svg.addEventListener("mousemove", move);
+    svg.addEventListener("mouseleave", leave);
+    svg.addEventListener("touchstart", function (e) { if (e.touches[0]) move(e.touches[0]); }, { passive: true });
+    svg.addEventListener("touchmove", function (e) { if (e.touches[0]) move(e.touches[0]); }, { passive: true });
+    svg.addEventListener("touchend", leave);
+  }
+
+  // ---------- outcome strip ----------
+
+  function renderStrip(rows, all) {
+    var host = $("strip");
+    host.textContent = "";
+    var byKeeper = {};
+    var order = [];
+    for (var i = 0; i < all.length; i++) {
+      var id = all[i].keeperId || "(unnamed)";
+      if (!byKeeper[id]) { byKeeper[id] = []; order.push(id); }
+      byKeeper[id].push(all[i]);
+    }
+    var visible = {};
+    for (var v = 0; v < rows.length; v++) visible[rows[v].cycleStartedAt + "|" + rows[v].keeperId] = true;
+
+    for (var k = 0; k < order.length; k++) {
+      var name = order[k];
+      var row = el("div", "strip-row");
+      var label = el("div", "strip-name", name);
+      label.title = name;
+      row.appendChild(label);
+      var ticks = el("div", "ticks");
+      var list = byKeeper[name];
+      for (var j = 0; j < list.length; j++) {
+        var r = list[j];
+        var meta = outcomeMeta(r.outcome);
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "tick" + (visible[r.cycleStartedAt + "|" + r.keeperId] ? "" : " is-dim");
+        b.setAttribute("data-cls", meta.cls);
+        var t = cycleFrom(r);
+        b.title = (t ? stamp(t) : "?") + "  —  " + r.outcome + "\n" + meta.note;
+        b.setAttribute("aria-label", b.title);
+        (function (rec) {
+          b.addEventListener("click", function () {
+            state.q = rec.cycleStartedAt;
+            $("q").value = rec.cycleStartedAt;
+            render();
+            var first = document.querySelector("#rows tr.row-head");
+            if (first) first.scrollIntoView({ block: "center", behavior: "smooth" });
+          });
+        })(r);
+        ticks.appendChild(b);
+      }
+      row.appendChild(ticks);
+      host.appendChild(row);
+    }
+
+    // legend, with counts, doubling as the outcome filter
+    var counts = {};
+    for (var c = 0; c < all.length; c++) counts[all[c].outcome] = (counts[all[c].outcome] || 0) + 1;
+    var seen = Object.keys(counts).sort(function (a, b) {
+      var ca = CLS_ORDER[outcomeMeta(a).cls], cb = CLS_ORDER[outcomeMeta(b).cls];
+      return ca === cb ? counts[b] - counts[a] : ca - cb;
+    });
+    var legend = $("legend");
+    legend.textContent = "";
+    for (var s = 0; s < seen.length; s++) {
+      (function (name) {
+        var meta = outcomeMeta(name);
+        var item = document.createElement("button");
+        item.type = "button";
+        item.className = "legend-item" + (state.hiddenOutcomes[name] ? " is-off" : "");
+        var sw = el("span", "swatch");
+        sw.style.background = meta.cls === "neutral" ? "var(--neutral)" : "var(--" + meta.cls + ")";
+        item.appendChild(sw);
+        item.appendChild(el("span", "mono", name));
+        item.appendChild(el("span", "legend-count", String(counts[name])));
+        item.title = meta.note;
+        item.setAttribute("aria-pressed", state.hiddenOutcomes[name] ? "false" : "true");
+        item.addEventListener("click", function () {
+          if (state.hiddenOutcomes[name]) delete state.hiddenOutcomes[name];
+          else state.hiddenOutcomes[name] = true;
+          render();
+        });
+        legend.appendChild(item);
+      })(seen[s]);
+    }
+  }
+
+  // ---------- table ----------
+
+  function detailRow(r) {
+    var tr = el("tr");
+    var td = el("td", "detail-cell");
+    td.colSpan = 8;
+    var grid = el("div", "detail-grid");
+
+    function block(title, pairs) {
+      var b = el("div", "detail-block");
+      b.appendChild(el("h4", null, title));
+      for (var i = 0; i < pairs.length; i++) {
+        if (pairs[i][1] == null || pairs[i][1] === "") continue;
+        var kv = el("div", "kv");
+        kv.appendChild(el("span", null, pairs[i][0]));
+        var right = el("span");
+        if (pairs[i][1] instanceof Node) right.appendChild(pairs[i][1]);
+        else right.textContent = pairs[i][1];
+        kv.appendChild(right);
+        b.appendChild(kv);
+      }
+      return b;
+    }
+
+    grid.appendChild(block("Cycle", [
+      ["instructionId", r.instructionId],
+      ["requestTx", r.requestTxStatus],
+      ["resultStatus", r.resultStatus],
+      ["errorClass", r.errorClass],
+      ["proxy", r.proxy],
+      ["observedAt", r.observedAt ? stamp(new Date(r.observedAt * 1000)) : null],
+      ["storeObservedAtAfter", r.storeObservedAtAfter ? stamp(new Date(r.storeObservedAtAfter * 1000)) : null],
+      ["keeperBalance", weiToCoins(r.keeperBalance) == null ? null : weiToCoins(r.keeperBalance).toFixed(4) + " CFLR"],
+      ["pendingNonceGap", r.pendingNonceGap ? String(r.pendingNonceGap) : null]
+    ]));
+
+    var contributors = el("div", "detail-block");
+    contributors.appendChild(el("h4", null, "Contributors and their prices"));
+    if (r.teeIds && r.teeIds.length) {
+      for (var i = 0; i < r.teeIds.length; i++) {
+        var kv = el("div", "kv");
+        var left = el("span");
+        left.appendChild(addrLink(r.teeIds[i]));
+        kv.appendChild(left);
+        kv.appendChild(el("span", null, (r.prices && r.prices[i]) ? r.prices[i] : "—"));
+        contributors.appendChild(kv);
+      }
+    } else {
+      contributors.appendChild(el("div", "kv", "no usable report this cycle"));
+    }
+    grid.appendChild(contributors);
+
+    if (r.dropped && r.dropped.length) {
+      var dr = el("div", "detail-block");
+      dr.appendChild(el("h4", null, "Dropped answers"));
+      for (var d = 0; d < r.dropped.length; d++) {
+        var item = r.dropped[d];
+        var kv2 = el("div", "kv");
+        var l2 = el("span");
+        if (item.teeId) l2.appendChild(addrLink(item.teeId));
+        else l2.textContent = "recovered to nobody";
+        kv2.appendChild(l2);
+        kv2.appendChild(el("span", null, item.guard + (item.detail ? " · " + item.detail : "")));
+        dr.appendChild(kv2);
+      }
+      grid.appendChild(dr);
+    }
+
+    if (r.sourceHealth) {
+      var sh = el("div", "detail-block");
+      sh.appendChild(el("h4", null, "Source health, per machine"));
+      var machines = Object.keys(r.sourceHealth);
+      if (!machines.length) sh.appendChild(el("div", "kv", "no machine could be asked"));
+      for (var mi = 0; mi < machines.length; mi++) {
+        var sources = r.sourceHealth[machines[mi]] || {};
+        var keys = Object.keys(sources);
+        var bad = [];
+        for (var si = 0; si < keys.length; si++) {
+          if (sources[keys[si]] !== "ok") bad.push(keys[si]);
+        }
+        // A machine reports every endpoint it reads — a dozen or more. Listing
+        // them all buries the one that is not ok, which is the only one worth
+        // reading, so the healthy ones are counted rather than named.
+        var head = el("div", "kv");
+        var hl = el("span");
+        hl.appendChild(addrLink(machines[mi]));
+        head.appendChild(hl);
+        head.appendChild(el("span", "status-" + (bad.length ? "warning" : "good"),
+          keys.length ? (keys.length - bad.length) + "/" + keys.length + " ok" : "nothing observed yet"));
+        sh.appendChild(head);
+        for (var bi = 0; bi < bad.length; bi++) {
+          var kv3 = el("div", "kv");
+          kv3.appendChild(el("span", null, "  " + bad[bi]));
+          kv3.appendChild(el("span", null, sources[bad[bi]]));
+          sh.appendChild(kv3);
+        }
+      }
+      grid.appendChild(sh);
+    }
+
+    var rawBlock = el("div", "detail-block");
+    rawBlock.appendChild(el("h4", null, "Record"));
+    var pre = el("pre", "raw", JSON.stringify(r, null, 2));
+    rawBlock.appendChild(pre);
+    grid.appendChild(rawBlock);
+
+    td.appendChild(grid);
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function renderTable(rows) {
+    var body = $("rows");
+    body.textContent = "";
+    $("empty").hidden = rows.length > 0;
+    $("table-note").textContent = rows.length
+      ? rows.length + " shown, newest first"
+      : "";
+
+    var ordered = rows.slice().reverse();
+    for (var i = 0; i < ordered.length; i++) {
+      (function (r) {
+        var key = r.cycleStartedAt + "|" + r.keeperId;
+        var meta = outcomeMeta(r.outcome);
+        var tr = el("tr", "row-head");
+        tr.tabIndex = 0;
+        tr.setAttribute("aria-expanded", state.open[key] ? "true" : "false");
+
+        var t = cycleFrom(r);
+        tr.appendChild(el("td", "mono", t ? stamp(t) : "—"));
+        tr.appendChild(el("td", "mono", r.keeperId || "—"));
+
+        var tdOut = el("td");
+        var pill = el("span", "pill");
+        var sw = el("span", "swatch");
+        sw.style.background = meta.cls === "neutral" ? "var(--neutral)" : "var(--" + meta.cls + ")";
+        pill.appendChild(sw);
+        pill.appendChild(document.createTextNode(r.outcome));
+        pill.title = meta.note;
+        tdOut.appendChild(pill);
+        tr.appendChild(tdOut);
+
+        var p = priceOf(r);
+        tr.appendChild(el("td", "mono num", formatPrice(p)));
+        tr.appendChild(el("td", "mono num", String((r.teeIds || []).length)));
+        tr.appendChild(el("td", "mono num", duration(r.durationMs)));
+
+        var tdTx = el("td", "mono");
+        if (r.submitTx) tdTx.appendChild(txLink(r.submitTx));
+        else tdTx.textContent = r.submitOutcome || "—";
+        tr.appendChild(tdTx);
+
+        var tdDetail = el("td");
+        tdDetail.style.whiteSpace = "normal";
+        tdDetail.textContent = r.detail || meta.note;
+        tr.appendChild(tdDetail);
+
+        body.appendChild(tr);
+
+        var detail = null;
+        function toggle() {
+          if (state.open[key]) {
+            delete state.open[key];
+            if (detail && detail.parentNode) detail.parentNode.removeChild(detail);
+            detail = null;
+            tr.setAttribute("aria-expanded", "false");
+          } else {
+            state.open[key] = true;
+            detail = detailRow(r);
+            tr.parentNode.insertBefore(detail, tr.nextSibling);
+            tr.setAttribute("aria-expanded", "true");
+          }
+        }
+        tr.addEventListener("click", toggle);
+        tr.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+        });
+        if (state.open[key]) {
+          detail = detailRow(r);
+          body.appendChild(detail);
+          tr.setAttribute("aria-expanded", "true");
+        }
+      })(ordered[i]);
+    }
+  }
+
+  // ---------- render ----------
+
+  function render() {
+    var all = state.records;
+    var rows = filtered();
+    priceDP = readPriceDP(all);
+    var m = metrics(rows);
+
+    // keeper select
+    var sel = $("keeper");
+    var ids = {};
+    for (var i = 0; i < all.length; i++) ids[all[i].keeperId || "(unnamed)"] = true;
+    var names = Object.keys(ids).sort();
+    var want = "all|" + names.join("|");
+    if (sel.getAttribute("data-built") !== want) {
+      sel.textContent = "";
+      var optAll = el("option", null, "all");
+      optAll.value = "all";
+      sel.appendChild(optAll);
+      for (var n = 0; n < names.length; n++) {
+        var o = el("option", null, names[n]);
+        o.value = names[n];
+        sel.appendChild(o);
+      }
+      sel.setAttribute("data-built", want);
+      sel.value = state.keeper;
+    }
+
+    renderTiles(rows, m);
+    renderPrice(rows);
+    renderStrip(rows, all);
+    renderTable(rows);
+  }
+
+  // ---------- input wiring ----------
+
+  $("keeper").addEventListener("change", function () { state.keeper = this.value; render(); });
+  $("q").addEventListener("input", function () { state.q = this.value; render(); });
+  $("reset").addEventListener("click", function () {
+    state.hiddenOutcomes = {};
+    state.keeper = "all";
+    state.q = "";
+    $("q").value = "";
+    $("keeper").value = "all";
+    render();
+  });
+
+  $("theme-toggle").addEventListener("click", function () {
+    var root = document.documentElement;
+    var now = root.getAttribute("data-theme");
+    var dark = now ? now === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+    root.setAttribute("data-theme", dark ? "light" : "dark");
+    render();
+  });
+
+  window.addEventListener("resize", function () {
+    clearTimeout(window.__usdxResize);
+    window.__usdxResize = setTimeout(render, 150);
+  });
+
+  // ---------- live ----------
+
+  // Served by cycles-web, the page sits next to the keeper's -records file at
+  // /cycles.jsonl and polls it. That is the only way records reach this page:
+  // it is an operator's view of one keeper, served beside it, not a viewer for
+  // files from elsewhere.
+  function signature(records) {
+    if (!records.length) return "0";
+    var last = records[records.length - 1];
+    return records.length + "|" + last.keeperId + "|" + last.cycleStartedAt;
+  }
+
+  function pollOnce(first) {
+    return fetch("cycles.jsonl", { cache: "no-store", headers: { "Accept": "application/x-ndjson" } })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        var type = res.headers.get("content-type") || "";
+        // A host with no such file usually answers with the page itself rather
+        // than a 404, and that is not records.
+        if (type.indexOf("html") >= 0) throw new Error("not the records endpoint");
+        return res.text();
+      })
+      .then(function (text) {
+        live.ok = true;
+        live.error = "";
+        live.lastAt = new Date();
+        var parsed = parseRecords(text);
+        var sig = signature(parsed.records);
+        // Re-rendering on every poll would break nothing, but it would move the
+        // table under a reader's cursor twice a minute for no reason. A cycle
+        // lands every ten minutes; the rest of the polls only confirm that.
+        if (first || sig !== live.signature) {
+          live.signature = sig;
+          setRecords(parsed);
+        } else {
+          paintStatus();
+        }
+      })
+      .catch(function (err) {
+        live.ok = false;
+        live.error = err && err.message ? err.message : "no answer";
+        paintStatus();
+      });
+  }
+
+  // The timer runs whatever the first attempt did: a keeper that is rolling out,
+  // or a sidecar that restarted, comes back on its own without a reload.
+  function startPolling() {
+    if (live.timer) return;
+    live.timer = setInterval(function () {
+      if (document.hidden) return;
+      pollOnce(false);
+    }, 30000);
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    // Coming back to the tab should show the current state, not the state it had
+    // when it was hidden.
+    if (!document.hidden) pollOnce(false);
+  });
+
+  // ---------- boot ----------
+
+  function boot() {
+    paintStatus();
+    pollOnce(true);
+    startPolling();
+  }
+
+  boot();
+})();
+</script>
