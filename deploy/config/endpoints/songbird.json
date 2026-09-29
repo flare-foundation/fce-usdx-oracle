@@ -1,0 +1,61 @@
+{
+  "flare": {
+    "threshold": 2,
+    "endpoints": [
+      {
+        "url": "https://flare-api-tracer.flare.network/ext/bc/C/rpc?x-apikey={secret}",
+        "secret": "flare_tracer_key"
+      },
+      {
+        "url": "https://chaotic-weathered-dust.flare-mainnet.quiknode.pro/{secret}/ext/bc/C/rpc/",
+        "secret": "quicknode_flare_key"
+      },
+      {
+        "url": "https://flare.rpc.aflabs.net/ext/bc/C/rpc?x-apikey={secret}",
+        "secret": "aflabs_key"
+      }
+    ]
+  },
+  "ethereum": {
+    "threshold": 2,
+    "endpoints": [
+      {
+        "url": "https://ethereum-api.flare.network"
+      },
+      {
+        "url": "https://wandering-intensive-sunset.ethereum-mainnet.quiknode.pro/{secret}/",
+        "secret": "quicknode_ethereum_key"
+      },
+      {
+        "url": "https://ethereum.rpc.aflabs.net/?x-apikey={secret}",
+        "secret": "aflabs_key"
+      }
+    ]
+  },
+  "songbird": {
+    "threshold": 2,
+    "endpoints": [
+      {
+        "url": "https://songbird-api-tracer.flare.network/ext/bc/C/rpc?x-apikey={secret}",
+        "secret": "songbird_tracer_key"
+      },
+      {
+        "url": "https://songbird.rpc.aflabs.net/ext/bc/C/rpc?x-apikey={secret}",
+        "secret": "aflabs_key"
+      },
+      {
+        "url": "https://songbird-node1.flare.space/ext/bc/C/rpc?apikey={secret}",
+        "secret": "flarespace_songbird_key"
+      }
+    ]
+  },
+  "hex_cash": {
+    "threshold": 1,
+    "endpoints": [
+      {
+        "urlHash": "0x2d6701ff42b8f4495cc3c1916fed9f2ddf54c4354d7b541616ac16f3afeb9955",
+        "secret": "hex_cash_url"
+      }
+    ]
+  }
+}

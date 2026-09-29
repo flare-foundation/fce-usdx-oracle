@@ -1,0 +1,18 @@
+{
+  "backing": {
+    "threshold": 2,
+    "admins": [
+      "0x64E794479273822a8C439363cf68Bc8424756237",
+      "0x3CE531B33344177FF847b59E1694DdC2714b2aa1",
+      "0x867b27dB92AfD0B3c3E1EAC2Be72791829baf8B8"
+    ]
+  },
+  "providers": {
+    "threshold": 2,
+    "admins": [
+      "0x64E794479273822a8C439363cf68Bc8424756237",
+      "0x3CE531B33344177FF847b59E1694DdC2714b2aa1",
+      "0x867b27dB92AfD0B3c3E1EAC2Be72791829baf8B8"
+    ]
+  }
+}
