@@ -103,6 +103,16 @@ func DefaultSupport(AddressesFilePath, chainNodeURL string) (*Support, error) {
 	return SupportWithKey(AddressesFilePath, chainNodeURL, privKey)
 }
 
+// ReadOnlySupport is the support for a command that only reads the chain. It
+// holds no signing key, so it needs none configured: verifying a machine or
+// listing a fleet must work for an admin or a coordinator who is not the
+// extension's owner, on a live chain where there is no dev key to fall back
+// to. A command built on it that tried to transact would dereference the
+// missing key, which is a programming error rather than a configuration one.
+func ReadOnlySupport(AddressesFilePath, chainNodeURL string) (*Support, error) {
+	return SupportWithKey(AddressesFilePath, chainNodeURL, nil)
+}
+
 // SupportWithKey is DefaultSupport for a command that resolves its own signing
 // key. The keeper is the reason it exists: relaying needs no authority, so it
 // must be able to run without the extension owner's key present at all.

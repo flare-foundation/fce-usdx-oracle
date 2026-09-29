@@ -73,7 +73,7 @@ func main() {
 	var feedID [21]byte
 	copy(feedID[:], feedRaw)
 
-	s, err := support.DefaultSupport(*af, *cf)
+	s, err := support.ReadOnlySupport(*af, *cf)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}

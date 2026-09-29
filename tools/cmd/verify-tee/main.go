@@ -138,7 +138,7 @@ func main() {
 		_, _ = fmt.Fprintf(out, "  ---   teeId derived from the attested public key: %s\n", teeID.Hex())
 	}
 
-	s, err := support.DefaultSupport(*af, *cf)
+	s, err := support.ReadOnlySupport(*af, *cf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot reach the chain: %v\n", err)
 		os.Exit(1)
