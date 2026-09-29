@@ -15,7 +15,8 @@
 #       and every value the funded key implies is filled in where the file has
 #       none: INITIAL_OWNER (derived), PROXY_PRIVATE_KEY and DIRECT_API_KEY
 #       (generated), ADMIN_KEY / ADMIN_KEYS (the deployer, plus a generated
-#       second provider admin) and deploy/config/admins/<chain>.json with the
+#       second provider admin; skipped for a chain whose admins file already
+#       exists, whose admins hold their own keys) and deploy/config/admins/<chain>.json with the
 #       matching addresses. Derived values never overwrite what the file has, so
 #       later switches are just `use-chain.sh coston`, and the file stays editable.
 #
@@ -206,8 +207,14 @@ if [[ "$LIVE" == true ]]; then
         fill INITIAL_OWNER "$(cast wallet address --private-key "$DEPLOYER_KEY")"
         fill PROXY_PRIVATE_KEY "$(cast wallet new | awk '/^Private key:/{print $3}')"
         fill DIRECT_API_KEY "$(openssl rand -hex 32)"
-        fill ADMIN_KEY "$DEPLOYER_KEY"
-        fill ADMIN_KEYS "$DEPLOYER_KEY,$(cast wallet new | awk '/^Private key:/{print $3}')"
+        # A chain that already has an admins file has admins of its own, holding
+        # their own keys. Generating provisioning keys here would write keys into
+        # .env that sign nothing the machines accept — the deployer is not one of
+        # them, and a fresh key is nobody's.
+        if [[ ! -f "$PROJECT_DIR/deploy/config/admins/$CHAIN.json" ]]; then
+            fill ADMIN_KEY "$DEPLOYER_KEY"
+            fill ADMIN_KEYS "$DEPLOYER_KEY,$(cast wallet new | awk '/^Private key:/{print $3}')"
+        fi
     fi
     fill LOCAL_MODE false
     fill SIMULATED_TEE true
