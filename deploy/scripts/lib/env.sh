@@ -57,3 +57,16 @@ read_extension_readiness() {
     local root="${PROJECT_DIR:-${REPO_ROOT:?}}"
     ( cd "$root/tools" && go run ./cmd/readiness -extension "${1%/}" -timeout 20s )
 }
+
+# env_var_for is the environment variable a ref's credential is read from:
+# ankr_flare_key → ANKR_FLARE_KEY. Prints nothing for a ref that is not a legal
+# variable name. One definition, so the script that checks a credential and the
+# one that uploads it always read the same variable.
+env_var_for() {
+  local name
+  name="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9_' '_')"
+  case "$name" in
+    [A-Z_]*) printf '%s' "$name" ;;
+    *) printf '' ;;
+  esac
+}

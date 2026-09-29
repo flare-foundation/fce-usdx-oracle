@@ -20,6 +20,12 @@
 #                  SET_ENDPOINTS committed to — publish-local.sh commits from the same
 #                  variables, so on the simulation the two agree by construction.
 #
+# The party holding the credentials need not be a backing admin. With
+# --build-only the run stops after step 2's encryption: it writes each envelope
+# out unsigned, reads no admin key — not even one set in .env — and never
+# contacts the direct channel. A backing admin signs what it writes, and
+# whoever holds the proxy API key submits it.
+#
 # Nothing here touches the chain except to READ it. The credentials are never in a
 # transaction, never on disk in plaintext, and never in argv — every secret is
 # passed to the tools through the environment, because argv is readable by any
@@ -28,6 +34,7 @@
 # Usage:
 #   ./deploy/scripts/upload-hex-key.sh
 #   ./deploy/scripts/upload-hex-key.sh --no-verify    # mocknode only — see step 1
+#   ./deploy/scripts/upload-hex-key.sh --build-only   # encrypt and hand off; sign and submit nothing
 #
 # Configuration is read from .env and the recorded local stack, then from the
 # environment; anything still unset and required is prompted for. Secrets are
@@ -51,10 +58,11 @@ PROJECT_DIR="$REPO_ROOT"
 source "$REPO_ROOT/deploy/scripts/lib/chains.sh"
 source "$REPO_ROOT/deploy/scripts/lib/env.sh"; load_env
 
-VERIFY=true
+VERIFY=true; BUILD_ONLY=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-verify) VERIFY=false; shift ;;
+    --build-only) BUILD_ONLY=true; shift ;;
     *) printf 'unknown argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -132,9 +140,20 @@ fi
 # accepts only the hash given to it. EXPECTED_CODE_HASH pins the upload to that
 # exact build on top; it is optional.
 
-ask_secret ADMIN_KEY      "Backing admin private key (hidden)"
-ask_secret DIRECT_API_KEY "Proxy API key (hidden)"
+# A build-only run reads neither: it signs nothing and sends nothing, so it
+# asks for nothing it would not use.
+if [ "$BUILD_ONLY" = false ]; then
+  ask_secret ADMIN_KEY      "Backing admin private key (hidden)"
+  ask_secret DIRECT_API_KEY "Proxy API key (hidden)"
+fi
 ask_secret SECRET_VALUE   "Hex API key (hidden)"
+
+# Named by machine as well as ref: a build-only run for each machine in turn
+# must not overwrite the envelope an earlier one left waiting for its signers.
+# RUN_TEE is the machine the envelopes are bound to, read back from the first.
+OUT_DIR="${OUT_DIR:-$REPO_ROOT/deploy/envelopes}"
+RUN_TEE=""
+handoff_file() { printf '%s/%s-%s.json' "$OUT_DIR" "$RUN_TEE" "$1"; }
 
 # The URL goes first: the machine accepts the blob only against the published
 # commitment, so a mismatch surfaces before the key is spent on a machine that
@@ -191,7 +210,11 @@ n=0
 for REF in "${REFS[@]}"; do
   n=$((n + 1))
   envelope="$WORKDIR/$REF.json"
-  step "2/3  Uploading $REF ($n of ${#REFS[@]})"
+  if [ "$BUILD_ONLY" = true ]; then
+    step "2/3  Building $REF ($n of ${#REFS[@]})"
+  else
+    step "2/3  Uploading $REF ($n of ${#REFS[@]})"
+  fi
 
   # build reads the public key from /info and encrypts the credential to it. -tee
   # is what ties that key to the attestation checked above: build refuses outright
@@ -210,6 +233,15 @@ for REF in "${REFS[@]}"; do
       -version "$VERSION" ${ATTESTED_TEE_ID:+-tee "$ATTESTED_TEE_ID"} \
       -out "$envelope" ) \
     || die "could not build the envelope for $REF"
+  RUN_TEE="$(jq -r '.teeId' "$envelope")"
+
+  if [ "$BUILD_ONLY" = true ]; then
+    mkdir -p "$OUT_DIR"
+    cp "$envelope" "$(handoff_file "$REF")"
+    echo
+    echo "  kept at $(handoff_file "$REF")"
+    continue
+  fi
 
   # One signature: the backing set governs both refs at 1-of-1. Every other
   # credential falls under the providers set and needs two distinct signers.
@@ -231,6 +263,22 @@ for REF in "${REFS[@]}"; do
     die "$REF was not applied — the enclave reports one reason for every failure, so check its logs"
   fi
 done
+
+if [ "$BUILD_ONLY" = true ]; then
+  step "3/3  Handing off"
+  for REF in "${REFS[@]}"; do
+    echo "  wait  $REF needs signers — $(handoff_file "$REF")"
+  done
+  echo
+  echo "Built for machine $RUN_TEE. Nothing was signed and nothing was sent."
+  echo
+  echo "Send each file to the backing admins — it holds ciphertext only. Before the"
+  echo "expiry printed above, each of them runs, with their own key in ADMIN_KEY:"
+  echo "    cd tools && go run ./cmd/send-secret sign -in <file>"
+  echo "and once a file carries the threshold, whoever holds the proxy API key:"
+  echo "    cd tools && go run ./cmd/send-secret submit -in <file> -p $PROXY_URL"
+  exit 0
+fi
 
 step "3/3  Confirming from the machine's readiness report"
 # Each submit above already waited for the machine's verdict; this asks the

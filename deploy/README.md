@@ -326,6 +326,7 @@ indexer enforces a ten-day minimum), or name an indexer of your own in `.env` (`
 | `oracle-cycle.sh -tee <a,b> [--dry-run] [--loop 10m]` | One keeper cycle against the deployed stack: request a feed update, collect the results, submit. |
 | `oracle-watch.sh [--interval 2m] [--records file] [--once]` | Follow the machine's own account of itself: every interval read the state in `/info` and the signed readiness report over `/direct`, append one JSON sample, print each change in a source's health, the last error class, the ready and would-sign flags. Reads only; no fee. |
 | `oracle-status.sh [--store 0x…]` | Read what the oracle publishes: store, feed, machine registration, extension health. |
+| `check-endpoints.sh <endpoints.json>` | Try every provider in an endpoint configuration with the credential that would be installed for it, each read from its ref's variable in capitals set in front of the command (`.env` is not loaded), and compare the chain each answers with the one its group reads. Keys reach curl on stdin and are never printed; exits non-zero on any failure. |
 | `upload-rpc-keys.sh`, `upload-hex-key.sh` | Provision credentials into the enclave over the direct channel, signed by the admins — the published set, so publish `SET_ADMINS` first. The Hex one reads `HEX_API_KEY`, `HEX_CASH_URL` and `HEX_CASH_SALT` from `.env`. With `SIMULATED_TEE=true` the expected code hash defaults to tee-node's test constant; a real machine's is given out of band. |
 
 Not part of the chain flow — development, tests and pins:

@@ -60,3 +60,6 @@ deploy/config/indexer/*/indexer-config.toml
 # .env); the tracked reference is admins/coston.example.json.
 deploy/config/admins/coston.json
 deploy/config/admins/coston_local.json
+
+# Envelopes waiting for admin signatures: ciphertext, but per-machine and short-lived.
+/deploy/envelopes/

@@ -14,6 +14,12 @@
 #     second admin to sign and submit. It holds ciphertext only — the plaintext
 #     credential never leaves the shell that read it.
 #
+# Whoever holds the credential need not be an admin. With --build-only the run
+# verifies the machine, encrypts each credential to it and writes the envelopes
+# out unsigned, reading no admin key at all — not even one set in .env — and
+# never contacting the direct channel. The admins sign what it writes, and
+# whoever holds the proxy API key submits it.
+#
 # Which refs are uploaded comes from the MACHINE, not from a file here: its
 # signed readiness report names missingSecretRefs, computed from the endpoint
 # configuration it actually applied. A ref exists because a provider URL named
@@ -24,6 +30,7 @@
 #   ./deploy/scripts/upload-rpc-keys.sh --all             # every ref in the config — i.e. rotate
 #   ./deploy/scripts/upload-rpc-keys.sh --refs ankr_eth_key,alchemy_flare_key
 #   ./deploy/scripts/upload-rpc-keys.sh --threshold 3     # match a 3-of-N providers set
+#   ./deploy/scripts/upload-rpc-keys.sh --build-only --refs ankr_eth_key  # coordinator: encrypt, sign nothing
 #   ./deploy/scripts/upload-rpc-keys.sh --no-verify       # mocknode only — see below
 #
 # Everything can be preset in the environment to run unattended; anything unset
@@ -35,7 +42,7 @@
 #   EXPECTED_CODE_HASH optional: pins the upload to one build on top of the registry's
 #                      acceptance (a SIMULATED_TEE=true machine defaults to tee-node's test constant)
 #   ADMIN_KEYS         provider admin private keys held HERE, comma-separated
-#                      (ADMIN_KEY is accepted as the single-key form)
+#                      (ADMIN_KEY is accepted as the single-key form); ignored with --build-only
 #   DIRECT_API_KEY     proxy API key for the direct channel
 #   <REF_IN_CAPS>      the credential for each ref — ANKR_FLARE_KEY for
 #                      ankr_flare_key, and so on
@@ -49,10 +56,16 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # lib/env.sh reads PROJECT_DIR; the two names are the same directory.
 PROJECT_DIR="$REPO_ROOT"
 
-# hex_api_key is the other script's job: it is the one ref the backing set
-# governs, and signing it with provider keys would produce an envelope no
-# machine can accept.
-BACKING_REF="hex_api_key"
+# The backing credentials are the other script's: the backing set governs them,
+# and signing them with provider keys would produce an envelope no machine can
+# accept. The list is protocol.BackingRefs in pkg/protocol, which is what the
+# enclave routes to the backing set.
+BACKING_REFS="hex_api_key hex_cash_url"
+is_backing_ref() {
+  local b
+  for b in $BACKING_REFS; do [ "$1" = "$b" ] && return 0; done
+  return 1
+}
 
 # How many signatures to collect before submitting.
 #
@@ -74,12 +87,13 @@ for tool in jq xxd curl; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
 done
 
-REFS_ARG=""; ALL=false; VERIFY=true
+REFS_ARG=""; ALL=false; VERIFY=true; BUILD_ONLY=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --refs) [ $# -ge 2 ] || die "--refs needs a comma-separated list"
             REFS_ARG="$2"; shift 2 ;;
     --all)  ALL=true; shift ;;
+    --build-only) BUILD_ONLY=true; shift ;;
     --threshold) [ $# -ge 2 ] || die "--threshold needs a number"
             PROVIDER_FLOOR="$2"; shift 2 ;;
     # For a local mocknode, which has no attestation to check and no registration
@@ -92,6 +106,13 @@ done
 
 # Envelopes that get submitted here are temporary; one that is handed off is
 # written to OUT_DIR instead, and outlives this process by design.
+#
+# Named by machine as well as ref: a coordinator builds for every machine in
+# turn before anyone signs, and the second machine's envelope must not overwrite
+# the first's. RUN_TEE is the machine this run's envelopes are bound to, read
+# back from the first one built.
+RUN_TEE=""
+handoff_file() { printf '%s/%s-%s.json' "$OUT_DIR" "$RUN_TEE" "$1"; }
 WORKDIR="$(mktemp -d)"
 BIN_DIR="$WORKDIR/bin"
 cleanup() { rm -rf "$WORKDIR"; }
@@ -121,18 +142,6 @@ ask_secret() {
   [ -n "$reply" ] || die "$var is required"
   printf -v "$var" '%s' "$reply"
   export "${var?}"
-}
-
-# envVarFor is the environment variable a ref's credential is read from:
-# ankr_flare_key → ANKR_FLARE_KEY. Returns nothing for a ref that is not a legal
-# variable name, so the caller falls back to prompting by ref instead.
-envVarFor() {
-  local name
-  name="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9_' '_')"
-  case "$name" in
-    [A-Z_]*) printf '%s' "$name" ;;
-    *) printf '' ;;
-  esac
 }
 
 # readMachineReport asks the machine for its signed readiness report
@@ -178,9 +187,15 @@ liveEndpointsHash() {
 
 echo "=== USDX oracle — upload the RPC provider credentials ==="
 echo
-echo "You will need: the proxy URL, at least one provider admin private key, the"
-echo "credential for each ref, and — only if you hold enough keys to submit — the"
-echo "proxy API key. EXPECTED_CODE_HASH, if set, pins the upload to that build."
+if [ "$BUILD_ONLY" = true ]; then
+  echo "Building only: the proxy URL and the credential for each ref are all this run"
+  echo "needs. It signs nothing and submits nothing; the envelopes it writes go to the"
+  echo "admins. EXPECTED_CODE_HASH, if set, pins the encryption to that build."
+else
+  echo "You will need: the proxy URL, at least one provider admin private key, the"
+  echo "credential for each ref, and — only if you hold enough keys to submit — the"
+  echo "proxy API key. EXPECTED_CODE_HASH, if set, pins the upload to that build."
+fi
 echo
 
 # The machine's proxy and the /direct key default from .env, as in
@@ -200,30 +215,40 @@ fi
 # As in upload-hex-key.sh: the registry vouches for the build, EXPECTED_CODE_HASH
 # pins one on top and is optional.
 
-# ADMIN_KEY is what send-secret itself reads, so a single-key operator can use
-# the same variable for both scripts.
-if [ -z "${ADMIN_KEYS:-}" ]; then
-  if [ -n "${ADMIN_KEY:-}" ]; then
-    ADMIN_KEYS="$ADMIN_KEY"
+# Optional throughout: only a submit needs it, and asking the machine which refs
+# it is missing. Set to empty when absent so the reads below survive set -u.
+: "${DIRECT_API_KEY:=}"
+
+if [ "$BUILD_ONLY" = true ]; then
+  # Emptied rather than left unread: .env may name admin keys, and a coordinator
+  # run must not sign with them just because they happen to be there.
+  ADMIN_KEYS=()
+else
+  # ADMIN_KEY is what send-secret itself reads, so a single-key operator can use
+  # the same variable for both scripts.
+  if [ -z "${ADMIN_KEYS:-}" ]; then
+    if [ -n "${ADMIN_KEY:-}" ]; then
+      ADMIN_KEYS="$ADMIN_KEY"
+    else
+      ask_secret ADMIN_KEYS "Provider admin private key(s), comma-separated (hidden)"
+    fi
+  fi
+
+  OLD_IFS="$IFS"; IFS=','; read -r -a ADMIN_KEYS <<< "$ADMIN_KEYS"; IFS="$OLD_IFS"
+  [ "${#ADMIN_KEYS[@]}" -gt 0 ] || die "no admin key given — pass --build-only to encrypt without signing"
+
+  # Only whoever submits needs the proxy API key, and an admin holding fewer keys
+  # than the threshold will only ever hand off. Asked here rather than at the
+  # submit itself so nobody is hunting for a key while the freshness window runs.
+  if [ "${#ADMIN_KEYS[@]}" -ge "$PROVIDER_FLOOR" ]; then
+    ask_secret DIRECT_API_KEY "Proxy API key (hidden)"
   else
-    ask_secret ADMIN_KEYS "Provider admin private key(s), comma-separated (hidden)"
+    echo "Holding ${#ADMIN_KEYS[@]} of the $PROVIDER_FLOOR signatures needed, so this run will hand"
+    echo "the envelopes off rather than submit them. No proxy API key required."
   fi
 fi
 
-OLD_IFS="$IFS"; IFS=','; read -r -a ADMIN_KEYS <<< "$ADMIN_KEYS"; IFS="$OLD_IFS"
-[ "${#ADMIN_KEYS[@]}" -gt 0 ] || die "no admin key given"
-
-# Only whoever submits needs the proxy API key, and an admin holding fewer keys
-# than the threshold will only ever hand off. Asked here rather than at the
-# submit itself so nobody is hunting for a key while the freshness window runs.
-if [ "${#ADMIN_KEYS[@]}" -ge "$PROVIDER_FLOOR" ]; then
-  ask_secret DIRECT_API_KEY "Proxy API key (hidden)"
-else
-  echo "Holding ${#ADMIN_KEYS[@]} of the $PROVIDER_FLOOR signatures needed, so this run will hand"
-  echo "the envelopes off rather than submit them. No proxy API key required."
-fi
-
-OUT_DIR="${OUT_DIR:-${TMPDIR:-/tmp}/usdx-envelopes}"
+OUT_DIR="${OUT_DIR:-$REPO_ROOT/deploy/envelopes}"
 
 echo
 echo "--- 1/4  Verifying the machine ------------------------------------"
@@ -290,11 +315,11 @@ else
   echo "  every ref the machine still reports missing"
 fi
 
-# The backing credential is the other script's, whichever list it arrived in.
+# The backing credentials are the other script's, whichever list they arrived in.
 FILTERED=()
 for ref in "${REFS[@]:-}"; do
   [ -n "$ref" ] || continue
-  if [ "$ref" = "$BACKING_REF" ]; then
+  if is_backing_ref "$ref"; then
     echo "  skipping $ref — the backing set governs it; use ./deploy/scripts/upload-hex-key.sh"
     continue
   fi
@@ -314,21 +339,25 @@ echo "  → ${REFS[*]}"
 # prompt rather than half way through the fleet's refs.
 echo
 for ref in "${REFS[@]}"; do
-  var="$(envVarFor "$ref")"
+  var="$(env_var_for "$ref")"
   [ -n "$var" ] || die "ref $ref does not map to a legal environment variable name; \
 upload it by hand, from tools/: SECRET_VALUE=… go run ./cmd/send-secret build -ref $ref …"
   ask_secret "$var" "Credential for $ref (hidden, or set $var)"
 done
 
 echo
-echo "--- 3/4  Building, signing and submitting --------------------------"
+if [ "$BUILD_ONLY" = true ]; then
+  echo "--- 3/4  Building -------------------------------------------------"
+else
+  echo "--- 3/4  Building, signing and submitting --------------------------"
+fi
 
 submitted=(); need_signers=(); rejected=(); proxy_refused=()
 for ref in "${REFS[@]}"; do
   echo
   echo "  $ref"
 
-  var="$(envVarFor "$ref")"
+  var="$(env_var_for "$ref")"
   envelope="$WORKDIR/$ref.json"
 
   # Strictly increasing per ref. Wall-clock seconds always increase, and stay
@@ -343,10 +372,11 @@ for ref in "${REFS[@]}"; do
       -version "$version" ${ATTESTED_TEE_ID:+-tee "$ATTESTED_TEE_ID"} \
       -out "$envelope" \
     || die "could not build the envelope for $ref"
+  RUN_TEE="$(jq -r '.teeId' "$envelope")"
 
   # Every key held HERE signs. send-secret refuses a duplicate signer, so a key
   # that already signed is a warning rather than a second useless signature.
-  for key in "${ADMIN_KEYS[@]}"; do
+  for key in "${ADMIN_KEYS[@]:-}"; do
     [ -n "$key" ] || continue
     ADMIN_KEY="$key" "$BIN_DIR/send-secret" sign -in "$envelope" \
       || echo "        (that key did not add a signature)"
@@ -357,11 +387,8 @@ for ref in "${REFS[@]}"; do
   # round trip and a new freshness window.
   keep() {
     mkdir -p "$OUT_DIR"
-    cp "$envelope" "$OUT_DIR/$ref.json"
-    echo "        kept at $OUT_DIR/$ref.json"
-    echo "        Before the expiry printed above, the next admin runs this with"
-    echo "        their own key in ADMIN_KEY:"
-    echo "          (cd tools && go run ./cmd/send-secret sign -in <file> && go run ./cmd/send-secret submit -in <file> -p $PROXY_URL)"
+    cp "$envelope" "$(handoff_file "$ref")"
+    echo "        kept at $(handoff_file "$ref")"
   }
 
   sigs="$(jq -r '.signatures | length' "$envelope")"
@@ -407,7 +434,11 @@ for ref in "${REFS[@]}"; do
 done
 
 echo
-echo "--- 4/4  Confirming ------------------------------------------------"
+if [ "$BUILD_ONLY" = true ]; then
+  echo "--- 4/4  Handing off -----------------------------------------------"
+else
+  echo "--- 4/4  Confirming ------------------------------------------------"
+fi
 echo
 # The machine's own account of itself, not the submit results: an accepted
 # envelope and an installed credential are not the same claim.
@@ -420,7 +451,7 @@ echo
 # for up to two and a half minutes until it no longer lists a submitted ref as
 # missing.
 still_missing=""
-for attempt in $(seq 1 30); do
+[ "${#submitted[@]}" -gt 0 ] && for attempt in $(seq 1 30); do
   if ! readMachineReport; then
     echo "  ?     the machine did not answer its readiness query — the uploads above were not confirmed"
     break
@@ -446,24 +477,24 @@ for ref in "${submitted[@]:-}"; do
 done
 for ref in "${need_signers[@]:-}"; do
   [ -n "$ref" ] || continue
-  echo "  wait  $ref needs another signer — $OUT_DIR/$ref.json"
+  echo "  wait  $ref needs signers — $(handoff_file "$ref")"
 done
 for ref in "${rejected[@]:-}"; do
   [ -n "$ref" ] || continue
-  echo "  FAIL  $ref was refused by the machine — $OUT_DIR/$ref.json"
+  echo "  FAIL  $ref was refused by the machine — $(handoff_file "$ref")"
 done
 for ref in "${proxy_refused[@]:-}"; do
   [ -n "$ref" ] || continue
-  echo "  FAIL  $ref never reached the machine — the proxy refused it, check the proxy API key — $OUT_DIR/$ref.json"
+  echo "  FAIL  $ref never reached the machine — the proxy refused it, check the proxy API key — $(handoff_file "$ref")"
 done
 
 if [ -n "$still_missing" ]; then
   echo
   echo "  still outstanding on this machine:"
   for m in $still_missing; do printf '        %s\n' "$m"; done
-  if printf '%s\n' "$still_missing" | grep -qx "$BACKING_REF"; then
-    echo "        $BACKING_REF is the backing credential — ./deploy/scripts/upload-hex-key.sh"
-  fi
+  for m in $still_missing; do
+    is_backing_ref "$m" && echo "        $m is a backing credential — ./deploy/scripts/upload-hex-key.sh"
+  done
 fi
 
 echo
@@ -473,7 +504,21 @@ echo
 if [ "${#submitted[@]}" -gt 0 ]; then
   echo "Done. What was accepted is installed in this machine only, and only in"
   echo "memory: it is lost on restart and must be uploaded again."
+elif [ "$BUILD_ONLY" = true ]; then
+  echo "Built for machine $RUN_TEE. Nothing was signed and nothing was sent."
 else
   echo "Nothing was installed: every upload above failed. The credentials this"
   echo "machine holds are unchanged."
+fi
+
+# One set of instructions for everything left waiting, whether this run held no
+# key at all or too few: the files hold ciphertext only and may go over any
+# channel, but they expire an hour after they were built.
+if [ "${#need_signers[@]}" -gt 0 ]; then
+  echo
+  echo "Send each waiting file to the providers admins. Before the expiry printed"
+  echo "above, each of them runs, with their own key in ADMIN_KEY:"
+  echo "    cd tools && go run ./cmd/send-secret sign -in <file>"
+  echo "and once a file carries the threshold, whoever holds the proxy API key:"
+  echo "    cd tools && go run ./cmd/send-secret submit -in <file> -p $PROXY_URL"
 fi

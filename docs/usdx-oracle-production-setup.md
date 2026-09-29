@@ -96,6 +96,18 @@ expecting a config the machine is not running:
 cd tools && go run ./cmd/send-endpoints -dry-run -config <ENDPOINTS_JSON>
 ```
 
+Then try every provider with the credential that will be installed for it. Each ref's key goes
+in front of the command under its name in capitals, and each URL must answer with the chain its
+group reads — a wrong key, a wrong parameter name or a URL for another network fails here, before
+it costs a round of admin signatures:
+
+```bash
+AFLABS_KEY=… QUICKNODE_FLARE_KEY=… ./deploy/scripts/check-endpoints.sh <ENDPOINTS_JSON>
+```
+
+Changing a URL after publishing costs another governance publication, so this is the cheap place
+to find out.
+
 Then build the publication, once per machine:
 
 ```bash
@@ -167,6 +179,19 @@ envelope on rather than submitting one the machine will refuse.
 ENDPOINTS_FILE=<ENDPOINTS_JSON> ./deploy/scripts/upload-rpc-keys.sh --threshold 3 --all
 ```
 
+**Or a coordinator who is not an admin.** Whoever holds the credentials need not hold a signing
+key. `--build-only` verifies the machine, encrypts each credential to it and writes the envelopes
+out **unsigned**; it reads no admin key — not even one that `.env` happens to name — and never
+touches the direct channel, so it needs neither the admin keys nor `DIRECT_API_KEY`:
+
+```bash
+ENDPOINTS_FILE=<ENDPOINTS_JSON> ./deploy/scripts/upload-rpc-keys.sh --build-only --all
+```
+
+Run it once per machine, changing `PROXY_URL`. Each file is named `<teeId>-<ref>.json`, so the
+second machine's envelopes sit beside the first's rather than overwriting them while they wait
+for signers. Every admin then signs as B does below, and the last one submits as C does.
+
 `--all` takes the ref list from the endpoints file — every `secret` it names — so the machine is
 never asked what it is missing. Use the file the machine is actually **running**: confirm with
 `send-endpoints -dry-run` that its predicted hash matches `latestEndpointsHash(feedId)`, or the list
@@ -186,7 +211,7 @@ set -a; . ./provisioning.env; set +a; ENDPOINTS_FILE=<ENDPOINTS_JSON> ./deploy/s
 
 It verifies the machine against the chain, encrypts each credential to the attested key, signs
 with whatever keys are in `ADMIN_KEYS`, and writes what it cannot finish to `OUT_DIR` (default
-`$TMPDIR/usdx-envelopes`). Each file holds ciphertext and signatures only — safe to send over any
+`deploy/envelopes/`, which git ignores). Each file holds ciphertext and signatures only — safe to send over any
 channel.
 
 Admin A is not asked for `DIRECT_API_KEY`: holding fewer keys than the threshold, this run can
@@ -212,6 +237,23 @@ cd tools && ADMIN_KEY=<ADMIN_C_KEY> go run ./cmd/send-secret sign -in <ENVELOPE_
 Only the submitter needs `DIRECT_API_KEY`. `send-secret sign` refuses a duplicate signer, so the
 same admin cannot fill two slots of an M-of-N.
 
+Before submitting, check the file carries enough:
+
+```bash
+cd tools && go run ./cmd/send-secret signers -in <ENVELOPE_JSON> -admins <ADMINS_JSON>
+```
+
+It recovers each signature to the address that made it, names any that is not in the set
+governing the ref, and exits non-zero below that set's threshold. The enclave answers a
+shortfall with the same one-line rejection it gives everything else, so this is where a missing
+or mistaken signer is found while the hour is still running.
+
+**Rehearse before the day.** Signing is offline, so each admin can sign a practice envelope in
+advance — any envelope will do, since signing never checks the expiry and a practice file is
+never submitted — and `signers -admins` then shows whether the key each will sign with is the one
+the admins file names. A key that differs recovers to an address outside the set, and is caught
+there rather than in the hour.
+
 Repeat per ref, and per machine. Afterwards the machine should report no missing provider ref:
 
 ```bash
@@ -236,9 +278,17 @@ as the preimage of the commitment the endpoints publication carries; the machine
 cash figure only once it holds both. This is the case the split exists for: they never see an
 RPC credential, and the provider admins never see theirs.
 
-If the Hex key holder is **not** a backing admin, this script does not apply — it signs and
-submits in one pass. Use the three commands directly, keeping the envelope somewhere durable so
-it can be handed over, and remember the one-hour window:
+If the Hex key holder is **not** a backing admin, or the backing set needs more than one
+signature, run it with `--build-only`. It verifies the machine and writes one unsigned envelope
+per credential to `OUT_DIR`, named `<teeId>-<ref>.json`, reading no admin key and never touching
+the direct channel; the backing admins then sign and submit as in step 3:
+
+```bash
+./deploy/scripts/upload-hex-key.sh --build-only
+```
+
+The same can be done by hand with the three commands, keeping the envelope somewhere durable so
+it can be handed over, and remembering the one-hour window:
 
 ```bash
 cd tools && go run ./cmd/verify-tee -p <PROXY_URL> -codeHash <0x…>
