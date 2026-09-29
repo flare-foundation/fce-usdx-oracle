@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/wire/configpayload"
 
+	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/crypto/ecies"
@@ -306,5 +308,62 @@ func TestPrivateURLValidation(t *testing.T) {
 				t.Fatalf("parsed %+v", u)
 			}
 		})
+	}
+}
+
+// signers must count only distinct members of the set that governs the ref, and
+// refuse below the threshold: the enclave answers any shortfall with one
+// indistinguishable rejection, so this is where a missing or mistaken signer is
+// found while the window is still open.
+func TestSignersCountsOnlyDistinctAdminsOfTheGoverningSet(t *testing.T) {
+	dir := t.TempDir()
+	keys := make([]*ecdsa.PrivateKey, 4)
+	addrs := make([]string, 4)
+	for i := range keys {
+		k, err := crypto.GenerateKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys[i], addrs[i] = k, crypto.PubkeyToAddress(k.PublicKey).Hex()
+	}
+	// keys[3] is a stranger: in neither set.
+	admins := filepath.Join(dir, "admins.json")
+	set := map[string]any{"threshold": 2, "admins": addrs[:3]}
+	raw, err := json.Marshal(map[string]any{"backing": set, "providers": set})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(admins, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("the body the admins sign")
+	sign := func(k *ecdsa.PrivateKey) string {
+		sig, err := crypto.Sign(accounts.TextHash(crypto.Keccak256(body)), k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig[64] += 27
+		return "0x" + hex.EncodeToString(sig)
+	}
+	envelope := func(sigs ...string) string {
+		path := filepath.Join(dir, "envelope.json")
+		if err := writeJSON(path, envelopeFile{
+			TeeID: "0x0000000000000000000000000000000000000001", Ref: "aflabs_key",
+			Body: "0x" + hex.EncodeToString(body), Signatures: sigs,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	if err := signers([]string{"-in", envelope(sign(keys[0])), "-admins", admins}); err == nil {
+		t.Error("one admin of a 2-of-3 set was reported as enough")
+	}
+	if err := signers([]string{"-in", envelope(sign(keys[0]), sign(keys[3])), "-admins", admins}); err == nil {
+		t.Error("an admin and a stranger were reported as enough")
+	}
+	if err := signers([]string{"-in", envelope(sign(keys[0]), sign(keys[2])), "-admins", admins}); err != nil {
+		t.Errorf("two distinct admins of a 2-of-3 set were refused: %v", err)
 	}
 }

@@ -6,6 +6,7 @@
 //	send-secret sign    one admin signs the envelope body
 //	send-secret submit  combine the signatures, POST, wait for the machine's verdict
 //	send-secret commit  print the urlHash a SET_ENDPOINTS publishes for the cash URL
+//	send-secret signers list who has signed an envelope, and whether it meets its set's threshold
 //
 // Subcommands because signing involves different people. The unsigned envelope
 // is safe to pass around: the credential inside is already ciphertext only the
@@ -83,6 +84,8 @@ func main() {
 		err = sign(os.Args[2:])
 	case "submit":
 		err = submit(os.Args[2:])
+	case "signers":
+		err = signers(os.Args[2:])
 	default:
 		usage()
 	}
@@ -102,6 +105,7 @@ func usage() {
   send-secret sign   -in env.json [-out env.json]
   send-secret submit -in env.json [-p <proxy>] [-wait <d>] [-extension <url>]
   send-secret commit                      print the urlHash a SET_ENDPOINTS publishes for the cash URL
+  send-secret signers -in env.json [-admins admins.json]   who has signed, and is it enough
 
 Credentials come from the environment, never from a flag: SECRET_VALUE for build,
 HEX_CASH_URL and HEX_CASH_SALT for the cash URL, ADMIN_KEY for sign and
@@ -378,6 +382,111 @@ func sign(args []string) error {
 	// go stale on the first rotation. The machine is the authority.
 	fmt.Printf("signed by %s (%d signature(s) so far)\n", signer.Hex(), len(f.Signatures))
 	return nil
+}
+
+// --- signers ---
+
+// signers recovers every signature on an envelope to the address that made it,
+// offline. With -admins it names each one against the set that governs the
+// envelope's ref and says whether the distinct admins reach that set's
+// threshold, which is the question to settle before a submit spends the window:
+// the enclave answers every shortfall with the same one-line rejection. The
+// same check serves a rehearsal, where each admin signs a practice envelope and
+// the recovered address shows whether the key they will sign with is the one
+// the admins file names.
+//
+// It reports on the signatures the file carries; what the body commits to is
+// read from the file as it stands.
+func signers(args []string) error {
+	fs := flag.NewFlagSet("send-secret signers", flag.ContinueOnError)
+	in := fs.String("in", "envelope.json", "envelope file")
+	adminsPath := fs.String("admins", "",
+		"the published admins file (deploy/config/admins/<chain>.json); checks each signer against it")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var f envelopeFile
+	if err := readJSON(*in, &f); err != nil {
+		return err
+	}
+	body, err := hexBytes(f.Body)
+	if err != nil {
+		return errors.Errorf("envelope body is not hex: %s", err)
+	}
+	role := protocol.AdminPolicy().RoleFor(f.Ref)
+
+	var set map[common.Address]bool
+	threshold := 0
+	if *adminsPath != "" {
+		admins, t, err := readAdminSet(*adminsPath, role)
+		if err != nil {
+			return err
+		}
+		set, threshold = admins, t
+	}
+
+	fmt.Printf("ref %s on machine %s — governed by the %s set\n", f.Ref, f.TeeID, role)
+	seen := map[common.Address]bool{}
+	for i, s := range f.Signatures {
+		raw, err := hexBytes(s)
+		signer, ok := common.Address{}, false
+		if err == nil {
+			signer, ok = eip191.Recover(body, raw)
+		}
+		switch {
+		case !ok:
+			fmt.Printf("  %d  does not recover — not a signature over this envelope\n", i+1)
+		case set == nil:
+			fmt.Printf("  %d  %s\n", i+1, signer.Hex())
+		case !set[signer]:
+			fmt.Printf("  %d  %s  NOT in the %s set\n", i+1, signer.Hex(), role)
+		case seen[signer]:
+			fmt.Printf("  %d  %s  admin, but already counted\n", i+1, signer.Hex())
+		default:
+			fmt.Printf("  %d  %s  admin\n", i+1, signer.Hex())
+			seen[signer] = true
+		}
+	}
+
+	if set == nil {
+		fmt.Printf("%d signature(s); pass -admins to check them against the published set\n", len(f.Signatures))
+		return nil
+	}
+	fmt.Printf("%d distinct %s admin(s) of the %d needed\n", len(seen), role, threshold)
+	if len(seen) < threshold {
+		return errors.Errorf("not enough: %d more distinct %s admin signature(s) before this can be submitted",
+			threshold-len(seen), role)
+	}
+	return nil
+}
+
+// readAdminSet reads one role's signer set out of an admins file in the shape
+// send-admins publishes: {"backing": {threshold, admins}, "providers": {...}}.
+func readAdminSet(path, role string) (map[common.Address]bool, int, error) {
+	var file map[string]json.RawMessage
+	if err := readJSON(path, &file); err != nil {
+		return nil, 0, errors.Errorf("reading %s: %s", path, err)
+	}
+	raw, ok := file[role]
+	if !ok {
+		return nil, 0, errors.Errorf("%s has no %s set", path, role)
+	}
+	var entry struct {
+		Threshold int      `json:"threshold"`
+		Admins    []string `json:"admins"`
+	}
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return nil, 0, errors.Errorf("%s: the %s set is malformed: %s", path, role, err)
+	}
+	set := make(map[common.Address]bool, len(entry.Admins))
+	for _, a := range entry.Admins {
+		if !common.IsHexAddress(a) {
+			return nil, 0, errors.Errorf("%s: %q is not an address", path, a)
+		}
+		set[common.HexToAddress(a)] = true
+	}
+	return set, entry.Threshold, nil
 }
 
 // --- submit ---

@@ -42,7 +42,7 @@ every command reads `../.env` for the chain, the addresses file and the keys.
 | --- | --- |
 | `send-endpoints` | publishes the RPC provider groups and their quorums |
 | `send-admins` | publishes the admin signer sets that may install credentials |
-| `send-secret` | builds, signs and submits a `SET_SECRET` envelope carrying one credential, taken from `SECRET_VALUE` |
+| `send-secret` | builds, signs and submits a `SET_SECRET` envelope carrying one credential, taken from `SECRET_VALUE`; `signers` shows who has signed one and whether it meets its set's threshold |
 
 **Running the feed**, with a funded wallet and the proxies' direct-channel key
 
