@@ -56,10 +56,6 @@ func saveState(path string, state *registrationState) error {
 	return nil
 }
 
-// teeStatusProduction is the registry's TeeStatus value for a machine that has
-// passed its availability check; the feed store accepts signatures from no other.
-const teeStatusProduction = 2
-
 func RegisterNode(s *support.Support, teeInfo *types.SignedTeeInfoResponse, hostURL, ftdcTeeURL string, ftdcTee common.Address, command, instructionIDstring, stateFilePath string) error {
 	teeID, proxyID, err := TeeProxyId(teeInfo)
 	if err != nil {
@@ -87,7 +83,7 @@ func RegisterNode(s *support.Support, teeInfo *types.SignedTeeInfoResponse, host
 			if machineErr == nil && machineInfo.TeeId != (common.Address{}) {
 				// A machine already in production has nothing left to do; ToProduction
 				// would revert InvalidTeeStatus. post-build.sh re-runs land here.
-				if status, statusErr := s.TeeMachineRegistry.GetTeeMachineStatus(callOpts, teeID); statusErr == nil && status == teeStatusProduction {
+				if status, statusErr := s.TeeMachineRegistry.GetTeeMachineStatus(callOpts, teeID); statusErr == nil && status == TeeStatusProduction {
 					logger.Infof("TEE machine %s is already in production; nothing to register", teeID.Hex())
 					return nil
 				}

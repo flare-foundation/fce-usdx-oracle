@@ -10,20 +10,22 @@
 // instructionsSender() unless given explicitly with -instructionSender.
 //
 // Every cycle requests through requestFeedUpdate(feedId, teeIds) on the
-// instruction sender, which pays the registry fee and dispatches one instruction
-// per named machine. The keeper picks the targets (-tee), so the result is
-// polled on every named machine's proxy until one answers. Before paying, it
-// asks those machines over GET_READINESS whether they would sign at all — a fee
-// spent on a machine with a stale observation buys a predictable failure.
+// instruction sender, paying the registry fee for one instruction addressed to
+// every named machine. The keeper picks the targets (-tee), and the result is
+// polled on the -p proxy and every registered machine's proxy until each target
+// has answered or -pollTimeout passes. Before paying, it asks those proxies over
+// GET_READINESS whether their machines would sign at all — a fee spent on a
+// machine with a stale observation buys a predictable failure.
 //
 // The keeper holds no authority, so a compromised one costs gas, not
 // correctness. requestFeedUpdate and submitFeedUpdates are both permissionless,
 // and the store verifies every TEE signature against the machine registry
 // itself, so the address here only ever spends its own gas: give it KEEPER_KEY,
 // a funded key and nothing more. Run at least two keepers: their submissions
-// collide harmlessly, exactly one wins each cycle and the rest record
-// race_lost. It does not alert — paging on the records, and on on-chain feed
-// age, is the monitoring layer's job.
+// collide harmlessly, because the store keeps only a strictly newer
+// observedAt, and a keeper whose batch has been overtaken records race_lost. It
+// does not alert — paging on the records, and on on-chain feed age, is the
+// monitoring layer's job.
 package main
 
 import (
@@ -84,10 +86,14 @@ func main() {
 		"warn when the paying account falls below this many coins; 0 disables the check")
 	dryRunF := flag.Bool("dry-run", false,
 		"run the cycle through the on-chain preflight and stop before submitting; the request is still sent and paid for")
-	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
+	apiKeyF := flag.String("directApiKey", "",
 		"proxy API key for the GET_READINESS preflight, which is skipped without one "+
 			"(default: $DIRECT_API_KEY)")
 	flag.Parse()
+	// Read after parsing rather than as the flag's default, so -h never prints the key.
+	if *apiKeyF == "" {
+		*apiKeyF = os.Getenv("DIRECT_API_KEY")
+	}
 
 	// Which flags were given by hand — -p means one thing as an override and
 	// another as a fallback.

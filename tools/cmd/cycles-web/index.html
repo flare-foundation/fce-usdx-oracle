@@ -657,8 +657,9 @@
     the number the machine signed; the page reads the precision off the record rather than assuming
     it. The store takes the median of the contributors, which is what the chart plots, and each
     contributor's own price stays in the row's detail. <code>race_lost</code> counts as a
-    cycle that advanced the feed &mdash; with two or more keepers exactly one submission wins, and the rest
-    are correct behaviour, not failures. Feed age is measured from <code>storeObservedAtAfter</code>, the
+    cycle that advanced the feed &mdash; the store refused the batch because it already held an
+    observation at least as new, almost always another keeper's, so it is correct behaviour with two or
+    more keepers, not a failure. Feed age is measured from <code>storeObservedAtAfter</code>, the
     store's own reading at the end of a cycle. Transaction and address links go to the Coston explorer.
   </footer>
 </div>
@@ -683,10 +684,9 @@
   // status colour; "note" is why an operator should or should not care.
   var OUTCOMES = {
     accepted:         { cls: "good",     note: "our submission landed" },
-    race_lost:        { cls: "good",     note: "another keeper won the cycle — a success" },
+    race_lost:        { cls: "good",     note: "the store already held an observation as new — a success" },
     dry_run:          { cls: "neutral",  note: "passed the rehearsal, stopped before submitting" },
     request_skipped:  { cls: "neutral",  note: "machines would not have signed, so no fee was paid" },
-    stale_submission: { cls: "warning",  note: "we relayed something older than the store held" },
     no_result:        { cls: "warning",  note: "the poll expired with no terminal status" },
     not_mined:        { cls: "warning",  note: "submitted, no receipt inside the deadline" },
     rejected:         { cls: "serious",  note: "the store refused the report" },

@@ -27,6 +27,7 @@ import (
 	"fce-usdx-oracle/tools/pkg/support"
 
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -36,6 +37,14 @@ import (
 // maxBatch is the store's ceiling on signatures per submission.
 const maxBatch = 32
 
+// The guards the cycle treats specially. guardNotNewer is the store's ratchet,
+// the one rejection that can mean another submission landed first;
+// guardReverted names a refusal whose revert data decodes to no store guard.
+const (
+	guardNotNewer = "NotNewer"
+	guardReverted = "Reverted"
+)
+
 // Rejection is a batch the store will not accept, named by the guard that
 // rejects it. The name matters more than the message: StaleEndpoints needs a
 // setEndpoints call, NotNewer usually needs nothing, and "execution reverted"
@@ -43,10 +52,6 @@ const maxBatch = 32
 type Rejection struct {
 	Guard string
 	Msg   string
-
-	// Set for NotNewer, so the caller can tell a lost race from a stale
-	// submission by comparing against the batch's observedAt.
-	StoreObservedAt uint64
 }
 
 func (r *Rejection) Error() string { return r.Msg }
@@ -220,22 +225,39 @@ func Preflight(
 			"%d machines answered, the store takes at most %d per submission", len(batch), maxBatch)
 	}
 
-	// Strictly increasing observedAt — the only time rule left. Checked here
-	// rather than left to the rehearsal because the store's stamp is what tells a
-	// lost race from a stale submission.
+	// Strictly increasing observedAt, the store's ratchet. Checked here as well as
+	// in the rehearsal so the refusal is named even by a node that strips revert
+	// data. Whether a NotNewer is a lost race is the caller's call, made on a
+	// fresh read of the store (see raceLost).
 	stored, err := store.ObservedAt(opts)
 	if err != nil {
 		return errors.Errorf("reading observedAt: %s", err)
 	}
 	if batch[0].ObservedAt <= stored {
-		rj := reject("NotNewer",
+		return reject(guardNotNewer,
 			"the store already holds observedAt=%d and this batch is stamped %d",
 			stored, batch[0].ObservedAt)
-		rj.StoreObservedAt = stored
-		return rj
 	}
 
 	return rehearse(ctx, s, storeAddr, batch)
+}
+
+// submitCall is the eth_call form of submitting batch: the calldata a real
+// submission carries, from the keeper's address.
+func submitCall(s *support.Support, storeAddr common.Address, batch []feedupdate.Update) (*abi.ABI, ethereum.CallMsg, error) {
+	parsed, err := teeoraclestore.IITeeOracleFeedStoreMetaData.GetAbi()
+	if err != nil {
+		return nil, ethereum.CallMsg{}, errors.Errorf("parsing the store ABI: %s", err)
+	}
+	input, err := parsed.Pack("submitFeedUpdates", signedBatch(batch))
+	if err != nil {
+		return nil, ethereum.CallMsg{}, errors.Errorf("encoding submitFeedUpdates: %s", err)
+	}
+	msg := ethereum.CallMsg{To: &storeAddr, Data: input}
+	if s.Prv != nil {
+		msg.From = crypto.PubkeyToAddress(s.Prv.PublicKey)
+	}
+	return parsed, msg, nil
 }
 
 // rehearse is the contract's own dry run: an eth_call of submitFeedUpdates with
@@ -243,33 +265,61 @@ func Preflight(
 // would — signature and registry status, the extension pause, the median's
 // spread bound — and a revert names the guard, which becomes the Rejection.
 func rehearse(ctx context.Context, s *support.Support, storeAddr common.Address, batch []feedupdate.Update) error {
-	parsed, err := teeoraclestore.IITeeOracleFeedStoreMetaData.GetAbi()
+	parsed, msg, err := submitCall(s, storeAddr, batch)
 	if err != nil {
-		return errors.Errorf("parsing the store ABI: %s", err)
+		return err
 	}
-	input, err := parsed.Pack("submitFeedUpdates", signedBatch(batch))
-	if err != nil {
-		return errors.Errorf("encoding submitFeedUpdates: %s", err)
-	}
-	msg := ethereum.CallMsg{To: &storeAddr, Data: input}
-	if s.Prv != nil {
-		msg.From = crypto.PubkeyToAddress(s.Prv.PublicKey)
-	}
-
 	if _, err = s.ChainClient.CallContract(ctx, msg, nil); err == nil {
 		return nil
 	}
+	if rj := decodeRejection(parsed, err, "the store rejects this batch in rehearsal"); rj != nil {
+		return rj
+	}
+	return errors.Errorf("rehearsing submitFeedUpdates: %s", err)
+}
+
+// replayRevert names the guard behind a submission that was mined and reverted,
+// by replaying it as an eth_call against the state at the end of the block it
+// was mined in. That state includes whatever landed alongside it, which is what
+// a submission that passed its rehearsal moments earlier has usually lost to.
+// Never nil: a replay that names nothing is guard Reverted, with what the node
+// said in the message.
+func replayRevert(
+	ctx context.Context, s *support.Support, storeAddr common.Address,
+	batch []feedupdate.Update, block *big.Int,
+) *Rejection {
+	parsed, msg, err := submitCall(s, storeAddr, batch)
+	if err != nil {
+		return reject(guardReverted, "the submission reverted on chain; replaying it: %s", err)
+	}
+	_, err = s.ChainClient.CallContract(ctx, msg, block)
+	if err == nil {
+		return reject(guardReverted,
+			"the submission reverted on chain, and its replay at block %s succeeds, so the guard cannot be named", block)
+	}
+	if rj := decodeRejection(parsed, err, "the store rejected the mined submission"); rj != nil {
+		return rj
+	}
+	return reject(guardReverted, "the submission reverted on chain, and its replay names no guard: %s", err)
+}
+
+// decodeRejection names the store guard behind a failed call: a custom error
+// from the store's ABI first, then a revert reason string, which is guard
+// Reverted with the reason (or the raw revert data) in the message. Nil when
+// the error carries no revert data at all, which is a transport failure rather
+// than a refusal.
+func decodeRejection(parsed *abi.ABI, err error, where string) *Rejection {
 	if data := fccutils.ExtractRevertData(err); len(data) >= 4 {
 		if named := fccutils.MatchCustomError(parsed, hex.EncodeToString(data)); named != "" {
 			guard := named
 			if before, _, found := strings.Cut(named, "["); found && before != "" {
 				guard = before
 			}
-			return reject(guard, "the store rejects this batch in rehearsal: %s", named)
+			return reject(guard, "%s: %s", where, named)
 		}
 	}
 	if reason := fccutils.DecodeRevertReason(err); reason != "" {
-		return reject("Reverted", "the store rejects this batch in rehearsal: %s", reason)
+		return reject(guardReverted, "%s: %s", where, reason)
 	}
-	return errors.Errorf("rehearsing submitFeedUpdates: %s", err)
+	return nil
 }

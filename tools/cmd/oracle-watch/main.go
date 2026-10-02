@@ -49,7 +49,7 @@ type sample struct {
 
 func main() {
 	pf := flag.String("p", configs.ExtensionProxyURL, "the machine's proxy url")
-	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
+	apiKeyF := flag.String("directApiKey", "",
 		"proxy API key for GET_READINESS (default: $DIRECT_API_KEY)")
 	intervalF := flag.Duration("interval", 2*time.Minute,
 		"how often to poll; the machine observes every 2 minutes, so faster shows nothing new")
@@ -57,6 +57,10 @@ func main() {
 	recordsF := flag.String("records", "", "append JSON samples to this file (default: stdout)")
 	timeoutF := flag.Duration("timeout", 30*time.Second, "how long to wait for each answer")
 	flag.Parse()
+	// Read after parsing rather than as the flag's default, so -h never prints the key.
+	if *apiKeyF == "" {
+		*apiKeyF = os.Getenv("DIRECT_API_KEY")
+	}
 
 	if *apiKeyF == "" {
 		fccutils.FatalWithCause(errors.New(

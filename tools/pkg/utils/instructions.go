@@ -2,9 +2,10 @@
 // requests feed updates and publishes configuration through
 // TeeOracleInstructionsSender.
 //
-// Nothing here deploys anything. The sender and the feed stores come from
-// flare-smart-contracts-v2's own deploy script; this repo only ever calls them,
-// through the upstream interfaces compiled via contracts/.
+// Nothing here deploys anything. The sender and the feed store come from
+// flare-smart-contracts-v2's deploy script, or for a deployment of our own
+// from contracts/script/DeployTeeOracle.s.sol (deploy-oracle.sh); this package
+// only calls them, through the upstream interfaces compiled via contracts/.
 package utils
 
 import (
@@ -26,13 +27,10 @@ import (
 	"github.com/pkg/errors"
 )
 
-// The operation identifiers, PINNED rather than read off the chain.
-//
-// The op type and commands, as the extension pins them. They used to be public
-// getters on the sender; upstream made them file-level constants shared by every
-// deployed instance, so there is nothing left to read on chain. Taken from the
-// extension rather than restated, because a mismatch prices the wrong fee row
-// and the instruction is rejected for an underpaid fee.
+// The op type and commands are pkg/protocol's, pinned rather than read off the
+// chain: upstream's sender declares them as file-level constants with no getter.
+// Taken from there rather than restated, because a mismatch prices the wrong
+// fee row and the instruction is rejected for an underpaid fee.
 
 func senderABI() (*abi.ABI, error) {
 	parsed, err := teeoraclesender.IITeeOracleInstructionsSenderMetaData.GetAbi()
@@ -78,9 +76,11 @@ func operationFee(ctx context.Context, s *support.Support, command common.Hash, 
 // RequestFeedUpdate asks the given machines for a fresh observation of one feed
 // and returns the dispatched instruction id.
 //
-// It is permissionless — the fee is what bounds spam — but every target must
-// already have endpoints AND admins published for the feed, or the call reverts
-// TeeIdNotConfigured. Use IsTeeIdConfigured to check before spending gas.
+// It is permissionless — the fee is what bounds spam — but the feed must have
+// endpoints and admins published (else FeedNotConfigured), and every target must
+// have been dispatched the feed's current versions, by the publication itself or a
+// later pushEndpoints/pushAdmins (else TeeIdNotConfigured). One unconfigured target
+// reverts the whole request. Use IsTeeIdConfigured to check before spending gas.
 func RequestFeedUpdate(
 	ctx context.Context, s *support.Support, senderAddress common.Address,
 	feedID [21]byte, teeIDs []common.Address,

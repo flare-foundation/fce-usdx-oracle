@@ -1,5 +1,5 @@
 // Command retire-tee takes a machine out of the registry's active set by pausing
-// it, the registry's one-way retirement.
+// it.
 //
 //	go run ./cmd/retire-tee -p http://localhost:6684        # the machine behind that proxy
 //	go run ./cmd/retire-tee -tee 0x…                         # a machine by id
@@ -13,9 +13,11 @@
 // form before it stops a stack.
 //
 // Pausing is the machine owner's call (MACHINE_OWNER_KEY, or the extension
-// owner's key where they are one address) on a
-// machine at PRODUCTION; a paused machine is never dispatched to and its
-// updates are rejected, and there is no unpause. -stale finds the machines
+// owner's key where they are one address) on a machine at PRODUCTION or
+// SUSPENDED. A paused machine is never dispatched to and its updates are
+// rejected. Its owner could return it with toProduction and a fresh
+// availability proof, which a stopped machine, whose key is gone, can never
+// produce, so for a stopped stack the pause is final. -stale finds the machines
 // whose registered URL either does not answer or answers as a different
 // machine, which is what a machine from an earlier stack looks like; it never
 // touches a machine whose URL answers with its own id.
@@ -38,12 +40,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/flare-foundation/go-flare-common/pkg/logger"
 	"github.com/pkg/errors"
-)
-
-// The registry's TeeStatus values, as fleet-status names them.
-const (
-	statusProduction uint8 = 2
-	statusPaused     uint8 = 4
 )
 
 // infoTimeout bounds each probe of a registered URL. A dead stack refuses at
@@ -144,13 +140,14 @@ func retire(s *support.Support, owner, id common.Address, dryRun bool) error {
 		return errors.Errorf("reading the status: %s", err)
 	}
 	switch status {
-	case statusPaused:
+	case fccutils.TeeStatusPaused:
 		logger.Infof("%s is already paused", id.Hex())
 		return nil
-	case statusProduction:
+	case fccutils.TeeStatusProduction, fccutils.TeeStatusSuspended:
 	default:
-		return errors.Errorf("status %d: only a PRODUCTION machine can be paused by its owner "+
-			"(a machine that never reached production is not dispatched to anyway)", status)
+		return errors.Errorf("status %s: its owner can pause only a PRODUCTION or SUSPENDED machine "+
+			"(an INITIALIZED one is not dispatched to anyway, and BANNED is the extension owner's)",
+			fccutils.TeeStatusName(status))
 	}
 	if dryRun {
 		logger.Infof("would pause %s", id.Hex())

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"fce-usdx-oracle/pkg/protocol"
 )
 
 const (
@@ -211,5 +213,32 @@ func TestFixtureIsValid(t *testing.T) {
 	}
 	if err := validateAdmins(parsed); err != nil {
 		t.Fatalf("validateAdmins: %v", err)
+	}
+}
+
+// The summary is what an operator checks before signing a rotation, so the
+// credentials it says each set governs must be the ones the build pins: the
+// backing set governs both Hex credentials, and naming only one would hide that
+// the cash URL rides on the weaker set.
+func TestSummariseNamesEveryBackingRef(t *testing.T) {
+	parsed, err := parseAdmins([]byte(payload(
+		`{"threshold":1,"admins":["`+a1+`"]}`,
+		`{"threshold":2,"admins":["`+a2+`","`+a3+`"]}`)))
+	if err != nil {
+		t.Fatalf("parseAdmins: %v", err)
+	}
+	out := summarise(parsed)
+	for _, want := range []string{
+		"backing: 1-of-1 — governs hex_api_key and hex_cash_url\n",
+		"providers: 2-of-2 — governs every other credential\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary is missing %q:\n%s", want, out)
+		}
+	}
+	for _, ref := range protocol.BackingRefs() {
+		if !strings.Contains(out, ref) {
+			t.Errorf("summary does not name backing ref %s:\n%s", ref, out)
+		}
 	}
 }

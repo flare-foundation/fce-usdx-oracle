@@ -428,13 +428,18 @@ func checkChainID(client *ethclient.Client) CheckResult {
 	}
 }
 
-// chainName returns a human-readable name for known chain IDs.
+// chainName returns a human-readable name for known chain IDs. Coston's id
+// covers both the coston and coston_local rows, which share the chain.
 func chainName(id interface{ String() string }) string {
 	switch id.String() {
 	case "31337":
 		return "Hardhat/Anvil (local devnet)"
+	case "16":
+		return "Coston (testnet)"
 	case "114":
 		return "Coston2 (testnet)"
+	case "19":
+		return "Songbird (canary network)"
 	case "14":
 		return "Flare (mainnet)"
 	default:

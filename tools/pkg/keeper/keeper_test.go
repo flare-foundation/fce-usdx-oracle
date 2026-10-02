@@ -6,50 +6,40 @@ import (
 	"testing"
 	"time"
 
-	wire "fce-usdx-oracle/pkg/wire/feedupdate"
-	"fce-usdx-oracle/tools/pkg/feedupdate"
-
 	"github.com/pkg/errors"
 )
 
 // A lost race is the designed outcome of the ≥2-keeper topology, not a fault.
 // If this ever classifies as a failure the on-call gets paged several times an
 // hour for the system working correctly, and the alert gets muted.
-func TestNotNewerIsARaceNotAFailure(t *testing.T) {
-	report := feedupdate.Update{FeedUpdate: wire.FeedUpdate{ObservedAt: 100}}
-
-	rj := &Rejection{Guard: "NotNewer", StoreObservedAt: 120}
-	if got := classifyRejection(rj, report.ObservedAt); got != OutcomeRaceLost {
-		t.Fatalf("store ahead of us should be a lost race, got %q", got)
+func TestOvertakenBatchIsARaceNotAFailure(t *testing.T) {
+	// Another keeper's later request landed first: the store is ahead of us.
+	if !raceLost(100, 120, true) {
+		t.Fatal("a store ahead of the batch should be a lost race")
+	}
+	// Two keepers whose requests were mined in one block share a stamp, and
+	// the second submission of that stamp is refused NotNewer.
+	if !raceLost(100, 100, true) {
+		t.Fatal("a store at the batch's own stamp should be a lost race")
 	}
 	if !OutcomeRaceLost.Advanced() {
 		t.Fatal("a lost race still advanced the feed — someone else's report landed")
 	}
 }
 
-// The same guard fires when our own report was stale, which is a latency problem
-// worth seeing. Collapsing the two is what would hide it.
-func TestNotNewerWithStaleReportIsDistinct(t *testing.T) {
-	report := feedupdate.Update{FeedUpdate: wire.FeedUpdate{ObservedAt: 100}}
-
-	rj := &Rejection{Guard: "NotNewer", StoreObservedAt: 80}
-	got := classifyRejection(rj, report.ObservedAt)
-	if got != OutcomeStaleSubmission {
-		t.Fatalf("store behind us should be a stale submission, got %q", got)
+// The ratchet only moves forward, so a NotNewer followed by a read showing the
+// store BEHIND the batch means the read did not see the refusing state: a node
+// lagging behind the one that ran the call, or a store that could not be read.
+// Neither proves the feed advanced, so neither may read as a success.
+func TestNotNewerWithoutAStoreAheadIsARejection(t *testing.T) {
+	if raceLost(100, 80, true) {
+		t.Error("a read from a lagging node (store behind the batch) was taken as a lost race")
 	}
-	if got.Advanced() {
-		t.Fatal("a stale submission did not advance the feed")
+	if raceLost(100, 0, false) {
+		t.Error("an unreadable store was taken as a lost race")
 	}
-}
-
-func TestOtherGuardsAreRejections(t *testing.T) {
-	report := feedupdate.Update{FeedUpdate: wire.FeedUpdate{ObservedAt: 100}}
-
-	for _, guard := range []string{"WrongExtensionId", "WrongFeedId", "StaleEndpoints", "NoEndpointsPublished", "StaleAdmins", "NoAdminsPublished", "BadSignature", "TooFarAhead", "NotEnoughSignatures", "TooManySignatures", "SpreadTooBig"} {
-		rj := &Rejection{Guard: guard}
-		if got := classifyRejection(rj, report.ObservedAt); got != OutcomeRejected {
-			t.Errorf("%s: got %q, want %q", guard, got, OutcomeRejected)
-		}
+	if OutcomeRejected.Advanced() {
+		t.Error("a rejection did not advance the feed")
 	}
 }
 
@@ -59,8 +49,9 @@ func TestOnlyAcceptedAndRaceLostAdvance(t *testing.T) {
 	advancing := map[Outcome]bool{OutcomeAccepted: true, OutcomeRaceLost: true}
 
 	all := []Outcome{
-		OutcomeAccepted, OutcomeRaceLost, OutcomeStaleSubmission, OutcomeRequestFailed,
-		OutcomeNoResult, OutcomeExtensionFailed, OutcomeRejected, OutcomeNotMined, OutcomeInternal,
+		OutcomeAccepted, OutcomeRaceLost, OutcomeRequestFailed, OutcomeRequestSkipped,
+		OutcomeNoResult, OutcomeExtensionFailed, OutcomeRejected, OutcomeDryRun,
+		OutcomeNotMined, OutcomeInternal,
 	}
 	for _, o := range all {
 		if o.Advanced() != advancing[o] {

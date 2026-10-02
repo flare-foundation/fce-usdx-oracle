@@ -19,8 +19,8 @@ import (
 //
 // The on-chain payload is ABI-encoded by the sender into Admins{version, feedId,
 // roles}; the contract assigns the version. This tool takes JSON for convenience
-// and builds the typed AdminRole list — the operator does NOT pick the version,
-// because it is no longer part of the payload the operator supplies.
+// and builds the typed AdminRole list. The operator does NOT pick the version:
+// the JSON carries none, and a top-level "version" number does not parse.
 //
 // Each role is a tagged signer set:
 //
@@ -33,12 +33,12 @@ type adminSetConfig struct {
 	Admins    []string `json:"admins"`
 }
 
-// Mirrors the floors/ceilings provision pins (MinBackingThreshold,
-// MinProviderThreshold, MaxAdmins, MaxThreshold). The floors differ by decision:
-// a wrong backing credential degrades the feed to cash-less, a rogue provider
-// credential denies service on every chain using it. maxThreshold is the
-// extension's signature cap: a set asking for more signatures than it will look
-// at can never be satisfied.
+// Mirrors the floors and ceilings pkg/protocol pins and the enclave's verifier
+// enforces (MinBackingThreshold, MinProviderThreshold, MaxAdmins, MaxThreshold).
+// The floors differ by decision: a wrong backing credential degrades the feed
+// to cash-less, a rogue provider credential denies service on every chain using
+// it. maxThreshold is the extension's signature cap: a set asking for more
+// signatures than it will look at can never be satisfied.
 const (
 	minBackingThreshold  = 1
 	minProviderThreshold = 2
@@ -47,7 +47,8 @@ const (
 )
 
 // knownRoles must both be present. Which credentials each governs is pinned in
-// the extension build, not here; this tool only checks the shape.
+// the extension build (protocol.BackingRefs), not here; this tool only checks
+// the shape.
 var knownRoles = []string{"backing", "providers"}
 
 // parseAdmins decodes the operator's JSON into the typed role list.
@@ -164,8 +165,8 @@ func summarise(roles []configpayload.Role) string {
 	for _, r := range roles {
 		name := configpayload.TagName(r.Role)
 		governs := "governs every other credential"
-		if name == "backing" {
-			governs = "governs " + protocol.HexAPIKeyRef + " only"
+		if name == protocol.RoleBacking {
+			governs = "governs " + joinAnd(protocol.BackingRefs())
 		}
 		b.WriteString(name + ": " + strconv.FormatUint(r.Threshold, 10) + "-of-" +
 			strconv.Itoa(len(r.Admins)) + " — " + governs + "\n")
@@ -176,6 +177,14 @@ func summarise(roles []configpayload.Role) string {
 		}
 	}
 	return b.String()
+}
+
+// joinAnd lists names in prose: "a", "a and b", "a, b and c".
+func joinAnd(names []string) string {
+	if len(names) <= 1 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 func floorFor(name string) (int, bool) {

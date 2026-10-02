@@ -1,6 +1,8 @@
 // Command send-endpoints publishes an endpoint configuration on-chain through
-// TeeOracleInstructionsSender, so the addressed TEE machines receive it as a
-// SET_ENDPOINTS instruction.
+// TeeOracleInstructionsSender, so the extension's active TEE machines receive it
+// as a SET_ENDPOINTS instruction. The payload is checked first against every
+// content rule a machine applies (validateEndpoints), so -dry-run refuses what
+// the machines would.
 //
 // The config is ABI-encoded by the sender into Endpoints{version, feedId,
 // groups}; this tool takes a JSON file for convenience and builds the typed
@@ -31,6 +33,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,9 +68,9 @@ func main() {
 	claimBackF := flag.String("claimBack", "",
 		"payer of record for the dispatched instruction, written on-chain for the reward "+
 			"calculation (default: this tool's key; with -out, name the executor's wallet)")
-	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
-		"proxy API key, used to confirm delivery via a signed GET_READINESS when the "+
-			"proxy publishes no attested state (default: $DIRECT_API_KEY)")
+	apiKeyF := flag.String("directApiKey", "",
+		"proxy API key, used to confirm delivery against the -p machine's signed GET_READINESS; "+
+			"without one the confirmation is skipped (default: $DIRECT_API_KEY)")
 	waitF := flag.Duration("wait", 90*time.Second,
 		"how long to wait for the machine to report the new config hash; 0 skips the check")
 	dryRunF := flag.Bool("dry-run", false, "validate the payload and print the predicted hash, but send nothing")
@@ -82,6 +85,10 @@ func main() {
 			"instead of sending — the path for production-mode senders, where setEndpoints "+
 			"is governance-only and Flare executes it through the timelock")
 	flag.Parse()
+	// Read after parsing rather than as the flag's default, so -h never prints the key.
+	if *apiKeyF == "" {
+		*apiKeyF = os.Getenv("DIRECT_API_KEY")
+	}
 
 	if *configF == "" {
 		fccutils.FatalWithCause(errors.New("-config is required"))
@@ -104,7 +111,7 @@ func main() {
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("%s: %s", *configF, err))
 	}
-	if err := validateEndpoints(groups); err != nil {
+	if err := validateEndpoints(feedID, groups); err != nil {
 		fccutils.FatalWithCause(errors.Errorf("%s: %s", *configF, err))
 	}
 
@@ -125,7 +132,7 @@ func main() {
 	instructionSenderAddress, err := configs.ResolveContract(*instructionSenderF, *af, "TeeOracleInstructionsSender")
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("resolving the instructions sender: %s — pass -instructionSender "+
-			"or run scripts/import-upstream-addresses.sh after the upstream deploy", err))
+			"or run deploy/scripts/import-upstream-addresses.sh after the upstream deploy", err))
 	}
 
 	var claimBack common.Address
@@ -195,6 +202,9 @@ func main() {
 		data, err := json.MarshalIndent(handoff, "", "  ")
 		if err != nil {
 			fccutils.FatalWithCause(errors.Errorf("encoding the hand-off: %s", err))
+		}
+		if err := os.MkdirAll(filepath.Dir(*outF), 0o755); err != nil {
+			fccutils.FatalWithCause(errors.Errorf("creating the directory for %s: %s", *outF, err))
 		}
 		if err := os.WriteFile(*outF, append(data, '\n'), 0o644); err != nil {
 			fccutils.FatalWithCause(errors.Errorf("writing %s: %s", *outF, err))

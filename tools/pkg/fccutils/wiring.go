@@ -31,8 +31,8 @@ import (
 //     answers GET /state with the empty state, and with no verifier the registry
 //     accepts exactly that and refuses both tee-node's "could not read the
 //     extension" sentinel and any other state.
-//  2. AddAllowedTeeMachineOwners(machineOwner) — registerTee reverts
-//     NotAllowedExtensionOwner for a machine whose owner is not on this list.
+//  2. AddAllowedTeeMachineOwners(machineOwner) — the registry's register
+//     reverts OwnerNotAllowed for a machine whose owner is not on this list.
 //     The address is the machines' initial owner, which is not this caller
 //     wherever the two roles are held by different keys; allowlisting the
 //     caller instead would widen the set of addresses that may register a

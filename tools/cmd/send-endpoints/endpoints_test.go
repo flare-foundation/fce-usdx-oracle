@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"fce-usdx-oracle/pkg/protocol"
 	"fce-usdx-oracle/pkg/wire/configpayload"
 )
 
@@ -31,7 +32,7 @@ func TestShippedFixturesValidate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			if err := validateEndpoints(parsed); err != nil {
+			if err := validateEndpoints(protocol.FeedID, parsed); err != nil {
 				t.Fatalf("validate: %v", err)
 			}
 		})
@@ -144,7 +145,65 @@ func TestValidateRejects(t *testing.T) {
 			name: "backing credential used as a provider secret",
 			payload: base("flare",
 				`"flare":{"threshold":1,"endpoints":[{"url":"https://a/{secret}","secret":"hex_api_key"}]}`),
-			wants: "may not be used as a provider secret",
+			wants: `"hex_api_key" is a backing ref and may not be used on a chain group`,
+		},
+		{
+			// Every backing ref is barred from a chain group, not only the API
+			// key: the cash URL's preimage is the backing set's to provision.
+			name: "cash URL ref as a public chain secret",
+			payload: base("ethereum",
+				`"ethereum":{"threshold":1,"endpoints":[{"url":"https://b/{secret}","secret":"hex_cash_url"}]}`),
+			wants: `"hex_cash_url" is a backing ref and may not be used on a chain group`,
+		},
+		{
+			// PRIVATE as well as PUBLIC: a chain endpoint delivered under a
+			// backing ref would let the weaker backing set choose a chain RPC.
+			name: "backing ref on a private chain endpoint",
+			payload: base("songbird",
+				`"songbird":{"threshold":1,"endpoints":[{"urlHash":"`+hexCashHash+`","secret":"hex_api_key"}]}`),
+			wants: `"hex_api_key" is a backing ref and may not be used on a chain group`,
+		},
+		{
+			name: "cash URL ref on a private chain endpoint",
+			payload: base("flare",
+				`"flare":{"threshold":1,"endpoints":[{"urlHash":"`+hexCashHash+`","secret":"hex_cash_url"}]}`),
+			wants: `"hex_cash_url" is a backing ref and may not be used on a chain group`,
+		},
+		{
+			// The machine trims the ref before comparing, so padding cannot
+			// smuggle a backing ref past the check.
+			name: "backing ref padded with whitespace",
+			payload: base("flare",
+				`"flare":{"threshold":1,"endpoints":[{"url":"https://a/{secret}","secret":" hex_api_key "}]}`),
+			wants: `"hex_api_key" is a backing ref`,
+		},
+		{
+			name:    "whitespace-only secret ref with a placeholder",
+			payload: base("flare", `"flare":{"threshold":1,"endpoints":[{"url":"https://a/{secret}","secret":"  "}]}`),
+			wants:   "must be used together",
+		},
+		{
+			// A misspelt key would otherwise be dropped and the endpoint published
+			// without the credential its author meant.
+			name:    "unknown endpoint field",
+			payload: base("flare", `"flare":{"threshold":1,"endpoints":[{"url":"https://a/","secretRef":"k"}]}`),
+			wants:   `unknown field "secretRef"`,
+		},
+		{
+			name:    "unknown group field",
+			payload: base("flare", `"flare":{"threshold":1,"quorum":1,"endpoints":[{"url":"https://a/"}]}`),
+			wants:   `unknown field "quorum"`,
+		},
+		{
+			// HexToHash would pad this into a commitment no URL can match.
+			name:    "short urlHash",
+			payload: base("hex_cash", `"hex_cash":{"threshold":1,"endpoints":[{"urlHash":"0xabab","secret":"hex_cash_url"}]}`),
+			wants:   "not a non-zero 32-byte hash",
+		},
+		{
+			name:    "hex_cash at threshold 2 of 1",
+			payload: base("hex_cash", `"hex_cash":{"threshold":2,"endpoints":[{"urlHash":"`+hexCashHash+`","secret":"hex_cash_url"}]}`),
+			wants:   "is not between 1 and 1",
 		},
 		{
 			name:    "endpoint with neither url nor urlHash",
@@ -181,7 +240,7 @@ func TestValidateRejects(t *testing.T) {
 			name: "hex_cash with the wrong secret ref",
 			payload: base("hex_cash",
 				`"hex_cash":{"threshold":1,"endpoints":[{"urlHash":"`+hexCashHash+`","secret":"something_else"}]}`),
-			wants: `must name secretRef "hex_cash_url"`,
+			wants: `must name secret "hex_cash_url"`,
 		},
 		{
 			name:    "hex_cash with two endpoints",
@@ -199,7 +258,7 @@ func TestValidateRejects(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			parsed, err := parseEndpoints([]byte(c.payload))
 			if err == nil {
-				err = validateEndpoints(parsed)
+				err = validateEndpoints(protocol.FeedID, parsed)
 			}
 			if err == nil {
 				t.Fatalf("expected rejection containing %q, got none", c.wants)
@@ -238,7 +297,7 @@ func TestValidateRejectsDuplicateGroup(t *testing.T) {
 		{Group: hexCash, Threshold: 1, Endpoints: []configpayload.Endpoint{privEp}},
 	}
 
-	err = validateEndpoints(groups)
+	err = validateEndpoints(protocol.FeedID, groups)
 	if err == nil {
 		t.Fatal("expected a duplicate-group rejection")
 	}
@@ -291,5 +350,106 @@ func TestSummariseNamesRefsNeverURLs(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary is missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// typedBase is base() as the typed group list, for the rules JSON cannot reach.
+func typedBase(t *testing.T) []configpayload.Group {
+	t.Helper()
+	parsed, err := parseEndpoints([]byte(base("", "")))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return parsed
+}
+
+// The machine serves one feed and refuses configuration for any other, so a
+// -feedId naming a sibling feed must fail here rather than at every machine.
+func TestValidateRejectsAnotherFeed(t *testing.T) {
+	other := protocol.FeedID
+	other[20] ^= 0xff
+	err := validateEndpoints(other, typedBase(t))
+	if err == nil || !strings.Contains(err.Error(), "is not the one this extension serves") {
+		t.Fatalf("err = %v, want the feed refused", err)
+	}
+}
+
+// The machine decodes at most maxPayloadBytes and the sender sets no limit, so
+// a payload past the cap would be recorded on chain and refused everywhere.
+func TestValidateRejectsAnOversizedPayload(t *testing.T) {
+	groups := typedBase(t)
+	for i, g := range groups {
+		if configpayload.TagName(g.Group) == "flare" {
+			groups[i].Endpoints[0].Url = "https://a/" + strings.Repeat("x", maxPayloadBytes)
+		}
+	}
+	err := validateEndpoints(protocol.FeedID, groups)
+	if err == nil || !strings.Contains(err.Error(), "a machine decodes at most") {
+		t.Fatalf("err = %v, want the size refused", err)
+	}
+}
+
+// The kind-consistency rules the machine re-checks, on endpoints JSON parsing
+// cannot produce.
+func TestValidateRejectsInconsistentEndpoints(t *testing.T) {
+	cases := []struct {
+		name  string
+		edit  func(*configpayload.Endpoint)
+		wants string
+	}{
+		{"private endpoint with a url", func(ep *configpayload.Endpoint) {
+			ep.Kind, ep.UrlHash, ep.SecretRef = configpayload.KindPrivate, [32]byte{1}, "k"
+		}, "carries only a non-zero urlHash"},
+		{"public endpoint with a commitment", func(ep *configpayload.Endpoint) {
+			ep.UrlHash = [32]byte{1}
+		}, "carries only a url"},
+		{"unknown kind", func(ep *configpayload.Endpoint) {
+			ep.Kind = 2
+		}, "unknown endpoint kind"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			groups := typedBase(t)
+			for i, g := range groups {
+				if configpayload.TagName(g.Group) == "ethereum" {
+					c.edit(&groups[i].Endpoints[0])
+				}
+			}
+			err := validateEndpoints(protocol.FeedID, groups)
+			if err == nil || !strings.Contains(err.Error(), c.wants) {
+				t.Fatalf("err = %v, want it to contain %q", err, c.wants)
+			}
+		})
+	}
+}
+
+// The group set is the build's: every pinned chain, then hex_cash. Taken from
+// pkg/protocol, so a chain added to the build is required here by construction.
+func TestKnownGroupsArePinnedChainsPlusHexCash(t *testing.T) {
+	want := make([]string, 0, len(protocol.Chains)+1)
+	for _, c := range protocol.Chains {
+		want = append(want, c.Name)
+	}
+	want = append(want, "hex_cash")
+	if strings.Join(knownGroups, ",") != strings.Join(want, ",") {
+		t.Fatalf("knownGroups = %v, want %v", knownGroups, want)
+	}
+}
+
+// The machine trims a secret ref before using it, so the tool publishes the
+// trimmed ref: the one a SET_SECRET has to name.
+func TestParseTrimsTheSecretRef(t *testing.T) {
+	parsed, err := parseEndpoints([]byte(base("flare",
+		`"flare":{"threshold":1,"endpoints":[{"url":"https://a/{secret}","secret":" ankr_key "}]}`)))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, g := range parsed {
+		if configpayload.TagName(g.Group) == "flare" && g.Endpoints[0].SecretRef != "ankr_key" {
+			t.Fatalf("secret ref = %q, want it trimmed", g.Endpoints[0].SecretRef)
+		}
+	}
+	if err := validateEndpoints(protocol.FeedID, parsed); err != nil {
+		t.Fatalf("validate: %v", err)
 	}
 }

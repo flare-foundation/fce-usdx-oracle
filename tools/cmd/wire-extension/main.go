@@ -2,7 +2,7 @@
 // extension after flare-smart-contracts-v2 has deployed its contracts and
 // Flare governance has run registerReserved(extensionId, owner).
 //
-// It makes three direct owner calls on the FlareTeeManager diamond, each
+// It makes two direct owner calls on the FlareTeeManager diamond, each
 // idempotent:
 //
 //  1. setExtensionContracts(extensionId, verifier, sender) — register-tee's
@@ -15,8 +15,8 @@
 //
 // The instructions sender resolves from -sender, or from the
 // TeeOracleInstructionsSender entry in the addresses file (put there by
-// scripts/import-upstream-addresses.sh after the upstream deploy). The machine
-// owner resolves from -machineOwner, or from MACHINE_OWNER_KEY, or from
+// deploy/scripts/import-upstream-addresses.sh after the upstream deploy). The
+// machine owner resolves from -machineOwner, or from MACHINE_OWNER_KEY, or from
 // INITIAL_OWNER, and finally from the signing key where none of those is set.
 //
 //	go run ./cmd/wire-extension            # addresses and chain from .env; -a / -c override
@@ -58,7 +58,7 @@ func main() {
 	senderAddr, err := configs.ResolveContract(*senderF, *af, "TeeOracleInstructionsSender")
 	if err != nil {
 		fccutils.FatalWithCause(errors.Errorf("resolving the instructions sender: %s — run "+
-			"scripts/import-upstream-addresses.sh after the upstream deploy, or pass -sender", err))
+			"deploy/scripts/import-upstream-addresses.sh after the upstream deploy, or pass -sender", err))
 	}
 	testSupport, err := support.DefaultSupport(*af, *cf)
 	if err != nil {
@@ -105,5 +105,5 @@ func main() {
 	}
 
 	logger.Infof("Extension %s wired. Next: build/deploy the machine image with EXTENSION_ID=%s, "+
-		"then run scripts/post-build.sh.", extensionID.String(), extensionID.String())
+		"then run deploy/scripts/post-build.sh.", extensionID.String(), extensionID.String())
 }

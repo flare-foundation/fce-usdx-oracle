@@ -78,8 +78,8 @@ func QueryReadiness(
 // wouldRefuse reports whether EVERY machine that could serve the request says it
 // would refuse to sign, and why, and brings back each machine's own view of its
 // sources for the cycle record. All of them, because the request goes to every
-// listed machine and any one of them signing is enough. Every uncertainty
-// answers false: "not known" is not "do not try".
+// listed machine and is worth paying for while any of them would sign. Every
+// uncertainty answers false: "not known" is not "do not try".
 //
 // Every machine is asked, concurrently, rather than stopping at the first that
 // would sign. A readiness query costs no fee and no gas, so asking them all
@@ -141,9 +141,9 @@ func wouldRefuse(
 			continue
 		}
 		if first == "" {
-			first = fmt.Sprintf("%s reports observation %ds old, class %q, ready=%t",
+			first = fmt.Sprintf("%s reports observation %ds old, class %q, ready=%t, adminsSet=%t",
 				targets[i], a.report.Payload.ObservationAge, a.report.Payload.LastErrorClass,
-				a.report.Payload.Readiness.Ready)
+				a.report.Payload.Readiness.Ready, a.report.Payload.Readiness.AdminsSet)
 		}
 	}
 	if len(health) == 0 {

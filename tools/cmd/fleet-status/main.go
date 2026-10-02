@@ -1,28 +1,31 @@
 // Command fleet-status answers "which of our TEE machines are configured for
 // the feed, and are they all running the same thing?" in one screen.
 //
-//	go run ./cmd/fleet-status -store 0x… -feedId 0x20555344582f…
-//	go run ./cmd/fleet-status -store 0x… -feedId 0x20555344582f… -json
+//	go run ./cmd/fleet-status
+//	go run ./cmd/fleet-status -store 0x… -feedId 0x21555344582f… -json
 //
-// The instructions sender is derived from the store's pointer unless given with
-// -instructionSender.
+// The store defaults to the TeeOracleFeedStore entry in the addresses file and
+// the feed to USDX/USD; the instructions sender is derived from the store's
+// pointer unless given with -instructionSender.
 //
 // Three sources, and the point of the tool is that they can disagree:
 //
-//	registry     which machines exist and their lifecycle status
+//	registry     the extension's active machines (the active set holds only
+//	             PRODUCTION machines) and each one's status
 //	on-chain     the feed's latest published configuration (latestEndpointsHash /
 //	             latestAdminsHash, plus versions) and whether each machine is at
 //	             it (isTeeIdConfigured — the precondition requestFeedUpdate
 //	             enforces per target)
 //	live         what each machine says it is running right now: its signed
 //	             readiness report, asked over the proxy's direct channel, so
-//	             this column needs the proxy's key (-directApiKey)
+//	             this column needs the proxy's key (DIRECT_API_KEY)
 //
 // A machine can be registered, sent a config it rejected, and still report
-// ready: true — running the PREVIOUS config. It then fails every submitFeedUpdates
-// with StaleEndpoints and the feed quietly stops advancing. The on-chain column
-// is what makes that visible without trusting the machine's own account of
-// itself; the live column is what tells you whether it has recovered.
+// ready: true — running the PREVIOUS config. Its answers are then refused as
+// StaleEndpoints, and once too few machines are left the feed quietly stops
+// advancing. The on-chain column is what makes that visible without trusting
+// the machine's own account of itself; the live column is what tells you
+// whether it has recovered.
 package main
 
 import (
@@ -56,11 +59,15 @@ func main() {
 		"feed id (bytes21 hex); defaults to USDX/USD")
 	storeF := flag.String("store", "",
 		"TeeOracleFeedStore address (default: the TeeOracleFeedStore entry in the addresses file)")
-	jsonOut := flag.Bool("json", false, "emit one JSON object per machine instead of a table")
-	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
+	jsonOut := flag.Bool("json", false, "emit the machines as one JSON array, one object per machine, instead of a table")
+	apiKeyF := flag.String("directApiKey", "",
 		"proxy API key for the live columns, read over GET_READINESS; without one they stay "+
 			"empty (default: $DIRECT_API_KEY)")
 	flag.Parse()
+	// Read after parsing rather than as the flag's default, so -h never prints the key.
+	if *apiKeyF == "" {
+		*apiKeyF = os.Getenv("DIRECT_API_KEY")
+	}
 
 	if *senderF != "" && !common.IsHexAddress(*senderF) {
 		fccutils.FatalWithCause(errors.Errorf("%q is not an address", *senderF))
@@ -129,8 +136,8 @@ type Machine struct {
 	AdminsHash       string `json:"adminsHash,omitempty"`
 	AdminsVersion    uint64 `json:"adminsVersion,omitempty"`
 
-	// The store's latest accepted observation, if any. Replaces lastReport and
-	// isProvenConfigured, both gone: the store keeps no per-machine bookkeeping.
+	// The store's latest accepted observation, if any. One stamp for the feed:
+	// the store keeps no per-machine record.
 	ObservedAt uint64 `json:"observedAt,omitempty"`
 
 	// Live, from the signed readiness report. Best-effort.
@@ -154,8 +161,8 @@ func buildReport(
 		return nil, errors.Errorf("binding the store: %s", err)
 	}
 
-	// The store's latest accepted observation. One global stamp now — per-machine
-	// bookkeeping is gone.
+	// The store's latest accepted observation: one stamp for the feed, since the
+	// store keeps no per-machine record.
 	storeObservedAt, _ := store.ObservedAt(&bind.CallOpts{Context: ctx})
 
 	// The registry lists machines per extension; the feed store only accepts
@@ -185,7 +192,7 @@ func buildReport(
 		}
 
 		if status, err := s.TeeMachineRegistry.GetTeeMachineStatus(opts, id); err == nil {
-			m.Status = teestatus(status)
+			m.Status = fccutils.TeeStatusName(status)
 		}
 
 		if configured, err := sender.IsTeeIdConfigured(opts, feedID, id); err == nil {
@@ -225,23 +232,6 @@ func liveState(ctx context.Context, proxyURL, apiKey string, m *Machine) {
 
 // liveQueryTimeout bounds one machine's readiness round trip.
 const liveQueryTimeout = 15 * time.Second
-
-func teestatus(s uint8) string {
-	switch s {
-	case 0:
-		return "NONE"
-	case 1:
-		return "REGISTERED"
-	case 2:
-		return "PRODUCTION"
-	case 3:
-		return "DECOMMISSIONED"
-	case 4:
-		return "PAUSED"
-	default:
-		return fmt.Sprintf("UNKNOWN(%d)", s)
-	}
-}
 
 func shortHash(h string) string {
 	if len(h) <= 12 {

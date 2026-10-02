@@ -14,16 +14,15 @@ import (
 type Outcome string
 
 const (
-	// Our submission landed — the only outcome that advanced the feed.
+	// Our submission landed.
 	OutcomeAccepted Outcome = "accepted"
 
-	// A newer price was already stored. A SUCCESS: with ≥2 keepers exactly one
-	// submission wins per cycle. Must never alert.
+	// The store refused our batch NotNewer (in the preflight, the rehearsal or
+	// gas estimation), or our submission was mined and reverted, and the store,
+	// read afterwards, holds an observedAt at least as new as ours: another
+	// submission landed first, almost always another keeper's later request.
+	// The feed advanced, so this is a success and must never alert.
 	OutcomeRaceLost Outcome = "race_lost"
-
-	// NotNewer, but the store is BEHIND our report: we relayed something old.
-	// A latency problem worth seeing, unlike OutcomeRaceLost.
-	OutcomeStaleSubmission Outcome = "stale_submission"
 
 	// The trigger transaction never landed.
 	OutcomeRequestFailed Outcome = "request_failed"
@@ -37,25 +36,32 @@ const (
 	// is expected, not exceptional.
 	OutcomeNoResult Outcome = "no_result"
 
-	// Status-0: the extension declined to publish and named a class in Log.
+	// No answering machine published a usable update: each declined (status 0)
+	// or sent a result that does not decode. ErrorClass carries the first
+	// refusal's text, and is empty when every answer failed to decode.
 	OutcomeExtensionFailed Outcome = "extension_failed"
 
-	// The report is real but the store will not take it — StaleEndpoints,
-	// StaleAdmins, NotNewer, TooFarAhead and friends.
+	// The answers are real but the store will not take them: StaleEndpoints,
+	// StaleAdmins, SpreadTooBig, TooFarAhead and friends, named in
+	// SubmitOutcome. Also a submission that was mined and reverted while the
+	// store stayed behind it, under the guard its replay names (Reverted when
+	// none), and a NotNewer while the store reads lower than our batch, which
+	// only a lagging RPC node or an unreadable store can produce.
 	OutcomeRejected Outcome = "rejected"
 
 	// OutcomeDryRun is a cycle that requested, collected and passed the store's
 	// rehearsal, then stopped before submitting because it was asked to.
 	OutcomeDryRun Outcome = "dry_run"
 
-	// Submitted, but no receipt inside the deadline. Not chased.
+	// Submitted, but no receipt inside the submit deadline. Not chased. A
+	// submission that was mined and reverted is race_lost or rejected instead.
 	OutcomeNotMined Outcome = "not_mined"
 
 	OutcomeInternal Outcome = "internal"
 )
 
-// Advanced reports whether the cycle left a newer price on chain, whether or not
-// this keeper is the one that put it there.
+// Advanced reports whether the feed holds a price at least as new as this
+// cycle's, whether or not this keeper is the one that put it there.
 func (o Outcome) Advanced() bool {
 	return o == OutcomeAccepted || o == OutcomeRaceLost
 }
@@ -71,8 +77,9 @@ type Record struct {
 
 	Outcome Outcome `json:"outcome"`
 
-	// Proxy is the first of the fleet's proxies to answer, which on a bad cycle
-	// is what says whose failure it was.
+	// Proxy is the first proxy, in poll order (the configured one, then the
+	// fleet's), that returned a result; the configured proxy when the cycle
+	// ended before any did.
 	Proxy string `json:"proxy,omitempty"`
 
 	// TeeIDs are the machines whose updates went up together, recovered from
@@ -92,8 +99,12 @@ type Record struct {
 	// "timeout" when no terminal result arrived.
 	ResultStatus string `json:"resultStatus,omitempty"`
 
-	// ActionResult.Log on a status-0 result: a constant from the extension's
-	// closed vocabulary, which is the alert key.
+	// ErrorClass is the first status-0 result's ActionResult.Log, copied
+	// verbatim: the extension's public refusal text, "error: <reason>". The
+	// reasons form a closed set (internal/failure), each with a class, so
+	// monitoring routes on the reason text through a reason → class table. A
+	// command the build does not serve reaches Log as the extension's 501 body
+	// instead, which is outside that set.
 	ErrorClass string `json:"errorClass,omitempty"`
 
 	// Every machine's own view of its sources, from the readiness preflight,
@@ -104,18 +115,27 @@ type Record struct {
 	// asked (no key, none reachable), never that the sources are healthy.
 	SourceHealth map[string]map[string]string `json:"sourceHealth,omitempty"`
 
-	// SubmitOutcome is "accepted", a named store guard, or "not_attempted".
+	// SubmitOutcome is how the submission step ended: "accepted"; "not_attempted"
+	// when the cycle ended before it; "dry_run"; "send_failed" when the
+	// transaction could not be sent for a reason that names no store guard;
+	// "not_mined"; or the store guard that refused the batch (NotNewer,
+	// StaleEndpoints, SpreadTooBig, …, or Reverted when the revert names none),
+	// whether the refusal came in the preflight, the rehearsal, gas estimation or
+	// a mined submission's replay.
 	SubmitOutcome string `json:"submitOutcome,omitempty"`
-	SubmitTx      string `json:"submitTx,omitempty"`
+	// SubmitTx is the submitFeedUpdates transaction, once one was broadcast.
+	SubmitTx string `json:"submitTx,omitempty"`
 
 	// Prices are each contributor's value at its own scale, in TeeIDs order, as
 	// strings. The keeper never aggregates them: the store takes the median.
 	Prices []string `json:"prices,omitempty"`
-	// ObservedAt is the instant the whole batch observed.
+	// ObservedAt is the batch's common observedAt: the requesting instruction's
+	// block timestamp, which every machine answering it signs.
 	ObservedAt uint64 `json:"observedAt,omitempty"`
 
-	// The store's observedAt at the end of the cycle — the one signal that
-	// cannot lie, and what separates a lost race from a real failure.
+	// The store's observedAt at the end of the cycle, read from the chain rather
+	// than taken from any machine. Zero when it could not be read, or before the
+	// first update.
 	StoreObservedAtAfter uint64 `json:"storeObservedAtAfter"`
 
 	// Dropped names the answers that arrived but did not go up, each with the

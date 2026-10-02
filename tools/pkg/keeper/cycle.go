@@ -46,16 +46,18 @@ type Config struct {
 	// and inside the signed update, so a mismatch with the store reverts.
 	FeedID [21]byte
 
-	// TeeIDs are the machines to ask. The sender dispatches one instruction per
-	// target and the fee scales with the count, so this is both a routing and a
-	// cost decision — and, since the store wants a threshold of distinct
-	// signatures per submission, a liveness one. An answer signed by any other
-	// machine is dropped before submission. Empty is a configuration error
-	// caught before any request.
+	// TeeIDs are the machines to ask. The sender dispatches one instruction
+	// addressed to every target and the fee scales with the count, so this is
+	// both a routing and a cost decision — and, since the store wants a
+	// threshold of distinct signatures per submission, a liveness one. Every
+	// target must be at the feed's latest published configuration, or the
+	// request reverts. An answer signed by any other machine is dropped before
+	// submission. Empty is a configuration error caught before any request.
 	TeeIDs []common.Address
 
-	// Proxy is the first place results are looked for, and the machine the
-	// readiness preflight asks before paying the registry fee.
+	// Proxy is the first place results are looked for. The readiness preflight
+	// asks it along with every ResultProxies entry before paying the registry
+	// fee.
 	Proxy string
 
 	// ResultProxies are further proxies to look for results on. Each addressed
@@ -88,7 +90,8 @@ type Config struct {
 	// which reads like a chain problem rather than an empty wallet.
 	MinBalance *big.Int
 
-	// DryRun stops after preflight, sending no transaction.
+	// DryRun stops before submitFeedUpdates: the requestFeedUpdate transaction is
+	// still sent and its fee paid, since that is what makes the machines answer.
 	DryRun bool
 }
 
@@ -184,15 +187,15 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) ([]feedupdate.
 		return fail(OutcomeNoResult, err)
 	}
 
-	// The first proxy to answer stands for the round.
+	// The first proxy in poll order with a result stands for the round.
 	rec.Proxy = results[0].proxy
 
 	updates := make([]feedupdate.Update, 0, len(results))
 	for _, r := range results {
 		if r.result.Status != direct.StatusSucceeded {
-			// A status-0 result is the extension declining to publish; Log is a
-			// class from its closed vocabulary. Relaying anything would invent a
-			// price.
+			// A status-0 result is the extension declining to publish; Log is
+			// its public refusal text, "error: <reason>". Relaying anything
+			// would invent a price.
 			logger.Warnf("[%s] %s published nothing (status %d): %s",
 				cfg.KeeperID, r.proxy, r.result.Status, r.result.Log)
 			if rec.ErrorClass == "" {
@@ -261,10 +264,10 @@ func Relay(
 		rec.Prices = append(rec.Prices, u.Price())
 	}
 
+	ours := batch[0].ObservedAt
 	if err := Preflight(ctx, s, cfg.Store, batch, signers); err != nil {
 		if rj, ok := AsRejection(err); ok {
-			rec.SubmitOutcome = rj.Guard
-			return finish(ctx, s, cfg, rec, classifyRejection(rj, batch[0].ObservedAt), err)
+			return settleRejection(ctx, s, cfg, rec, rj, ours)
 		}
 		return finish(ctx, s, cfg, rec, OutcomeInternal, err)
 	}
@@ -276,20 +279,77 @@ func Relay(
 
 	tx, err := submit(ctx, s, cfg, batch)
 	if err != nil {
+		// Gas estimation runs the submission against pending state, so a batch
+		// overtaken since its rehearsal is refused here, by name.
+		if rj, ok := AsRejection(err); ok {
+			return settleRejection(ctx, s, cfg, rec, rj, ours)
+		}
 		rec.SubmitOutcome = "send_failed"
 		return finish(ctx, s, cfg, rec, OutcomeRejected, err)
 	}
 	rec.SubmitTx = tx.Hash().Hex()
 
-	if err := waitMined(ctx, s, tx, cfg.SubmitTimeout); err != nil {
+	receipt, err := awaitReceipt(ctx, s, tx, cfg.SubmitTimeout)
+	if err != nil {
 		// Not chased. The next cycle supersedes this one, and a replacement
 		// carrying the same observedAt would revert NotNewer anyway.
 		rec.SubmitOutcome = "not_mined"
 		return finish(ctx, s, cfg, rec, OutcomeNotMined, err)
 	}
+	if receipt.Status != types.ReceiptStatusSuccessful {
+		return settleRevert(ctx, s, cfg, rec, batch, receipt)
+	}
 
 	rec.SubmitOutcome = "accepted"
 	return finish(ctx, s, cfg, rec, OutcomeAccepted, nil)
+}
+
+// settleRejection ends a cycle whose batch the store refused before it was
+// mined: in the preflight's own checks, in the rehearsal, or at gas estimation.
+// A NotNewer is a lost race when the store, read again now, holds an
+// observedAt at least as new as ours; every other refusal is a rejection.
+func settleRejection(
+	ctx context.Context, s *support.Support, cfg Config, rec Record, rj *Rejection, ours uint64,
+) (Record, error) {
+	rec.SubmitOutcome = rj.Guard
+	out := OutcomeRejected
+	if rj.Guard == guardNotNewer {
+		stored, err := readStoreObservedAt(ctx, s, cfg.Store)
+		if raceLost(ours, stored, err == nil) {
+			out = OutcomeRaceLost
+		}
+	}
+	return finish(ctx, s, cfg, rec, out, rj)
+}
+
+// settleRevert ends a cycle whose submission was mined and reverted. The
+// replay names the guard for the record; the outcome rests on the store alone.
+// A batch that passed its rehearsal and then reverted has almost always been
+// overtaken, and a store that now holds an observedAt at least as new as ours
+// says the feed advanced regardless of which guard the replay names. Otherwise
+// it is a rejection under that guard.
+func settleRevert(
+	ctx context.Context, s *support.Support, cfg Config, rec Record,
+	batch []feedupdate.Update, receipt *types.Receipt,
+) (Record, error) {
+	rj := replayRevert(ctx, s, cfg.Store, batch, receipt.BlockNumber)
+	rec.SubmitOutcome = rj.Guard
+	stored, err := readStoreObservedAt(ctx, s, cfg.Store)
+	out := OutcomeRejected
+	if raceLost(batch[0].ObservedAt, stored, err == nil) {
+		out = OutcomeRaceLost
+	}
+	return finish(ctx, s, cfg, rec, out, errors.Wrapf(rj,
+		"tx %s was mined in block %s and reverted", receipt.TxHash.Hex(), receipt.BlockNumber))
+}
+
+// raceLost reports whether a refused batch was overtaken: the store, read after
+// the refusal, holds an observedAt at least as new as the batch's. The ratchet
+// only moves forward, so a NotNewer reads this way whenever the read reaches a
+// node that has seen the refusing state; a lagging node, or a store that could
+// not be read at all, answers false and the cycle stays a rejection.
+func raceLost(ours, stored uint64, readable bool) bool {
+	return readable && stored >= ours
 }
 
 // signedUpdate is a decoded update with the machine its signature recovers to.
@@ -391,20 +451,6 @@ func (c Config) pollTargets() []string {
 	return out
 }
 
-// classifyRejection separates the one benign store guard from the rest.
-// NotNewer fires both when a keeper loses a race and when its own batch was
-// stale; comparing against the store's stamp tells those apart. The only time
-// rule left on the store is strict monotonicity.
-func classifyRejection(rj *Rejection, observedAt uint64) Outcome {
-	if rj.Guard != "NotNewer" {
-		return OutcomeRejected
-	}
-	if rj.StoreObservedAt >= observedAt {
-		return OutcomeRaceLost
-	}
-	return OutcomeStaleSubmission
-}
-
 // signedBatch reshapes decoded updates into the store's calldata, byte for byte.
 func signedBatch(batch []feedupdate.Update) []teeoraclestore.ITeeOracleFeedStoreSignedFeedUpdate {
 	out := make([]teeoraclestore.ITeeOracleFeedStoreSignedFeedUpdate, 0, len(batch))
@@ -425,7 +471,13 @@ func signedBatch(batch []feedupdate.Update) []teeoraclestore.ITeeOracleFeedStore
 	return out
 }
 
+// submit sends the batch to the store. A refusal at gas estimation that names a
+// store guard comes back as a *Rejection; any other failure is a plain error.
 func submit(ctx context.Context, s *support.Support, cfg Config, batch []feedupdate.Update) (*types.Transaction, error) {
+	parsed, err := teeoraclestore.IITeeOracleFeedStoreMetaData.GetAbi()
+	if err != nil {
+		return nil, errors.Errorf("parsing the store ABI: %s", err)
+	}
 	store, err := teeoraclestore.NewIITeeOracleFeedStoreTransactor(cfg.Store, s.ChainClient)
 	if err != nil {
 		return nil, errors.Errorf("binding the store: %s", err)
@@ -438,26 +490,25 @@ func submit(ctx context.Context, s *support.Support, cfg Config, batch []feedupd
 
 	tx, err := store.SubmitFeedUpdates(opts, signedBatch(batch))
 	if err != nil {
+		if rj := decodeRejection(parsed, err, "the store rejects this batch at gas estimation"); rj != nil {
+			return nil, rj
+		}
 		return nil, errors.Errorf("submitFeedUpdates rejected before broadcast: %s", err)
 	}
 	return tx, nil
 }
 
-func waitMined(ctx context.Context, s *support.Support, tx *types.Transaction, timeout time.Duration) error {
+// awaitReceipt waits up to timeout for tx's receipt, whatever its status. An
+// error means no receipt arrived in time.
+func awaitReceipt(ctx context.Context, s *support.Support, tx *types.Transaction, timeout time.Duration) (*types.Receipt, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	receipt, err := bind.WaitMined(ctx, s.ChainClient, tx)
 	if err != nil {
-		return errors.Errorf("tx %s was not mined within %s: %s", tx.Hash().Hex(), timeout, err)
+		return nil, errors.Errorf("tx %s was not mined within %s: %s", tx.Hash().Hex(), timeout, err)
 	}
-	if receipt.Status != types.ReceiptStatusSuccessful {
-		// Preflight passed, so this is a race that landed between the check and
-		// the send, or a guard that changed underneath us.
-		return errors.Errorf("tx %s reverted despite passing preflight — re-run "+
-			"oracle-cycle.sh --dry-run to see which guard rejects it", tx.Hash().Hex())
-	}
-	return nil
+	return receipt, nil
 }
 
 // PollResult waits for a terminal action result on one proxy.
@@ -584,14 +635,19 @@ func pollResults(
 	return out, nil
 }
 
-// storeObservedAt reads the store's current stamp. Best-effort: it is a
-// diagnostic on the record, not a control input.
-func storeObservedAt(ctx context.Context, s *support.Support, storeAddr common.Address) uint64 {
+// readStoreObservedAt reads the store's current stamp.
+func readStoreObservedAt(ctx context.Context, s *support.Support, storeAddr common.Address) (uint64, error) {
 	store, err := teeoraclestore.NewIITeeOracleFeedStoreCaller(storeAddr, s.ChainClient)
 	if err != nil {
-		return 0
+		return 0, errors.Errorf("binding the store: %s", err)
 	}
-	observedAt, err := store.ObservedAt(&bind.CallOpts{Context: ctx})
+	return store.ObservedAt(&bind.CallOpts{Context: ctx})
+}
+
+// storeObservedAt is readStoreObservedAt for the record, zero when unreadable.
+// Best-effort: it is a diagnostic, not a control input.
+func storeObservedAt(ctx context.Context, s *support.Support, storeAddr common.Address) uint64 {
+	observedAt, err := readStoreObservedAt(ctx, s, storeAddr)
 	if err != nil {
 		return 0
 	}

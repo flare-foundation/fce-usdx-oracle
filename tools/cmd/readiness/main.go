@@ -5,7 +5,7 @@
 // signature is bound to. It is how the operator scripts read a machine; the
 // machine publishes nothing else about itself.
 //
-//	go run ./cmd/readiness -p https://proxy.example -directApiKey KEY
+//	DIRECT_API_KEY=… go run ./cmd/readiness -p https://proxy.example
 //	go run ./cmd/readiness -extension http://127.0.0.1:7702     # a dev server, no proxy
 //
 // -p asks over the proxy's direct channel and needs the proxy's key. -extension
@@ -42,12 +42,16 @@ type output struct {
 
 func main() {
 	pf := flag.String("p", configs.ExtensionProxyURL, "the machine's proxy url")
-	apiKeyF := flag.String("directApiKey", os.Getenv("DIRECT_API_KEY"),
+	apiKeyF := flag.String("directApiKey", "",
 		"proxy API key for the direct channel (default: $DIRECT_API_KEY)")
 	extF := flag.String("extension", "",
 		"post to this extension's own /action instead of a proxy (the development harness)")
 	timeoutF := flag.Duration("timeout", 30*time.Second, "how long to wait for the answer")
 	flag.Parse()
+	// Read after parsing rather than as the flag's default, so -h never prints the key.
+	if *apiKeyF == "" {
+		*apiKeyF = os.Getenv("DIRECT_API_KEY")
+	}
 
 	// stdout carries the JSON and nothing else; the shared logger writes there.
 	logger.Set(logger.Config{Level: "ERROR", Console: true})

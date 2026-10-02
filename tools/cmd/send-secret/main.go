@@ -124,7 +124,7 @@ from the same two variables.
 The freshness window is `+envelope.Freshness.String()+`: sign and submit within it, or
 the envelope is rejected as stale.
 
-Two role-tagged signer sets are published per machine, and the ref decides which
+Two role-tagged signer sets are published per feed, and the ref decides which
 one applies: `+strings.Join(protocol.BackingRefs(), ", ")+`
 are authorised by the backing set (at least `+fmt.Sprint(protocol.MinBackingThreshold)+` signature), every other ref by
 the providers set (at least `+fmt.Sprint(protocol.MinProviderThreshold)+` DISTINCT signatures). The exact thresholds

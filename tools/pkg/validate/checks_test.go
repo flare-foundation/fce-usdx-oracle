@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
@@ -435,5 +436,21 @@ func TestCheckExtensionEnvFormat_EmptyValue(t *testing.T) {
 	}
 	if failCount != 1 {
 		t.Errorf("expected 1 FAIL for empty value, got %d", failCount)
+	}
+}
+
+// Every chain the scripts deploy to is named, so the chain-ID check says which
+// network a CHAIN_URL reaches rather than "unknown network".
+func TestChainNameCoversEveryScriptChain(t *testing.T) {
+	for id, want := range map[int64]string{
+		31337: "Hardhat/Anvil (local devnet)",
+		16:    "Coston (testnet)",
+		114:   "Coston2 (testnet)",
+		19:    "Songbird (canary network)",
+		14:    "Flare (mainnet)",
+	} {
+		if got := chainName(big.NewInt(id)); got != want {
+			t.Errorf("chainName(%d) = %q, want %q", id, got, want)
+		}
 	}
 }
