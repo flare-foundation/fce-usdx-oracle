@@ -1,0 +1,81 @@
+# Builds the extension TEE image (./Dockerfile) reproducibly on every tag and
+# publishes it to ghcr.io, after tee-node's workflow of the same name. The
+# image's config digest is the code hash a Confidential Space VM attests and the
+# chain registers, so the job rebuilds the image from scratch and fails unless
+# both builds agree byte for byte; see REPRODUCIBILITY.md.
+#
+# The keeper (keeper.Dockerfile) is not built here: nothing attests it, and the
+# GitLab pipeline publishes it.
+name: repro-container-images
+
+on:
+  push:
+    tags: [ "*" ]
+
+jobs:
+  build-repro:
+    name: Build (repro)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+      with:
+        fetch-depth: 0
+
+    - name: Set build metadata
+      env:
+        REPOSITORY: '${{ github.repository }}'
+        TAG: '${{ github.ref_name }}'
+      run: |
+        image="ghcr.io/${REPOSITORY,,}"
+        tags="$image:$TAG"
+        # latest follows stable releases only: strict semver, no pre-release suffix.
+        if [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+          tags+=",$image:latest"
+        fi
+        echo "ALL_TAGS=$tags" >>"$GITHUB_ENV"
+        echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >>"$GITHUB_ENV"
+
+    - name: Login to ghcr.io
+      uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Reproducibly build and push image
+      id: build
+      uses: freedomofpress/repro-build@9987861aa56cdd7d75baa5dbdb7d7b6d719f1653  # 2.0.0
+      with:
+        tags: ${{ env.ALL_TAGS }}
+        source_date_epoch: ${{ env.SOURCE_DATE_EPOCH }}
+        push: true
+
+    - name: Verify image reproducibility
+      uses: freedomofpress/repro-build/verify@9987861aa56cdd7d75baa5dbdb7d7b6d719f1653  # 2.0.0
+      with:
+        expected_digest: ${{ steps.build.outputs.digest }}
+        source_date_epoch: ${{ env.SOURCE_DATE_EPOCH }}
+
+    # The code hash is the config digest, not the manifest digest the registry
+    # shows, so it is read from the build's own metadata. Written only once the
+    # rebuild has matched: a hash from an image that failed verification is not
+    # one to register.
+    - name: Record the code hash
+      env:
+        METADATA: ${{ steps.build.outputs.metadata }}
+        DIGEST: ${{ steps.build.outputs.digest }}
+      run: |
+        config="$(jq -r '."containerimage.config.digest" // empty' <<<"$METADATA")"
+        [[ "$config" == sha256:?* ]] || { echo "build metadata has no containerimage.config.digest"; exit 1; }
+        {
+          echo "### ${ALL_TAGS%%,*}"
+          echo
+          echo "| | |"
+          echo "| --- | --- |"
+          echo "| code hash | \`0x${config#sha256:}\` |"
+          echo "| manifest digest | \`$DIGEST\` |"
+          echo "| SOURCE_DATE_EPOCH | \`$SOURCE_DATE_EPOCH\` |"
+        } >>"$GITHUB_STEP_SUMMARY"

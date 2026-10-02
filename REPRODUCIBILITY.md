@@ -41,9 +41,14 @@ the two Go modules and of the proxy image drift apart.
   bytes. Adapted from
   [reproducible-containers/repro-sources-list.sh](https://github.com/reproducible-containers/repro-sources-list.sh/blob/master/alternative/Dockerfile.debian-13)
 - CI uses BuildKit's [`rewrite-timestamp=true`](https://github.com/moby/buildkit/pull/4057)
-  exporter option to normalize layer timestamps, and on every tag offers a
-  manual `verify-reproducible` job that rebuilds the published image cold and
-  compares code hashes
+  exporter option to normalize layer timestamps. Two pipelines publish the
+  image on every tag, and both check it by rebuilding it cold:
+  - GitHub (`.github/workflows/repro-build.yml`) builds it with
+    [freedomofpress/repro-build](https://github.com/freedomofpress/repro-build),
+    pushes it to `ghcr.io/flare-foundation/fce-usdx-oracle`, fails unless the
+    rebuild is identical, and then writes the code hash to the job summary
+  - GitLab (`.gitlab-ci.yml`) pushes it to Flare's Artifact Registry and offers
+    a manual `verify-reproducible` job that compares the code hashes
 
 ## Build context
 
@@ -73,37 +78,62 @@ The default Docker builder does not properly support `rewrite-timestamp`
 ([moby/buildkit#4230](https://github.com/moby/buildkit/issues/4230)). You need
 a BuildKit builder using the `docker-container` driver.
 
-Create the builder (one-time setup):
+Create the builder (one-time setup), pinned to the BuildKit the GitHub workflow
+builds with — repro-build's default, which should move with that action's pin:
 
 ```sh
-docker buildx create --driver=docker-container --name=moby-buildkit --driver-opt image=moby/buildkit --bootstrap
+docker buildx create \
+  --driver=docker-container \
+  --name=moby-buildkit \
+  --driver-opt image=moby/buildkit:v0.31.0@sha256:a095b3d11ce1a9a05b6064ef515dfca0291ec5bcf2ea8178da8f6461924294e1 \
+  --bootstrap
 ```
 
-Clone the extension repository (self-contained — no sibling `tee-node/` needed;
-the pinned module is fetched from the network at build time):
+Clone the repository (self-contained — no sibling `tee-node/` needed; the
+pinned module is fetched from the network at build time), checkout the tag you
+want to verify, build locally and compare the config digest against the
+registry image:
 
 ```sh
-git clone https://github.com/flare-foundation/extension-examples.git
-```
+git clone https://github.com/flare-foundation/fce-usdx-oracle.git
+cd fce-usdx-oracle
 
-Checkout the tag you want to verify, build locally, and compare the image ID
-against the registry image. Run from `extension-examples/fce-usdx-oracle/`:
-
-```sh
 TAG=$(git describe --tags --abbrev=0)
 git checkout "$TAG"
 
-docker buildx build --builder moby-buildkit --platform linux/amd64 --no-cache --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) --output "type=docker,rewrite-timestamp=true" -t local/fce-usdx-oracle:verify --load -f Dockerfile .
+docker buildx build \
+  --builder moby-buildkit \
+  --platform linux/amd64 \
+  --no-cache \
+  --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+  --output "type=docker,rewrite-timestamp=true" \
+  -t local/fce-usdx-oracle:verify --load -f Dockerfile .
 
-# Where CI publishes it (.gitlab-ci.yml); the ID below is the code hash registered on chain.
-REGISTRY_IMAGE=europe-west1-docker.pkg.dev/flare-network-staging/containers/tee-usdx
+# the local image's config digest
+docker image save local/fce-usdx-oracle:verify | tar -xOf - manifest.json | sed -nE 's/.*"Config":"(blobs\/sha256\/)?([a-f0-9]{64})(\.json)?".*/sha256:\2/p' | head -n1
+
+# the published image's, from either registry CI pushes to
+REGISTRY_IMAGE=ghcr.io/flare-foundation/fce-usdx-oracle                               # GitHub
+# REGISTRY_IMAGE=europe-west1-docker.pkg.dev/flare-network-staging/containers/tee-usdx  # GitLab
 docker pull --platform linux/amd64 "$REGISTRY_IMAGE:$TAG"
-
-docker inspect --format='{{.Id}}' local/fce-usdx-oracle:verify
-docker inspect --format='{{.Id}}' "$REGISTRY_IMAGE:$TAG"
+docker image save "$REGISTRY_IMAGE:$TAG" | tar -xOf - manifest.json | sed -nE 's/.*"Config":"(blobs\/sha256\/)?([a-f0-9]{64})(\.json)?".*/sha256:\2/p' | head -n1
 ```
 
-Both IDs should be identical.
+Both values should be identical. With `0x` in place of `sha256:`, it is the
+code hash the chain registers for that image.
+
+### Why the config digest, and why not `docker inspect`
+
+The config digest is the sha256 of the OCI image config JSON. It covers the
+rootfs layer digests and every config field (env, command, labels), so it is
+what reproducibility has to match — and it is what Confidential Space reports
+as the image's id.
+
+`docker inspect --format='{{.Id}}'` is avoided because its meaning depends on
+the host's storage backend: it returns the config digest with the classic graph
+driver store and the manifest digest with the containerd image store. The
+manifest digest also covers platform metadata and compression, so two hosts
+that built byte-identical configs can still report different `.Id` values.
 
 ## Upstream references
 
