@@ -1,0 +1,66 @@
+# Creates a GitHub release for every v* tag, after tee-node's workflow of the
+# same name. Its notes are the tag's own section of CHANGELOG.md; a strict
+# semver tag (v1.2.3) is a stable release and becomes the latest one, any other
+# v* tag (v1.2.3-rc1) a pre-release. The image itself is built by
+# repro-build.yml.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+        with:
+          fetch-depth: 0
+
+      - name: Check if stable release
+        id: check
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # The same rule repro-build.yml applies to the latest image tag.
+          if [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract changelog
+        id: changelog
+        env:
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          # The lines under "## [<tag>]", up to the next "## [" heading. Matched
+          # as a string, not a pattern, so the dots in a version are literal.
+          body=$(awk -v heading="## [$TAG]" '
+            /^## \[/ { if (found) exit; found = (index($0, heading) == 1); next }
+            found' CHANGELOG.md)
+          if [[ -z "${body//[[:space:]]/}" ]]; then
+            echo "::warning::CHANGELOG.md has no section for $TAG; the release has no notes"
+          fi
+          # A random delimiter, so no line of the notes can end the value early.
+          delim="EOF_$(openssl rand -hex 8)"
+          {
+            echo "body<<$delim"
+            echo "$body"
+            echo
+            echo "**Full Changelog**: https://github.com/$REPOSITORY/blob/$TAG/CHANGELOG.md"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
+        with:
+          body: ${{ steps.changelog.outputs.body }}
+          draft: false
+          prerelease: ${{ steps.check.outputs.stable != 'true' }}
+          make_latest: ${{ steps.check.outputs.stable == 'true' }}
