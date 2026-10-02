@@ -41,10 +41,11 @@ done
 
 PROXY="${EXT_PROXY_URL:-http://localhost:6674}"
 ARGS=(-p "$PROXY")
-# The simulation's proxy accepts any /direct key (api_key_optional); elsewhere
-# the tool reads DIRECT_API_KEY itself and refuses to start without one.
-KEY="${DIRECT_API_KEY:-${STACK:+local}}"
-[[ -n "$KEY" ]] && ARGS+=(-directApiKey "$KEY")
+# The tool reads the key from DIRECT_API_KEY, never from its command line, where
+# ps shows it, and refuses to start without one. The simulation's proxy accepts
+# any /direct key (api_key_optional), so a recorded local stack gets a placeholder.
+DIRECT_API_KEY="${DIRECT_API_KEY:-${STACK:+local}}"
+[[ -n "$DIRECT_API_KEY" ]] && export DIRECT_API_KEY
 [[ -n "$INTERVAL" ]] && ARGS+=(-interval "$INTERVAL")
 [[ -n "$RECORDS" ]] && ARGS+=(-records "$RECORDS")
 [[ "$ONCE" == true ]] && ARGS+=(-once)

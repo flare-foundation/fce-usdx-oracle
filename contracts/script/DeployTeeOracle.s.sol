@@ -27,11 +27,16 @@ import {ITeeOracleInstructionsSender} from
  * deploy-time choice, made for the simulation and for test deployments on a
  * testnet; a production deployment uses upstream's script.
  *
- * Everything else matches upstream's configuration (deployment/chain-config):
- * the USDX/USD feed with its submission policy and the fee destination. The
- * extension id comes from the environment, since a test deployment may run
- * under a public id the registry minted rather than the reserved 1. The
- * contracts are upstream's own sources, compiled from the sibling checkout.
+ * Everything else matches upstream's simulation configuration
+ * (deployment/chain-config/scdev.json): the UsdxFeedStore registry name, the
+ * USDX/USD feed under custom-feed category 33 (0x21), the submission policy
+ * (one required signature, a 100 BIPS spread bound, no absolute bound) and the
+ * fee destination. The feed id must equal pkg/protocol.FeedID, the feed the
+ * extension signs for: a store deployed under any other id rejects every update
+ * with WrongFeedId. The extension id comes from the environment, since a test
+ * deployment may run under a public id the registry minted rather than the
+ * reserved 1. The contracts are upstream's own sources, compiled from the
+ * sibling checkout.
  *
  * Inputs come from the environment, set by deploy/scripts/deploy-oracle.sh:
  * DEPLOYER_PRIVATE_KEY, EXTENSION_ID (default 1), and the network's
@@ -42,7 +47,7 @@ import {ITeeOracleInstructionsSender} from
  */
 contract DeployTeeOracle is Script {
     string internal constant FEED_REGISTRY_NAME = "UsdxFeedStore";
-    uint8 internal constant FEED_CATEGORY = 0x20;
+    uint8 internal constant FEED_CATEGORY = 0x21;
     bytes20 internal constant FEED_NAME = bytes20("USDX/USD");
     uint8 internal constant REQUIRED_SIGNATURES = 1;
     uint16 internal constant MAX_SPREAD_BIPS = 100;

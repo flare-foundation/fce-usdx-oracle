@@ -2,12 +2,15 @@
 #
 # build-image.sh — build the extension TEE image and push it to a registry.
 #
-# The image's ID is what the machine attests: Confidential Space reports it as
-# submods.container.image_id, and tee-node turns that claim into the codeHash it
-# registers on chain (tee-node pkg/attestation/attestation_token.go, CodeHash()).
-# The ID is the *config* digest, which a push leaves untouched, so the code hash
-# is known here — before the VM boots — and is checked against the registry after
-# the push.
+# The image's config digest is what the machine attests: Confidential Space
+# reports it as submods.container.image_id, and tee-node turns that claim into
+# the codeHash it registers on chain (tee-node pkg/attestation/attestation_token.go,
+# CodeHash()). A push leaves the config digest untouched, so the code hash is
+# known here — before the VM boots — and is checked against the registry after
+# the push. It is taken from BuildKit's build metadata
+# (containerimage.config.digest, as CI's verify-reproducible reads it), not from
+# `docker image inspect {{.Id}}`: under the containerd image store the ID is the
+# manifest's digest, not the config's.
 #
 # This is a plain build, deliberately NOT a reproducible one: the code hash it
 # produces identifies the image but cannot be re-derived from source by anyone
@@ -31,8 +34,9 @@
 # reference and the code hash (EXPECTED_CODE_HASH, which upload-rpc-keys.sh and
 # upload-hex-key.sh ask for).
 #
-# Prerequisites: docker, jq, and push access
-# (`gcloud auth configure-docker <registry-host>` for Artifact Registry).
+# Prerequisites: docker with BuildKit (docker's default builder since 23), jq,
+# and push access (`gcloud auth configure-docker <registry-host>` for Artifact
+# Registry).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -47,8 +51,10 @@ die()  { echo -e "${RED}[build-image] ERROR:${NC} $*" >&2; exit 1; }
 source "$SCRIPT_DIR/lib/env.sh"; load_env
 source "$SCRIPT_DIR/lib/versions.sh"
 
-# Only the extension image is attested; the proxy image is not, so it is not built
-# here (start-services.sh builds it from deploy/proxy/Dockerfile).
+# Only the extension image is attested; the proxy is not, so it is not built here.
+# The compose stack runs tee-proxy's own published image at the pinned tag
+# (deploy/docker-compose.yaml); start-services.sh builds one from the sibling
+# checkout only with USE_LOCAL_SIBLINGS=1.
 DEFAULT_IMAGE_REPO="europe-west1-docker.pkg.dev/flare-network-staging/containers/tee-usdx"
 
 IMAGE_REPO="${IMAGE_REPO:-$DEFAULT_IMAGE_REPO}"
@@ -105,15 +111,20 @@ step "Build"
 # GOARCH=amd64 whatever the host is. The default builder is fine; what this build
 # skips relative to REPRODUCIBILITY.md is rewrite-timestamp, which needs a
 # docker-container builder and only matters for a hash someone else must re-derive.
+METADATA="$(mktemp)"
+trap 'rm -f "$METADATA"' EXIT
 docker build \
     --platform linux/amd64 \
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+    --metadata-file "$METADATA" \
     -t "$IMAGE" \
     -f "$PROJECT_DIR/Dockerfile" \
     "$PROJECT_DIR" \
     || die "build failed"
 
-CODE_HASH_RAW="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
+CODE_HASH_RAW="$(jq -r '."containerimage.config.digest" // empty' "$METADATA")"
+[[ "$CODE_HASH_RAW" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || die "the build metadata carries no config digest (containerimage.config.digest) — is BuildKit the builder? (docker buildx version)"
 CODE_HASH="0x${CODE_HASH_RAW#sha256:}"
 
 # ------------------------------------------------------------------
@@ -169,7 +180,7 @@ if [[ "$PUSH" == true ]]; then
     # If it is not, the image the VM pulls is not the image checked here.
     remote_config="$(docker buildx imagetools inspect "$IMAGE" --raw 2>/dev/null | jq -r '.config.digest // empty' || true)"
     if [[ -z "$remote_config" ]]; then
-        warn "could not read the registry's config digest — check by hand: docker pull $IMAGE && docker image inspect --format '{{.Id}}' $IMAGE"
+        warn "could not read the registry's config digest — check by hand: docker buildx imagetools inspect $IMAGE --raw | jq -r .config.digest"
     elif [[ "$remote_config" != "$CODE_HASH_RAW" ]]; then
         die "the registry holds config digest $remote_config, but the built image is $CODE_HASH_RAW — do not register this build"
     else

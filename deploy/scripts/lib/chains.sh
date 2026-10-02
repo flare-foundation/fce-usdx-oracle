@@ -8,10 +8,10 @@
 # bundled indexer database is published on (docker-compose.<chain>-indexer.yaml).
 # .env values override the defaults taken from here (CHAIN_URL, NORMAL_PROXY_URL).
 #
-# What a row does not say is whether the TEE contracts are on the chain:
-# deploy-oracle.sh asks the network's contract registry. Songbird and Flare are
-# listed so the scripts address them; their registries carry no FlareTeeManager
-# yet, and as mainnets they accept no simulated machine, so a stack there is a
+# What a row does not say is where the chain's system contracts are: the
+# addresses file and the network's contract registry say that
+# (import-upstream-addresses.sh, deploy-oracle.sh). Songbird and Flare are
+# mainnets: their registries accept no simulated machine, so a stack there is a
 # real Confidential Space machine (deploy/README.md, "A remote machine").
 #
 # `oracle` says where the TEE oracle contracts come from, which decides whether
@@ -61,6 +61,18 @@ chain_oracle()       { local id rpc proxy upstream faucet kind indexer indexer_p
 chain_is_mainnet()   { [[ "$(chain_kind "$1" 2>/dev/null)" == mainnet ]]; }
 # True when this repository deploys the oracle contracts for the chain itself.
 chain_deploys_own_oracle() { [[ "$(chain_oracle "$1" 2>/dev/null)" == own ]]; }
+
+# chain_compose_network <chain>: the Docker network a live chain's stack runs
+# on, which is the network of the chain's bundled indexer
+# (docker-compose.<indexer>-indexer.yaml), so the proxy resolves
+# <indexer>-indexer-db by name. Two rows on one chain share it: coston_local's is
+# fce-usdx-oracle-coston. A chain without a bundled indexer gets one of its own
+# name. COMPOSE_NETWORK, when set, overrides this wherever the scripts use it.
+chain_compose_network() {
+    local id rpc proxy upstream faucet kind indexer indexer_port oracle
+    chain_row "$1" || return 1
+    echo "fce-usdx-oracle-${indexer:-$1}"
+}
 
 # chain_from_id <chain id>: the chain with that id, or nothing. Coston's two rows
 # share an id, so this answers with the official one; a test deployment is named

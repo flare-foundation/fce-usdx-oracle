@@ -5,9 +5,9 @@
 # file is that list, packaged.
 #
 # It carries a second binary, cycles-web, which serves the keeper's records file
-# and the page that reads it. In Kubernetes the two run as two containers of one
-# pod over a shared volume (deploy/k8s/usdx-keeper.yaml); under plain docker the
-# keeper alone is the whole deployment and the second binary sits unused.
+# and the page that reads it. Run beside the keeper over a shared volume holding
+# that file, it is the keeper's dashboard; run without it, the keeper alone is
+# the whole deployment and the second binary sits unused.
 #
 # It is not the extension image, and deliberately shares none of its build. Nothing
 # here is attested, so the apt snapshot, the SOURCE_DATE_EPOCH clamping and the
@@ -37,9 +37,8 @@
 # `(^|/)\.?[Dd]ockerfile[^/]*$` — which swept up the .dockerignore beside it, and
 # hadolint cannot parse one of those. An ignore file must be named after its
 # Dockerfile, so the Dockerfile is what had to move out of the way. The cost is
-# that hadolint no longer sees this file either: it is clean as of this commit,
-# and `docker run --rm -i hadolint/hadolint hadolint - < keeper.Dockerfile` keeps
-# it so.
+# that CI's hadolint does not see this file either; it is checked by hand with
+# `docker run --rm -i hadolint/hadolint hadolint - < keeper.Dockerfile`.
 
 # Not pinned by digest, unlike the extension image: this one is not attested, and a
 # long-running keeper is better off taking the base's security fixes on a rebuild.
@@ -72,10 +71,11 @@ COPY tools/ ./
 # minutes. Off, the build needs no gcc and the binary needs no libc at runtime.
 # -trimpath keeps build-host paths out of it, -s -w drop the symbol and dwarf tables.
 #
-# Two binaries, one image, because they are two containers of the same pod: the
-# keeper writes the records and cycles-web serves them. Separate processes, so
-# only one of them is ever given KEEPER_KEY; separate images would only mean two
-# things to build, push and keep in step for what is one deployment.
+# Two binaries, one image, because they run as two containers of one deployment
+# over a shared volume: the keeper writes the records and cycles-web serves them.
+# Separate processes, so only one of them is ever given KEEPER_KEY; separate
+# images would only mean two things to build, push and keep in step for what is
+# one deployment.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -trimpath -ldflags="-s -w" -o /out/keeper ./cmd/keeper \
   && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
@@ -144,6 +144,6 @@ ENTRYPOINT ["/usr/local/bin/keeper"]
 # -tee has no default worth guessing, so a real invocation restates them:
 #   docker run ... usdx-keeper -tee 0xA,0xB -interval 10m -records /var/log/usdx/cycles.jsonl
 # Worth adding there: -keeperId. It defaults to the hostname, which under docker is
-# a fresh container id on every restart, so records from one keeper stop being
-# attributable to it across restarts without one.
+# the container id: new whenever the container is recreated (not on a plain
+# `docker restart`), so without one records stop being attributable across redeploys.
 CMD ["-interval", "10m", "-records", "/var/log/usdx/cycles.jsonl"]

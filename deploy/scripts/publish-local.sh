@@ -152,9 +152,10 @@ if [[ -z "$EXEC_FILE" && "$(eth_call "$SENDER_ADDR" 'productionMode()')" == *0 ]
     # simulation and on a test deployment alike, and the deployer is the key the
     # tools sign with, so the publication executes in the transaction that
     # submits it: no recording, no timelock, no executor. The tool confirms
-    # delivery over the machine's readiness query; the local proxy accepts any
-    # /direct key (api_key_optional), hence the placeholder.
-    ( cd "$PROJECT_DIR/tools" && go run "./cmd/$TOOL" -a "$ADDR_FILE" -c "$CHAIN_URL" -p "$EXT_PROXY_URL" -config "$CONFIG" -directApiKey "${DIRECT_API_KEY:-local}" ) \
+    # delivery over the machine's readiness query with the proxy's key, which it
+    # reads from DIRECT_API_KEY rather than its command line; the local proxy
+    # accepts any /direct key (api_key_optional), hence the placeholder.
+    ( cd "$PROJECT_DIR/tools" && DIRECT_API_KEY="${DIRECT_API_KEY:-local}" go run "./cmd/$TOOL" -a "$ADDR_FILE" -c "$CHAIN_URL" -p "$EXT_PROXY_URL" -config "$CONFIG" ) \
         || die "$TOOL failed"
     exit 0
 fi

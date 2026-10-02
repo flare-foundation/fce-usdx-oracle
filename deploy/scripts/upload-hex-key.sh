@@ -6,9 +6,9 @@
 #
 #   1. verify the machine is running a build you accept, and read its attested
 #      public key                                   (on-chain, not self-reported)
-#   2. for each credential: encrypt it to that key, sign the envelope with the
-#      backing admin key, submit it over the direct channel and wait for the
-#      machine's own verdict                        (ECIES; plaintext never leaves this shell)
+#   2. for each credential: encrypt it to that key, sign the envelope with every
+#      backing admin key held here, submit it over the direct channel and wait
+#      for the machine's own verdict                (ECIES; plaintext never leaves this shell)
 #   3. confirm from the machine's readiness report that nothing is still missing
 #
 # Two credentials fall under the backing set, and the machine uses the cash
@@ -20,10 +20,17 @@
 #                  SET_ENDPOINTS committed to — publish-local.sh commits from the same
 #                  variables, so on the simulation the two agree by construction.
 #
+# An envelope needs as many distinct backing admins' signatures as the backing
+# set's threshold: 1 on the simulation and on the test deployments use-chain.sh
+# sets up, more on a production deployment (Songbird's set is 2-of-3). The run
+# signs with every key in ADMIN_KEYS, or with ADMIN_KEY alone, and submits once
+# they reach the threshold. Holding fewer distinct keys than the threshold, it
+# stops before building anything, since nothing it built could be submitted.
+#
 # The party holding the credentials need not be a backing admin. With
 # --build-only the run stops after step 2's encryption: it writes each envelope
 # out unsigned, reads no admin key — not even one set in .env — and never
-# contacts the direct channel. A backing admin signs what it writes, and
+# contacts the direct channel. The backing admins sign what it writes, and
 # whoever holds the proxy API key submits it.
 #
 # Nothing here touches the chain except to READ it. The credentials are never in a
@@ -33,6 +40,7 @@
 #
 # Usage:
 #   ./deploy/scripts/upload-hex-key.sh
+#   ./deploy/scripts/upload-hex-key.sh --threshold 2  # match a 2-of-N backing set
 #   ./deploy/scripts/upload-hex-key.sh --no-verify    # mocknode only — see step 1
 #   ./deploy/scripts/upload-hex-key.sh --build-only   # encrypt and hand off; sign and submit nothing
 #
@@ -45,7 +53,11 @@
 #   CHAIN_ID           target chain id                (default: CHAIN_ID from .env)
 #   EXPECTED_CODE_HASH optional: pins the upload to one build on top of the registry's
 #                      acceptance (a SIMULATED_TEE=true machine defaults to tee-node's test constant)
-#   ADMIN_KEY          backing admin private key, hex (default on the simulation: the dev backing admin)
+#   ADMIN_KEYS         backing admin private keys held HERE, hex, comma-separated
+#                      (ADMIN_KEY is accepted as the single-key form; default on the
+#                      simulation: the dev backing admin); ignored with --build-only
+#   BACKING_THRESHOLD  signatures the backing set needs (default: backing.threshold in
+#                      deploy/config/admins/<chain>.json, else 1); --threshold overrides it
 #   DIRECT_API_KEY     proxy API key for the direct channel
 #   HEX_API_KEY        the Hex API key itself
 #   HEX_CASH_URL       the restricted cash URL, https  (optional; enables the cash source)
@@ -58,23 +70,28 @@ PROJECT_DIR="$REPO_ROOT"
 source "$REPO_ROOT/deploy/scripts/lib/chains.sh"
 source "$REPO_ROOT/deploy/scripts/lib/env.sh"; load_env
 
-VERIFY=true; BUILD_ONLY=false
+die() { printf '\nerror: %s\n' "$1" >&2; exit 1; }
+step() { printf '\n--- %s ---------------------------------------------------\n\n' "$1"; }
+
+VERIFY=true; BUILD_ONLY=false; THRESHOLD_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-verify) VERIFY=false; shift ;;
     --build-only) BUILD_ONLY=true; shift ;;
-    *) printf 'unknown argument: %s\n' "$1" >&2; exit 1 ;;
+    --threshold) [ $# -ge 2 ] || die "--threshold needs a number"
+                 THRESHOLD_ARG="$2"; shift 2 ;;
+    -h|--help) awk 'NR>2 && /^#/ {sub(/^# ?/, ""); print; next} NR>2 {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
+    *) die "unknown argument: $1 (try --help)" ;;
   esac
 done
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
 
 # The envelopes hold only ciphertext, but they are still removed on every exit
 # path rather than left in a working directory someone later tars up.
 WORKDIR="$(mktemp -d)"
 cleanup() { rm -rf "$WORKDIR"; }
 trap cleanup EXIT
-
-die() { printf '\nerror: %s\n' "$1" >&2; exit 1; }
-step() { printf '\n--- %s ---------------------------------------------------\n\n' "$1"; }
 
 # ask reads a visible value; ask_secret reads a hidden one. Both leave the value
 # in a variable and never in argv or the shell history.
@@ -140,10 +157,59 @@ fi
 # accepts only the hash given to it. EXPECTED_CODE_HASH pins the upload to that
 # exact build on top; it is optional.
 
-# A build-only run reads neither: it signs nothing and sends nothing, so it
-# asks for nothing it would not use.
-if [ "$BUILD_ONLY" = false ]; then
-  ask_secret ADMIN_KEY      "Backing admin private key (hidden)"
+# How many distinct backing admins must sign. The machine holds the real
+# threshold, published with SET_ADMINS; this run's copy comes from --threshold,
+# BACKING_THRESHOLD, or the admins file that publication is made from, and is 1,
+# the floor, when none names one. Like PROVIDER_THRESHOLD in upload-rpc-keys.sh,
+# it says when to stop collecting signatures, never that the machine will accept.
+ADMINS_FILE="$REPO_ROOT/deploy/config/admins/$(resolve_chain "").json"
+if [ -n "$THRESHOLD_ARG" ]; then
+  BACKING_THRESHOLD="$THRESHOLD_ARG"; THRESHOLD_FROM="--threshold"
+elif [ -n "${BACKING_THRESHOLD:-}" ]; then
+  THRESHOLD_FROM="BACKING_THRESHOLD"
+elif [ -f "$ADMINS_FILE" ] && BACKING_THRESHOLD="$(jq -er '.backing.threshold' "$ADMINS_FILE" 2>/dev/null)"; then
+  THRESHOLD_FROM="${ADMINS_FILE#"$REPO_ROOT"/}"
+else
+  BACKING_THRESHOLD=1; THRESHOLD_FROM="the backing set's floor"
+fi
+case "$BACKING_THRESHOLD" in
+  ''|*[!0-9]*) die "the backing threshold must be a positive whole number, not '$BACKING_THRESHOLD' ($THRESHOLD_FROM)" ;;
+esac
+[ "$BACKING_THRESHOLD" -ge 1 ] || die "the backing threshold must be at least 1 ($THRESHOLD_FROM)"
+
+# A build-only run reads neither keys nor the proxy API key: it signs nothing
+# and sends nothing, so it asks for nothing it would not use.
+KEYS=()
+if [ "$BUILD_ONLY" = true ]; then
+  # Emptied rather than left unread: .env may name admin keys, and a build-only
+  # run must not sign with them just because they happen to be there.
+  unset ADMIN_KEY ADMIN_KEYS
+else
+  # ADMIN_KEY is what send-secret itself reads, so a single-key operator can use
+  # the same variable for both upload scripts.
+  if [ -z "${ADMIN_KEYS:-}" ]; then
+    if [ -n "${ADMIN_KEY:-}" ]; then
+      ADMIN_KEYS="$ADMIN_KEY"
+    else
+      ask_secret ADMIN_KEYS "Backing admin private key(s), comma-separated (hidden)"
+    fi
+  fi
+  OLD_IFS="$IFS"; IFS=','; read -r -a KEYS <<< "$ADMIN_KEYS"; IFS="$OLD_IFS"
+
+  # Distinct signers, not keys as typed: one key written twice, with and without
+  # its 0x prefix or in another case, is one signer, and the machine counts
+  # signers. Refused here, before anything is built, because an envelope that
+  # cannot reach the threshold can never be submitted.
+  distinct="$(for key in "${KEYS[@]:-}"; do
+      key="$(printf '%s' "$key" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+      key="${key#0x}"; key="$(printf '%s' "$key" | sed 's/^0*//')"
+      if [ -n "$key" ]; then printf '%s\n' "$key"; fi
+    done | sort -u | wc -l | tr -d ' ')"
+  if [ "$distinct" -lt "$BACKING_THRESHOLD" ]; then
+    die "this run holds $distinct distinct backing admin key(s), and the backing set needs $BACKING_THRESHOLD signatures ($THRESHOLD_FROM). Nothing was built or sent.
+       Give every key held here in ADMIN_KEYS (comma-separated), or run with --build-only
+       and have $BACKING_THRESHOLD backing admins sign each envelope it writes before it is submitted."
+  fi
   ask_secret DIRECT_API_KEY "Proxy API key (hidden)"
 fi
 ask_secret SECRET_VALUE   "Hex API key (hidden)"
@@ -168,6 +234,7 @@ fi
 echo
 echo "machine   $PROXY_URL  (chain $CHAIN_ID)"
 echo "uploads   ${REFS[*]}"
+echo "signers   $BACKING_THRESHOLD of the backing set ($THRESHOLD_FROM)$([ "$BUILD_ONLY" = true ] || printf '; %s distinct key(s) held here' "$distinct")"
 if [ ${#REFS[@]} -eq 1 ]; then
   echo "          HEX_CASH_URL is not set, so only the key goes up and the machine keeps running cash-less"
 fi
@@ -195,7 +262,8 @@ if [ "$VERIFY" = true ]; then
   # here proves something about the key THIS request received; passing the id to
   # build is what makes build refuse a different key on its own request.
   ATTESTED_TEE_ID="$( cd "$REPO_ROOT/tools" && go run ./cmd/verify-tee \
-      -p "$PROXY_URL" ${EXPECTED_CODE_HASH:+-codeHash "$EXPECTED_CODE_HASH"} -printTeeId )" \
+      -p "$PROXY_URL" ${EXTENSION_ID:+-extensionId "$EXTENSION_ID"} \
+      ${EXPECTED_CODE_HASH:+-codeHash "$EXPECTED_CODE_HASH"} -printTeeId )" \
     || die "verification failed — nothing was sent"
   [ -n "$ATTESTED_TEE_ID" ] \
     || die "verification passed but printed no teeId — nothing was sent"
@@ -243,12 +311,26 @@ for REF in "${REFS[@]}"; do
     continue
   fi
 
-  # One signature: the backing set governs both refs at 1-of-1. Every other
-  # credential falls under the providers set and needs two distinct signers.
+  # Every key held here signs: the backing set governs both refs, and the
+  # envelope needs BACKING_THRESHOLD distinct backing admins. send-secret refuses
+  # a duplicate signer, so a key that already signed is a warning rather than a
+  # second useless signature. The envelope is ciphertext plus signatures, so one
+  # that falls short is kept for the other backing admins to sign.
   echo
   echo "» sign"
-  "$WORKDIR/send-secret" sign -in "$envelope" \
-    || die "could not sign the envelope for $REF"
+  for key in "${KEYS[@]:-}"; do
+    [ -n "$key" ] || continue
+    ADMIN_KEY="$key" "$WORKDIR/send-secret" sign -in "$envelope" \
+      || echo "  (that key did not add a signature)"
+  done
+  sigs="$(jq -r '.signatures | length' "$envelope")"
+  if [ "$sigs" -lt "$BACKING_THRESHOLD" ]; then
+    mkdir -p "$OUT_DIR"
+    cp "$envelope" "$(handoff_file "$REF")"
+    die "$REF carries $sigs signature(s), and the backing set needs $BACKING_THRESHOLD; nothing was submitted.
+       The envelope is kept at $(handoff_file "$REF") for the other backing admins to sign
+       (cd tools && go run ./cmd/send-secret sign -in <file>) before it is submitted."
+  fi
 
   # Direct channel: no gas, no transaction, no permanent record of the ciphertext.
   # Must land within the one-hour freshness window opened at build time. submit
@@ -257,10 +339,15 @@ for REF in "${REFS[@]}"; do
   echo
   echo "» submit"
   if ! "$WORKDIR/send-secret" submit -in "$envelope" -p "$PROXY_URL"; then
+    mkdir -p "$OUT_DIR"
+    cp "$envelope" "$(handoff_file "$REF")"
+    admins_arg=""
+    if [ -f "$ADMINS_FILE" ]; then admins_arg=" -admins $ADMINS_FILE"; fi
+    signers_hint="check who signed against the published set: (cd tools && go run ./cmd/send-secret signers -in $(handoff_file "$REF")$admins_arg)"
     if [ "$REF" = hex_cash_url ]; then
-      die "$REF was not applied — the usual cause is a published hex_cash commitment that was not made from this HEX_CASH_URL and HEX_CASH_SALT"
+      die "$REF was not applied — the usual cause is a published hex_cash commitment that was not made from this HEX_CASH_URL and HEX_CASH_SALT; otherwise $signers_hint"
     fi
-    die "$REF was not applied — the enclave reports one reason for every failure, so check its logs"
+    die "$REF was not applied — the enclave reports one reason for every failure: a signer outside the backing set, a threshold above $BACKING_THRESHOLD, or a stale version; $signers_hint"
   fi
 done
 
@@ -275,7 +362,8 @@ if [ "$BUILD_ONLY" = true ]; then
   echo "Send each file to the backing admins — it holds ciphertext only. Before the"
   echo "expiry printed above, each of them runs, with their own key in ADMIN_KEY:"
   echo "    cd tools && go run ./cmd/send-secret sign -in <file>"
-  echo "and once a file carries the threshold, whoever holds the proxy API key:"
+  echo "and once a file carries $BACKING_THRESHOLD signature(s) ($THRESHOLD_FROM), whoever holds the"
+  echo "proxy API key:"
   echo "    cd tools && go run ./cmd/send-secret submit -in <file> -p $PROXY_URL"
   exit 0
 fi
@@ -287,8 +375,8 @@ step "3/3  Confirming from the machine's readiness report"
 # ref list is taken from it: no report and a report naming nothing both yield an
 # empty list, and treating them alike once reported "no longer missing" for a
 # machine that had said nothing at all. Polled for up to two and a half minutes:
-# the report is the machine's live answer, but the secret is installed by the
-# poller's next observation.
+# the report is the machine's live answer and the secret is installed as soon as
+# SET_SECRET applies, but the proxy can take a moment to relay the answer.
 report_json=""
 missing=""
 outstanding=""

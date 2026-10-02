@@ -5,12 +5,15 @@
 # By default, starts services via Docker Compose, picking the compose overlay
 # from --chain (or env CHAIN, or legacy LOCAL_MODE):
 #   --chain local            → docker-compose.yaml only (local devnet)
-#   --chain coston|coston2|songbird|flare
+#   --chain coston|coston_local|coston2|songbird|flare
 #                            → + docker-compose.live.yaml, with the proxy
 #                              configuration rendered for that chain
 #
 # A live chain also needs its C-chain indexer, which docker-compose.<chain>-indexer.yaml
 # runs; start-services.sh refuses to start against one that is behind the chain.
+# The stack joins the indexer's Docker network, fce-usdx-oracle-<indexer chain>
+# (lib/chains.sh chain_compose_network; coston_local shares Coston's), so the
+# proxy reaches <indexer chain>-indexer-db by name. COMPOSE_NETWORK overrides it.
 #
 # Pass --local to run the extension TEE and proxy as host processes
 # (tools/cmd/local-stack) instead of containers.
@@ -169,6 +172,7 @@ render_live_proxy_config() {
     if [[ -n "${INDEXER_DB_HOST:-}" ]]; then
         db_host="$INDEXER_DB_HOST"; db_port="${INDEXER_DB_PORT:-3306}"
     elif [[ "$mode" == docker ]]; then
+        [[ -n "$(chain_indexer "$CHAIN")" ]] || die "no indexer database for $CHAIN — set INDEXER_DB_HOST/INDEXER_DB_PORT in .env to name one"
         db_host="$(chain_indexer "$CHAIN")-indexer-db"; db_port=3306
     else
         db_host=127.0.0.1; db_port="$(chain_indexer_port "$CHAIN")"
@@ -193,8 +197,9 @@ render_live_proxy_config() {
 mkdir -p "$(dirname "$CONFIG_FILE")"
 { grep -vE '^REDIS_BIND=' "$CONFIG_FILE" 2>/dev/null || true; echo "REDIS_BIND=$REDIS_BIND"; } > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 
-# Reserved id 1 (pinned in internal/config); the upstream sender/store are
-# not deployed locally. May be overridden for a test extension on another id.
+# The id .env names: 1 is the reserved id upstream's configuration uses, and a
+# public id is what deploy-oracle.sh recorded when the registry minted one. The
+# extension itself has no default; 1 is this script's when .env names none.
 EXTENSION_ID="${EXTENSION_ID:-1}"
 EXT_PROXY_EXTERNAL_BIND="${EXT_PROXY_EXTERNAL_BIND:-0.0.0.0:6674}"
 PROXY_PRIVATE_KEY="${PROXY_PRIVATE_KEY:-983760a4ebf75b2ac3a93531168a0f225d01e5dc6e3568adbd46233ba1fb4fa4}"
@@ -319,7 +324,11 @@ if [[ "$USE_LOCAL" == "false" ]]; then
         COMPOSE_FILES+=("-f" "$PROJECT_DIR/deploy/docker-compose.siblings.yaml")
     fi
     if [[ "$CHAIN" != local ]]; then
-        log "$CHAIN — attaching docker-compose.live.yaml"
+        # The network the chain's indexer runs on, which docker-compose.live.yaml
+        # and docker-compose.<indexer>-indexer.yaml both name, so the proxy
+        # resolves the indexer's database. stop-services.sh sets the same.
+        COMPOSE_NETWORK="${COMPOSE_NETWORK:-$(chain_compose_network "$CHAIN")}"; export COMPOSE_NETWORK
+        log "$CHAIN — attaching docker-compose.live.yaml (network $COMPOSE_NETWORK)"
         COMPOSE_FILES+=("-f" "$PROJECT_DIR/deploy/docker-compose.live.yaml")
     fi
 
@@ -340,10 +349,11 @@ if [[ "$USE_LOCAL" == "false" ]]; then
     # or the simulation it synced against, keeps signing-policy state for a chain
     # that no longer exists and never initialises the node for the current one.
     # A recreated node can come up under a new identity, so the machine has to be
-    # registered again: full-setup.sh does that in its next phase. Coston stacks
-    # keep their containers.
-    # The testnet overlays mount a proxy configuration the operator copies from
-    # its example; it is git-ignored because it can carry database credentials.
+    # registered again: full-setup.sh does that in its next phase. Live-chain
+    # stacks keep their containers.
+    # A live chain's proxy configuration is rendered for this run into out/proxy/
+    # (render_live_proxy_config), which is git-ignored because it can carry the
+    # indexer database's credentials.
     if [[ "$CHAIN" != "local" ]]; then
         check_indexer_sync
         PROXY_CONFIG_FILE="$(render_live_proxy_config docker)" || exit 1

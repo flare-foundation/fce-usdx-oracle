@@ -39,6 +39,9 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRIPT_NAME="$(basename "$0")"
 # shellcheck source=lib/chains.sh
 source "$SCRIPT_DIR/lib/chains.sh"
+# edit_in_place: the portable form of sed -i.
+# shellcheck source=lib/env.sh
+source "$SCRIPT_DIR/lib/env.sh"
 
 log() { echo "[use-chain] $*"; }
 die() { echo "[use-chain] ERROR: $*" >&2; exit 1; }
@@ -126,7 +129,7 @@ if [[ ! -f "$SRC" ]]; then
         # the one place the deployment's keys live, and nothing recovers a lost
         # deployer key.
         cp "$PROJECT_DIR/.env.example" "$SRC"
-        sed -i '' -E "s/^FLARE_CHAIN=.*/FLARE_CHAIN=$CHAIN/" "$SRC"
+        edit_in_place "$SRC" -E "s/^FLARE_CHAIN=.*/FLARE_CHAIN=$CHAIN/" || die "could not pin FLARE_CHAIN in $SRC"
         log "created .env.$CHAIN from .env.example"
     else
         log "no .env.$CHAIN in $PROJECT_DIR"
@@ -155,9 +158,9 @@ fill() {  # fill KEY VALUE: set KEY in .env.<chain> unless it already has a valu
     # & is the whole match in a sed replacement, \ and the delimiter are special.
     escaped="$(printf '%s' "$quoted" | sed 's/[&|\\]/\\&/g')"
     if grep -qE "^$key=" "$SRC"; then
-        sed -i '' -E "s|^$key=.*|$key=$escaped|" "$SRC"
+        edit_in_place "$SRC" -E "s|^$key=.*|$key=$escaped|" || die "could not write $key into $SRC"
     elif grep -qE "^# ?$key=" "$SRC"; then
-        sed -i '' -E "s|^# ?$key=.*|$key=$escaped|" "$SRC"
+        edit_in_place "$SRC" -E "s|^# ?$key=.*|$key=$escaped|" || die "could not write $key into $SRC"
     else
         printf '\n%s=%s\n' "$key" "$quoted" >> "$SRC"
     fi
@@ -170,9 +173,9 @@ given() {  # given KEY: a value passed on this command line is written, replacin
     quoted="$value"; [[ "$value" =~ [^A-Za-z0-9_./:-] ]] && quoted="\"$value\""
     escaped="$(printf '%s' "$quoted" | sed 's/[&|\\]/\\&/g')"
     if grep -qE "^# ?$key=" "$SRC" && ! grep -qE "^$key=" "$SRC"; then
-        sed -i '' -E "s|^# ?$key=.*|$key=$escaped|" "$SRC"
+        edit_in_place "$SRC" -E "s|^# ?$key=.*|$key=$escaped|" || die "could not write $key into $SRC"
     elif grep -qE "^$key=" "$SRC"; then
-        sed -i '' -E "s|^$key=.*|$key=$escaped|" "$SRC"
+        edit_in_place "$SRC" -E "s|^$key=.*|$key=$escaped|" || die "could not write $key into $SRC"
     else
         printf '\n%s=%s\n' "$key" "$quoted" >> "$SRC"
     fi
@@ -250,7 +253,7 @@ cp "$SRC" "$DST" || die "failed to copy $SRC → $DST"
 # The scripts resolve the chain from this name (scripts/lib/chains.sh); pinned
 # here so a .env.<chain> that predates the variable still names its chain. Not
 # CHAIN: Foundry's cast reads that variable as its --chain option.
-sed -i '' -E 's/^CHAIN=/FLARE_CHAIN=/' "$DST"
+edit_in_place "$DST" -E 's/^CHAIN=/FLARE_CHAIN=/' || die "could not pin FLARE_CHAIN in $DST"
 grep -qE '^FLARE_CHAIN=' "$DST" || printf '\n# The chain this file targets, pinned by use-chain.sh.\nFLARE_CHAIN=%s\n' "$CHAIN" >> "$DST"
 log "active chain: $CHAIN"
 
@@ -285,12 +288,17 @@ if [[ "$LIVE" == true && ! -f "$ADMINS" ]]; then
         log "wrote ${ADMINS#"$PROJECT_DIR"/}: backing [$OWNER_ADDR], providers [$OWNER_ADDR, $SECOND_ADDR]"
     fi
 elif [[ "$LIVE" == true && -f "$ADMINS" ]]; then
-    # An admin set left from another deployer would have the machine refuse this
-    # one's uploads; said here, not at the first rejected credential.
     OWNER_ADDR="$(val_in "$SRC" INITIAL_OWNER | tr '[:upper:]' '[:lower:]')"
-    BACKING="$(jq -r '.backing.admins[0] // empty' "$ADMINS" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-    if [[ -n "$OWNER_ADDR" && -n "$BACKING" && "$BACKING" != "$OWNER_ADDR" ]]; then
-        log "WARN: ${ADMINS#"$PROJECT_DIR"/} names $BACKING as backing admin, not this deployer ($OWNER_ADDR); delete the file to have it rewritten, or edit it"
+    IS_BACKING="$(jq -r --arg o "$OWNER_ADDR" '[.backing.admins[]? | ascii_downcase] | index($o) != null' "$ADMINS" 2>/dev/null || echo false)"
+    if git -C "$PROJECT_DIR" ls-files --error-unmatch "${ADMINS#"$PROJECT_DIR"/}" >/dev/null 2>&1; then
+        # A tracked admins file is a deployment's published set, whose admins
+        # hold their own keys; nothing here generates or replaces it.
+        log "${ADMINS#"$PROJECT_DIR"/} is this chain's published admin set: its admins sign uploads with their own keys (ADMIN_KEY / ADMIN_KEYS)"
+    elif [[ -n "$OWNER_ADDR" && "$IS_BACKING" != true ]]; then
+        # An admin set left by another deployer of a test deployment would have
+        # the machine refuse this one's uploads; said here, not at the first
+        # rejected credential.
+        log "WARN: ${ADMINS#"$PROJECT_DIR"/} does not name this deployer ($OWNER_ADDR) as a backing admin; delete the file to have it rewritten, or edit it"
     fi
 fi
 

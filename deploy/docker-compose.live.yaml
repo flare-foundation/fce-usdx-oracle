@@ -1,4 +1,5 @@
-# Docker Compose overlay for any live network: Coston, Coston2, Songbird, Flare.
+# Docker Compose overlay for any live network: Coston (both rows, coston and
+# coston_local), Coston2, Songbird, Flare.
 #
 # Usage:
 #   docker compose -f docker-compose.yaml -f docker-compose.live.yaml up -d
@@ -39,6 +40,13 @@ services:
       - MODE=${MODE:-1}
       - SIMULATED_TEE=${SIMULATED_TEE:-true}
 
+# The network the chain's indexer runs on (docker-compose.<indexer>-indexer.yaml),
+# so the proxy resolves <indexer>-indexer-db by name. start-services.sh and
+# stop-services.sh set COMPOSE_NETWORK to it, fce-usdx-oracle-<indexer chain>
+# (lib/chains.sh chain_compose_network): coston_local shares Coston's indexer, so
+# its stack runs on fce-usdx-oracle-coston. Run by hand, the default below is
+# right for every chain but coston_local, which needs
+# COMPOSE_NETWORK=fce-usdx-oracle-coston.
 networks:
   default:
     name: ${COMPOSE_NETWORK:-fce-usdx-oracle-${FLARE_CHAIN:-live}}

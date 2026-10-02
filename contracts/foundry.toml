@@ -4,11 +4,13 @@
 # tests see is whatever that checkout is at.
 #
 #   src/Bindings.sol   the interfaces deploy/scripts/generate-bindings.sh binds
-#   script/            the local-simulation deploy behind deploy/scripts/deploy-oracle-local.sh
+#   script/            the deployer-governed deploy behind deploy/scripts/deploy-oracle.sh
+#                      (the simulation and test deployments)
 #   test/              the wire-vector tests behind deploy/testdata/wire
 #                      (deploy/scripts/regen-wire-fixtures.sh)
 #
-# `forge install` here after cloning to fetch forge-std into lib/.
+# `forge install --no-git foundry-rs/forge-std` here after cloning to fetch forge-std
+# into lib/ (there is no .gitmodules, so a bare `forge install` fetches nothing).
 [profile.default]
 src = "src"
 test = "test"
@@ -25,7 +27,7 @@ evm_version = "cancun"
 # sibling checkout. The deploy script also pulls in upstream's implementations,
 # which import OpenZeppelin and flare-periphery from upstream's Soldeer
 # dependencies/; the versions here follow upstream's remappings.txt, and
-# deploy/scripts/deploy-oracle-local.sh installs them there when missing.
+# deploy/scripts/deploy-oracle.sh installs them there when missing.
 remappings = [
     "flare-smart-contracts-v2/=../../../../fsp/flare-smart-contracts-v2/contracts/",
     "@openzeppelin/contracts/=../../../../fsp/flare-smart-contracts-v2/dependencies/@openzeppelin-contracts-5.7.0/",

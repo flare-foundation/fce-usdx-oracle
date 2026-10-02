@@ -19,9 +19,18 @@
 # deploy/config/local/deployed-addresses.json from the e2e repository's sim dump
 # (SIM_DUMP, a flat name→address map) before slotting the oracle contracts in.
 #
+# Nothing is written until everything has been read and checked. The new
+# addresses file and the indexer configuration are assembled in a temporary
+# directory, and replace the files in deploy/config only once the deploys file,
+# the addresses file and every address taken from them have passed. Oracle
+# entries the addresses file already holds are replaced only by entries the
+# deploys file supplies: a deploys file that lists no oracle contracts, as
+# upstream's does for a network whose oracle was recorded here by hand, leaves
+# them as they are. A file whose contents would not change is not rewritten.
+#
 # Usage: ./deploy/scripts/import-upstream-addresses.sh <network> [path-to-flare-smart-contracts-v2]
 #        SIM_DUMP=<path> ./deploy/scripts/import-upstream-addresses.sh local
-# Example: ./deploy/scripts/import-upstream-addresses.sh coston2
+# Example: ./deploy/scripts/import-upstream-addresses.sh coston
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -29,47 +38,61 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 if [[ $# -lt 1 ]]; then
     echo "Usage: $0 <network> [path-to-flare-smart-contracts-v2]" >&2
-    echo "Example: $0 coston2" >&2
+    echo "Example: $0 coston" >&2
     exit 2
 fi
 
 NETWORK="$1"
 UPSTREAM="${2:-$PROJECT_DIR/../../../fsp/flare-smart-contracts-v2}"
 
-# Upstream's forge script names Hardhat's chain `scdev`, so the local simulation's
-# deploys file is deployment/deploys/scdev.json while ours is deploy/config/local/.
-SCRIPT_DIR_LIB="$(cd "$(dirname "$0")" && pwd)/lib"
 # The chain rows (RPC per network) and .env, for CHAIN_URL and UPSTREAM_DIR.
 # shellcheck source=lib/chains.sh
-source "$SCRIPT_DIR_LIB/chains.sh"
+source "$SCRIPT_DIR/lib/chains.sh"
 # shellcheck source=/dev/null
 [[ -f "$PROJECT_DIR/.env" ]] && { set -a; . "$PROJECT_DIR/.env"; set +a; }
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+for t in jq python3; do command -v "$t" >/dev/null || die "$t is required"; done
 
 # The upstream deploys file is named after the CHAIN, which is not the row name:
 # the simulation's is scdev.json, and coston_local reads coston's.
 UPSTREAM_NETWORK="${UPSTREAM_NETWORK:-$(chain_upstream "$NETWORK" 2>/dev/null || echo "$NETWORK")}"
 # DEPLOYS_SRC names a deploys file of the same shape written elsewhere, as
-# deploy-oracle.sh --chain local does for its own deploy.
+# deploy-oracle.sh does for its own deploy.
 SRC="${DEPLOYS_SRC:-$UPSTREAM/deployment/deploys/$UPSTREAM_NETWORK.json}"
 DEST="$PROJECT_DIR/deploy/config/$NETWORK/deployed-addresses.json"
 
-[[ -n "${DEPLOYS_SRC:-}" || -d "$UPSTREAM/deployment" ]] || { echo "ERROR: no deployment/ under $UPSTREAM" >&2; exit 1; }
-[[ -f "$SRC" ]]  || { echo "ERROR: $SRC not found — did the upstream deploy run for $NETWORK?" >&2; exit 1; }
+[[ -n "${DEPLOYS_SRC:-}" || -d "$UPSTREAM/deployment" ]] || die "no deployment/ under $UPSTREAM"
+[[ -f "$SRC" ]] || die "$SRC not found — did the upstream deploy run for $NETWORK?"
+jq -e 'type == "array" and all(.[]; type == "object")' "$SRC" >/dev/null 2>&1 \
+    || die "$SRC is not a deploys file: a JSON array of {name, contractName, address} entries"
+
+# Everything below is assembled here and moved into place at the end.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+STAGED="$WORK/deployed-addresses.json"
+
 if [[ "$NETWORK" == "local" ]]; then
     SIM_DUMP="${SIM_DUMP:-$PROJECT_DIR/../../e2e/docker/sim_dump/deployed-addresses.json}"
     [[ "$SIM_DUMP" != /* ]] && SIM_DUMP="$PROJECT_DIR/$SIM_DUMP"
-    [[ -f "$SIM_DUMP" ]] || { echo "ERROR: sim dump $SIM_DUMP not found — is the e2e stack up?" >&2; exit 1; }
-    mkdir -p "$(dirname "$DEST")"
+    [[ -f "$SIM_DUMP" ]] || die "sim dump $SIM_DUMP not found — is the e2e stack up?"
+    jq -e 'type == "object"' "$SIM_DUMP" >/dev/null 2>&1 || die "$SIM_DUMP is not a name → address map"
     # GovernanceSettings is not in the dump: the sim installs it at Flare's genesis
     # address with hardhat_setCode rather than deploying it. publish-local.sh reads
     # the timelock from it.
     GS_ADDR="${GOVERNANCE_SETTINGS_ADDRESS:-0x1000000000000000000000000000000000000007}"
     # Re-seeded every time: the dump is the truth for the sim's own contracts, and
-    # a stale FlareTeeManager address would fail every registration call.
-    jq --arg gs "$GS_ADDR" 'to_entries | map({name: .key, contractName: (.key + ".sol"), address: .value}) + [{name: "GovernanceSettings", contractName: "GovernanceSettings.sol", address: $gs}]' "$SIM_DUMP" > "$DEST"
-    echo "Seeded $DEST from $SIM_DUMP ($(jq length "$DEST") contracts)"
+    # a stale FlareTeeManager address would fail every registration call. Oracle
+    # entries recorded against an earlier simulation go with it; they arrive again
+    # from deploy-oracle.sh's deploy (DEPLOYS_SRC).
+    jq --arg gs "$GS_ADDR" 'to_entries | map({name: .key, contractName: (.key + ".sol"), address: .value}) + [{name: "GovernanceSettings", contractName: "GovernanceSettings.sol", address: $gs}]' "$SIM_DUMP" > "$STAGED"
+    echo "Seeding from $SIM_DUMP ($(jq length "$STAGED") contracts)"
+else
+    [[ -f "$DEST" ]] || die "$DEST not found — unknown network $NETWORK"
+    cp "$DEST" "$STAGED"
 fi
-[[ -f "$DEST" ]] || { echo "ERROR: $DEST not found — unknown network $NETWORK" >&2; exit 1; }
+jq -e 'type == "array" and all(.[]; type == "object")' "$STAGED" >/dev/null 2>&1 \
+    || die "${DEST#"$PROJECT_DIR"/} is not an addresses file: a JSON array of {name, contractName, address} entries"
 
 # On a testnet the network's FlareContractRegistry, at the same address on every
 # Flare chain, has the last word on the system contracts: upstream's deploys
@@ -79,18 +102,23 @@ fi
 # the deploys file altogether: the AddressUpdater the oracle contracts are wired
 # to and GovernanceSettings, whose timelock publish-local.sh reads (a genesis
 # contract on most chains, a deployed one on Coston). The simulation seeds them
-# above.
+# above. An entry already present keeps its place in the file and has only its
+# address replaced; a missing one is appended.
+INDEXER_OUT=""
 if [[ "$NETWORK" != "local" ]]; then
     RPC="${CHAIN_URL:-$(chain_rpc "$NETWORK" 2>/dev/null || true)}"
     if [[ -n "$RPC" ]] && command -v cast >/dev/null; then
         for name in AddressUpdater GovernanceSettings Relay VoterRegistry FlareSystemsManager FlareTeeManager; do
             addr="$(cast call 0xaD67FE66660Fb8dFE9d6b1b4240d8650e30F6019 'getContractAddressByName(string)(address)' "$name" --rpc-url "$RPC" 2>/dev/null || true)"
-            [[ "$addr" =~ ^0x[0-9a-fA-F]{40}$ && "$addr" != 0x0000000000000000000000000000000000000000 ]] || { echo "WARN: $name not in the contract registry at $RPC — left out" >&2; continue; }
-            jq --arg n "$name" --arg a "$addr" 'map(select(.name != $n)) + [{name: $n, contractName: ($n + ".sol"), address: $a}]' "$DEST" > "$DEST.tmp" && mv "$DEST.tmp" "$DEST"
+            [[ "$addr" =~ ^0x[0-9a-fA-F]{40}$ && "$addr" != 0x0000000000000000000000000000000000000000 ]] || { echo "WARN: $name not in the contract registry at $RPC — left as it is" >&2; continue; }
+            jq --arg n "$name" --arg a "$addr" \
+                'if any(.[]; .name == $n) then map(if .name == $n then .address = $a else . end)
+                 else . + [{name: $n, contractName: ($n + ".sol"), address: $a}] end' \
+                "$STAGED" > "$STAGED.next" && mv "$STAGED.next" "$STAGED"
             echo "  registry $name: $addr"
         done
     else
-        echo "WARN: no RPC or no cast — the registry's system addresses were not refreshed in $DEST" >&2
+        echo "WARN: no RPC or no cast — the registry's system addresses were not refreshed" >&2
     fi
 
     # The chain's C-chain indexer reads the same contracts, so its configuration
@@ -101,15 +129,15 @@ if [[ "$NETWORK" != "local" ]]; then
     INDEXER_CHAIN="$(chain_indexer "$NETWORK" 2>/dev/null || echo "$NETWORK")"
     if [[ -n "$INDEXER_CHAIN" && -f "$PROJECT_DIR/deploy/docker-compose.$INDEXER_CHAIN-indexer.yaml" ]]; then
         TEMPLATE="$PROJECT_DIR/deploy/config/indexer/indexer-config.toml.template"
-        OUT="$PROJECT_DIR/deploy/config/indexer/$INDEXER_CHAIN/indexer-config.toml"
-        mkdir -p "$(dirname "$OUT")"
-        addr_of() { jq -r --arg n "$1" '[.[] | select(.name == $n) | .address][0] // empty' "$DEST"; }
+        INDEXER_OUT="$PROJECT_DIR/deploy/config/indexer/$INDEXER_CHAIN/indexer-config.toml"
+        addr_of() { jq -r --arg n "$1" '[.[] | select(.name == $n) | .address][0] // empty' "$STAGED"; }
         MISSING=""
         for name in FlareSystemsManager VoterRegistry FlareTeeManager Relay; do
-            [[ -n "$(addr_of "$name")" ]] || MISSING="$MISSING $name"
+            [[ "$(addr_of "$name")" =~ ^0x[0-9a-fA-F]{40}$ ]] || MISSING="$MISSING $name"
         done
         if [[ -n "$MISSING" ]]; then
-            echo "WARN: no indexer config written —$MISSING missing from $DEST" >&2
+            echo "WARN: no indexer config written —$MISSING missing from the addresses" >&2
+            INDEXER_OUT=""
         else
             sed -e "s#__FLARE_SYSTEMS_MANAGER__#$(addr_of FlareSystemsManager)#g" \
                 -e "s#__VOTER_REGISTRY__#$(addr_of VoterRegistry)#g" \
@@ -118,8 +146,7 @@ if [[ "$NETWORK" != "local" ]]; then
                 -e "s#__NODE_URL__#${RPC:-$(chain_rpc "$NETWORK")}#g" \
                 -e "s#__DB_HOST__#$INDEXER_CHAIN-indexer-db#g" \
                 -e "s#__HISTORY_DROP__#${INDEXER_HISTORY_DROP:-604800}#g" \
-                "$TEMPLATE" > "$OUT"
-            echo "Wrote ${OUT#"$PROJECT_DIR"/} (seven days of history; restart the indexer to pick it up)"
+                "$TEMPLATE" > "$WORK/indexer-config.toml"
         fi
     fi
 fi
@@ -133,16 +160,22 @@ TAKE_ORACLE=true
 if [[ -z "${DEPLOYS_SRC:-}" ]] && chain_deploys_own_oracle "$NETWORK" 2>/dev/null; then
     TAKE_ORACLE=false
 fi
+# The file as it stands, for the check that no oracle entry is lost; the
+# simulation's is re-seeded on purpose, so it has nothing to keep.
+KEEP_FROM=""
+[[ "$NETWORK" != "local" ]] && KEEP_FROM="$DEST"
 
-python3 - "$SRC" "$DEST" "$TAKE_ORACLE" <<'PYEOF'
-import json, sys
+python3 - "$SRC" "$STAGED" "$TAKE_ORACLE" "$KEEP_FROM" <<'PYEOF'
+import json, re, sys
 
-src_path, dest_path, take_oracle = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
+src_path, staged_path, take_oracle, keep_from = sys.argv[1], sys.argv[2], sys.argv[3] == "true", sys.argv[4]
 
 with open(src_path) as f:
     src = json.load(f)
-with open(dest_path) as f:
+with open(staged_path) as f:
     dest = json.load(f)
+
+ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 def is_impl(e):
     return e.get("name", "").endswith("Implementation")
@@ -154,6 +187,18 @@ def is_impl(e):
 # name the same thing.
 def contract(e):
     return e.get("contractName", "").removesuffix(".sol").removesuffix("Proxy")
+
+# The oracle entries of an addresses file: the two names the tools resolve, and
+# every feed store under its registry name.
+def oracle_names(entries):
+    return {e.get("name") for e in entries
+            if e.get("name") in ("TeeOracleInstructionsSender", "TeeOracleFeedStore")
+            or (contract(e) == "TeeOracleFeedStore" and not is_impl(e))}
+
+def write(entries):
+    with open(staged_path, "w") as f:
+        json.dump(entries, f, indent=2)
+        f.write("\n")
 
 # The deploy script logs the sender proxy as "TeeOracleInstructionsSender" and
 # each feed store proxy under its registry name (UsdxFeedStore upstream);
@@ -168,63 +213,95 @@ if not take_oracle:
     # not from upstream's file for the same chain.
     print(f"NOTE: oracle entries in {src_path} left out — they are the chain's own "
           f"deployment, not this one's; deploy/scripts/deploy-oracle.sh writes ours")
-    sys.exit(0)
-
-if sender is None or not stores:
-    # Nothing to import. That is an error only when the destination has no
+    upserts = []
+elif sender is None or not stores:
+    # Nothing to import. That is an error only when the addresses file has no
     # oracle addresses either: a standalone run refreshes the system addresses
     # and the indexer configuration above, which is reason enough to run it.
-    have = any(e.get("name") == "TeeOracleInstructionsSender" for e in dest)
-    if have:
-        print(f"NOTE: no TEE oracle entries in {src_path}; "
-              f"{dest_path} keeps the ones it has")
-        sys.exit(0)
-    sys.exit(f"ERROR: no TEE oracle entries in {src_path} — run "
-             "deployment/scripts/deploy-tee-oracle.sh <network> upstream first, "
-             "or deploy/scripts/deploy-oracle.sh --chain <chain> for a test deployment")
-
-upserts = [{
-    "name": "TeeOracleInstructionsSender",
-    "contractName": "TeeOracleInstructionsSender.sol",
-    "address": sender["address"],
-}]
-for store in stores:
-    upserts.append({
-        "name": store["name"],
-        "contractName": "TeeOracleFeedStore.sol",
-        "address": store["address"],
-    })
-# The keeper and fleet-status resolve the single feed store by the generic
-# name; keep that alias only when there is exactly one store, so the name
-# never silently picks a feed.
-if len(stores) == 1:
-    upserts.append({
-        "name": "TeeOracleFeedStore",
-        "contractName": "TeeOracleFeedStore.sol",
-        "address": stores[0]["address"],
-    })
+    if oracle_names(dest):
+        print(f"NOTE: no TEE oracle entries in {src_path}; the addresses file keeps "
+              f"the ones it has ({', '.join(sorted(oracle_names(dest)))})")
+        upserts = []
+    else:
+        sys.exit(f"ERROR: no TEE oracle entries in {src_path} — run "
+                 "deployment/scripts/deploy-tee-oracle.sh <network> upstream first, "
+                 "or deploy/scripts/deploy-oracle.sh --chain <chain> for a test deployment. "
+                 "Nothing was written.")
 else:
-    names = ", ".join(s["name"] for s in stores)
-    print(f"NOTE: {len(stores)} feed stores deployed ({names}); no generic "
-          "TeeOracleFeedStore alias written — pass -store explicitly")
+    upserts = [{
+        "name": "TeeOracleInstructionsSender",
+        "contractName": "TeeOracleInstructionsSender.sol",
+        "address": sender.get("address", ""),
+    }]
+    for store in stores:
+        upserts.append({
+            "name": store.get("name", ""),
+            "contractName": "TeeOracleFeedStore.sol",
+            "address": store.get("address", ""),
+        })
+    # The keeper and fleet-status resolve the single feed store by the generic
+    # name; keep that alias only when there is exactly one store, so the name
+    # never silently picks a feed.
+    if len(stores) == 1:
+        upserts.append({
+            "name": "TeeOracleFeedStore",
+            "contractName": "TeeOracleFeedStore.sol",
+            "address": stores[0].get("address", ""),
+        })
+    else:
+        names = ", ".join(s.get("name", "?") for s in stores)
+        print(f"NOTE: {len(stores)} feed stores deployed ({names}); no generic "
+              "TeeOracleFeedStore alias written — pass -store explicitly")
+
+# Every address is checked before any is used.
+bad = [f"{u['name'] or '<unnamed>'}: {u['address'] or '<none>'}" for u in upserts
+       if not u["name"] or not ADDRESS.match(u["address"])]
+if bad:
+    sys.exit(f"ERROR: {src_path} names malformed oracle entries ({'; '.join(bad)}). Nothing was written.")
 
 by_name = {e.get("name"): i for i, e in enumerate(dest)}
 for entry in upserts:
     i = by_name.get(entry["name"])
     if i is None:
         dest.append(entry)
-        action = "added"
+        print(f"  added {entry['name']}: {entry['address']}")
+    elif dest[i].get("address", "").lower() == entry["address"].lower():
+        print(f"  unchanged {entry['name']}: {entry['address']}")
     else:
+        print(f"  updated {entry['name']}: {dest[i].get('address', '?')} → {entry['address']}")
         dest[i] = entry
-        action = "updated"
-    print(f"  {action} {entry['name']}: {entry['address']}")
 
-with open(dest_path, "w") as f:
-    json.dump(dest, f, indent=2)
-    f.write("\n")
+# Belt and braces: whatever happened above, an oracle entry the addresses file
+# held is still there.
+if keep_from:
+    with open(keep_from) as f:
+        before = json.load(f)
+    lost = oracle_names(before) - {e.get("name") for e in dest}
+    if lost:
+        sys.exit(f"ERROR: the import would drop {', '.join(sorted(lost))}. Nothing was written.")
+
+write(dest)
 PYEOF
 
-echo ""
-echo "Imported into $DEST"
+# --- Everything checked: into place ---
+mkdir -p "$(dirname "$DEST")"
+if [[ -f "$DEST" ]] && python3 -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])) == json.load(open(sys.argv[2])) else 1)' "$DEST" "$STAGED" 2>/dev/null; then
+    echo ""
+    echo "${DEST#"$PROJECT_DIR"/} is unchanged"
+else
+    # Copied over rather than moved, so a tracked file keeps its permissions.
+    cat "$STAGED" > "$DEST"
+    echo ""
+    echo "Imported into ${DEST#"$PROJECT_DIR"/}"
+fi
+if [[ -n "$INDEXER_OUT" && -f "$WORK/indexer-config.toml" ]]; then
+    mkdir -p "$(dirname "$INDEXER_OUT")"
+    if cmp -s "$WORK/indexer-config.toml" "$INDEXER_OUT"; then
+        echo "${INDEXER_OUT#"$PROJECT_DIR"/} is unchanged"
+    else
+        cp "$WORK/indexer-config.toml" "$INDEXER_OUT"
+        echo "Wrote ${INDEXER_OUT#"$PROJECT_DIR"/} (seven days of history; restart the indexer to pick it up)"
+    fi
+fi
 echo "The sender is also derived on-chain from the store's instructionsSender()"
 echo "pointer at runtime; the file entry is what the flag-free tooling resolves."

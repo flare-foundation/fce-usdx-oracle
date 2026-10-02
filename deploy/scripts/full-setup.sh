@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
-# full-setup.sh — Run the complete extension lifecycle: start → post-build.
+# full-setup.sh — Bring a machine up for a chain: start → post-build.
 #
-# The extension contracts (TeeOracleInstructionsSender, TeeOracleFeedStore) are
-# upstream from flare-smart-contracts-v2 and already on-chain — nothing is
-# deployed locally, so there is no pre-build phase. The extension's EXTENSION_ID
-# is the reserved id 1 (pinned in internal/config). This script just pins
-# deploy/config/extension.env, starts the services, and registers the TEE machine.
+# The oracle contracts (TeeOracleInstructionsSender, TeeOracleFeedStore) must
+# already be on the chain and in its addresses file: upstream's deployment,
+# brought in by import-upstream-addresses.sh, or a test deployment of our own
+# made by deploy-oracle.sh (local, coston_local, coston2), followed by
+# tools/cmd/wire-extension. This script records EXTENSION_ID from .env in
+# deploy/config/extension.env, starts the services, and registers the TEE
+# machine. The id has no default in the extension; 1, the reserved id upstream's
+# configuration uses, is this script's when .env names none, and a public id is
+# what deploy-oracle.sh recorded in .env when the registry minted one.
 #
 # Usage:
-#   ./deploy/scripts/full-setup.sh                          # setup only, docker compose, local devnet
+#   ./deploy/scripts/full-setup.sh                          # setup only, docker compose, the chain .env names (default local)
 #   ./deploy/scripts/full-setup.sh --local                  # extension TEE and proxy as host processes (tools/cmd/local-stack)
 #   ./deploy/scripts/full-setup.sh --chain coston           # target Coston testnet (chain_id=16)
+#   ./deploy/scripts/full-setup.sh --chain coston_local     # our own test deployment on Coston
 #   ./deploy/scripts/full-setup.sh --chain coston2          # target Coston2 testnet
 #
 # Flags:
-#   --chain <name>   local | coston | coston2 | songbird | flare (default: local)
+#   --chain <name>   local | coston | coston_local | coston2 | songbird | flare
+#                    (default: the chain .env names, else local)
 #   --local          run the extension TEE and proxy as host processes instead of containers
 #
 # End-to-end validation of the running feed is a separate step — see
@@ -85,9 +91,10 @@ else
     export CHAIN_ID="${CHAIN_ID:-$(chain_id "$CHAIN")}"
     export NORMAL_PROXY_URL="${NORMAL_PROXY_URL:-$(chain_normal_proxy "$CHAIN")}"
     # A mainnet registry accepts no simulated machine: a stack there is a real
-    # Confidential Space VM, whose .env says so.
-    if chain_is_mainnet "$CHAIN" && [[ "${SIMULATED_TEE:-false}" == true ]]; then
-        die "SIMULATED_TEE=true on $CHAIN: a mainnet registry accepts only real attestation (GCP_*). Set SIMULATED_TEE=false and MODE=0, and run the machine on a Confidential Space VM (docs/deployment-steps.md)."
+    # Confidential Space VM, whose .env says so. Both settings are checked: the
+    # live overlay defaults MODE to 1, simulated attestation, when .env names none.
+    if chain_is_mainnet "$CHAIN" && [[ "${SIMULATED_TEE:-false}" == true || "${MODE:-1}" != 0 ]]; then
+        die "SIMULATED_TEE=${SIMULATED_TEE:-<unset>} and MODE=${MODE:-<unset, so 1>} on $CHAIN: a mainnet registry accepts only real attestation (GCP_*). Set SIMULATED_TEE=false and MODE=0, and run the machine on a Confidential Space VM (docs/deployment-steps.md)."
     fi
 fi
 FLARE_CHAIN="$CHAIN"; export FLARE_CHAIN
@@ -95,8 +102,9 @@ FLARE_CHAIN="$CHAIN"; export FLARE_CHAIN
 log "Chain: $CHAIN"
 
 # --- Phase 1: Pin extension identity ---
-# The extension id is the reserved 1 (pinned in internal/config); the feed
-# store address is resolved from the addresses file when the keeper runs.
+# The extension id from .env, which tee-node and the extension both read from
+# deploy/config/extension.env; the feed store address is resolved from the
+# addresses file when the keeper runs.
 echo -e "\n${CYAN}╔══════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║  Phase 1: Pin extension identity      ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════╝${NC}"

@@ -23,16 +23,18 @@
 # Stop: ./deploy/scripts/stop-services.sh --local
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/chains.sh
+source "$SCRIPT_DIR/lib/chains.sh"
 
 ATTACH=false
 CHAIN=local
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --attach) ATTACH=true; shift ;;
-        --chain) [[ $# -ge 2 ]] || { echo "--chain requires a value (local|coston|coston2|songbird|flare)" >&2; exit 2; }
+        --chain) [[ $# -ge 2 ]] || { echo "--chain requires a value ($CHAINS_USAGE)" >&2; exit 2; }
                  CHAIN="$2"; shift 2 ;;
         --chain=*) CHAIN="${1#--chain=}"; shift ;;
-        *) echo "usage: $0 [--chain local|coston|coston2|songbird|flare] [--attach]   (LOCAL_STACK_REDIS=<addr> to pick the redis)" >&2; exit 2 ;;
+        *) echo "usage: $0 [--chain $CHAINS_USAGE] [--attach]   (LOCAL_STACK_REDIS=<addr> to pick the redis)" >&2; exit 2 ;;
     esac
 done
 

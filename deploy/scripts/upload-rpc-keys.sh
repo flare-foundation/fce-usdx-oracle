@@ -8,8 +8,8 @@
 #   · SEVERAL credentials, not one. Each {secret} named in the published endpoint
 #     configuration is its own ref, its own envelope and its own version.
 #   · The PROVIDERS set governs them, and it is at least 2-of-N. The backing set
-#     that governs hex_api_key can be 1-of-N, so that upload finishes on one
-#     laptop and this one usually cannot.
+#     that governs hex_api_key and hex_cash_url may be 1-of-N, so that upload can
+#     finish on one laptop where this one usually cannot.
 #   · So it hands off what it cannot finish: the envelope is written out for a
 #     second admin to sign and submit. It holds ciphertext only — the plaintext
 #     credential never leaves the shell that read it.
@@ -269,7 +269,8 @@ if [ "$VERIFY" = true ]; then
   # to this check and a substituted one to an encryption a moment later is
   # refused rather than handed a credential. One id for the whole run: every ref
   # goes to the same machine.
-  ATTESTED_TEE_ID="$("$BIN_DIR/verify-tee" -p "$PROXY_URL" ${EXPECTED_CODE_HASH:+-codeHash "$EXPECTED_CODE_HASH"} -printTeeId)" \
+  ATTESTED_TEE_ID="$("$BIN_DIR/verify-tee" -p "$PROXY_URL" ${EXTENSION_ID:+-extensionId "$EXTENSION_ID"} \
+    ${EXPECTED_CODE_HASH:+-codeHash "$EXPECTED_CODE_HASH"} -printTeeId)" \
     || die "verification failed — no credential was sent"
   [ -n "$ATTESTED_TEE_ID" ] \
     || die "verification passed but printed no teeId — no credential was sent"
@@ -297,14 +298,21 @@ elif [ "$ALL" = true ]; then
   echo "  every ref named in $ENDPOINTS_FILE (rotation)"
   # Best effort: the list came from the file, so a machine that does not answer
   # costs the cross-check but not the run.
+  #
+  # The comparison is with the hash recorded when this file was published, not
+  # with a fresh send-endpoints -dry-run: the hash covers the publication's
+  # version, and a dry run predicts the NEXT version's, which no machine runs.
   if readMachineReport && [ -n "$(liveEndpointsHash)" ]; then
     echo "  the machine is running endpointsHash $(liveEndpointsHash)"
-    echo "  confirm that is this file's hash before trusting the list:"
+    echo "  before trusting the list, confirm that is the hash this file was published"
+    echo "  under: the payloadHash in its governance hand-off (send-endpoints -out), or"
+    echo "  the endpointsHash send-endpoints printed when it published the file."
   else
     echo "  the machine did not answer, so it cannot be asked which config it runs;"
-    echo "  confirm this file is the published one before trusting the list:"
+    echo "  before trusting the list, confirm this file is the published one: the"
+    echo "  payloadHash in its governance hand-off (send-endpoints -out) must equal the"
+    echo "  sender's latestEndpointsHash for the feed."
   fi
-  echo "    cd tools && go run ./cmd/send-endpoints -dry-run -config $ENDPOINTS_FILE"
 elif ! readMachineReport; then
   die "this machine did not answer its readiness query (proxy unreachable, wrong /direct key, or \
 the machine down), so it cannot be asked which credentials it wants — name them with --refs <a,b>, \

@@ -17,8 +17,8 @@
 #
 #   local          governance is the simulation's own key (LOCAL_GOVERNANCE_KEY), so
 #                  the reserved id is reserved here with registerReserved.
-#   coston/coston2 a reserved id (below 65536) must already be owned by the
-#                  deployer — Flare governance's registerReserved(id, owner) — and
+#   coston_local,  a reserved id (below 65536) must already be owned by the
+#   coston2        deployer — Flare governance's registerReserved(id, owner) — and
 #                  the script checks that and stops otherwise. If the deployer is
 #                  on the registry's extension-owner allowlist instead, the
 #                  registry mints a public id: the contracts are deployed under
@@ -33,9 +33,12 @@
 # cast and jq.
 #
 # Usage:
-#   ./deploy/scripts/deploy-oracle.sh --chain local               # the simulation (deploy-oracle.sh --chain local is this)
-#   ./deploy/scripts/deploy-oracle.sh --chain coston              # deploy once, reuse if still on chain
-#   ./deploy/scripts/deploy-oracle.sh --chain coston --refresh    # redeploy
+#   ./deploy/scripts/deploy-oracle.sh --chain local                  # the simulation
+#   ./deploy/scripts/deploy-oracle.sh --chain coston_local           # deploy once, reuse if still on chain
+#   ./deploy/scripts/deploy-oracle.sh --chain coston_local --refresh # redeploy
+#
+# Chains whose oracle contracts are upstream's (coston, songbird, flare) are
+# refused; lib/chains.sh says which are which.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -111,7 +114,20 @@ eth_call() {  # eth_call <from> <to> <sig> [args...] → raw hex return data; se
 }
 word_addr() { echo "0x${1: -40}"; }               # last 20 bytes of a 32-byte word
 word_uint() { printf '%d' "$((16#${1#0x}))"; }    # a 32-byte word as decimal
+lower() { tr '[:upper:]' '[:lower:]' <<<"$1"; }
 GAS_LIMIT="${GAS_LIMIT:-3000000}"
+
+# The feed the extension signs for, pkg/protocol.FeedID. A store deployed under
+# any other id rejects every update with WrongFeedId, so a recorded store is
+# reused only when it serves this one, and a fresh deploy is checked against it.
+WANT_FEED_ID="$(sed -nE 's/^const feedIDHex = "(0x[0-9a-fA-F]{42})"$/\1/p' "$PROJECT_DIR/pkg/protocol/protocol.go")"
+[[ -n "$WANT_FEED_ID" ]] || die "could not read feedIDHex from pkg/protocol/protocol.go"
+WANT_FEED_ID="$(lower "$WANT_FEED_ID")"
+# feed_id_of <store>: the bytes21 feedId() a store serves, empty when it cannot be read.
+feed_id_of() {
+    local word; word="$(eth_call "$DEPLOYER_ADDR" "$1" 'feedId()')"
+    if [[ ${#word} -eq 66 ]]; then lower "0x${word:2:42}"; fi
+}
 
 # The simulation's account 0 is its busiest sender, so a transaction from it can
 # lose the nonce it was built with; cast picks the nonce up again on every attempt.
@@ -206,15 +222,22 @@ fi
 # A recorded sender is reused only when it is this deployment's: deployed for
 # this extension id (immutable in the contract) and governed by this deployer,
 # who publishes through it. One left by another key or another id, as the file
-# holds after a change of deployer, is replaced.
+# holds after a change of deployer, is replaced, and so is a pair whose feed
+# store serves a feed other than the one the extension signs for.
 if [[ "$REFRESH" == "false" && -n "$SENDER" && "$(cast code "$SENDER" --rpc-url "$CHAIN_URL")" != "0x" ]]; then
     SENDER_EXT="$(word_uint "$(eth_call "$DEPLOYER_ADDR" "$SENDER" 'extensionId()')" 2>/dev/null || echo "")"
     SENDER_GOV="$(word_addr "$(eth_call "$DEPLOYER_ADDR" "$SENDER" 'governance()')" 2>/dev/null || echo "")"
+    STORE_REC="$(jq -r '[.[] | select(.name=="TeeOracleFeedStore") | .address][0] // empty' "$ADDRS" 2>/dev/null || true)"
+    STORE_FEED=""
+    [[ -n "$STORE_REC" ]] && STORE_FEED="$(feed_id_of "$STORE_REC")"
     if [[ "$SENDER_EXT" != "$EXTENSION_ID" ]]; then
         log "the recorded sender $SENDER was deployed for extension ${SENDER_EXT:-?}, not $EXTENSION_ID — deploying anew"
         REFRESH=true
-    elif [[ "$(tr '[:upper:]' '[:lower:]' <<<"$SENDER_GOV")" != "$(tr '[:upper:]' '[:lower:]' <<<"$DEPLOYER_ADDR")" ]]; then
+    elif [[ "$(lower "$SENDER_GOV")" != "$(lower "$DEPLOYER_ADDR")" ]]; then
         log "the recorded sender $SENDER is governed by ${SENDER_GOV:-?}, not by this deployer — deploying anew"
+        REFRESH=true
+    elif [[ "$STORE_FEED" != "$WANT_FEED_ID" ]]; then
+        log "the recorded feed store ${STORE_REC:-<none>} serves feed ${STORE_FEED:-?}, not $WANT_FEED_ID (pkg/protocol.FeedID) — deploying anew"
         REFRESH=true
     fi
 fi
@@ -255,6 +278,11 @@ else
     SENDER="$(jq -r '[.[] | select(.name=="TeeOracleInstructionsSender") | .address][0] // empty' "$DEPLOY_OUT")"
     [[ -n "$SENDER" ]] || die "deploy ran but printed no TeeOracleInstructionsSender address (log: ${FORGE_LOG#"$PROJECT_DIR"/})"
     log "sender at $SENDER ($(jq length "$DEPLOY_OUT") contracts)"
+    NEW_STORE="$(jq -r '[.[] | select(.contractName=="TeeOracleFeedStore" and (.name | endswith("Implementation") | not)) | .address][0] // empty' "$DEPLOY_OUT")"
+    NEW_FEED="$( [[ -n "$NEW_STORE" ]] && feed_id_of "$NEW_STORE" || true )"
+    [[ "$NEW_FEED" == "$WANT_FEED_ID" ]] \
+        || die "the deployed feed store ${NEW_STORE:-<none>} serves feed ${NEW_FEED:-?}, not $WANT_FEED_ID (pkg/protocol.FeedID) — contracts/script/DeployTeeOracle.s.sol and pkg/protocol disagree"
+    log "feed store at $NEW_STORE serves feed $NEW_FEED"
 fi
 # --- Making the extension ours ---
 section "Extension ownership"
@@ -292,7 +320,8 @@ elif [[ "$REGISTER_PUBLIC" == "true" ]]; then
     for envfile in "$PROJECT_DIR/.env" "$PROJECT_DIR/.env.$CHAIN"; do
         [[ -f "$envfile" ]] || continue
         if grep -qE '^EXTENSION_ID=' "$envfile"; then
-            sed -i '' -E "s/^EXTENSION_ID=.*/EXTENSION_ID=$EXTENSION_ID/" "$envfile"
+            edit_in_place "$envfile" -E "s/^EXTENSION_ID=.*/EXTENSION_ID=$EXTENSION_ID/" \
+                || die "could not record EXTENSION_ID in $envfile"
         else
             printf '\n# The extension id the registry minted for this key, recorded by deploy-oracle.sh.\nEXTENSION_ID=%s\n' "$EXTENSION_ID" >> "$envfile"
         fi

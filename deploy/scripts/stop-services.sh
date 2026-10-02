@@ -5,7 +5,8 @@
 # By default, stops Docker Compose services, picking the compose overlay from
 # --chain (or env CHAIN, or legacy LOCAL_MODE):
 #   --chain local    → docker-compose.yaml only
-#   --chain <live chain>  → + docker-compose.live.yaml
+#   --chain <live chain>  → + docker-compose.live.yaml, on the network
+#                           start-services.sh brought it up on
 #
 # The chain's indexer (docker-compose.<chain>-indexer.yaml) is a stack of its own
 # and is left running: it is slow to catch up again.
@@ -35,6 +36,14 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[stop-services]${NC} $*"; }
 die()  { echo -e "${RED}[stop-services] ERROR:${NC} $*" >&2; exit 1; }
 
+# The libraries: load_env (.env, then the stack start-services.sh recorded in
+# deploy/config/stack.env) and the chain rows. Sourced before the flags are
+# read, so a usage error can list the chains.
+# shellcheck source=lib/env.sh
+source "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=lib/chains.sh
+source "$SCRIPT_DIR/lib/chains.sh"
+
 # --- Parse flags ---
 USE_LOCAL=false
 CHAIN="${CHAIN:-}"
@@ -50,11 +59,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# .env, then the stack start-services.sh recorded (deploy/config/stack.env).
-# shellcheck source=lib/env.sh
-source "$SCRIPT_DIR/lib/env.sh"
-# shellcheck source=lib/chains.sh
-source "$SCRIPT_DIR/lib/chains.sh"; load_env
+load_env
+
 # Without --local, the recorded stack decides what "stop" means: a host-process
 # stack is stopped as such rather than a compose stack that is not there.
 if [[ "$USE_LOCAL" == "false" && "${STACK:-}" == "host" ]]; then
@@ -112,9 +118,17 @@ else
     esac
 
     # The live overlay, the same single file start-services.sh brought the stack
-    # up with. The chain's indexer is a stack of its own and is left running: it
-    # is slow to catch up again and nothing else depends on this stop.
-    [[ "$CHAIN" != local ]] && COMPOSE_FILES+=("-f" "$PROJECT_DIR/deploy/docker-compose.live.yaml")
+    # up with, with the variables it interpolates set as start-services.sh sets
+    # them: the network is the chain indexer's (lib/chains.sh). The chain's
+    # indexer is a stack of its own and is left running: it is slow to catch up
+    # again and nothing else depends on this stop.
+    if [[ "$CHAIN" != local ]]; then
+        COMPOSE_FILES+=("-f" "$PROJECT_DIR/deploy/docker-compose.live.yaml")
+        CHAIN_URL="${CHAIN_URL:-$(chain_rpc "$CHAIN")}"
+        CHAIN_ID="${CHAIN_ID:-$(chain_id "$CHAIN")}"
+        COMPOSE_NETWORK="${COMPOSE_NETWORK:-$(chain_compose_network "$CHAIN")}"
+        export CHAIN_URL CHAIN_ID COMPOSE_NETWORK
+    fi
 
     # docker-compose.yaml interpolates SOURCE_DATE_EPOCH as a build arg. It's
     # irrelevant on `down`, but compose still warns when it's unset — silence it.

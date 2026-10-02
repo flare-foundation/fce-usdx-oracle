@@ -14,7 +14,8 @@ deploy/config/**/*.log
 deploy/config/register-tee.state
 .DS_Store
 
-# Foundry build artifacts and dependencies — run `forge install` in contracts/ after cloning.
+# Foundry build artifacts and dependencies — run `forge install --no-git foundry-rs/forge-std`
+# in contracts/ after cloning.
 # Anchored: a bare lib/ would also swallow deploy/scripts/lib/.
 contracts/out/
 contracts/cache/

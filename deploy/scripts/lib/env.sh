@@ -44,11 +44,15 @@ record_stack() {
 # proxy accepts any). The extension publishes nothing else about itself — its
 # GET /state carries the empty state.
 #
+# The key reaches the tool as DIRECT_API_KEY in its environment, which the
+# tool's -directApiKey flag defaults from, and never on its command line: argv
+# is readable by every process on the machine through ps.
+#
 # Exit status: 0 with the JSON on stdout; 1 when the machine could not be asked
 # or did not answer, with the reason on stderr.
 read_machine_readiness() {
     local root="${PROJECT_DIR:-${REPO_ROOT:?}}" key="${2:-${DIRECT_API_KEY:-}}"
-    ( cd "$root/tools" && go run ./cmd/readiness -p "${1%/}" -directApiKey "$key" -timeout 20s )
+    ( cd "$root/tools" && DIRECT_API_KEY="$key" go run ./cmd/readiness -p "${1%/}" -timeout 20s )
 }
 
 # read_extension_readiness <extension-url> — the same report, asked of a dev
@@ -56,6 +60,25 @@ read_machine_readiness() {
 read_extension_readiness() {
     local root="${PROJECT_DIR:-${REPO_ROOT:?}}"
     ( cd "$root/tools" && go run ./cmd/readiness -extension "${1%/}" -timeout 20s )
+}
+
+# edit_in_place <file> <sed arguments...> — sed's in-place edit in a form every
+# sed accepts. BSD sed (macOS) and GNU sed (Linux, Git Bash) disagree on the
+# syntax of -i, so the edit is written to a temporary file beside the original
+# and copied back over it. Copied rather than moved, so the file keeps its
+# permissions and ownership: the files edited this way hold keys. The original
+# is left untouched when sed fails.
+edit_in_place() {
+    local file="$1" tmp rc=0
+    shift
+    tmp="$(mktemp "$file.XXXXXX")" || return 1
+    if sed "$@" "$file" > "$tmp"; then
+        cat "$tmp" > "$file" || rc=1
+    else
+        rc=1
+    fi
+    rm -f "$tmp"
+    return "$rc"
 }
 
 # env_var_for is the environment variable a ref's credential is read from:

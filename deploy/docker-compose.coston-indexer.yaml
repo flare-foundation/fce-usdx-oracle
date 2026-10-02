@@ -1,15 +1,20 @@
 # The Coston C-chain indexer and its MySQL database. The extension proxy reads
 # signing policies, voter registrations and relay finalisations from this
-# database; the configuration under config/indexer/coston/ is the e2e
-# repository's docker/coston with a seven-day history.
+# database. The configuration under config/indexer/coston/ is rendered by
+# import-upstream-addresses.sh coston (or coston_local) from the chain's
+# addresses, with a seven-day history.
 #
 # A file of its own so the indexer runs without the rest of the stack and
 # without any variable set:
 #   docker compose -f deploy/docker-compose.coston-indexer.yaml up -d
 #   docker compose -f deploy/docker-compose.coston-indexer.yaml logs -f coston-indexer
-# start-services.sh --chain coston adds this file to the compose set, so the
-# indexer started this way is the one the proxy later joins (same project
-# `deploy`, same network) rather than a second copy.
+# It serves both Coston rows, coston and coston_local. The stack
+# start-services.sh brings up for either is in the same compose project
+# (`deploy`, the directory of the first file) and on the same network (below),
+# so the proxy reaches coston-indexer-db by name. start-services.sh never starts
+# the indexer: it reads the indexer's lag through this file, and with --local it
+# adds this file to the set it starts redis from, so compose counts these
+# containers as the project's own rather than as orphans.
 #
 # At start the indexer indexes the chain from seven days back and prunes older
 # rows as it advances; the proxy's policy fetches fail until it has caught up,
@@ -40,8 +45,9 @@ services:
       coston-indexer-db:
         condition: service_healthy
 
-# The same network the coston overlay gives the stack, so the proxy resolves
-# coston-indexer-db whichever of the two files started it.
+# The network the live overlay gives a Coston stack (start-services.sh sets
+# COMPOSE_NETWORK to this name for coston and coston_local alike), so the proxy
+# resolves coston-indexer-db.
 networks:
   default:
     name: ${COMPOSE_NETWORK:-fce-usdx-oracle-coston}

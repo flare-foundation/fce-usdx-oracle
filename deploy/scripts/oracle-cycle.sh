@@ -21,7 +21,7 @@
 #
 # Usage:
 #   ./deploy/scripts/oracle-cycle.sh -tee a,b,c                      # one cycle, submit for real
-#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --dry-run            # preflight only, send nothing
+#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --dry-run            # request and collect (the fee is paid), but submit nothing
 #   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --loop 10m           # stay up and cycle on a timer
 #   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --loop 10m --records cycles.jsonl
 #   PROXY_OVERRIDE=http://localhost:6674 ./deploy/scripts/oracle-cycle.sh -tee a   # one machine, other address
@@ -87,10 +87,14 @@ ARGS=(-a "$ADDR_FILE" -store "$STORE" -tee "$TEE")
 # -p given explicitly overrides every machine's registered url, so it is passed
 # only when the operator asked for that.
 [[ -n "${PROXY_OVERRIDE:-}" ]] && ARGS+=(-p "$PROXY_OVERRIDE")
-# The readiness preflight needs the proxy's direct-channel key. The simulation's
-# proxy accepts any (api_key_optional), so a recorded local stack gets a placeholder
-# and the keeper stops warning about paying fees blind.
-[[ -n "${STACK:-}" ]] && ARGS+=(-directApiKey "${DIRECT_API_KEY:-local}")
+# The readiness preflight needs the proxy's direct-channel key, which the keeper
+# reads from DIRECT_API_KEY (never passed on its command line, where ps shows
+# it). The simulation's proxy accepts any (api_key_optional), so a recorded local
+# stack gets a placeholder and the keeper stops warning about paying fees blind.
+if [[ -n "${STACK:-}" ]]; then
+    DIRECT_API_KEY="${DIRECT_API_KEY:-local}"
+fi
+[[ -n "${DIRECT_API_KEY:-}" ]] && export DIRECT_API_KEY
 [[ "$DRY_RUN" == "true" ]] && ARGS+=(-dry-run)
 [[ -n "$RECORDS" ]] && ARGS+=(-records "$RECORDS")
 

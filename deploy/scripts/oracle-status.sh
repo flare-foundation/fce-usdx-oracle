@@ -7,8 +7,9 @@
 #      implements the FTSO custom-feed interface itself, so there is no separate
 #      feed adapter: getCurrentFeed() is what a consumer reads, observedAt /
 #      extensionId / instructionsSender is what an operator checks.
-#   2. TeeMachineRegistry  — is the machine still registered at PRODUCTION
-#   3. the extension's state, read out of the proxy's /info — per-source health and readiness
+#   2. FlareTeeManager     — is the machine still registered at PRODUCTION
+#   3. the machine's signed GET_READINESS report, asked over the proxy's direct
+#      channel — per-source health, provisioning, and whether it would sign
 #
 # The store is the upstream TeeOracleFeedStore from flare-smart-contracts-v2;
 # its address lives under "TeeOracleFeedStore" in the deployed-addresses file.
@@ -43,7 +44,8 @@ lookup() { jq -r --arg n "$1" '[.[] | select(.name == $n) | .address][0] // empt
 STORE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --store) STORE="$2"; shift 2 ;;
+        --store) [[ $# -ge 2 ]] || { echo "--store needs an address" >&2; exit 1; }
+                 STORE="$2"; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -77,15 +79,22 @@ c() {  # c call <to> 'name(args)(returns)' [args...]
 clean() { sed 's/\[[^]]*\]//g' | tr -d ' ' | tr '\n' ' '; }
 
 section "Store + feed — what a consumer reads ($STORE)"
-FEED_TRIPLE="$(C_VALUE=0xde0b6b3a7640000 c call "$STORE" 'getCurrentFeed()(uint256,int8,uint64)' | clean)"
-VALUE="$(echo "$FEED_TRIPLE" | cut -d' ' -f1)"
-DECIMALS="$(echo "$FEED_TRIPLE" | cut -d' ' -f2)"
-TS="$(echo "$FEED_TRIPLE" | cut -d' ' -f3)"
-echo "  getCurrentFeed(): value=$VALUE decimals=$DECIMALS observedAt=$TS"
-# Read it as value / 10^decimals and nothing else. In particular it is not a
-# float: at 8 decimals a float64 round-trip is already lossy, which is why the
-# whole path carries it as a uint256.
-awk -v v="$VALUE" -v d="$DECIMALS" 'BEGIN { printf "  price:            $%.*f\n", d, v / (10 ^ d) }'
+# getCurrentFeed reverts with NoValuePublished until the first update lands,
+# which is a state to report, not a reason to stop: the operator view below
+# still has something to say.
+if FEED_TRIPLE="$(C_VALUE=0xde0b6b3a7640000 c call "$STORE" 'getCurrentFeed()(uint256,int8,uint64)' 2>/dev/null | clean)" \
+        && [[ -n "${FEED_TRIPLE// /}" ]]; then
+    VALUE="$(echo "$FEED_TRIPLE" | cut -d' ' -f1)"
+    DECIMALS="$(echo "$FEED_TRIPLE" | cut -d' ' -f2)"
+    TS="$(echo "$FEED_TRIPLE" | cut -d' ' -f3)"
+    echo "  getCurrentFeed(): value=$VALUE decimals=$DECIMALS observedAt=$TS"
+    # Read it as value / 10^decimals and nothing else. In particular it is not a
+    # float: at 8 decimals a float64 round-trip is already lossy, which is why the
+    # whole path carries it as a uint256.
+    awk -v v="$VALUE" -v d="$DECIMALS" 'BEGIN { printf "  price:            $%.*f\n", d, v / (10 ^ d) }'
+else
+    echo -e "  getCurrentFeed(): ${RED}reverted${NC} — NoValuePublished before the first update, or the read fee"
+fi
 
 section "Store — the operator view ($STORE)"
 OBSERVED_AT="$(c call "$STORE" 'observedAt()(uint64)' | clean | tr -d ' ')"
@@ -94,8 +103,9 @@ echo "  extensionId:      $(c call "$STORE" 'extensionId()(uint256)')"
 echo "  instructionsSender: $(c call "$STORE" 'instructionsSender()(address)')"
 echo "  feeDestination:   $(c call "$STORE" 'feeDestination()(address)')"
 
-# The feed cannot revert, so a stale price is returned looking exactly like a
-# fresh one. The timestamp is the only signal there is — always check the age.
+# The feed does not revert on staleness, so a stale price is returned looking
+# exactly like a fresh one. The timestamp is the only signal there is — always
+# check the age.
 AGE=$(( $(date -u +%s) - OBSERVED_AT ))
 if [[ "$OBSERVED_AT" == "0" ]]; then
     echo -e "  age:              ${RED}no data — no feed update has ever landed${NC}"
