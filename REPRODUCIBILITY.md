@@ -12,9 +12,19 @@ This repository ships a single Go implementation, and the image is
 **bit-for-bit reproducible across machines**: one statically linked binary built
 with `-trimpath -buildid=` on a digest-pinned distroless base, from tee-node's
 own Dockerfile with only the package built, the launch-policy label and the
-command changed. Nothing host-specific survives, so an auditor on different
-hardware can independently reproduce the code hash that gets registered
-on-chain.
+command changed. tee-node's image also copies the Google Confidential Space
+root certificate into `/app/assets/`; this one leaves it out, since nothing in
+the pinned tee-node reads that file. Nothing host-specific survives, so an
+auditor on different hardware can independently reproduce the code hash that
+gets registered on-chain.
+
+The code hash is the image's **config digest**, not the manifest digest a
+registry lists for a tag; see
+[why the config digest](#why-the-config-digest-and-why-not-docker-inspect).
+
+Only images built this way are reproducible. `deploy/scripts/build-image.sh` is a
+plain build for a test deployment: the code hash it prints identifies that image
+but cannot be re-derived from source by anyone else.
 
 tee-node is not a separate binary: the extension embeds it as the Go module
 `go.mod` pins, and `deploy/scripts/check-versions.sh` fails when the pins of
@@ -47,17 +57,22 @@ the two Go modules and of the proxy image drift apart.
     [freedomofpress/repro-build](https://github.com/freedomofpress/repro-build),
     pushes it to `ghcr.io/flare-foundation/fce-usdx-oracle`, fails unless the
     rebuild is identical, and then writes the code hash to the job summary
-  - GitLab (`.gitlab-ci.yml`) pushes it to Flare's Artifact Registry and offers
-    a manual `verify-reproducible` job that compares the code hashes
+  - GitLab (`.gitlab-ci.yml`) pushes it to Flare's Artifact Registry;
+    `record-images` reads the pushed image's config digest from its manifest
+    and exports it as `EXPECTED_CODE_HASH`, and the manual `verify-reproducible`
+    job rebuilds the image with rootless BuildKit and fails unless its
+    `containerimage.config.digest` equals that hash. On `NOT REPRODUCIBLE`, do
+    not register that code hash on chain
 
 ## Build context
 
 The default build is self-contained: the build context is the repo root
 (`deploy/docker-compose.yaml` sets `context: ..`, `dockerfile: Dockerfile` — the root is the
 Go module). `go.mod` pins
-`github.com/flare-foundation/tee-node` to a released version and fetches it from
-the network (verified against `go.sum`), so the build needs only this repo's own
-sources — no sibling `tee-node/` checkout.
+`github.com/flare-foundation/tee-node` to a pseudo-version, one exact commit
+(`v0.0.27-0.20260914073453-9c6bc46a5ee6`, a commit after the `v0.0.26` tag), and
+fetches it from the network (verified against `go.sum`), so the build needs only
+this repo's own sources — no sibling `tee-node/` checkout.
 
 .dockerignore admits only the module's own sources — `go.mod`, `go.sum`,
 `cmd/`, `internal/` and `pkg/` — and excludes everything else, in tee-node's

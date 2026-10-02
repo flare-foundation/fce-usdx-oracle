@@ -80,8 +80,8 @@ matters.
    unchanged, publish against the **higher** recent supply. The mint restores supply
    within minutes, so the hold self-corrects; while active it can only understate the
    price, never overstate it. Note this signature (`S` down, `B` flat) is shared with
-   a redemption burn whose reserve tick has not landed yet (Case 3) — the same
-   treatment is correct there too, for the same conservative reason.
+   a redemption burn whose republished reserve figure has not landed yet (Case 3) — the
+   same treatment is correct there too, for the same conservative reason.
 
 ---
 
@@ -170,23 +170,26 @@ the feed matters most.
   drop in `B` with no escrow rise is an outflow with no matching burn — the event this
   feed exists to detect (theft, freeze, operational loss; same signature, no benign
   explanation). This discriminator needs the redemption contract addresses from Hex,
-  and its resolution is coarse because reserves tick only every ~10 minutes.
+  and its resolution is coarse: Hex republishes the reserve figures within about ten
+  minutes of a mint or a redemption, and not otherwise (Hex's answer, recorded in spec §7).
 - Escrowed tokens are counted in our `S` today (they are inside `totalSupply`). Any
   change to that is a population decision — see accounting below.
 
 **How to account for it.**
 
-The choice follows the population principle from findings §3.0: our `S` must be
-measured on the same basis Hex measures reserves against.
+The choice follows the population principle in rationale §6 ("No exclusions"): our `S`
+must be measured on the same basis Hex measures reserves against.
 
 1. **Default — keep escrowed tokens in `S`.** The published price is the honest
    backing ratio on the issuer's stated populations, biased conservatively during
    redemption windows. Cost: periodic false-low prints that monitoring must learn to
    classify (use the escrow discriminator above).
-2. **Alternative — exclude the escrow balance via `E`** (spec §3.3 already made the
-   exclusion list configurable for exactly this class of problem). `S` then drops at
-   escrow time — *before* the wire leaves — and `B/S` stays ≈ 1 through ordinary
-   redemptions. Adopt only if Hex confirms both that reading (a) is real (multi-day
+2. **Alternative — subtract the escrow balance from `S`.** The build has no exclusion
+   mechanism: supply is the plain sum of `totalSupply()` over the tokens pinned in
+   `protocol.Chains`. Subtracting an escrow balance means new code that reads the escrow
+   contracts' `balanceOf`, so a new code hash, a new version registration and replacement
+   machines. `S` then drops at escrow time — *before* the wire leaves — and `B/S` stays
+   ≈ 1 through ordinary redemptions. Adopt only if Hex confirms both that reading (a) is real (multi-day
    sub-$1 windows) **and** that their own global-supply reconciliation excludes
    escrow, so we stay on their basis. Trade-off: a failed redemption that returns
    escrowed tokens makes `S` jump back up; and exclusion diverges from plain
@@ -218,8 +221,11 @@ of reading resolves it. It is a question for Hex, and until answered it is a sta
 
 **How to account for it.** Keep the exclusion until Hex answers (adding it today would
 publish a spurious 0.59% depeg on day one if reserves do cover it — the cash buffer
-currently masks either error, which is luck, not design). When answered: one-line
-config change either way. Recorded as Q3 below.
+currently masks either error, which is luck, not design). The contract is excluded by
+being absent from the pinned chain set, `protocol.Chains`, so changing that is not a
+configuration change: it is a new build, a new code hash and a new version registration,
+and a second Ethereum token also needs its own endpoint group in the published
+configuration. Recorded as Q3 below.
 
 ---
 
@@ -232,9 +238,9 @@ Our oracle pins three chains.
 **Dynamics.** If USDX supply exists on a chain we do not read, and Hex's reserves
 figure covers the global population (it reconciles globally — *"Total supply across
 all chains is tracked and enforced against reserves at the global level"*), then our
-`S` is permanently under-counted and every price we publish is biased up. The config
-rule "every pinned chain must be present" (findings §15) protects the configured set;
-it cannot protect against the set being incomplete.
+`S` is permanently under-counted and every price we publish is biased up. The rule that
+a `SET_ENDPOINTS` payload must name every pinned chain (findings §15) protects the pinned
+set; it cannot protect against the set being incomplete.
 
 Their new transparency surface exposes exactly the right data — `GET /domains`
 (canonical domain registry) and `GET /supply` (per-domain breakout) — but it is not
@@ -254,11 +260,12 @@ having.
 be a roadmap figure ("phase 1" language suggests not all are live), but we have no
 independent view of which are.
 
-**How to account for it.** Obtain the domain registry from Hex (Q4) and pin every
-domain with non-zero supply into config. When their `/domains` route goes live, have
-the keeper poll it and alert on any delta against the pinned set — that converts a
-standing blind spot into a monitored one. Revisit the config every time Hex announces
-a new domain.
+**How to account for it.** Obtain the domain registry from Hex (Q4) and add every
+domain with non-zero supply to the pinned chain set, `protocol.Chains`. That is a new
+build and a new code hash, and each new chain also needs an endpoint group in the
+published configuration. When their `/domains` route goes live, have the keeper poll it
+and alert on any delta against the pinned set — that converts a standing blind spot into
+a monitored one. Revisit the pinned set every time Hex announces a new domain.
 
 ---
 
@@ -319,9 +326,10 @@ which would make this case empty by construction.
 **Direction.** Price under-stated — conservative. The risk is a persistent quiet
 discount nobody investigates.
 
-**How to account for it.** The exclusion list `E` handles it if it ever exists.
-Verification is one `balanceOf` sweep once Hex provides the controller/burn addresses
-(folded into Q4/Q6). No action until then.
+**How to account for it.** Nothing in the build would handle it: supply has no
+exclusion mechanism, so excluding such a balance would take new code and a new code
+hash. Verification is one `balanceOf` sweep once Hex provides the controller/burn
+addresses (folded into Q4/Q6). No action until then.
 
 ---
 
@@ -335,12 +343,14 @@ Verification is one `balanceOf` sweep once Hex provides the controller/burn addr
 | 4 | Old ETH contract | understated | n/a | up, persistent | forever | no — population question |
 | 5 | Domains not read | understated | n/a | up, persistent | forever | no — set completeness |
 | 6 | T-bill purchase / outflows | flat | ↓ | below $1 (down), false | persistent until semantics fixed | no — reserves side |
-| 7 | Non-circulating balances | overstated | n/a | down, persistent | forever | yes if in `E`; conservative either way |
+| 7 | Non-circulating balances | overstated | n/a | down, persistent | forever | no exclusion mechanism; conservative either way |
 
-**What the current design already absorbs:** the par cap (Cases 2, 7-safe), truncation
-(always biased down), the single block-pinned supply read (no intra-observation supply
-race — the figure is supply as of one block), the configurable exclusion list `E`
-(3-alt, 7), and "every pinned chain must be present" (integrity of the configured set).
+**What the current design already absorbs:** the par cap (Cases 2, 7-safe), the single
+block-pinned supply read (no intra-observation supply race — the figure is supply as of
+one block), and "every pinned chain must be present" (integrity of the pinned set).
+Rounding is half-up in exact `big.Rat` arithmetic, so it moves the price by at most half a
+unit of the eighth decimal in either direction: it neither prints a depeg that has not
+happened nor hides one larger than that.
 
 **What it does not absorb:** any reserves-side movement (Cases 3, 6 — the supply reads
 are correct there; nothing to bracket), cross-chain gaps fully inside the observation
@@ -378,14 +388,15 @@ Numbered to extend the spec §7 list:
 
 If `S` falls between consecutive observations while `B` is unchanged, publish against
 `max(S_now, S_prev)` instead of `S_now`. Rationale: the two causes of that signature
-are a bridge in flight (Case 1) and a redemption burn whose reserve tick has not
-landed (Case 3 within one 10-minute tick). In both, `B` is stale-*high* in the same
-direction `S` would correct, so holding the larger supply aligns the two figures and
-the ratio stays ≈ correct; in neither case can the hold overstate the price — it only
-ever pushes it down. The hold self-clears when the mint lands or the tick arrives.
+are a bridge in flight (Case 1) and a redemption burn whose reserve republication has
+not landed (Case 3: Hex republishes within about ten minutes of the event, by Hex's
+answer recorded in spec §7). In both, `B` is stale-*high* in the same direction `S`
+would correct, so holding the larger supply aligns the two figures and the ratio stays
+≈ correct; in neither case can the hold overstate the price — it only ever pushes it
+down. The hold self-clears when the mint lands or the republished figure arrives.
 
-Trade-offs, stated honestly: after a genuine redemption it can print slightly low for
-up to one reserve tick, which may trip the deviation guard (§6.2) — consistent with
+Trade-offs, stated honestly: after a genuine redemption it can print slightly low
+until Hex republishes, which may trip the deviation guard (§6.2) — consistent with
 the design-wide rule that every error fails down; and the comparison state is
 per-process, so the guard is inactive on the first observation after a restart.
 Implementation location (extension observation loop vs keeper) is open; the extension
@@ -409,8 +420,8 @@ is the only place that sees both figures.
 2. `/domains` + `/supply` transparency routes going live (Case 5) — wire the keeper
    delta alert.
 3. Hex answers Q1/Q6 (Case 3) — decide default vs escrow-exclusion accounting.
-4. Any new domain announcement (Case 5) — config update before the domain carries
-   material supply.
+4. Any new domain announcement (Case 5) — a new build with the chain in the pinned set
+   before the domain carries material supply.
 
 ---
 
@@ -457,7 +468,8 @@ days.
 **Probes.**
 
 - `GET https://api.htdigitalassets.com/alm-stablecoin-db/metrics/current_reserves_amount`
-  → 200, value as above (tick cadence ~10 min, per spec).
+  → 200, value as above. Hex republishes it within about ten minutes of a mint or a
+  redemption and not otherwise (Hex's answer, recorded in spec §7).
 - `GET /domains`, `/supply`, `/reserves`, `/status` on the same host → **404** — the
   new transparency surface is not served from the known host.
 - Transparency hub page renders "Waiting for registry / Polling /status" — no live

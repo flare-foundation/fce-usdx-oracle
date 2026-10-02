@@ -1,34 +1,50 @@
-# USDX Oracle — Source Availability: Open Question
+# USDX Oracle — Source Availability
 
-**Status:** ⚠ **OPEN QUESTION — needs a decision owner** · **Raised:** 2026-08-03
+**Status:** **DECIDED in code** — fail closed; publish without cash only at par · **Still open:**
+risk-owner sign-off, Hex's uptime commitment, a second source for the bond figure ·
+**Raised:** 2026-08-03
 
 _Companion docs: design intent in `usdx-oracle-spec.md`, implementation findings in
-`usdx-oracle-findings.md`._
+`usdx-oracle-findings.md`, the observation design in `usdx-oracle-rationale.md` §2 and §4._
 
 ---
 
-## ⚠ The question
+## The decision, and what is still open
 
-**Today, one unavailable backing API blocks the price entirely. Is that the behaviour we
-want, or should the oracle publish a degraded price computed from the sources that
-did respond?**
+**The question was:** when a backing API is unavailable, should the oracle stop publishing, or
+publish a degraded price computed from the sources that did respond?
 
-The code fails closed: if either Hex endpoint is down, no price is published and the
-feed ages. That is a deliberate design decision (spec §7.15), but it was made before
-the implementation revealed that the two backing sources have **no redundancy at all**
-— one URL each, no fallback — while the supply reads have three-deep provider
-redundancy per chain. The asymmetry was not an explicit choice, and it makes the whole
-feed's availability equal to the availability of Hex's two endpoints.
+**The code fails closed** (spec §7, question 15: freeze and let the timestamp age), with one
+narrow exception for cash:
 
-**The question that settles it:** *is an hour of stale price worse than an hour of price
-computed from an incomplete formula?* Our reading is no — see the analysis below — but
-the answer commits someone to accepting either staleness risk or misreporting risk, and
-that is not an engineering call.
+- **The bond figure** (`hex_bonds`, the pinned public endpoint) failing fails the observation.
+  Nothing replaces it.
+- **The cash figure** (`hex_cash`, the restricted endpoint) failing, or not provisioned, does not
+  fail the observation on its own. `price.ComputeWithoutCash` publishes a cash-less price **only
+  when bonds alone already reach par**, where the missing figure provably cannot change the
+  answer; below par it refuses with `BackingUnavailable` (`internal/observation/observation.go`,
+  `readBacking`).
+- **Any chain** failing its supply read fails the observation.
 
-**Secondary question, same owner:** what uptime do we actually get from Hex? This is
-question 8 on the existing Hex list ("uptime expectations and an escalation contact")
-and it should be weighted higher than it currently is, because with no fallback source
-their uptime *is* our uptime.
+A failed observation does not stop the feed at once: the machine keeps signing its last good
+observation until that is `MaxObservationAge` (10 minutes) old, and then refuses (see "What
+'fail closed' actually does").
+
+The decision was made before the implementation showed how asymmetric the redundancy is. Each
+backing source is **one URL with no fallback**, while each chain's supply is read from as many RPC
+providers as governance publishes for it, at a governance-set quorum. So the feed's availability
+is the bond endpoint's availability, and below par the cash endpoint's too. The asymmetry was
+never an explicit choice.
+
+**Still open:**
+
+1. **Sign-off by a risk owner.** *Is an hour of stale price worse than an hour of price computed
+   from an incomplete formula?* Our reading is no, the analysis below says why, and the code
+   implements it. But the answer commits someone to accepting staleness risk over misreporting
+   risk, and that is not an engineering call.
+2. **Hex's uptime and escalation path** for both endpoints (spec §7, question 8). With no
+   fallback source, their uptime *is* our uptime.
+3. **A second source for the bond figure**, the one whose failure stops the feed outright.
 
 ---
 
@@ -46,7 +62,7 @@ Asked during review; recording the answer because the reasoning is not obvious f
 code alone.
 
 Supply reads and reserve reads are not atomic, and the resulting error has a
-**direction**. `oracle.Observe` used to bracket the reserve read between two supply
+**direction**. `observation.Observe` used to bracket the reserve read between two supply
 reads:
 
 ```
@@ -70,10 +86,10 @@ one extra RPC round per observation.
 
 ### Caveat: the double-read covers less than the framing suggests
 
-`oracle.checkWindow` computes the consistency spread over `Reading.RetrievedAt` — when
-*we* received the response. But `Reading.AsOf` is Hex's own `last_update`, and its doc
-comment states that "the gap between this and the supply reads is the TOCTOU exposure in
-spec §6.1."
+`checkWindow` (`internal/observation`) computes the consistency spread over
+`Reading.RetrievedAt` — when *we* received the response. But `Reading.AsOf` is Hex's own
+`last_update`, and at the time its doc comment called the gap between it and the supply
+reads the TOCTOU exposure in spec §6.1.
 
 That gap is **not** in the window check. At the time it was bounded only by `MaxAge`,
 which for a source believed to tick every ~10 minutes had to be at least 10 minutes. So
@@ -92,28 +108,28 @@ republish within ~10 minutes of a mint or a redemption and not otherwise — so 
 *change* timestamp with no periodic refresh to bound, and folding it into `checkWindow`
 would have failed every observation on a quiet day. `checkWindow` covers read skew and
 says so. The reserve lag itself is unbounded and fails safe: a reserve figure trailing a
-mint understates `R/S`, and the price is capped at par. See failure-modes,
-"`hex_cash` staleness — resolved".
+mint understates `R/S`, and the price is capped at par. See failure-modes, "Backing figures
+carry no freshness bound".
 
 ---
 
 ## Background 2 — what actually happens when a source is down
 
-Tolerance is layered, and it is asymmetric. This is the state of the implementation as
-of 2026-08-03.
+Tolerance is layered, and it is asymmetric.
 
 | Layer | Behaviour | Verdict |
 | --- | --- | --- |
-| **RPC providers** (within a chain) | `agreedBlock` skips providers that error; fails only when surviving providers < `Quorum`. `readTotalSupply` then requires `Quorum` **identical** answers. | Tolerant. 3 providers at quorum 2 → one dead provider costs nothing. |
-| **Chains** (Flare / Ethereum / Songbird) | `readAllChains` fails the whole observation if any chain fails. | Intolerant — and correctly so. Dropping Songbird's 1.16M would manufacture a 4.5% depeg. |
-| **Backing API** (bonds) | `readBacking` aborts on error. Two attempts, 250 ms apart, transient faults only — 5xx and 429 retry, 4xx and malformed bodies do not. | Intolerant, **and with no redundancy** — a single URL. |
-| **Backing API** (cash) | _Changed 5 Aug 2026._ Absent or failing, the observation continues and `price.ComputeWithoutCash` publishes only where the figure provably cannot matter. Same retry policy when present. | Tolerant **only at par**; below par it fails closed. See "What was implemented instead" below. |
+| **RPC providers** (within a chain) | `providerHeads` demotes providers that do not answer; `pinCandidateBlocks` takes the Quorum-th highest claimed head and steps down through the distinct heads below it until `Quorum` providers serve one; `readTotalSupply` then requires `Quorum` **identical** answers with a unique winner. Too few providers answering fails the chain with `SupplyUnavailable`, and no agreement with `SupplyNoQuorum`. | Tolerant of N − `Quorum` dead providers, where N and `Quorum` are what governance published for that chain. The shipped `coston`, `songbird` and `public-only` configurations run every chain at 2-of-3, so one dead provider costs nothing; `coston2.json` runs Songbird at 1-of-1 and Ethereum at 2-of-2, where it costs the chain. |
+| **Chains** (Flare / Ethereum / Songbird) | `readAllChains` fails the whole observation if any chain fails. | Intolerant — and correctly so. Dropping Songbird's 1.16M (4.5% of supply) would overstate the price by about that much and hide a shortfall of that size. |
+| **Backing API** (bonds) | `readBacking` fails the observation on error. Two attempts, 250 ms apart, transient faults only — 5xx and 429 retry, 4xx and malformed bodies do not. | Intolerant, **and with no redundancy** — a single pinned URL. |
+| **Backing API** (cash) | Absent, unprovisioned or failing, the observation continues and `price.ComputeWithoutCash` publishes only where the figure provably cannot matter. Same retry policy when present. | Tolerant **only at par**; below par it fails closed. See "What was implemented instead" below. |
 
 Identical results are required rather than a median because a read at a fixed block is
 deterministic: two honest providers cannot disagree, so disagreement means one is wrong
 or lying and there is no safe way to average that.
 
-**The gap is the third row.** Supply has three-deep redundancy; backing has none.
+**The gap is the third row.** Supply's redundancy is whatever governance publishes per chain;
+the bond figure has one URL.
 
 ---
 
@@ -121,12 +137,18 @@ or lying and there is no safe way to average that.
 
 Worth stating precisely, because the phrase sounds worse than the behaviour:
 
-- No new feed update is published.
+- The poller keeps its last good observation when a later one fails, and `GET_FEED` keeps
+  signing it until it is `MaxObservationAge` (10 minutes) old. The age is measured against the
+  machine's clock and again against the requesting instruction's block timestamp
+  (`internal/observation/poller`). A one-tick outage therefore publishes nothing different.
+- Past that, `GET_FEED` refuses with `error: no recent observation` (`ObservationStale`), and no
+  new feed update can be published. Which source failed is in the signed readiness report
+  (`sourceHealth`, `lastErrorClass`), not in the refusal.
 - `TeeOracleFeedStore` keeps the last accepted value and its `observedAt`.
-- `TeeOracleFeedStore.getCurrentFeed()` returns the last value with an ageing timestamp once
-  any update has landed — it reverts `NoValuePublished` only before the first one, and
-  otherwise never throws, specifically because `FtsoV2` forwards the call and a revert would
-  become a simultaneous liveness outage for every consumer at once.
+- `TeeOracleFeedStore.getCurrentFeed()` returns that value with its ageing timestamp. It reverts
+  `NoValuePublished` before the first update has landed, and on a fee error, but never on
+  staleness, specifically because `FtsoV2` forwards the call and a revert would become a
+  simultaneous liveness outage for every consumer at once.
 
 The failure mode is **stale and visibly so**, not broken. Consumers are required to check
 the timestamp, and that requirement is already on the consumer-docs TODO.
@@ -143,10 +165,11 @@ Two reasons we recommend against it.
 
 ### 1. Structural — a degraded price is indistinguishable from a full one
 
-`report.PriceReport` is `{ChainID, Store, FeedID, Price, Decimals, ObservedAt,
-InstructionID}`. There is no field for "computed without cash", and the on-chain payload
-is price-only **by decision** (spec §4.1, Hex confidentiality). The readiness report cannot
-carry it either, for the same reason.
+The signed update, `feedupdate.FeedUpdate`, is `{ExtensionID, FeedID, Value, Decimals,
+ObservedAt, EndpointsHash, AdminsHash}`. There is no field for "computed without cash", and the
+on-chain payload is price-only **by decision** (spec §4.1, Hex confidentiality). The readiness
+report carries no reserve figure either, for the same reason; its `sourceHealth` says whether the
+cash source was read, but that reaches the machine's operators, not the feed's consumers.
 
 So a degraded price would reach consumers and auditors as an ordinary one. We would be
 silently changing what the published number means, with no channel to say so. The
@@ -158,7 +181,7 @@ computed to the published definition.
 Under par operations `R_bonds ≈ S` (observed 31 Jul), so dropping cash changes nothing:
 both paths give exactly 1.0 after the par cap. It looks free.
 
-But `R_bonds` is a genuine asset measure that can fall below supply (§3.0, resolved: it
+But `R_bonds` is a genuine asset measure that can fall below supply (spec §3.0, resolved: it
 is a bank-reported balance) — and when it does, cash is precisely the buffer that decides
 whether the price is below par:
 
@@ -172,7 +195,7 @@ Degradation would manufacture depegs exactly when the feed matters most.
 
 ### Therefore
 
-**With §3.0 resolved — `R_bonds` is a real balance that can fall below supply — the
+**With spec §3.0 resolved — `R_bonds` is a real balance that can fall below supply — the
 numeric argument applies today.** Dropping cash would suppress exactly the buffer that
 decides whether a depeg prints, which is a strong reason not to degrade.
 
@@ -185,15 +208,15 @@ The fix for the availability concern is **redundancy, not degradation**.
 1. **Give the backing sources fallbacks, the way supply already has them.** One URL per
    source is the single point of failure for the entire feed. For the public bond figure
    a second source may be feasible. For the private cash endpoint it is Hex's one
-   endpoint, so it becomes an uptime/SLA conversation — which is why the secondary
-   question above matters more than its current position on the list suggests.
+   endpoint, so it becomes an uptime/SLA conversation — which is why Hex's uptime is one of
+   the open items at the top.
 
 2. **Resolve the `AsOf` / `RetrievedAt` inconsistency** in `checkWindow`, or document that
    `MaxAge` is the real bound. **Done, 17 Aug 2026 — neither option.** `MaxAge` was removed:
    Hex republishes on an on-chain event, not on a schedule, so no wall-clock bound on `AsOf`
-   is meaningful. `checkWindow` covers read skew and now says only that.
+   is meaningful. `checkWindow` covers read skew and says only that.
 
-3. **Do not implement graceful degradation.** §3.0 is resolved: `R_bonds` is a real
+3. **Do not implement graceful degradation.** Spec §3.0 is resolved: `R_bonds` is a real
    asset measure, so degradation is actively harmful — it would drop the cash buffer
    that decides whether a depeg prints.
 
@@ -216,12 +239,13 @@ this publishes nothing, where degradation would have printed 0.990 against a tru
 | Bonds = 1.00 · S | 1.000 | 1.000 | 1.000 |
 | Bonds = 0.99 · S | 0.998 | 0.990 ← the harm | **nothing published** |
 
-Two things make this more than a technicality. `internal/observation/price` now rounds
+Two things make this more than a technicality. `internal/observation/price` rounds
 half-up rather than truncating (findings §21), which is what lets the measured
 figures — bonds $0.004 below supply, purely because Hex quotes to the cent —
-reach par at all. And the readiness report's health map reports the cash source as `not_configured`
-rather than dropping it, so a par-from-bonds observation is distinguishable from
-a complete one even though the published price is identical by construction.
+reach par at all. And the readiness report's health map reports the cash source as
+`not_configured` (never provisioned) or `down` (failed) rather than dropping it, so a
+par-from-bonds observation is distinguishable from a complete one to the machine's
+operators, even though the published price is identical by construction.
 
 Recommendation 1 is unaffected: this covers the case where cash is *absent*, not
 the case where the bond figure is. That source still has no redundancy, and it is
@@ -291,28 +315,32 @@ the design claims and what the implementation guarantees.
 
 ## Source-unreachable alerting, in the keeper
 
-**Status: designed — the build plan is `usdx-oracle-monitoring.md`.** _Was "to think about
-later, not designed, not scheduled" until 4 Aug 2026._
+**Status: partly built.** The keeper's cycle records carry each machine's refusal text and the
+source health its readiness preflight read (`tools/pkg/keeper`); `oracle-watch` samples every
+machine's signed readiness report on the poller's cadence; `cycles-web` serves the records.
+Paging, deduplication across keepers and a watcher outside the keeper are not built. The plan is
+`usdx-oracle-monitoring.md`.
 
 What remains here is the **placement** reasoning — why this belongs in the keeper and not the
 extension — recorded so it is not relitigated. The missed-update taxonomy, the alert routing
-tables and the phased build now live in the monitoring doc, which also carries every design
-point listed at the end of this section.
+tables and the phased build live in the monitoring doc, which also carries every design point
+listed at the end of this section.
 
-Fail-closed is only a safe default if somebody finds out. Today an unreachable source
-produces a failed observation and a `sourceHealth` entry, and nothing pages anyone. The
-`Price < 1` alert is already on the plan as a business event; **source-unreachable is the
-missing operational twin** — and it is the one that fires first, because a source outage
-precedes the staleness a consumer would eventually notice.
+Fail-closed is only a safe default if somebody finds out. An unreachable source produces a
+failed observation and a `sourceHealth` entry, and nothing pages anyone. The `Price < 1` alert
+is already on the plan as a business event; **source-unreachable is the missing operational
+twin** — and it is the one that fires first, because a source outage precedes the staleness a
+consumer would eventually notice.
 
 ### This belongs in the keeper, not the extension
 
 The extension is the wrong place, for reasons that are structural rather than stylistic:
 
-- **The host allowlist is baked into the image.** `allowedHosts` in the embedded config is
-  code-hash-pinned precisely so configured endpoints can only ever be attested hosts.
-  Adding a webhook or paging endpoint would mean a new code hash — re-attestation and a
-  version registration — for a purely operational concern.
+- **The extension calls only what the build pins or governance publishes.** Its destinations
+  are the pinned bonds URL, the RPC providers governance publishes, and the cash URL committed
+  in the same publication. A webhook or paging endpoint would need either a new code hash —
+  re-attestation and a version registration — or a governance publication, for a purely
+  operational concern.
 - **Alerting credentials would become enclave secrets.** A PagerDuty key or Slack webhook
   would join the secret inventory, the provisioning path, and the disclosure surface, for
   no security benefit.
@@ -331,24 +359,33 @@ No extension change is needed; the data is already on the wire.
 
 | Source | Signal |
 | --- | --- |
-| `ActionResult.Log` | A `failure.Failure` from the closed vocabulary — the error *class* is the alert key |
-| `GET_READINESS` report | `sourceHealth` map, per source: `ok` / `down` / `lagging` / `disagree` / `unknown` / `not_configured` |
+| `ActionResult.Log` | `error: <reason>`, where the reason is one of a closed set of fixed texts (`internal/failure`), each with a class. Route on the reason, through a reason → class table built from `failure.All`. Once the machine has had one good observation, a source outage reaches the log only as `no recent observation`, ten minutes later |
+| `GET_READINESS` report | `sourceHealth`, per source and per RPC provider (`rpc_<chain>` and `rpc_<chain>_<n>`): `ok` / `down` / `lagging` / `disagree` / `unknown` / `not_configured` |
 | Same | `failures`, `observations`, `lastErrorClass`, `lastObservedAt`, `observationAge`, `wouldSign`, `readiness` |
 | Keeper's own timeout | No result at all → TEE or proxy unreachable, distinct from a source outage |
 
-The classes that matter for this alert:
+The classes, from `failure.All`:
 
 ```
-ClassSourceDown     BackingUnavailable, BackingTimeout, SupplyUnavailable, SupplyTimeout
+ClassSourceDown     BackingUnavailable, BackingTimeout, SupplyUnavailable, SupplyTimeout,
+                    Deadline, NoObservation, ObservationStale
 ClassQuorumFailed   SupplyNoQuorum
-ClassSourceInvalid  BackingMalformed, BackingCurrency, BackingTimestamp
-ClassNotConfigured  NotConfigured        (secrets lost to a restart — memory-only by design)
+ClassSourceInvalid  BackingMalformed, BackingCurrency, BackingMetric, BackingTimestamp,
+                    SupplyMalformed, SupplyBlockStale, WindowExceeded,
+                    UnexpectedPayload, WrongActionType, ProvisionRejected, MissingRequestTime
+ClassNotConfigured  NotConfigured     (unprovisioned: credentials are memory-only, so after every restart)
+ClassClockSkew      ClockBehindChain
+ClassImplausible    BackingImplausible, SupplyImplausible, SupplyZero, PriceImplausible (declared, never returned)
+ClassSignFailed     SignUnavailable, SignRejected
+ClassInternal       Internal
 ```
 
-`ClassSourceDown` and `ClassQuorumFailed` are the reachability alerts. `ClassSourceInvalid`
-is a different kind of problem — the source answered but said something we refuse to use —
-and should page differently, because a shape change from Hex needs a human reading the
-response, not a retry.
+`ClassSourceDown` and `ClassQuorumFailed` are the reachability alerts. The source faults in
+`ClassSourceInvalid` (the `Backing*` and `Supply*` reasons and `WindowExceeded`) are a different
+kind of problem — the source answered but said something we refuse to use — and should page
+differently, because a shape change from Hex needs a human reading the response, not a retry. The
+rest of `ClassSourceInvalid` names a malformed request rather than a source, which is why routing
+is on the reason and not on the class alone.
 
 ### Design points to settle when this is picked up
 
@@ -364,22 +401,23 @@ was raised. Update that doc, not this list, if the thinking changes._
   tell the difference; correlating across machines can.
 - **Deduplicate across keeper instances.** The plan calls for ≥2 idempotent keepers. Both
   will observe the same outage and must not both page.
-- **`sourceHealth` is a snapshot, not a probe.** It is written only when an observation
-  runs. If the keeper stops requesting, the last values persist and continue to read `ok`
-  — the failure mode finding 8 was written about, one level up. Freshness of the health
-  map needs its own check.
+- **`sourceHealth` describes the most recent attempt.** The poller observes every 2 minutes on
+  its own timer, whether or not anyone requests, and every attempt rewrites the map, so it does
+  not freeze when the keeper stops. It says nothing about a machine that is down, which answers
+  nothing at all: freshness of the report itself (its timestamp and `observationAge`) still
+  needs its own check.
 - **Staleness is the consumer-facing alert and is separate.** Source-down is a cause; feed
   age past 2× the update interval is the effect consumers actually feel. Both are wanted;
   only the second is a true page.
-- **Per-source or per-chain granularity** is still open (finding 8): `rpc_flare: "ok"`
-  hides one-of-three providers being down, which is exactly the state worth seeing before
-  the second one goes and quorum fails.
+- **Per-provider health is reported.** `rpc_flare: "ok"` alone would hide one of three
+  providers being down; the per-provider entries beside it (`rpc_flare_1` …) show that state,
+  which is exactly the one worth seeing before the next provider goes and quorum fails.
 
 ### Related
 
-This is the mitigation half of the open question at the top of this document. If the
-answer there is "keep failing closed", then alerting is what makes that acceptable, and it
-should be scheduled alongside — not after — the decision.
+This is the mitigation half of the decision at the top of this document. The code fails closed,
+and alerting is what makes that acceptable, so it belongs alongside the risk owner's sign-off,
+not after it.
 
 ---
 
@@ -387,7 +425,7 @@ should be scheduled alongside — not after — the decision.
 
 | # | Question | Owner | Blocking |
 | --- | --- | --- | --- |
-| 1 | Is stale-but-honest preferable to fresh-but-incomplete? | _TBD — needs a risk owner_ | Design |
+| 1 | Is stale-but-honest preferable to fresh-but-incomplete? The code answers yes (fail closed; cash-less only at par); this is the sign-off | _TBD — needs a risk owner_ | Sign-off |
 | 2 | What uptime and escalation path does Hex offer on both endpoints? | Hex | Yes, for sizing (1) |
 | 2a | ~~Does Hex republish reserves on a schedule or on change?~~ **On change**, within ~10 min of an on-chain event — answered 17 Aug 2026 | Hex | Closed |
 | 3 | Is a second source for the bond figure obtainable? | Hex / us | No |

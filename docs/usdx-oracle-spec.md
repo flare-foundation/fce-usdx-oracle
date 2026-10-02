@@ -2,7 +2,7 @@
 
 **Status:** draft for review
 **Owner:** _TBD_
-**Last updated:** 2026-07-31
+**Last updated:** 2026-10-02
 
 > This is a first pass meant to be edited. Anything marked **OPEN** is a real
 > unresolved question, not a placeholder for prose. Anything marked **ASSUMPTION**
@@ -11,8 +11,10 @@
 > **Implementation findings live in `usdx-oracle-findings.md`.** Where this spec
 > and that document disagree, the findings doc wins: it records what was verified
 > against source and pinned by a test, including the signing-path details in §WP3
-> (confirmed against tee-node `v0.0.21-0.20260619120252-31fc839ae6d2`) and two
-> credential-disclosure paths this spec does not mention.
+> (confirmed against the tee-node version go.mod pins, `v0.0.27-0.20260914073453-9c6bc46a5ee6`)
+> and two credential-disclosure paths this spec does not mention. Where the code
+> has settled a question this draft left OPEN, the section says what the code does
+> and the decisions log records it.
 
 ### Decisions log
 
@@ -24,12 +26,19 @@
 | 2026-07-31 | **`getCurrentFeed()` never reverts on staleness** — returns the last price with an ageing timestamp | `FtsoV2` forwards the call, so a revert becomes a liveness outage for every downstream consumer at once. See WP4. |
 | 2026-07-31 | ~~**`calculateFee()` returns 0**~~ — **superseded** by the upstream store, which resolves fees through the central `FeeCalculator` (per-feed override → category fee → default fee, governance-settable; free while the rows are unset) | Unlike the sFLR/stXRP feeds we have no underlying FTSO read to pay for — the original case for free reads. |
 | 2026-08-03 | **§3.0 premise resolved** — `current_reserves_amount` is the bank-provider balance of the reserve account | Provenance from the team. The observed supply-tracking is 1:1 treasury operation, not derivation from chain data; the figure falls below supply on any unmirrored outflow. Written confirmation from Hex remains as diligence. |
+| 2026-08-03 | **No exclusion list: supply is a plain sum over the pinned chains** (§3.3) | `protocol.Chains` names Flare, Ethereum (the current contract) and Songbird, and the pre-migration Ethereum contract is excluded by being absent, matching Hex's reserves basis. The set is covered by the code hash, which settles §3.3's OPEN for auditability over operational flexibility. Rationale §6. |
+| 2026-08-03 | **Backing is `R_bonds + R_cash`, unweighted, in USD only** (§3.4) | `price.Backing` adds the two figures with no haircut: one would always have been zero, and applying one changes the published price, so it needs a new code hash regardless (rationale §5). A figure in another currency fails the observation (`BackingCurrency`): the cash endpoint must report `"currency": "USD"`, and the bonds endpoint, which omits the field, must report USD if it ever names one. Whether `current_reserves_amount` already includes cash, and how bonds are valued, remain questions for Hex (§7 Q2, Q3). |
+| 2026-08-03 | **The cash endpoint's key travels in an `X-API-Key` header** (WP1) | `config.HexCashAuthHeader`. Without credentials the endpoint answers 404, not 401/403, so only a working key confirms the scheme; changing it is a new code hash. |
+| 2026-08-03 | **Decimals are pinned at 8** (§3.5) | `config.PriceDecimals`: 1e-8 resolution around $1.00, and every consumer assumes 8. The store accepts any scale; the enclave fails the observation rather than wrap a value that does not fit `int32`. |
+| 2026-08-03 | **`v` is normalised to 27/28 in the enclave** (WP3) | `internal/teenode.NormalizeV` rewrites tee-node's 0/1 recovery id before a signature leaves the machine (`TestNormalizeV`), and the store adds nothing: `Fdc2Verification` recovers with OpenZeppelin `ECDSA`, which requires 27/28. Findings §4. |
+| 2026-08-03 | **A source outage freezes the feed** (§7 Q15) | `GET_FEED` fails closed, and the store keeps the last accepted value with its true, ageing timestamp; nothing on-chain signals "no price". Consumers already have to check staleness. |
 | 2026-08-05 | **Round half-up instead of truncating** (§3.5) | Hex quotes reserves to the cent; truncation turned a $0.004 quantisation artifact into a permanent sub-par print. Half a ULP is $0.127 at current supply — 12× the worst-case quantisation, 5e-9 of the float — so the concealable shortfall stays bounded and no material depeg is affected. Findings §21. |
 | 2026-08-05 | **A missing cash figure no longer fails the observation outright** | Published only where the missing figure provably cannot change the answer: cash is non-negative and the price caps at par, so a bonds-only price already at par *is* the full result. Everything below par still fails closed, so the availability doc's objection to degradation is untouched. Findings §21. |
 | 2026-08-05 | **GET_FEED carries an ABI-encoded `FeedUpdateRequest`** naming the feed (supersedes the original one-byte `0x01` envelope once one sender began serving several feeds), never an empty message | `sendInstructions` reverts `MessageEmpty()`, so `requestFeedUpdate()` could never dispatch an empty message. The extension requires exactly that encoding and rejects any other shape, preserving the property the empty message was chosen for. Findings §22. |
 | 2026-08-05 | **Observation moved onto a timer; GET_FEED only signs** | tee-node allows an extension 2 s per action (`settings.ProxyTimeout`, a const in its internal package); a complete observation measures 2.0–2.9 s, so every request timed out. `internal/observation/poller` observes every 2 min and `MaxObservationAge` (10 min) bounds the resulting staleness. Findings §23. |
+| 2026-08-06 | **The keeper requests every 10 minutes, with no deviation trigger** (WP5) | `tools/cmd/keeper -interval`, default `10m`: Hex republishes within about ten minutes of an on-chain event, so a faster cycle pays a fee for nothing new. A deviation trigger has nothing to compare: the keeper sees a price only after it has paid for the request. |
 | 2026-09-15 | **The signed `observedAt` is the requesting instruction's block timestamp** | That is the store's definition of the field (`ITeeOracleFeedStore.FeedUpdate`), and `submitFeedUpdates` requires every update in a batch to carry the same value, which only a shared on-chain instant gives; the reading's own time was signed before, so no two machines on independent timers could ever form a batch. The inputs behind an update are at most `MaxObservationAge` (10 min) older than the stamp, checked against that very timestamp before signing; the reading's time stays on the observation as `lastObservedAt`. |
-| 2026-09-16 | **`GET /state` carries the empty state** | The signed `GET_READINESS` report is the machine's one account of itself. The state was a second, unsigned copy of its fields, written by the `GET_FEED` handler and therefore up to a keeper cycle behind, with counters any holder of the direct-channel key could move (security review II, T-26). tee-node relays the empty state as such and the registry accepts it. |
+| 2026-09-16 | **`GET /state` carries the empty state** | The signed `GET_READINESS` report is the machine's one account of itself. The state was a second, unsigned copy of its fields, written by the `GET_FEED` handler and therefore up to a keeper cycle behind, with counters any holder of the direct-channel key could move. tee-node relays the empty state as such and the registry accepts it. |
 | 2026-09-16 | **Feed id moves to category `0x21`** | The official Coston deployment registers USDX/USD as `0x21555344582f555344…`. The id is a build fact: it is signed into every update and checked by the store, so the wire vectors and conformance fixtures move with it. |
 
 ---
@@ -112,7 +121,6 @@ inferred from one observed supply change rather than a time series.*
 | `S_flare` | `USDX.totalSupply()` on Flare | ERC-20, **6 decimals** |
 | `S_eth` | `USDX.totalSupply()` on Ethereum | ERC-20, **18 decimals** |
 | `S_sgb` | `USDX.totalSupply()` on Songbird | ERC-20, **6 decimals** |
-| `E` | excluded balances | see 3.3 |
 | `R_bonds` | Hex public API `current_reserves_amount` | see §3.0 |
 | `R_cash` | Hex private API `current_cash_reserves_amount` | cash held for redemptions |
 
@@ -131,7 +139,7 @@ Decimals differ per chain — normal for a LayerZero OFT, and a live footgun.
 ### 3.2 Formula
 
 ```
-S = (S_flare + S_eth + S_sgb) - E          # circulating supply, USD-denominated (1 USDX = 1 unit)
+S = S_flare + S_eth + S_sgb                # circulating supply, USD-denominated (1 USDX = 1 unit)
 B = R_bonds + R_cash                        # total backing, USD
 
 price = 1.0                if B >= S
@@ -169,29 +177,45 @@ Still to confirm with Hex:
   burn address).
 - Any other chains with USDX supply that we are not reading.
 
-Until answered, `E` is a **configurable list of (chain, address) exclusions** read
-from extension config, so we can adjust without a code-hash change. **OPEN:** or
-should exclusions be code-hash-pinned for auditability? Trade-off: config is
-operationally flexible but weakens the "the code decides" guarantee.
+**Decided: no exclusion list.** Supply is the plain sum of `totalSupply()` over the
+contracts in `protocol.Chains` — Flare, the current Ethereum contract and Songbird —
+with no `balanceOf` call. The old Ethereum contract is excluded by being absent from
+that list, which matches Hex's reserves figure, and Songbird is counted. The list is
+covered by the code hash, so the OPEN this section carried (configurable exclusions,
+or code-hash-pinned) is settled for auditability: if Hex's answers above change the
+set, that is a new build. Rationale §6, "No exclusions".
 
-### 3.4 Reserve accounting — **OPEN**
+### 3.4 Reserve accounting — decided in the build
 
-- Does `current_reserves_amount` (public) already **include** cash reserves? If
-  yes, `B = R_bonds` and adding cash double-counts.
-- Are bonds valued at market or at par? Mark-to-market matters for the ratio.
-- Should bonds get a haircut for liquidity/duration risk (e.g. 0–2% for T-bills)?
-  A haircut factor `h` would make `B = R_cash + (1 - h) * R_bonds`, with `h`
-  governance-set. **Proposal: support `h`, default 0.**
-- Currency: both endpoints report `"currency": "USD"`. Do we hard-fail if
-  `currency != "USD"`? **Proposal: yes, fail closed.**
+The build computes `B = R_bonds + R_cash` (`price.Backing`), exactly, in `big.Rat`:
+
+- **Composition:** both figures are added, so the build treats
+  `current_reserves_amount` as excluding the cash reserves. **Still to confirm with
+  Hex (§7 Q2):** if it already includes them, the sum double-counts cash and
+  overstates `B`.
+- **Valuation:** bonds are taken at whatever value Hex reports. Market or par is
+  Hex's answer to give (§7 Q3).
+- **Haircut: none.** The haircut factor `h` once proposed here
+  (`B = R_cash + (1 - h) * R_bonds`, governance-set, default 0) is not implemented:
+  it would always have been zero, and applying one changes the published price, so
+  it needs a new code hash regardless (rationale §5).
+- **Currency: USD only, fail closed.** The cash endpoint must report
+  `"currency": "USD"`; the bonds endpoint omits the field, and if it ever names a
+  currency it must be USD. Anything else fails the observation with
+  `BackingCurrency` (`internal/observation/backing`).
 
 ### 3.5 Output encoding
 
-FTSO custom feeds return `(uint256 value, int8 decimals, uint64 timestamp)`.
+FTSO custom feeds return `(int256 value, int8 decimals, uint64 timestamp)`
+(`IICustomFeed.getCurrentFeed`). The signed update and the store carry the value as
+`int32`.
 
-- **decimals:** proposed `8` — gives 1e-8 resolution around $1.00. The interface
-  returns `int8` and imposes no constraint, so this is purely our choice.
-- **value:** `round(price * 10^decimals)`. `1.0` → `100_000_000`.
+- **decimals:** **decided, 8** (`config.PriceDecimals`) — 1e-8 resolution around
+  $1.00. The interface returns `int8` and imposes no constraint, and the store keeps
+  whatever scale the enclave signs, so this is purely our choice; every consumer
+  assumes 8.
+- **value:** `round(price * 10^decimals)`. `1.0` → `100_000_000`, inside `int32`
+  (whose ceiling is ~21.47 at 8 decimals; out of range fails closed).
 - **rounding:** round **half-up**. _Changed 5 Aug 2026; was truncation, "so we never
   over-report backing"._ Truncation is the safe direction, but the error it was
   protecting against measured **$0.004**: Hex quotes reserves to the cent while supply
@@ -246,9 +270,9 @@ feedId = 0x21555344582f555344000000000000000000000000
 
 **Resolved:** category `0x21`, name `"USDX/USD"` — the feed id
 `0x21555344582f555344000000000000000000000000` is pinned in the upstream
-deployment's chain-config and as a build fact in `internal/config`. The Coston
-deployment of 2026-09 registers it under that category; an earlier draft used
-`0x20`, which is equally inside the valid range. The store's
+deployment's chain-config and as a build fact in `pkg/protocol` (`protocol.FeedID`).
+The Coston and Songbird deployments register it under that category; an earlier
+draft used `0x20`, which is equally inside the valid range. The store's
 initializer reverts `InvalidFeedCategory` outside the custom range `[0x20, 0x40)`.
 
 ---
@@ -262,10 +286,10 @@ initializer reverts `InvalidFeedCategory` outside the custom range `[0x20, 0x40)
                  ▼                                                                              ▼
    ┌─────────────────────────────┐                                       ┌──────────────────────────────┐
    │ TeeOracleInstructionsSender │                                       │ TeeOracleFeedStore           │
-   │  → TeeMachineRegistry       │                                       │  verify TEE sig + registry   │
-   │    .sendInstructions()      │                                       │  monotonic ts + commitments  │
-   │  (upstream, flare-smart-    │                                       │  implements IICustomFeed     │
-   │   contracts-v2)             │                                       │  (upstream)                  │
+   │  → FlareTeeManager          │                                       │  verify TEE sig + registry   │
+   │    .sendInstructions()      │                                       │  median + spread bound,      │
+   │  (upstream, flare-smart-    │                                       │  ratchet, commitments        │
+   │   contracts-v2)             │                                       │  IICustomFeed (upstream)     │
    └──────────────┬──────────────┘                                       └──────────────┬───────────────┘
                   │ instruction event                                                   │
                   ▼                                                                     ▼
@@ -274,9 +298,10 @@ initializer reverts `InvalidFeedCategory` outside the custom range `[0x20, 0x40)
                   ▼
    ┌──────────────────────────────────────────────┐
    │ TEE proxy  ──►  TEE machine (Confidential Space)
+   │                  one process (cmd/extension-tee), loopback HTTP between:
    │                  ├── tee-node   (attestation, keys, /sign, /decrypt)
    │                  └── usdx-oracle extension  (POST /action, GET /state)
-   │                        ├─► RPC ×3 providers × 3 chains  → totalSupply
+   │                        ├─► RPC providers × 3 chains  → totalSupply
    │                        ├─► Hex public API   → bond reserves
    │                        └─► Hex private API  → cash reserves   (API key, IP-whitelisted)
    └──────────────────────────────────────────────┘
@@ -289,10 +314,13 @@ Flow:
 
 1. Keeper calls `requestFeedUpdate(feedId, teeIds)` on the TeeOracleInstructionsSender
    (payable — the registry charges a per-instruction fee, scaling with the target
-   count). Both contracts are upstream from flare-smart-contracts-v2; nothing is
-   deployed locally, and the extension id is the reserved 1.
-2. Registry emits an instruction event; data providers' relay clients cosign and
-   deliver it to the named TEE machine(s).
+   count). Both contracts are upstream's (flare-smart-contracts-v2): Coston and
+   Songbird run the upstream deployment, and this repo deploys the same contracts
+   only for the simulation and its own test deployments
+   (`deploy/scripts/deploy-oracle.sh`). The extension id comes from `EXTENSION_ID`:
+   1 upstream; an own deployment uses a reserved id it owns or one the registry mints.
+2. `FlareTeeManager` emits one instruction addressed to every named machine; data
+   providers' relay clients cosign it and the proxies deliver it.
 3. Extension signs its latest cached observation and returns an `ActionResult`
    whose `data` is the ABI-encoded feed update **plus a TEE signature** obtained
    from `POST /sign` on `$SIGN_PORT`. This makes the result self-contained and
@@ -301,7 +329,8 @@ Flow:
    submits it to the `TeeOracleFeedStore`, which verifies the signature through
    `Fdc2Verification` against the TEE machine registry before accepting.
 
-**No cosigners:** both instructions are sent with an empty `cosigners` list and
+**No cosigners:** every instruction the sender dispatches — `GET_FEED`,
+`SET_ENDPOINTS` and `SET_ADMINS` — is sent with an empty `cosigners` list and
 `cosignersThreshold` 0, so a machine executes on delivery without waiting for
 external co-signatures. Adding cosigners later changes instruction dispatch and
 delivery only — see the findings doc.
@@ -313,8 +342,9 @@ enclave.
 ### 4.1 What is public, and what is not
 
 This matters more than it looks, because **nothing the extension says about
-itself is private**. tee-node polls `GET /state` and folds the response into
-`TEEState.state`, attested and published by the TEE proxy at `GET /info`; the
+itself is private**. tee-node reads `GET /state` on every TEE info response and
+folds it into `TEEState.state`, attested and published by the TEE proxy at
+`GET /info`; the
 signed `GET_READINESS` report is served to anyone holding the proxy's direct
 key. The extension therefore carries nothing in `/state` — the zero version and
 no bytes, which tee-node relays as such and the registry accepts — and its one
@@ -357,10 +387,14 @@ proposing to them.
 
 We considered attesting the supply reads through FDC. Rejected for v1: it adds a
 round trip and considerable complexity for data we can read directly, and the TEE
-is already the trust anchor. Instead we get robustness from **redundancy**: three
-independent RPC providers per chain (Flare public, Ankr, QuickNode — all
-configurable), so no single provider is a point of failure or a manipulation
-vector.
+is already the trust anchor. Instead we get robustness from **redundancy**:
+several independent RPC providers per chain, and a quorum of them must return
+identical results at one pinned block. Both the provider list and the quorum are
+governance-published per chain (`SET_ENDPOINTS`, 1 ≤ quorum ≤ providers); the
+shipped configurations run every chain at 2-of-3, except
+`deploy/config/endpoints/coston2.json`, which runs Songbird at 1-of-1 and Ethereum
+at 2-of-2. Below a quorum of 2 a single provider is again a point of failure for
+that chain's share of supply (§2.8).
 
 ---
 
@@ -376,14 +410,19 @@ Each row is a candidate ticket. Owner/estimate to be filled in.
 | 1.2 | Get TEE egress IPs whitelisted by Hex (see WP6.4) | | blocked on 1.1 |
 | 1.3 | Client for public `current_reserves_amount` | | |
 | 1.4 | Client for private `current_cash_reserves_amount` (auth header) | | |
-| 1.5 | Response validation: schema, `currency == USD`, `last_update` parseable and not in the future (**no** age bound — the sources are event-driven), value parseable as decimal, non-negative, within plausible bounds | | |
+| 1.5 | Response validation: schema, `metric_name`, `currency == USD`, `last_update` parseable and not in the future (**no** age bound — the sources are event-driven), value parseable as decimal and non-negative (no magnitude bound: the price is bounded to [0, 1] by construction) | | |
 | 1.6 | Timeouts, bounded retries, no unbounded response body | | |
 | 1.7 | Agree an SLA / uptime expectation with Hex; what happens on their maintenance windows | | |
 
 Endpoints:
 
-- Public: `GET https://api.htdigitalassets.com/alm-stablecoin-db/metrics/current_reserves_amount`
-- Private: `GET https://api.htdigitalassets.com/alm-stablecoin-db/restricted/metrics/current_cash_reserves_amount`
+- Public: `GET https://api.htdigitalassets.com/alm-stablecoin-db/metrics/current_reserves_amount`,
+  pinned in the build (`config.HexBondsURL`).
+- Private: `GET` of the restricted `current_cash_reserves_amount` metric on the same
+  host. Its URL is sensitive (`internal/config`) and is not reproduced here:
+  governance publishes only a salted commitment to it, as the one PRIVATE endpoint
+  of the `hex_cash` group, and a backing admin provisions the URL itself as
+  `hex_cash_url` (§WP6).
 
 Private response shape (confirmed by Hex):
 
@@ -419,10 +458,13 @@ Consequences for 1.5:
 - Parse as arbitrary-precision decimal, never float64.
 - `last_update` ticked 12:17:21 → 12:27:21 with an unchanged value, suggesting a
   **10-minute refresh cadence**. If real, polling faster than that gains nothing.
+  (Answered 17 Aug 2026: there is no cadence; both endpoints are event-driven — §6.1.)
 
-**OPEN:** how is the private endpoint authenticated — bearer token, `X-API-Key`,
-mTLS? It currently returns **404** (not 401/403) without credentials, so we cannot
-distinguish "unauthorised" from "wrong path" until the key arrives.
+**Decided for the build: `X-API-Key`.** The private endpoint's key is sent in an
+`X-API-Key` header (`config.HexCashAuthHeader`), and changing the scheme is a new
+code hash. The endpoint returns **404** (not 401/403) without credentials, so
+"unauthorised" and "wrong path" look alike, and only a working key confirms the
+scheme.
 **OPEN:** are the formatting differences deliberate and stable, or an accident of
 two different serializers? Handle both formats on both endpoints regardless.
 
@@ -432,17 +474,22 @@ two different serializers? Handle both formats on both endpoints regardless.
 | --- | --- | --- | --- |
 | 2.1 | ~~Confirm USDX contract addresses~~ — **done**, §3.1 | | ✅ |
 | 2.2 | ~~Confirm token decimals per chain~~ — **done**: 6 / 6 / **18**. Read at runtime anyway; never hard-code | | ✅ |
-| 2.2b | Decide whether the old Ethereum contract counts toward supply (§3.3) | | |
-| 2.3 | Multi-provider RPC client: 3 endpoints per chain, configurable | | |
+| 2.2b | ~~Decide whether the old Ethereum contract counts toward supply~~ — **decided**: it does not; it is absent from `protocol.Chains` (§3.3) | | ✅ |
+| 2.3 | Multi-provider RPC client: governance-published providers per chain | | |
 | 2.4 | Quorum rule across providers (see below) | | |
 | 2.5 | Block-finality policy per chain | | |
-| 2.6 | Exclusion-list handling (`balanceOf` on excluded addresses) | | |
+| 2.6 | ~~Exclusion-list handling (`balanceOf` on excluded addresses)~~ — **dropped**: there is no exclusion list (§3.3) | | ✅ |
 | 2.7 | Per-provider timeout, retry, and failover behaviour | | |
 
 > **⚠ Superseded — this subsection records the design-time proposal, not what ships.**
-> Two parts of it were replaced after implementation and are wrong as written below:
+> Three parts of it were replaced after implementation and are wrong as written below:
 >
-> - **Head selection is the Quorum-th *highest*, not the minimum.** A single provider
+> - **The quorum is not a fixed 2-of-3.** Each chain's provider list and threshold
+>   `Quorum` (1 ≤ `Quorum` ≤ providers) are governance-published in `SET_ENDPOINTS`.
+>   The shipped configurations run 2-of-3 on every chain, except
+>   `deploy/config/endpoints/coston2.json` (Songbird 1-of-1, Ethereum 2-of-2).
+> - **Head selection is the Quorum-th *highest*, not the minimum**, stepping down
+>   through the distinct lower heads until `Quorum` providers actually serve one. A single provider
 >   answering "what block are you at?" with a two-week-old number dragged the minimum
 >   back with it, and every honest provider then corroborated the stale supply at that
 >   block perfectly — quorum passed and the enclave signed a stale figure. Rewinding to
@@ -456,8 +503,9 @@ two different serializers? Handle both formats on both endpoints regardless.
 >   pinned block's timestamp is itself agreed by Quorum providers, so a liar cannot
 >   pair an ancient block number with a fresh stamp.
 >
-> The rest — explicit block numbers never tags, ≥2-of-3 *identical* results, reading
-> `decimals()` at the same block, the state-retention constraint — is what ships.
+> The rest — explicit block numbers never tags, `Quorum` *identical* results with a
+> unique most common answer (a tie fails closed), reading `decimals()` at the same
+> block, the state-retention constraint — is what ships.
 
 **Quorum rule — proposal.** For each chain, query all 3 providers for
 `totalSupply()` **at an explicit block number** (not `latest`, which differs per
@@ -494,13 +542,13 @@ at 30 blocks, which looks like a blocker until you notice we don't use it.
 
 ### 2.8 Endpoint inventory
 
-The operationally important
-result: **Songbird has exactly one working public RPC**
-(`songbird-api.flare.network`), so the 3-provider rule cannot be met there with
-free endpoints. Flare has four, Ethereum five usable. Production should assume
-keyed/paid primaries (QuickNode, dRPC, Ankr premium) with public endpoints as the
-third leg — three endpoints named in the original plan had already died by the
-time of the survey.
+The operationally important result of the survey: **Songbird had exactly one
+working public RPC** (`songbird-api.flare.network`), so a multi-provider quorum
+could not be met there with free endpoints (`coston2.json` runs Songbird at 1-of-1;
+the other shipped configurations run it at 2-of-3). Flare had four, Ethereum five
+usable. Production should assume keyed/paid primaries (QuickNode, dRPC, Ankr
+premium) with public endpoints as the third leg — three endpoints named in the
+original plan had already died by the time of the survey.
 
 ### WP3 — Extension logic (Go)
 
@@ -520,18 +568,18 @@ upstream `userInterfaces/tee/ITeeOracleFeedStore.sol` (flare-smart-contracts-v2)
 
 ```solidity
 struct FeedUpdate {
-    uint256 extensionId;    // the RESERVED id 1
+    uint256 extensionId;    // EXTENSION_ID: the reserved id 1 upstream
     bytes21 feedId;         // 0x21 + "USDX/USD" (category byte + name, §3.6)
     int32   value;          // round(price · 10^decimals), half-up
     int8    decimals;       // 8
-    uint64  observedAt;     // store's monotonicity key — timestamp of an emitted
-                            // on-chain event, always strictly in the past
+    uint64  observedAt;     // store's monotonicity key — the requesting
+                            // instruction's block timestamp, always in the past
     bytes32 endpointsHash;  // endpoint configuration the machine was running
     bytes32 adminsHash;     // admin signer sets the machine was running
 }
 
 // domain is the bytes32 prefix TEE_ORACLE_FEED — the ASCII string right-padded
-// with zeros, NOT a keccak; chainId is inside the signed payload
+// with zeros, NOT a keccak; chainId is a field of the signed payload beside it
 messageHash = keccak256(abi.encode(TEE_ORACLE_FEED, chainId, keccak256(abi.encode(update))))
 data        = abi.encode(update, signature)
 ```
@@ -560,7 +608,9 @@ for a possible lagged-disclosure remedy.
   chainId, dataHash)` is handed to the signer as the message preimage, not the
   32-byte hash.
 - **`v` is returned as 0/1**, while `ecrecover` and OpenZeppelin's `ECDSA.recover`
-  need 27/28. Decide which side adds 27, and test that exactly one does.
+  need 27/28. **Decided: the enclave adds 27** (`internal/teenode.NormalizeV`,
+  pinned by `TestNormalizeV`) and the store adds nothing — `Fdc2Verification`
+  recovers with OpenZeppelin `ECDSA`.
 - Request/response are **base64**, not hex (Go `[]byte` marshalling).
 
 Note this is a *second, separate* signature from the FCC result signature over
@@ -569,45 +619,68 @@ and is explicitly not for external use.
 
 ### WP4 — Contracts
 
-**Superseded in shape, not in substance:** nothing here is deployed by this repo
-any more. The sender and the store are upstream (flare-smart-contracts-v2); this
-repo compiles their interfaces out of a sibling checkout (`contracts/`) and generates Go
-bindings from them (`./deploy/scripts/generate-bindings.sh`).
+**Superseded in shape, not in substance:** the sender and the store are upstream
+(flare-smart-contracts-v2), and the live deployments are upstream's. This repo
+compiles their interfaces out of a sibling checkout (`contracts/`), generates Go
+bindings from them (`./deploy/scripts/generate-bindings.sh`), and deploys the same
+contracts itself only for the simulation and its own test deployments
+(`contracts/script/DeployTeeOracle.s.sol`, `deploy/scripts/deploy-oracle.sh`).
 
 | # | Task | Owner | Status |
 | --- | --- | --- | --- |
-| 4.1 | `TeeOracleInstructionsSender` (upstream) — `requestFeedUpdate(feedId, teeIds)`, `setEndpoints`, `setAdmins`; the feed's latest configuration hashes live here | | |
-| 4.2 | Access control: requests are open (the fee bounds spam); configuration is governance-only (`onlyGovernance`) | | |
+| 4.1 | `TeeOracleInstructionsSender` (upstream) — `requestFeedUpdate(feedId, teeIds)`; `setEndpoints(feedId, groups, claimBack)` and `setAdmins(feedId, roles, claimBack)`, each dispatched to the extension's whole active set; `pushEndpoints` / `pushAdmins` to bring a later machine up to date (`get*PushTargets` lists who is behind); the feed's latest configuration hashes live here | | |
+| 4.2 | Access control: requests and pushes are open (the fee bounds spam); publication is governance-only (`onlyGovernance`, timelocked) | | |
 | 4.3 | `TeeOracleFeedStore` (upstream) — threshold batches (`submitFeedUpdates`, `requiredSignatures`, median with a spread bound), TEE signature verification via `Fdc2Verification`, replay/ordering guards, configuration commitments; implements `IICustomFeed` itself | | |
 | 4.4 | Agree category byte + feed name with Flare | | |
 | 4.5 | Feed registration via governance `addCustomFeeds` — **has a lead time, start early** | | |
 | 4.6 | Re-run `./deploy/scripts/generate-bindings.sh` when upstream changes | | |
 | 4.7 | Foundry wire-vector tests (`contracts/test/*.t.sol`) — pin the Solidity ABI encoding the Go codecs assert against | | |
 
-`TeeOracleFeedStore` acceptance rules — as shipped upstream:
+`TeeOracleFeedStore` acceptance rules — as shipped upstream, in the order
+`submitFeedUpdates` checks them:
 
-- the TEE signature verifies through `Fdc2Verification.verifyTeeSignature` —
-  the signer is a registered **PRODUCTION** machine on the store's extension,
-  and submissions are rejected while the extension is emergency paused;
-- the update names the store's own `extensionId` and `feedId` (`WrongExtensionId`
-  / `WrongFeedId` otherwise);
-- the update carries the `endpointsHash` and `adminsHash` currently published
-  for that machine on the sender (`StaleEndpoints` / `StaleAdmins`;
-  `NoEndpointsPublished` / `NoAdminsPublished` if never published);
+- the batch's shape: at least `requiredSignatures` and at most 32 signed updates
+  (`NotEnoughSignatures` / `TooManySignatures`), all carrying one `observedAt`
+  (`ObservedAtMismatch`), their `decimals` within 8 of each other
+  (`DecimalsSpreadTooBig`);
+- the two values bracketing the median lie within the spread bound,
+  `maxSpreadBIPS` of |median| plus `maxSpreadAbsolute` (`SpreadTooBig`). A value
+  outside that bracket is not judged by it: it is accepted, and named in
+  `FeedOutliers` if it lies beyond the bound;
 - `observedAt` strictly greater than stored (`NotNewer` — rejects replays *and*
   out-of-order delivery; FCC is explicitly "fire and forget" with no ordering
   guarantee) and strictly older than the accepting block (`TooFarAhead` —
   unreachable for an honestly produced update, since `observedAt` is the
-  timestamp of the on-chain instruction event that requested the update).
+  timestamp of the on-chain instruction event that requested the update);
+- the feed's configuration is published on the sender: `latestEndpointsHash(feedId)`
+  and `latestAdminsHash(feedId)` (`NoEndpointsPublished` / `NoAdminsPublished`);
+- per update: the TEE signature verifies through `Fdc2Verification.verifyTeeSignature`
+  — the signer is a registered **PRODUCTION** machine on the store's extension, and
+  submissions are rejected while the extension is emergency paused; the signer is not
+  repeated in the batch (`DuplicateTeeId`); the update names the store's own
+  `extensionId` and `feedId` (`WrongExtensionId` / `WrongFeedId`); and it carries
+  exactly the feed's latest `endpointsHash` and `adminsHash` (`StaleEndpoints` /
+  `StaleAdmins`). The check is feed-level, not per machine: a publication
+  invalidates every machine still running the previous generation until it adopts
+  the new one.
+
+The store then keeps the median, rescaled to the finest `int32` scale it fits, with
+the batch's `observedAt`. `requiredSignatures`, `maxSpreadBIPS` and
+`maxSpreadAbsolute` are its submission policy, set at deployment and changed by
+governance with `setSubmissionPolicy` (timelocked); upstream's deployment
+configuration for Coston and Songbird is 2 signatures, 100 BIPS and 0.
 
 There is no maximum-age window, no price band and no pause flag on the store:
-acceptance is anchored by the signature, the commitments and monotonicity. The
-optional deviation guard (§6.2) is therefore still open, and would have to live
-elsewhere — the keeper's preflight, or the monitoring layer.
+acceptance is anchored by the signatures, the threshold, the commitments and
+monotonicity. The spread bound compares the machines of one batch with each other,
+not a value with its predecessor, so the optional deviation guard (§6.2) is still
+open, and would have to live elsewhere — the keeper's preflight, or the monitoring
+layer. The emergency pause is the extension's, on `FlareTeeManager`.
 
-Anyone may submit a valid signed update; the keeper holds no authority and is a
-liveness convenience, not a trusted party. Colliding submissions are harmless —
-exactly one wins per cycle. This is deliberate.
+Anyone may submit a valid signed batch; the keeper holds no authority and is a
+liveness convenience, not a trusted party. Colliding submissions are harmless: the
+ratchet admits one batch per `observedAt`, and any other carrying the same stamp
+reverts `NotNewer`. This is deliberate.
 
 #### `IICustomFeed` — verified against `flare-smart-contracts-v2`
 
@@ -616,7 +689,7 @@ three functions:
 
 ```solidity
 interface IICustomFeed {
-    function getCurrentFeed() external payable returns (uint256 _value, int8 _decimals, uint64 _timestamp);
+    function getCurrentFeed() external payable returns (int256 _value, int8 _decimals, uint64 _timestamp);
     function feedId() external view returns (bytes21 _feedId);
     function calculateFee() external view returns (uint256 _fee);
 }
@@ -627,8 +700,9 @@ Four things about it that shape our implementation:
 **1. `getCurrentFeed()` is `payable` and *not* `view`.** It cannot be marked
 `view` in our implementation even though we only read storage — the mutability
 must match the interface. Consumers therefore call it as a transaction, or via
-`staticcall` off-chain. `FtsoV2.getFeedById` forwards `msg.value` straight
-through to it.
+`staticcall` off-chain. FtsoV2's reads (`getFeedById` and the rest) check the
+caller's payment against `calculateFee()`, forward exactly that amount, and burn
+the excess.
 
 **2. We are a *primary* feed, unlike both shipped examples.** `SFlrCustomFeed`
 and `StXrpCustomFeed` are *derivative* — they read an underlying FTSO feed from
@@ -648,17 +722,21 @@ accumulates on the store. While the fee rows are unset, reads are free — but t
 meter exists, unlike in the original design.
 
 **4. Reverting is a consumer-facing failure.** `FtsoV2.getFeedById` forwards the
-call, so if `getCurrentFeed()` reverts, the consumer's call reverts. This makes
-the staleness decision from §7.15 concrete and load-bearing:
+call, so if `getCurrentFeed()` reverts, the consumer's call reverts. The store
+reverts only `NoValuePublished` before its first accepted update, and on a fee it
+cannot collect (`FeeTooLow`, `FeeTransferFailed`). This makes the staleness
+decision from §7.15 concrete and load-bearing:
 
 > **Decision: `getCurrentFeed()` must never revert on staleness.** Return the last
 > stored price with its true (ageing) `_timestamp` and let consumers apply their
 > own freshness policy. Reverting would turn a stale-data problem into a liveness
 > outage for every downstream protocol at once.
 
-The same applies to stopping the feed: the store has no pause flag, and the
-extension-level emergency pause freezes the value by refusing new submissions,
-not by making the feed throw.
+The same applies to stopping the feed: the store has no pause flag. The emergency
+pause is extension-level, on `FlareTeeManager` (`emergencyPauseExtension`, by the
+extension owner or its pausers): no instruction is dispatched and no signature
+verifies while it is set, so the value freezes with its ageing timestamp. It
+cannot withdraw a published value, and it never makes the feed throw.
 
 **Registration is a governance action.** `FtsoV2.addCustomFeeds(IICustomFeed[])`
 is `onlyGovernance` and reverts with `"invalid feed category"` outside 32–63 or
@@ -676,9 +754,9 @@ round.
 
 ### WP5 — Keeper / relayer
 
-_Implementation spec: `usdx-oracle-keeper.md` — including how the original cycle sketch was
-corrected against the deployed contracts (the request returns and emits its instruction id;
-`ActionResult` has no `signature` field, so `data` is decoded into the signed update)._
+_Implementation spec: `usdx-oracle-keeper.md`. Against the deployed contracts, the request
+returns and emits its instruction id, and `ActionResult` has no `signature` field, so the
+keeper decodes `data` into the signed update._
 
 | # | Task | Owner | Status |
 | --- | --- | --- | --- |
@@ -690,10 +768,14 @@ corrected against the deployed contracts (the request returns and emits its inst
 | 5.6 | Run ≥ 2 independent keeper instances (idempotent submissions) | | |
 | 5.7 | Deployment: where does it run, who operates it | | |
 
-**OPEN:** update cadence `T`. A stablecoin backing ratio moves slowly, but a
-depeg needs fast detection. Straw man: **every 5 minutes**, plus an immediate
-update if the computed price deviates from the stored one by more than X bps.
-Cost per update = instruction fee × target-machine count + gas × 2 transactions.
+**Decided: `T` = 10 minutes, with no deviation trigger.** The keeper starts a cycle
+every `-interval` (default `10m`, `tools/cmd/keeper`). A stablecoin backing ratio
+moves slowly, and Hex republishes only within about ten minutes of an on-chain
+event (§6.1), so a faster cycle pays for nothing new. The straw man's immediate
+update on a deviation of more than X bps is not built: the keeper sees a price only
+in the signed result it has already paid to request, so there is nothing to compare
+before paying. Cost per update = instruction fee × target-machine count + gas × 2
+transactions (`requestFeedUpdate`, `submitFeedUpdates`).
 
 ### WP6 — Secrets, attestation, infrastructure
 
@@ -831,17 +913,23 @@ trades depeg-detection latency against manipulation resistance, and the right
 answer depends on who bears the loss in each direction.
 
 Straw man to react to, not a decision: allow *upward* moves toward 1.0 freely;
-require **K consecutive observations** (K ≈ 3, ~15 min at T = 5 min) before
-publishing a downward move larger than `maxDeviationBps`, and page on the first
-one. Note that under this rule a real depeg reaches consumers ~15 minutes late,
-which someone must consciously accept.
+require **K consecutive observations** (K ≈ 3, ~30 min at the keeper's T = 10 min)
+before publishing a downward move larger than `maxDeviationBps`, and page on the
+first one. Note that under this rule a real depeg reaches consumers ~30 minutes
+late, which someone must consciously accept.
 
 ### 6.3 Source compromise
 
 - **Hex API compromise** — a wrong reserve number produces a wrong price. The TEE
-  cannot detect this. Mitigation is bounds + alerting + a governance pause, plus
-  agreeing an out-of-band verification channel with Hex.
-- **RPC compromise** — mitigated by the 2-of-3 quorum at a fixed block.
+  cannot detect this: the only bound is [0, 1], by construction (`min(1, B/S)` over
+  non-negative inputs), and a sub-par figure publishes as a sub-par price.
+  Mitigation is alerting on the published value, the extension-level emergency
+  pause on `FlareTeeManager` (it freezes the last value; it cannot withdraw it),
+  plus agreeing an out-of-band verification channel with Hex.
+- **RPC compromise** — mitigated by each chain's quorum at a fixed block:
+  `Quorum` identical answers with a unique winner, at the `Quorum`-th highest head
+  (§WP2). The quorum is governance-set per chain; at 1 a single provider decides
+  that chain's share of supply.
 - **TEE compromise** — out of scope; the FCC trust model handles it via
   attestation and code-hash registration.
 
@@ -867,11 +955,14 @@ For Hex:
    that an unmirrored outflow shows up in the figure.
 1. ~~Is USDX natively issued or bridged?~~ Evidence says native burn-and-mint OFT
    (§3.3) — needs confirmation, not investigation. Which addresses are
-   non-circulating, and what is the old Ethereum contract's status?
-2. Does `current_reserves_amount` already include cash reserves?
+   non-circulating, and what is the old Ethereum contract's status? (The build
+   counts no exclusions and leaves the old contract out — §3.3.)
+2. Does `current_reserves_amount` already include cash reserves? The build adds the
+   two (§3.4); if it does, that double-counts cash.
 3. Are bonds valued at market or par?
-4. Auth scheme and rate limits for the private endpoint? Response shape of the
-   public one?
+4. Auth scheme and rate limits for the private endpoint? The build sends the key as
+   `X-API-Key` (WP1); confirmation and the rate limits are outstanding. The public
+   endpoint's response shape was verified directly (WP1).
 5. How many IPs can we whitelist, and what is the lead time to add one?
 6. ~~How frequently are the reserve figures recomputed? Does `last_update` move on
    every redemption?~~ **Answered 17 Aug 2026:** not on a frequency at all. Both
@@ -890,18 +981,23 @@ For Flare / internal:
    **Resolved:** category `0x21`, name `"USDX/USD"`, pinned upstream and in the
    build. Decimals are 8 — the interface constrains nothing, and the store keeps
    whatever scale the enclave signs.
-10. Update cadence `T` and the fee/gas budget that implies.
+10. ~~Update cadence `T`~~ — **decided:** 10 minutes, no deviation trigger (WP5).
+    Still open: the fee/gas budget that implies.
 11. How many TEE machines serve this extension? (Drives the IP-whitelist count in
     WP6.4 — Hex has to whitelist one static egress IP per machine.)
 12. Deviation-guard policy (§6.2) — **who owns that risk decision?** Currently
     unassigned and blocking.
 13. Where do Confidential Space extension logs land and who can read them (§4.1)?
 14. Is an external audit in scope?
-15. Behaviour when a source is unavailable: freeze at last value (with an ageing
-    timestamp) vs actively signal "no price". **Proposal: freeze and let the
-    timestamp age — consumers already must check staleness.**
+15. ~~Behaviour when a source is unavailable: freeze at last value (with an ageing
+    timestamp) vs actively signal "no price".~~ **Decided: freeze.** `GET_FEED`
+    fails closed and publishes nothing, and `getCurrentFeed()` keeps returning the
+    last accepted value with its true, ageing timestamp; it never reverts on
+    staleness (WP4). Consumers already must check staleness.
 
-Resolved (see decisions log at the top): submission path, on-chain payload shape.
+Resolved (see decisions log at the top): submission path, on-chain payload shape,
+supply accounting and reserve composition as built (§3.3, §3.4), the cash endpoint's
+auth header, decimals, the `v` convention, keeper cadence and outage behaviour (Q15).
 
 ---
 
@@ -926,15 +1022,18 @@ Relevant references:
   `GET /state`, wire format, reproducibility rules)
 - `docs/deployment-steps.md` — Confidential Space deployment
 - `docs/testing.md` — unit / conformance / e2e layers
-- `internal/extension/extension.go` — handler dispatch
+- `internal/extension/router.go` — action dispatch; `internal/extension/extension.go` —
+  the loopback HTTP server (`POST /action`, `GET /state`)
 - `userInterfaces/tee/ITeeOracleInstructionsSender.sol` / `ITeeOracleFeedStore.sol` in
   flare-smart-contracts-v2 — the upstream on-chain interfaces the extension's payloads must match
 
-The tee-node signing API available to the extension on `$SIGN_PORT`:
+The tee-node signing API available to the extension on `$SIGN_PORT` (loopback only,
+in the same process):
 
 | Endpoint | Use here |
 | --- | --- |
-| `POST /sign` | sign the price result with the TEE identity key |
+| `POST /sign` | sign the feed update and the readiness report with the TEE identity key |
 | `POST /sign/{walletID}/{keyID}` | not needed in v1 |
-| `POST /decrypt` | decrypt injected secrets (Hex API key, RPC keys) |
+| `POST /decrypt` | decrypt injected secrets (Hex API key, cash URL, RPC keys) |
+| `POST /decrypt/{walletID}/{keyID}`, `POST /result` | not needed in v1 |
 | `GET /key-info/{walletID}/{keyID}` | not needed in v1 |
