@@ -20,15 +20,16 @@ import (
 // observation exceeds the 2s tee-node allows per action, so it runs on a timer
 // in internal/observation/poller.
 type Observer interface {
-	// requestedAt is the requesting instruction's block timestamp. It is a
-	// reference clock, not a value to publish: the observer measures its cached
-	// observation against it and refuses rather than restamping. See
+	// requestedAt is the requesting instruction's block timestamp. The observer
+	// signs the update with it as observedAt, so every machine answering one
+	// request signs the same value, and measures its cached observation's age
+	// against it, refusing one read more than MaxObservationAge earlier. See
 	// internal/observation/poller.
 	Report(ctx context.Context, requestedAt uint64) (observation.Observation, error)
 
 	// ReadinessReport answers GET_READINESS. It takes the provisioning half because
-	// the observer does not own it, and returns the finished payload: assembling
-	// and signing both happen behind the poller's lock.
+	// the observer does not own it, and returns the finished payload, assembled
+	// from one snapshot taken under the poller's read lock and signed outside it.
 	ReadinessReport(
 		ctx context.Context, instructionID common.Hash, provisioning types.Readiness,
 	) ([]byte, error)

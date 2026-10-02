@@ -1,6 +1,6 @@
 {
   "name": "02-get-feed-is-deterministic",
-  "description": "A second GET_FEED returns an identical payload. Unlike the scaffold's greeting counter, the price is a function of observed inputs, not of how many times it has been asked \u2014 nothing in the payload may drift per call.",
+  "description": "A second GET_FEED returns an identical payload. The price is a function of observed inputs, not of how many times it has been asked \u2014 nothing in the payload may drift per call.",
   "request": {
     "method": "POST",
     "path": "/action",

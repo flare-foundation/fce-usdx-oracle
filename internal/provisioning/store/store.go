@@ -250,9 +250,9 @@ func (s *Store) ApplyAdmins(payload []byte) error {
 
 // checkFeedID refuses configuration published for a different feed of the same
 // extension. This machine serves exactly one, and the sender keeps commitments
-// per feed and machine — so a sibling feed's payload would install cleanly, and
-// then every feed update would carry a hash the store compares against THIS
-// feed's commitment and rejects. Refusing here turns a silent, permanent
+// per feed (only the dispatched versions are per machine) — so a sibling feed's
+// payload would install cleanly, and then every feed update would carry a hash
+// the store compares against THIS feed's commitment and rejects. Refusing here turns a silent, permanent
 // StaleEndpoints into a rejected instruction that names the reason.
 func checkFeedID(feedID [21]byte) error {
 	if feedID != protocol.FeedID {

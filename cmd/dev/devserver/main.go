@@ -4,8 +4,8 @@
 //
 //	go run ./cmd/dev/mocknode &
 //	go run ./cmd/dev/devserver &
-//	./deploy/scripts/set-endpoints.sh deploy/config/endpoints/coston2.json
-//	./deploy/scripts/set-admins.sh deploy/config/admins/dev-wellknown-keys.json
+//	./deploy/scripts/set-config.sh endpoints deploy/config/endpoints/coston2.json
+//	./deploy/scripts/set-config.sh admins deploy/config/admins/dev-wellknown-keys.json
 //
 // NOT a production entrypoint. Production is ./cmd/extension-tee.
 package main

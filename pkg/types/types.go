@@ -47,9 +47,8 @@ type ReadinessReport struct {
 	// freezing, not erroring.
 	ObservationAge uint64 `json:"observationAge"`
 
-	// WouldSign reports whether a GET_FEED issued now would succeed — the
-	// newest observation exists and is inside MaxObservationAge. A keeper can
-	// skip a cycle it would otherwise pay for.
+	// WouldSign reports whether this machine would sign a GET_FEED for the
+	// newest observation
 	WouldSign bool `json:"wouldSign"`
 
 	// Observations and Failures are the poller's cumulative counters.
@@ -60,7 +59,7 @@ type ReadinessReport struct {
 	// observation succeeded. A closed taxonomy, never a raw error.
 	LastErrorClass string `json:"lastErrorClass"`
 
-	// SourceHealth maps each positional source name to a config.Health* value.
+	// SourceHealth maps each positional source name to a Health* value.
 	// Positional so nothing an endpoint author supplies reaches this surface.
 	SourceHealth map[string]string `json:"sourceHealth"`
 

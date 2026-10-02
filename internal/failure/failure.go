@@ -4,8 +4,9 @@
 //
 // Not the only route to that field, though: a non-200 from POST /action reaches
 // Log too, because tee-node wraps the response body into a status-0 result. The
-// two 501 handlers in internal/extension are the only paths that do it, and the
-// comments there say why they may.
+// router's 400 and 501 answers in internal/extension are the paths that do it:
+// their bodies carry only caller-supplied input (a decoder error, the op hashes
+// received) and this build's command list, and the comments there say why they may.
 package failure
 
 import "errors"
@@ -128,7 +129,8 @@ var (
 
 	// Observation older than the requesting block by more than MaxObservationAge
 	// while the LOCAL bound passed — only a slow clock does that. Bounded this
-	// direction only; the store's MAX_FUTURE_SKEW covers the other.
+	// direction only. The other cannot arise: the signed observedAt is the request's
+	// block timestamp, which the store also requires to be below block.timestamp.
 	ClockBehindChain = Failure{ClassClockSkew, "machine clock is behind chain time"}
 
 	// --- price computation ---

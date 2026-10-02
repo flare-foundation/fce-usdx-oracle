@@ -40,7 +40,9 @@ const signTimeout = time.Second
 
 // StartExtension starts the HTTP server and the observation loop, returning a channel
 // that receives any ListenAndServe failure. The extension boots UNPROVISIONED and that
-// is normal: it serves not_configured until SET_ENDPOINTS and SET_SECRET land.
+// is normal: it observes once SET_ENDPOINTS has landed and SET_SECRET has delivered
+// every RPC credential that configuration names, and it signs a feed update only once
+// SET_ADMINS has installed the admin sets. Until then GET_FEED answers not_configured.
 func StartExtension(extensionPort, signPort int) <-chan error {
 	errCh := make(chan error, 1)
 
@@ -52,8 +54,9 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 		errCh <- err
 		return errCh
 	}
-	// The address is public: it is what governance names in setEndpoints and
-	// what the machine registry publishes.
+	// The address is public: it is what the machine registry publishes, what a
+	// keeper names in requestFeedUpdate, and what every provisioning envelope is
+	// bound to.
 	logger.Infof("tee identity resolved: %s", teeID.Hex())
 
 	// The admin policy — which refs the backing set governs, and each set's
@@ -71,7 +74,7 @@ func StartExtension(extensionPort, signPort int) <-chan error {
 	// is also how the memory-only credentials are discarded.
 	go loop.Run(context.Background())
 
-	logger.Infof("extension started unprovisioned; awaiting SET_ENDPOINTS and SET_SECRET")
+	logger.Infof("extension started unprovisioned; awaiting SET_ENDPOINTS, SET_ADMINS and SET_SECRET")
 	logger.Infof("observing every %s, refusing to sign anything older than %s",
 		config.ObservationInterval, config.MaxObservationAge)
 

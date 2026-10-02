@@ -625,10 +625,11 @@ func TestRead_TwoStalledProvidersBreakQuorum(t *testing.T) {
 	}
 }
 
-// T-10. A head is a claim, not proof. One provider naming a head it does not hold
+// A head is a claim, not proof. One provider naming a head it does not hold
 // pushes the Quorum-th highest onto a block only ONE honest provider can serve, and
-// the vote there is one honest answer against one forged — a tie. Before the step
-// down, a single provider denied every round this way.
+// the vote there is one honest answer against one forged — a tie. The round steps
+// down to the next distinct head, which Quorum providers do serve, so a single
+// overclaiming provider cannot deny it.
 func TestRead_OverclaimedHeadDoesNotDenyTheRound(t *testing.T) {
 	honestA := client(1000, "20620459685024", 6)
 	honestB := client(999, "20620459685024", 6)

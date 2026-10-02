@@ -938,10 +938,51 @@ func TestApplySecret_RejectsCredentialThatWouldAlterAURL(t *testing.T) {
 	}
 }
 
+// acceptingSecrets is a store with endpoints and admin sets installed and no
+// credential yet, so the next valid envelope for any ref is accepted.
+func acceptingSecrets(t *testing.T) *Store {
+	t.Helper()
+	s := newStore(t)
+	if err := setEndpoints(s, 1, testGroups(t)); err != nil {
+		t.Fatalf("SetEndpoints: %v", err)
+	}
+	setAdmins(t, s, 1)
+	return s
+}
+
 func TestApplySecret_RejectsOversizedMessage(t *testing.T) {
-	s := provisioned(t)
-	if err := s.ApplySecret(context.Background(), make([]byte, maxPayloadBytes+1)); err == nil {
-		t.Fatal("an oversized message must be rejected")
+	s := acceptingSecrets(t)
+
+	// A fully valid envelope that is merely too big. Garbage of the same length
+	// would prove nothing, since it fails decoding either way: only a message
+	// that would otherwise be accepted shows that the size bound refused it.
+	oversized := envelopeFor(t, protocol.HexAPIKeyRef, []byte(strings.Repeat("k", maxPayloadBytes)), 1)
+	if len(oversized) <= maxPayloadBytes {
+		t.Fatalf("setup: message is %d bytes, expected more than %d", len(oversized), maxPayloadBytes)
+	}
+
+	err := s.ApplySecret(context.Background(), oversized)
+	if err == nil {
+		t.Fatal("a message larger than maxPayloadBytes must be refused")
+	}
+	// Indistinguishable from every other rejection, so the endpoint cannot be
+	// used to probe where the bound sits.
+	if !errors.Is(err, failure.ProvisionRejected) {
+		t.Errorf("want ProvisionRejected, got %v", err)
+	}
+	s.mu.RLock()
+	stored := s.secrets[protocol.HexAPIKeyRef]
+	s.mu.RUnlock()
+	if len(stored) != 0 {
+		t.Error("an oversized credential was stored anyway")
+	}
+
+	// The same ref at an ordinary size still applies, so the bound refuses size
+	// and not everything. Reusing version 1 is the point: a rejection before the
+	// verifier must not have consumed that version.
+	if err := s.ApplySecret(context.Background(),
+		envelopeFor(t, protocol.HexAPIKeyRef, []byte("value-ok"), 1)); err != nil {
+		t.Fatalf("a normal envelope at the same version must still be accepted: %v", err)
 	}
 }
 
@@ -984,6 +1025,51 @@ func TestApplySecret_IsSafeUnderConcurrency(t *testing.T) {
 	defer s.mu.RUnlock()
 	if len(s.secrets["ankr_flare_key"]) == 0 {
 		t.Error("no credential was installed")
+	}
+}
+
+// One envelope submitted many times at once, as an attacker replaying a captured
+// message would. The verifier's version check and its record of the accepted
+// version must happen as one step, or several copies read the old version
+// before any records the new one and all of them are accepted.
+func TestApplySecret_ConcurrentReplayAdmitsExactlyOne(t *testing.T) {
+	s := acceptingSecrets(t)
+	message := envelopeFor(t, protocol.HexAPIKeyRef, []byte("the-credential"), 1)
+
+	const attempts = 8
+	var (
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+		results = make([]error, attempts)
+	)
+	for i := range attempts {
+		wg.Go(func() {
+			// Released together, so the copies contend for the verifier rather
+			// than arriving one after another.
+			<-start
+			results[i] = s.ApplySecret(context.Background(), message)
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	accepted := 0
+	for i, err := range results {
+		switch {
+		case err == nil:
+			accepted++
+		case !errors.Is(err, failure.ProvisionRejected):
+			t.Errorf("attempt %d: want ProvisionRejected for a replay, got %v", i, err)
+		}
+	}
+	if accepted != 1 {
+		t.Errorf("%d of %d copies accepted, want exactly 1", accepted, attempts)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if got := string(s.secrets[protocol.HexAPIKeyRef]); got != "the-credential" {
+		t.Errorf("installed credential = %q, want the one the envelope carries", got)
 	}
 }
 

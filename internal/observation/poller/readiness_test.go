@@ -148,6 +148,76 @@ func TestReadinessReport_StaleObservationWouldNotSign(t *testing.T) {
 	}
 }
 
+// An observation taken before any admin set was installed is one Report refuses
+// with NotConfigured: the update it would sign commits to no admin set, and the
+// store rejects that. A report saying it would sign would have a keeper pay for
+// the refusal.
+func TestReadinessReport_NoAdminSetWouldNotSign(t *testing.T) {
+	p := stubPoller(t, &fakeSigner{})
+	obs := observationAt(1_800_000_000 - 60)
+	obs.Binding.AdminsHash = common.Hash{}
+	p.record(obs, nil)
+
+	rep := decodeReadiness(t, mustReadiness(t, p))
+	if rep.WouldSign {
+		t.Error("an observation that commits to no admin set cannot be signed; wouldSign should be false")
+	}
+	if rep.ObservationAge != 60 {
+		t.Errorf("observationAge = %d, want 60: the refusal is about the admin set, not the age", rep.ObservationAge)
+	}
+}
+
+// wouldSign is a forecast of Report, so for a request arriving now the two must
+// agree in every state the poller can be in.
+func TestReadinessReport_WouldSignAgreesWithReport(t *testing.T) {
+	noAdmins := observationAt(1_800_000_000 - 60)
+	noAdmins.Binding.AdminsHash = common.Hash{}
+
+	cases := []struct {
+		name string
+		seed func(p *Poller)
+	}{
+		{"never observed", func(p *Poller) {}},
+		{"only failures", func(p *Poller) { p.record(observation.Observation{}, failure.NotConfigured) }},
+		{"fresh, admins installed", func(p *Poller) { p.record(observationAt(1_800_000_000-60), nil) }},
+		{"at the age bound", func(p *Poller) { p.record(observationAt(1_800_000_000-10*60), nil) }},
+		{"past the age bound", func(p *Poller) { p.record(observationAt(1_800_000_000-(10*60+1)), nil) }},
+		{"fresh, no admin set", func(p *Poller) { p.record(noAdmins, nil) }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := stubPoller(t, &fakeSigner{})
+			c.seed(p)
+
+			rep := decodeReadiness(t, mustReadiness(t, p))
+			_, err := p.Report(context.Background(), testRequestedAt)
+			if rep.WouldSign != (err == nil) {
+				t.Errorf("wouldSign = %v, but Report for a request now returned %v", rep.WouldSign, err)
+			}
+		})
+	}
+}
+
+// The one check wouldSign cannot make: Report measures the observation against
+// the requesting block's timestamp, which only a request carries. A machine
+// whose own clock says the reading is fresh still refuses a request stamped
+// more than maxAge later, and one with no timestamp at all.
+func TestReadinessReport_CannotForeseeTheRequestClock(t *testing.T) {
+	p := stubPoller(t, &fakeSigner{})
+	p.record(observationAt(1_800_000_000-60), nil)
+
+	rep := decodeReadiness(t, mustReadiness(t, p))
+	if !rep.WouldSign {
+		t.Fatal("setup: a fresh observation under an admin set should report wouldSign")
+	}
+	if _, err := p.Report(context.Background(), 1_800_000_000+10*60); !errors.Is(err, failure.ClockBehindChain) {
+		t.Errorf("Report for a request 11 minutes after the reading = %v, want ClockBehindChain", err)
+	}
+	if _, err := p.Report(context.Background(), 0); !errors.Is(err, failure.MissingRequestTime) {
+		t.Errorf("Report for a request with no timestamp = %v, want MissingRequestTime", err)
+	}
+}
+
 // Health is copied under the lock. Handing out the live map would race with the
 // next observation replacing it.
 func TestReadinessReport_HealthIsACopy(t *testing.T) {

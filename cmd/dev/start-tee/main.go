@@ -72,9 +72,10 @@ func main() {
 }
 
 func loadEnv() {
-	// Try project-root .env first (works even when CWD is elsewhere).
+	// Try project-root .env first (works even when CWD is elsewhere). This file
+	// is cmd/dev/start-tee/main.go, three directories below the root.
 	_, thisFile, _, _ := runtime.Caller(0)
-	rootEnv := filepath.Join(filepath.Dir(thisFile), "..", "..", ".env")
+	rootEnv := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", ".env")
 	if err := godotenv.Load(rootEnv); err != nil {
 		// Fallback to CWD .env.
 		if err := godotenv.Load(); err != nil {

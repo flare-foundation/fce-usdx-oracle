@@ -1,6 +1,6 @@
 {
   "name": "13-get-feed-refused-over-direct",
-  "description": "GET_FEED is an on-chain instruction and nothing else. Serving it over the direct channel would hand the same signed update to anyone holding the proxy API key, free and unrecorded, so a direct GET_FEED is refused with the wrong-action-type class rather than answered. The envelope here is a DirectInstruction rather than a DataFixed, which is the shape the proxy really sends: parsing one as the other does not error, it yields an empty payload, so this also pins that the refusal comes from the CHANNEL check and not from an accidentally empty message. Deliberately last \u2014 the fixtures share one process and 12-get-state asserts the counters exactly, so anything inserted before it moves them.",
+  "description": "GET_FEED is an on-chain instruction and nothing else. Serving it over the direct channel would hand the same signed update to anyone holding the proxy API key, free and unrecorded, so a direct GET_FEED is refused with the wrong-action-type class rather than answered. The envelope here is a DirectInstruction rather than a DataFixed, which is the shape the proxy really sends: parsing one as the other does not error, it yields an empty payload, so this also pins that the refusal comes from the CHANNEL check and not from an accidentally empty message.",
   "request": {
     "method": "POST",
     "path": "/action",

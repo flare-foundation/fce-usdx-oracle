@@ -1,6 +1,6 @@
 {
   "name": "12-get-state",
-  "description": "GET /state returns the envelope tee-node decodes as its TeeState: a bytes32 stateVersion and the state as bytes. Both are empty on purpose \u2014 the zero version and no bytes \u2014 which tee-node carries as such and the extension's on-chain state verifier accepts. The extension publishes nothing here: its account of itself is the signed GET_READINESS report. A whole-body exact match, so a field carrying a price, a counter, a supply or a reserve figure can never reappear on this world-readable surface unnoticed.",
+  "description": "GET /state returns the envelope tee-node decodes as its TeeState: a bytes32 stateVersion and the state as bytes. Both are empty on purpose \u2014 the zero version and no bytes \u2014 which tee-node carries as such and the registry accepts: the extension is registered without a state verifier. The extension publishes nothing here: its account of itself is the signed GET_READINESS report. A whole-body exact match, so a field carrying a price, a counter, a supply or a reserve figure can never reappear on this world-readable surface unnoticed.",
   "request": {
     "method": "GET",
     "path": "/state"

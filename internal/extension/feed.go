@@ -10,9 +10,11 @@ import (
 	"github.com/flare-foundation/go-flare-common/pkg/tee/instruction"
 )
 
-// processGetFeed signs the latest observation and returns the payload. Fails
-// closed: never guesses, never falls back to a cached price. A frozen feed with
-// an ageing timestamp is the designed failure mode.
+// processGetFeed signs the poller's latest observation and returns the payload.
+// Fails closed: the observation is signed only while it is within
+// MaxObservationAge of both the machine's clock and the request, and nothing
+// older or guessed is ever substituted. A frozen feed with an ageing timestamp
+// is the designed failure mode.
 func (e *Extension) processGetFeed(df *instruction.DataFixed) outcome {
 	// The request names a feed, because one sender serves every feed of its
 	// extension. Anything that is not exactly one ABI-encoded FeedUpdateRequest

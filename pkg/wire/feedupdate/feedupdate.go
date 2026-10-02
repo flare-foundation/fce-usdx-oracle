@@ -20,9 +20,9 @@
 // endpointsHash and adminsHash commit to the configuration and signer set. The
 // payload carries no instruction id; correlation is the tee-node action id.
 //
-// Requests now use an ABI-encoded FeedUpdateRequest (was a fixed byte) to support multiple feeds.
-// This extension only serves one: DecodeFeedRequest only accepts that id, mirroring the store’s
-// own update check.
+// A GET_FEED request is an ABI-encoded FeedUpdateRequest naming the feed, because one sender
+// serves every feed of its extension. This extension serves one: DecodeFeedRequest accepts only
+// that id, mirroring the store's own check on the update.
 //
 // Every FeedUpdate field is static, so ABI encoding is always canonical and can be re-encoded freely.
 // Only dynamic SET_ENDPOINTS and SET_ADMINS payloads must avoid re-serializing before hashing.
@@ -343,7 +343,8 @@ func Digest(u FeedUpdate, chainID uint64) (common.Hash, error) {
 }
 
 // SplitSignature turns tee-node's r ‖ s ‖ v blob into the store's struct. v is
-// required to be 27/28 — tee-node's Sign already normalises it, and the store's
+// required to be 27/28 — tee-node's /sign returns a raw recovery id 0/1, which
+// internal/teenode.Client.Sign normalises before it reaches here, and the store's
 // OpenZeppelin ECDSA rejects anything else — so a raw recovery id is a bug
 // upstream of here rather than something to paper over.
 func SplitSignature(signature []byte) (Signature, error) {

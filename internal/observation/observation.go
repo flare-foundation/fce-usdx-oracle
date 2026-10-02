@@ -113,7 +113,7 @@ type Observation struct {
 	// were read, not to whatever is current when the request arrives.
 	Binding Binding
 
-	// Health maps each source identifier to a config.Health* value.
+	// Health maps each source identifier to a types.Health* value.
 	Health map[string]string
 
 	// Data is the ActionResult payload, abi.encode(FeedUpdate, Signature).

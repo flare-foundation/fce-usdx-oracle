@@ -122,10 +122,11 @@ func Roles() []string { return []string{RoleBacking, RoleProviders} }
 // The floors are the least threshold each set may be installed with. The
 // contract validates neither, so they are the only guard.
 //
-// Backing is 1-of-N by decision. It authenticates the pinned reserve sources, so
-// a wrong credential degrades the feed rather than moving the price; unpin the
-// bonds URL and this floor must rise. A provider credential is substituted into a
-// URL the publisher chooses, hence 2.
+// Backing is 1-of-N by decision. Its refs are the API key for the pinned bonds
+// URL and the cash URL, which must match the commitment governance published, so
+// one backing admin can neither choose the cash source nor touch the bonds one;
+// unpin the bonds URL and this floor must rise. A provider credential is
+// substituted into a URL the publisher chooses, hence 2.
 const (
 	MinBackingThreshold  = 1
 	MinProviderThreshold = 2

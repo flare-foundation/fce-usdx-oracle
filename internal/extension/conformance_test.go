@@ -27,8 +27,8 @@ import (
 // assert the ENVELOPE — routing, status codes, the ActionResult field set, and
 // the exact body of GET /state — never the price.
 //
-// They share one process and index.json fixes the order, so a fixture may rely
-// on what the ones before it did to the extension.
+// They run in index.json's order against one extension, which keeps no state a
+// request can change, so each fixture stands on its own.
 const fixtureDir = "../../deploy/testdata/conformance"
 
 // The observation every GET_FEED fixture is answered with. Fixed so the replay
@@ -125,8 +125,7 @@ func TestConformance(t *testing.T) {
 		var f fixture
 		readJSON(t, filepath.Join(fixtureDir, name+".json"), &f)
 
-		// Sequential on purpose: the fixtures share one extension and the
-		// counters accumulate.
+		// Sequential, in index.json's order, against the one extension.
 		t.Run(name, func(t *testing.T) { replay(t, e, f) })
 	}
 }

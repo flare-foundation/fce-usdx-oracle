@@ -14,8 +14,8 @@
 // hash every subsequent feed update has to carry.
 //
 // Both payloads name a FEED. One sender serves every feed of its extension and
-// keeps commitments per feed and machine, so a configuration is only meaningful
-// alongside the feed it was published for.
+// keeps commitments per feed (and the dispatched versions per machine), so a
+// configuration is only meaningful alongside the feed it was published for.
 //
 // Both payloads are DYNAMIC, so their encoding is not canonical. The publisher
 // encodes to predict the hash the sender will record; the enclave never

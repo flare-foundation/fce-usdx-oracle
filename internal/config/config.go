@@ -104,8 +104,9 @@ const (
 	HexBondsMetric = "current_reserves_amount"
 	HexCashMetric  = "current_cash_reserves_amount"
 
-	// OPEN: the endpoint returns 404 rather than 401 without credentials, so
-	// bearer vs X-API-Key cannot be distinguished until a key is issued.
+	// The cash endpoint's key travels in this header (the spec's decisions log,
+	// 2026-08-03). Without credentials the endpoint answers 404 rather than 401, so
+	// only a working key confirms the scheme; changing it is a new code hash.
 	HexCashAuthHeader = "X-API-Key"
 
 	HexBondsName = "hex_bonds"

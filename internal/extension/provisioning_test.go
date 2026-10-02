@@ -100,7 +100,7 @@ func TestSetSecret_DirectEnvelopeDeliversThePayload(t *testing.T) {
 // GET_FEED is raised through requestFeedUpdate(), which pays the registry fee
 // and leaves the request on-chain. Serving it over /direct would hand the same
 // signed report to anyone holding the proxy API key, for free and unrecorded.
-func TestGetPrice_RejectedOverDirectChannel(t *testing.T) {
+func TestGetFeed_RejectedOverDirectChannel(t *testing.T) {
 	e := newTestExtension()
 
 	action := buildDirectAction(protocol.OPTypeTeeOracle, protocol.OPCommandGetFeed,
@@ -281,7 +281,7 @@ func TestSetSecret_DoesNotEchoEnvelope(t *testing.T) {
 // Before provisioning, a price request must fail closed with the distinct
 // not_configured class so monitoring can route it differently from a source
 // outage.
-func TestGetPrice_NotConfiguredBeforeProvisioning(t *testing.T) {
+func TestGetFeed_NotConfiguredBeforeProvisioning(t *testing.T) {
 	e := newTestExtension()
 	e.observer = nil
 	e.provisioner = &fakeProvisioner{}

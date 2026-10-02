@@ -234,7 +234,10 @@ func (p *Poller) ReadinessReport(
 		if age > 0 {
 			rep.ObservationAge = uint64(age.Seconds())
 		}
-		rep.WouldSign = age <= p.maxAge
+		// The request-independent half of Report: Latest's staleness bound, and
+		// the admin set the update would commit to. The clock check against the
+		// requesting block cannot be made without a request.
+		rep.WouldSign = age <= p.maxAge && p.last.Binding.AdminsHash != (common.Hash{})
 	}
 
 	// Copied under the lock: the map is replaced wholesale by record(), and

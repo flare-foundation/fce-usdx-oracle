@@ -90,7 +90,8 @@ USER 0:0
 
 # confidential space launch policy label: allow the operator to override these env vars at workload launch
 # without this, the confidential space VM rejects overrides at attestation time and the values baked here are final
-# tee-node's list plus this extension's: CHAIN_URL for its own chain reads, SIGN_PORT and EXTENSION_PORT for the two in-process ports
+# tee-node's list plus this extension's SIGN_PORT and EXTENSION_PORT, the two in-process ports
+# CHAIN_URL is accepted but read by nothing in the image: the extension reads chains only through the published endpoints
 LABEL "tee.launch_policy.allow_env_override"="LOG_LEVEL,PROXY_URL,INITIAL_OWNER,EXTENSION_ID,CHAIN_URL,CHAIN_ID,GOVERNANCE_SIGNERS,GOVERNANCE_THRESHOLD,GOVERNANCE_SAFE,GOVERNANCE_TEE_MANAGER,SIGN_PORT,EXTENSION_PORT"
 
 EXPOSE 5500
