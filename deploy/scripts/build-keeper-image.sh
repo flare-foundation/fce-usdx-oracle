@@ -277,7 +277,7 @@ cat <<NEXT
 Run it on the server (one line each):
 
   docker pull ${DIGEST:-$IMAGE}
-  docker run -d --name usdx-keeper --restart unless-stopped --stop-timeout 90 --env-file /opt/usdx/keeper.env -v usdx-records:/var/log/usdx ${DIGEST:-$IMAGE} -tee <machine>,<machine> -interval 10m -records /var/log/usdx/cycles.jsonl -keeperId <host>
+  docker run -d --name usdx-keeper --restart unless-stopped --stop-timeout 90 --env-file /opt/usdx/keeper.env -v usdx-records:/var/log/usdx ${DIGEST:-$IMAGE} -interval 10m -records /var/log/usdx/cycles.jsonl -keeperId <host>
 
 keeper.env holds KEEPER_KEY, DIRECT_API_KEY, CHAIN_URL and EXT_PROXY_URL; the
 addresses file and FLARE_CHAIN=$CHAIN are baked into the image. Allow the 90

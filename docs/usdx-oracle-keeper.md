@@ -13,7 +13,8 @@ so a rejection arrives named — `StaleEndpoints`, `NotNewer` — instead of as 
 once by hand, so what an operator proves interactively is what runs unattended._
 
 _Every cycle raises its request on-chain through `requestFeedUpdate(feedId, teeIds)`, naming
-the target machines explicitly: the keeper's static `-tee` list. Each machine answers on its own
+the target machines explicitly: by default the extension's active machines at the feed's latest
+configuration, read from the chain every cycle, or a fixed `-tee` list. Each machine answers on its own
 proxy; the updates that agree on `observedAt` go up together in one `submitFeedUpdates` call,
 and each update's own signature says which machine produced it. Before paying the fee it asks the
 machines over `GET_READINESS` whether they would sign at all — a fee spent on a machine with a
@@ -66,8 +67,9 @@ submission at the same or an older stamp reverts `NotNewer`. It must therefore n
 
 ```
 every T:                                  # single-flight — an overrun starts the next cycle at once
-    targets = -tee                                                       # static, read at start
     fleet   = machineRegistry.getActiveTeeMachines(store.extensionId())  # proxy urls, re-read each tick
+    targets = -tee if given, else fleet less sender.getEndpointsPushTargets(feedId)
+                                        less sender.getAdminsPushTargets(feedId)    # re-read each tick
     proxies = dedupe([-p] + fleet.urls)
 
     # 0. preflight — ask before paying
@@ -140,7 +142,7 @@ the instructions sender is derived from the store's own `instructionsSender()` u
 explicitly with `-instructionSender`. `-records <file>` appends the JSON records somewhere other
 than stdout.
 
-`oracle-cycle.sh` takes `-tee`, `--dry-run`, `--loop <interval>` (stay up and cycle, instead of
+`oracle-cycle.sh` takes `-tee` (optional, as for the keeper), `--dry-run`, `--loop <interval>` (stay up and cycle, instead of
 `-once`) and `--records <file>`; `PROXY_OVERRIDE` in the environment becomes `-p`. It resolves
 the store from the chain's addresses file and passes it as `-store`. It reads nothing back
 after the cycle: the record is the result.
@@ -157,7 +159,7 @@ on a non-zero exit therefore alerts on a skip; route on the record's `outcome` i
 
 | Flag | Default | What it does |
 | --- | --- | --- |
-| `-tee` | — required | Comma-separated TEE machine addresses to request from: the targets of every request. Read once at start; see [the static target list](#the-target-list-is-static). The fee scales with the count. |
+| `-tee` | read from the chain | Comma-separated TEE machine addresses to request from: the targets of every request, fixed for the life of the process. Omitted, the keeper picks them every cycle; see [the target list](#the-target-list). The fee scales with the count. |
 | `-interval` | `10m` | How often a cycle starts. Match the source refresh; faster costs a fee per cycle and buys nothing. A cycle that runs longer is followed by the next at once. |
 | `-pollTimeout` | `5m` | How long to wait for the machines' terminal `ActionResult`s. The wait ends early once as many proxies have answered as there are targets; a machine that never answers costs the whole timeout, and the cycle goes on with the answers it has. |
 | `-requestTimeout` | `2m` | How long to wait for the `requestFeedUpdate` receipt. Cycles are single-flight, so this is the bound that keeps an unmined trigger from stopping the keeper rather than costing it one cycle. |
@@ -228,7 +230,7 @@ single-machine fee would underpay a fleet-wide request and revert.
 ### Named machines per request
 
 `requestFeedUpdate(feedId, teeIds)` dispatches the request to **the machines the caller
-names**, and `-tee` is what routes the cycle. Every named machine answers, and each result is
+names**, and the target list is what routes the cycle. Every named machine answers, and each result is
 retrievable only from that machine's own proxy. Consequences the keeper must respect:
 
 - **Poll every proxy, and wait for as many answers as there are targets.** The keeper polls
@@ -263,8 +265,9 @@ retrievable only from that machine's own proxy. Consequences the keeper must res
   `pushEndpoints(feedId, teeIds, groups)` / `pushAdmins(feedId, teeIds, roles)`, fed the payload
   from the `EndpointsPublished` / `AdminsPublished` event; `getEndpointsPushTargets` /
   `getAdminsPushTargets` list the machines that are behind. No tool in this repository wraps
-  `push*`. Until it is pushed, naming the machine in `-tee` reverts every request
-  `TeeIdNotConfigured`.
+  `push*`. Until it is pushed, a request naming the machine reverts `TeeIdNotConfigured`: a
+  keeper that picks its own targets leaves it out until then, while a `-tee` list that names it
+  stops every request.
 - A failed cycle may mean one bad machine, not a broken data source. This is why
   `usdx-oracle-monitoring.md` requires cross-machine correlation before a single `status == 0`
   is allowed to page.
@@ -319,27 +322,36 @@ So there is one channel, and every cycle exercises it.
 `/direct` itself stays enabled and stays keyed: `SET_SECRET` and `GET_READINESS` — both
 commands under the `TEE_ORACLE` op type — have no on-chain counterpart and go through it.
 
-### The target list is static
+### The target list
 
-`-tee` is read once, at start. The registry's active list for the store's extension is re-read
-every tick, but only for **where to look**: the proxies results are polled on and the machines
-the readiness preflight asks. It never adds or removes a target. So:
+The registry's active list for the store's extension is re-read every tick. It always says
+**where to look**: the proxies results are polled on and the machines the readiness preflight
+asks. Who is **asked** depends on `-tee`:
 
-- a machine that is replaced, paused, suspended or banned must be taken out of `-tee` (and the
-  keeper restarted), or every request reverts — `TeeMachineNotAvailable` for a machine that is
-  not PRODUCTION;
-- a new machine is requested only once it is added to `-tee`, after it is at the feed's latest
-  configuration (above).
+- **Without `-tee`, the keeper picks the targets every tick**: the active machines, less those
+  the sender's `getEndpointsPushTargets` / `getAdminsPushTargets` list as behind the feed's latest
+  publication — the same per-machine records `requestFeedUpdate` checks, so the request it sends
+  names no machine it would revert on. A machine that restarts under a new id, or is paused,
+  suspended or banned, drops out at the next tick; a new machine is asked from the first tick
+  after it is at the feed's latest configuration. Every change is logged. A machine that is
+  configured but not yet holding its credentials is still asked, and its fee paid: it answers at
+  once that it is not configured, and the other machines carry the round.
+- **With `-tee`, the targets are fixed** for the life of the process. A machine that is
+  replaced, paused, suspended or banned must be taken out of `-tee` and the keeper restarted, or
+  every request reverts — `TeeMachineNotAvailable` for a machine that is not PRODUCTION, and the
+  feed stops even though the remaining machines could carry it. A new machine is asked only once
+  it is added.
 
-A registry read that fails, or lists no reachable machine, keeps the previous proxy list,
-because an empty one would leave only `-p` to poll. Machines the registry lists **without a URL
-are dropped**, with a warning — there is nowhere to poll for their results.
+A registry read that fails, or lists no reachable machine, keeps the previous lists, because an
+empty one would leave only `-p` to poll and nobody to ask. Machines the registry lists **without
+a URL are dropped**, with a warning — there is nowhere to poll for their results, so they are not
+asked either.
 
 ### The readiness preflight
 
 Before paying, the keeper asks over `GET_READINESS` whether the machines would sign right now.
 It asks `-p` and every registry-listed machine's proxy, deduplicated — the same list it later
-polls for results, which is the extension's whole active set rather than the `-tee` targets.
+polls for results, which is the extension's whole active set rather than just the targets.
 The cycle ends `request_skipped`, with no fee spent, only when **every** proxy asked answered
 and **none** reports `wouldSign`: one willing machine is enough to make the request worth paying
 for.
@@ -441,7 +453,9 @@ commitments against the published ones — so a separate attestation entry point
 machinery for something that falls out of the normal one.
 
 `requestFeedUpdate(feedId, teeIds)` takes the target list, so commissioning a particular machine
-is a matter of naming it in `-tee`. `isTeeIdConfigured(feedId, teeId)` is the sender's check that
+is a matter of asking it: a keeper that picks its own targets does so from the first cycle after
+the machine is at the feed's latest configuration, and a fixed list does once the machine is
+named in `-tee`. `isTeeIdConfigured(feedId, teeId)` is the sender's check that
 the machine is at the feed's latest published endpoints and admin sets, and it is the
 precondition `requestFeedUpdate` enforces per target — a machine without configuration cannot
 even be asked, which is what makes commissioning state visible before any fee is spent.
@@ -467,8 +481,9 @@ Order matters when bringing a machine up, because each step is what makes the ne
    on-chain and asks each machine directly over `GET_READINESS`, and so does not depend on it
    having landed anything. `go run ./cmd/readiness -p <proxy>` shows what `fleet-status` does
    not: `.readiness.missingSecretRefs`, which must be empty.
-6. Add the machine to the keeper's `-tee` and restart it; `oracle-cycle.sh -tee <machine>`
-   drives one cycle by hand. Its first accepted update is its commissioning.
+6. A keeper that picks its own targets is already asking the machine; one with a fixed `-tee`
+   needs it added and a restart. `oracle-cycle.sh -tee <machine>` drives one cycle against it
+   alone. Its first accepted update is its commissioning.
 
 Two things to expect at step 6:
 
@@ -640,7 +655,7 @@ It is reported, not retried into: the fix is operational.
 | Instruction fee | Read from `OperationFees` (`TEE_ORACLE`, `GET_FEED`), not hard-coded; scales with the target count. See step 1. |
 | Feed id | `0x21555344582f555344000000000000000000000000` — category 0x21 + "USDX/USD", 21 bytes, pinned in `pkg/protocol`. Named in the request and inside the signed update; a mismatch with the store reverts. |
 | `TeeOracleInstructionsSender`, `TeeOracleFeedStore` addresses | From `deploy/config/<chain>/deployed-addresses.json`; the keeper resolves the store entry and derives the sender from the store's `instructionsSender()`. |
-| Target machines | The `-tee` list — named explicitly in every request, and static for the life of the process. |
+| Target machines | Named explicitly in every request: by default the extension's active machines at the feed's latest configuration, re-read every cycle; with `-tee`, that fixed list. |
 | Proxy URLs | Read from the registry per machine, for `/action/result/<id>` and the readiness preflight. `EXT_PROXY_URL` (`-p`'s default) is polled and asked as well, and is all there is when the registry lists none; `-p` given explicitly (the wrapper's `PROXY_OVERRIDE`) overrides all of them. |
 | Chain RPC | The keeper's own endpoint — a failure here is cause 2, distinct from the extension's supply RPCs. |
 | Hot wallet key | `KEEPER_KEY`: low-value, monitored, funded. Both of the keeper's transactions are permissionless and the store verifies TEE signatures against the machine registry itself, so this address has no authority at all — compromise costs the gas on it. Falling back to `EXTENSION_OWNER_KEY` works and is warned about; that key can also configure the extension, which nothing here needs. |
@@ -677,7 +692,8 @@ process that holds one key, keeps no state and listens on nothing.
 | `ADDRESSES_FILE` | absolute path to the addresses JSON. The compiled-in default resolves against the source tree the binary was built from, which does not exist on a server, so this must be set explicitly. |
 | `EXT_PROXY_URL` | a proxy polled for results and asked by the preflight in addition to each machine's registered URL, and the only one when the registry lists none. For the preflight to be able to skip, it must answer — see [The readiness preflight](#the-readiness-preflight). |
 
-`-tee` is the one required argument: the machines to request from. `-keeperId` defaults to the
+No argument is required. Leave `-tee` out so the keeper follows the registry: a machine that
+restarts or is paused then needs no change here. `-keeperId` defaults to the
 hostname and only matters when two keepers run — but under Docker the hostname is the container
 id, which changes whenever the container is recreated, so pass it explicitly there.
 
@@ -693,7 +709,7 @@ interval, and it needs rotating); otherwise a consumer has to select the lines b
 **Stopping and restarting.** SIGTERM cancels the cycle in flight, which unwinds at its next
 checkpoint and exits **0**; a second SIGTERM kills a process still winding down, so allow around
 90 seconds before sending it. A startup misconfiguration — an unreadable addresses file, a
-missing `-tee`, a chain node that does not answer — exits **1** before any cycle runs, and
+`-tee` that names no machine, a chain node that does not answer — exits **1** before any cycle runs, and
 restarting will not fix it; the log line above the exit names the cause. (`-once` has its own
 exit codes; see [`-once`](#-once).)
 
@@ -775,7 +791,7 @@ The line `build-keeper-image.sh` prints:
 ```
 docker run -d --name usdx-keeper --restart unless-stopped --stop-timeout 90 \
   --env-file /opt/usdx/keeper.env -v usdx-records:/var/log/usdx \
-  <image@digest> -tee <machine>,<machine> -interval 10m \
+  <image@digest> -interval 10m \
   -records /var/log/usdx/cycles.jsonl -keeperId <host>
 ```
 
@@ -783,7 +799,7 @@ docker run -d --name usdx-keeper --restart unless-stopped --stop-timeout 90 \
   env file, so the key stays out of the shell history and `ps`. The addresses file and
   `FLARE_CHAIN` come from the image.
 - Arguments given to `docker run` replace `CMD`, so the real invocation restates `-interval` and
-  `-records`, and adds `-tee` and `-keeperId`.
+  `-records`, and adds `-keeperId` — and `-tee` only to fix the targets.
 - `--stop-timeout 90`, because docker's default 10 s sends the killing signal while a cycle is
   still unwinding.
 - A named volume inherits the records directory's ownership from the image; a bind mount has to
@@ -839,7 +855,7 @@ owes it is one **cycle record per tick**, emitted regardless of outcome — impl
 | `rejected` | no | The store will not take the answers, under a named guard: the whole round (`NoEndpointsPublished`, `NoAdminsPublished`, `SenderUnavailable`); every answer dropped (their common guard, else `NoUsableUpdate`); the batch preflight (`NotEnoughSignatures`, `TooManySignatures`); the rehearsal or gas estimation (the store's error name, else `Reverted`); a mined submission that reverted while the store stayed behind it (the replay's guard, else `Reverted`); a `NotNewer` while the store reads lower than ours, which only a lagging node or a failed read produces; or a transaction that could not be sent for a reason naming no guard. | the guard, or `send_failed` |
 | `dry_run` | no | `-dry-run`: requested (and paid), collected, screened and rehearsed; stopped before submitting. | `dry_run` |
 | `not_mined` | no | Submitted; no receipt within `-submitTimeout`. Not chased. | `not_mined` |
-| `internal` | no | A keeper-side fault: no `-tee`, an unreadable store or submission policy, a binding or encoding error. | `not_attempted` |
+| `internal` | no | A keeper-side fault: no target machine to ask, an unreadable store or submission policy, a binding or encoding error. | `not_attempted` |
 
 ### The record
 

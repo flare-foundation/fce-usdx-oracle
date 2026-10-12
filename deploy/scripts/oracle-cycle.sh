@@ -11,8 +11,11 @@
 # The keeper holds no authority: the store verifies the TEE signature through
 # Fdc2Verification, so the worst a wrong invocation does is waste gas.
 #
-# The keeper names the target machines explicitly, so -tee is what routes the
-# request. Each machine files its result on its own proxy, and the keeper polls
+# The keeper names the target machines explicitly in every request. Without
+# -tee it picks them each cycle: the extension's active machines that are at the
+# feed's latest configuration, read from the chain. With -tee the set is fixed,
+# and a named machine that is paused or replaced stops every request. Each
+# machine files its result on its own proxy, and the keeper polls
 # every one at the url the machine registered; EXT_PROXY_URL is where it looks
 # first and its fallback when the registry lists none. PROXY_OVERRIDE addresses
 # every machine at one proxy instead — right only with a single machine that is
@@ -20,10 +23,11 @@
 # machine's result is never collected. See docs/usdx-oracle-keeper.md.
 #
 # Usage:
-#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c                      # one cycle, submit for real
-#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --dry-run            # request and collect (the fee is paid), but submit nothing
-#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --loop 10m           # stay up and cycle on a timer
-#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c --loop 10m --records cycles.jsonl
+#   ./deploy/scripts/oracle-cycle.sh                                 # one cycle, targets read from the chain
+#   ./deploy/scripts/oracle-cycle.sh -tee a,b,c                      # one cycle, a fixed set of targets
+#   ./deploy/scripts/oracle-cycle.sh --dry-run                       # request and collect (the fee is paid), but submit nothing
+#   ./deploy/scripts/oracle-cycle.sh --loop 10m                      # stay up and cycle on a timer
+#   ./deploy/scripts/oracle-cycle.sh --loop 10m --records cycles.jsonl
 #   PROXY_OVERRIDE=http://localhost:6674 ./deploy/scripts/oracle-cycle.sh -tee a   # one machine, other address
 set -euo pipefail
 
@@ -52,7 +56,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$TEE" ]] || die "-tee is required: at least one TEE machine address"
 # The keeper runs from tools/, so a relative records path is resolved here,
 # against the directory the command was typed in, before that change.
 [[ -n "$RECORDS" && "$RECORDS" != /* ]] && RECORDS="$PWD/$RECORDS"
@@ -76,14 +79,15 @@ export EXT_PROXY_URL="${EXT_PROXY_URL:-http://localhost:6674}"
 echo -e "${CYAN}store: ${NC} $STORE"
 echo -e "${CYAN}proxy: ${NC} $EXT_PROXY_URL (first looked at; each machine at its registered url)"
 [[ -n "${PROXY_OVERRIDE:-}" ]] && echo -e "${CYAN}override:${NC} $PROXY_OVERRIDE (every machine addressed there)"
-echo -e "${CYAN}tee:   ${NC} $TEE"
+echo -e "${CYAN}tee:   ${NC} ${TEE:-every active machine at the latest feed configuration, read each cycle}"
 
 cd "$PROJECT_DIR/tools"
 
 BIN_DIR="${TMPDIR:-/tmp}/usdx-oracle-bin"
 mkdir -p "$BIN_DIR"
 
-ARGS=(-a "$ADDR_FILE" -store "$STORE" -tee "$TEE")
+ARGS=(-a "$ADDR_FILE" -store "$STORE")
+[[ -n "$TEE" ]] && ARGS+=(-tee "$TEE")
 # -p given explicitly overrides every machine's registered url, so it is passed
 # only when the operator asked for that.
 [[ -n "${PROXY_OVERRIDE:-}" ]] && ARGS+=(-p "$PROXY_OVERRIDE")

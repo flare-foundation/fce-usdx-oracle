@@ -35,15 +35,21 @@ func Run(ctx context.Context, s *support.Support, cfg LoopConfig) error {
 	logger.Infof("  sender=%s store=%s", cfg.Sender.Hex(), cfg.Store.Hex())
 	logger.Infof("  every cycle requests on-chain through requestFeedUpdate(feedId, teeIds), " +
 		"naming the target machines explicitly")
+	if cfg.picksTargets() {
+		logger.Infof("  targets: every active machine at the feed's latest configuration, re-read each cycle")
+	} else {
+		logger.Infof("  targets: %s", hexList(cfg.TeeIDs))
+	}
 	if cfg.ProxyOverride != "" {
 		logger.Infof("  every machine is addressed at %s, overriding its registered url",
 			cfg.ProxyOverride)
 	}
 
-	// The fleet is read for the result poll: every addressed machine answers on
-	// its own proxy. Two eth_calls, so it costs nothing to keep current.
+	// The fleet is read for the result poll, every addressed machine answering on
+	// its own proxy, and for the targets when the keeper picks them. A few
+	// eth_calls, so it costs nothing to keep current.
 	var fl fleet
-	fl.refresh(ctx, s, cfg.Store, cfg.ProxyOverride)
+	fl.refresh(ctx, s, cfg)
 	for _, m := range fl.machines {
 		logger.Infof("  machine %s at %s", m.TeeID.Hex(), m.Proxy)
 	}
@@ -60,9 +66,9 @@ func Run(ctx context.Context, s *support.Support, cfg LoopConfig) error {
 			return nil
 		}
 
-		// Re-read each tick so machines added or suspended mid-run are picked up
-		// without a restart.
-		fl.refresh(ctx, s, cfg.Store, cfg.ProxyOverride)
+		// Re-read each tick so machines added, restarted or paused mid-run are
+		// picked up without a restart.
+		fl.refresh(ctx, s, cfg)
 
 		rec, err := RunCycle(ctx, s, cfg.cycleConfig(&fl))
 		cfg.Emitter.Emit(rec)
@@ -104,17 +110,30 @@ func Run(ctx context.Context, s *support.Support, cfg LoopConfig) error {
 // where the process is started fresh on every tick.
 func RunOnce(ctx context.Context, s *support.Support, cfg LoopConfig) (Record, error) {
 	var fl fleet
-	fl.refresh(ctx, s, cfg.Store, cfg.ProxyOverride)
+	fl.refresh(ctx, s, cfg)
 	return RunCycle(ctx, s, cfg.cycleConfig(&fl))
 }
 
+// picksTargets reports whether the keeper chooses its own target machines,
+// which it does whenever none were given: every cycle then asks the machines
+// the registry lists as active that are at the feed's latest configuration. A
+// fixed list goes stale the moment a machine restarts under a new id or is
+// paused, and a request naming a paused machine reverts as a whole.
+func (cfg LoopConfig) picksTargets() bool {
+	return len(cfg.TeeIDs) == 0
+}
+
 // cycleConfig points one cycle at the whole fleet: each addressed machine files
-// its result on its own proxy, so every proxy is a place to look.
+// its result on its own proxy, so every proxy is a place to look. A keeper that
+// picks its own targets requests from the fleet's requestable machines.
 func (cfg LoopConfig) cycleConfig(fl *fleet) Config {
 	c := cfg.Config
 	c.ResultProxies = fl.proxies()
 	// Falling through with the configured proxy is deliberate: an unreadable
 	// registry must not stop the feed, and cfg.Proxy is the one machine we were
 	// told about by hand.
+	if cfg.picksTargets() {
+		c.TeeIDs = fl.requestable
+	}
 	return c
 }

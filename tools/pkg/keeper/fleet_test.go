@@ -86,6 +86,74 @@ func TestCycleConfigFallsBackToTheConfiguredProxy(t *testing.T) {
 	}
 }
 
+// A request naming a machine behind either publication reverts as a whole, so
+// one machine waiting for a push must be left out rather than stop the feed.
+func TestRequestableLeavesOutMachinesBehindEitherPublication(t *testing.T) {
+	machines := []Machine{
+		{TeeID: machineA, Proxy: "https://a"},
+		{TeeID: machineB, Proxy: "https://b"},
+		{TeeID: machineC, Proxy: "https://c"},
+	}
+
+	got := requestable(machines, []common.Address{machineB}, []common.Address{machineC})
+	if len(got) != 1 || got[0] != machineA {
+		t.Errorf("requestable = %v, want only %s", got, machineA.Hex())
+	}
+
+	if got := requestable(machines, nil, nil); len(got) != 3 {
+		t.Errorf("requestable = %v, want every machine when none is behind", got)
+	}
+}
+
+// Without a named set, every cycle requests from the machines the last refresh
+// found requestable — so a machine that restarts under a new id, or is paused,
+// changes the targets without a restart.
+func TestCycleConfigRequestsFromTheRequestableMachinesWhenNoneAreNamed(t *testing.T) {
+	cfg := LoopConfig{Config: Config{Proxy: "https://configured"}}
+	f := fleet{
+		machines: []Machine{
+			{TeeID: machineA, Proxy: "https://a"},
+			{TeeID: machineB, Proxy: "https://b"},
+		},
+		requestable: []common.Address{machineA},
+	}
+
+	got := cfg.cycleConfig(&f).TeeIDs
+	if len(got) != 1 || got[0] != machineA {
+		t.Errorf("targets = %v, want the requestable %s", got, machineA.Hex())
+	}
+
+	f.requestable = []common.Address{machineA, machineB}
+	if got := cfg.cycleConfig(&f).TeeIDs; len(got) != 2 {
+		t.Errorf("targets = %v, want the refreshed pair", got)
+	}
+	if len(cfg.TeeIDs) != 0 {
+		t.Error("picking the targets wrote them into the loop config, fixing them for every later cycle")
+	}
+}
+
+// A named set is the operator's choice and is used as given.
+func TestCycleConfigKeepsANamedSet(t *testing.T) {
+	cfg := LoopConfig{Config: Config{TeeIDs: []common.Address{machineC}}}
+	f := fleet{requestable: []common.Address{machineA, machineB}}
+
+	got := cfg.cycleConfig(&f).TeeIDs
+	if len(got) != 1 || got[0] != machineC {
+		t.Errorf("targets = %v, want the named %s", got, machineC.Hex())
+	}
+}
+
+// A restart replaces one machine with another, which leaves the count alone;
+// the fleet has changed all the same.
+func TestSameAddressesComparesMembershipNotCountOrOrder(t *testing.T) {
+	if !sameAddresses([]common.Address{machineA, machineB}, []common.Address{machineB, machineA}) {
+		t.Error("the same machines in another order were reported as a change")
+	}
+	if sameAddresses([]common.Address{machineA, machineB}, []common.Address{machineA, machineC}) {
+		t.Error("a replaced machine went unreported")
+	}
+}
+
 func TestPollTargetsDeduplicatesAndKeepsThePrimaryFirst(t *testing.T) {
 	cfg := Config{
 		Proxy:         "https://a/",

@@ -2,8 +2,9 @@
 // update from the configured machines, poll the proxy for the signed result,
 // relay it to TeeOracleFeedStore, and emit one JSON record per cycle.
 //
-//	go run ./cmd/keeper -tee @a,@b,@c -interval 10m
-//	go run ./cmd/keeper -tee @a,@b,@c -once   # one cycle, for cron
+//	go run ./cmd/keeper -interval 10m               # targets read from the chain every cycle
+//	go run ./cmd/keeper -tee @a,@b,@c -interval 10m # a fixed set of targets
+//	go run ./cmd/keeper -once                       # one cycle, for cron
 //
 // The store resolves from -store or the TeeOracleFeedStore entry in the
 // addresses file; the instructions sender is derived from the store's own
@@ -11,11 +12,20 @@
 //
 // Every cycle requests through requestFeedUpdate(feedId, teeIds) on the
 // instruction sender, paying the registry fee for one instruction addressed to
-// every named machine. The keeper picks the targets (-tee), and the result is
-// polled on the -p proxy and every registered machine's proxy until each target
-// has answered or -pollTimeout passes. Before paying, it asks those proxies over
-// GET_READINESS whether their machines would sign at all — a fee spent on a
-// machine with a stale observation buys a predictable failure.
+// every named machine. Without -tee the keeper picks the targets itself, every
+// cycle: the machines the registry lists as active for the store's extension,
+// less any the sender reports behind the feed's latest endpoints or admins
+// publication — the request reverts as a whole if it names a machine that is
+// paused or not yet pushed the configuration. A machine that restarts under a
+// new id, or is paused, therefore drops in and out without a restart. With
+// -tee the set is fixed, and naming a machine that is no longer active stops
+// every request.
+//
+// The result is polled on the -p proxy and every registered machine's proxy
+// until each target has answered or -pollTimeout passes. Before paying, the
+// keeper asks those proxies over GET_READINESS whether their machines would
+// sign at all — a fee spent on a machine with a stale observation buys a
+// predictable failure.
 //
 // The keeper holds no authority, so a compromised one costs gas, not
 // correctness. requestFeedUpdate and submitFeedUpdates are both permissionless,
@@ -68,7 +78,8 @@ func main() {
 	feedIDF := flag.String("feedId", configs.FeedID,
 		"feed id (bytes21 hex); defaults to USDX/USD")
 	teeF := flag.String("tee", "",
-		"comma-separated TEE machine addresses to request from (required)")
+		"comma-separated TEE machine addresses to request from; when omitted, every cycle requests "+
+			"from the extension's active machines at the feed's latest configuration, read from the chain")
 	keeperIDF := flag.String("keeperId", defaultKeeperID(),
 		"stable identifier for this instance, so records from ≥2 keepers can be told apart")
 	intervalF := flag.Duration("interval", 10*time.Minute,
@@ -161,12 +172,13 @@ func main() {
 	var feed [21]byte
 	copy(feed[:], feedRaw)
 
+	// Empty is not an error: the keeper then picks the targets each cycle.
 	teeIDs, err := parseTeeIDs(*teeF)
 	if err != nil {
 		fccutils.FatalWithCause(err)
 	}
-	if len(teeIDs) == 0 {
-		fccutils.FatalWithCause(errors.New("-tee is required: at least one TEE machine address"))
+	if set["tee"] && len(teeIDs) == 0 {
+		fccutils.FatalWithCause(errors.New("-tee names no machine; omit it to let the keeper pick the targets"))
 	}
 
 	records, closeRecords, err := openRecords(*recordsF)

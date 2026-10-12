@@ -23,6 +23,9 @@ heading before tagging.
 
 ### Changed
 
+- The keeper's `-tee` is optional. Without it, every cycle requests from the extension's active
+  machines that are at the feed's latest configuration, read from the chain, so a machine that
+  restarts under a new id or is paused no longer stops the feed. `oracle-cycle.sh` follows.
 - `verify-tee` and `fleet-status` run without a signing key.
 - `upload-rpc-keys.sh` leaves `hex_cash_url` to `upload-hex-key.sh`, as it already did
   `hex_api_key`: both are backing credentials.

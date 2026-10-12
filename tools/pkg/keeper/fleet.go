@@ -2,8 +2,10 @@ package keeper
 
 import (
 	"context"
+	"slices"
 	"strings"
 
+	"fce-usdx-oracle/tools/pkg/contracts/teeoraclesender"
 	"fce-usdx-oracle/tools/pkg/contracts/teeoraclestore"
 	"fce-usdx-oracle/tools/pkg/support"
 
@@ -68,19 +70,67 @@ func machineList(teeIDs []common.Address, urls []string, proxyOverride string) [
 	return machines
 }
 
-// fleet is the keeper's view of the machines that could serve its instruction.
-// It holds no state across cycles: the sender names the target machines
-// explicitly, and each of them files its result on its own proxy, so every one
-// is polled.
-type fleet struct {
-	machines []Machine
+// RequestableMachines narrows machines to the ones a feed request may name.
+// requestFeedUpdate reverts as a whole (TeeIdNotConfigured) if any target is
+// behind the feed's latest endpoints or admins publication, so one machine
+// waiting for a push would otherwise stop the feed. The sender's push-target
+// views list exactly those machines, from the same per-machine records the
+// request checks.
+func RequestableMachines(
+	ctx context.Context, s *support.Support, senderAddr common.Address, feedID [21]byte, machines []Machine,
+) ([]common.Address, error) {
+	opts := &bind.CallOpts{Context: ctx}
+
+	sender, err := teeoraclesender.NewIITeeOracleInstructionsSenderCaller(senderAddr, s.ChainClient)
+	if err != nil {
+		return nil, errors.Errorf("binding the instructions sender: %s", err)
+	}
+	endpointsBehind, err := sender.GetEndpointsPushTargets(opts, feedID)
+	if err != nil {
+		return nil, errors.Errorf("reading the machines behind the endpoints publication: %s", err)
+	}
+	adminsBehind, err := sender.GetAdminsPushTargets(opts, feedID)
+	if err != nil {
+		return nil, errors.Errorf("reading the machines behind the admins publication: %s", err)
+	}
+	return requestable(machines, endpointsBehind, adminsBehind), nil
 }
 
-// refresh re-reads the registry so machines added or suspended mid-run are picked
-// up without a restart. A read failure keeps the previous list: a briefly
-// unreadable registry is not a reason to stop sending prices.
-func (f *fleet) refresh(ctx context.Context, s *support.Support, storeAddr common.Address, proxyOverride string) {
-	machines, err := ActiveMachines(ctx, s, storeAddr, proxyOverride)
+// requestable is every machine not named in any of the behind lists, in fleet
+// order.
+func requestable(machines []Machine, behind ...[]common.Address) []common.Address {
+	skip := map[common.Address]bool{}
+	for _, list := range behind {
+		for _, id := range list {
+			skip[id] = true
+		}
+	}
+	out := make([]common.Address, 0, len(machines))
+	for _, m := range machines {
+		if !skip[m.TeeID] {
+			out = append(out, m.TeeID)
+		}
+	}
+	return out
+}
+
+// fleet is the keeper's view of the machines that could serve its instruction,
+// re-read every cycle: each addressed machine files its result on its own proxy,
+// so every one is polled.
+type fleet struct {
+	machines []Machine
+
+	// requestable are the machines a request may name: active, reachable and at
+	// the feed's latest configuration. Read only for a keeper that picks its own
+	// targets.
+	requestable []common.Address
+}
+
+// refresh re-reads the registry so machines added, restarted or paused mid-run
+// are picked up without a restart. A read failure keeps the previous lists: a
+// briefly unreadable registry is not a reason to stop sending prices.
+func (f *fleet) refresh(ctx context.Context, s *support.Support, cfg LoopConfig) {
+	machines, err := ActiveMachines(ctx, s, cfg.Store, cfg.ProxyOverride)
 	if err != nil {
 		logger.Warnf("could not list the fleet, keeping the previous %d machine(s): %s",
 			len(f.machines), err)
@@ -92,10 +142,68 @@ func (f *fleet) refresh(ctx context.Context, s *support.Support, storeAddr commo
 		return
 	}
 
-	if len(machines) != len(f.machines) {
-		logger.Infof("fleet is now %d machine(s)", len(machines))
+	if !sameAddresses(teeIDsOf(machines), teeIDsOf(f.machines)) {
+		logger.Infof("fleet is now %d machine(s): %s", len(machines), describeMachines(machines))
 	}
 	f.machines = machines
+
+	if !cfg.picksTargets() {
+		return
+	}
+	targets, err := RequestableMachines(ctx, s, cfg.Sender, cfg.FeedID, machines)
+	if err != nil {
+		logger.Warnf("could not read which machines are at the feed's latest configuration, "+
+			"keeping the previous %d target(s): %s", len(f.requestable), err)
+		return
+	}
+	if !sameAddresses(targets, f.requestable) {
+		logger.Infof("requesting from %d machine(s): %s", len(targets), hexList(targets))
+		for _, m := range machines {
+			if !slices.Contains(targets, m.TeeID) {
+				logger.Warnf("machine %s is behind the feed's latest endpoints or admins publication — "+
+					"left out of requests until pushEndpoints / pushAdmins reaches it", m.TeeID.Hex())
+			}
+		}
+	}
+	f.requestable = targets
+}
+
+func teeIDsOf(machines []Machine) []common.Address {
+	out := make([]common.Address, 0, len(machines))
+	for _, m := range machines {
+		out = append(out, m.TeeID)
+	}
+	return out
+}
+
+// sameAddresses compares two lists as sets: the registry's order is not a
+// change worth reporting.
+func sameAddresses(a, b []common.Address) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, id := range a {
+		if !slices.Contains(b, id) {
+			return false
+		}
+	}
+	return true
+}
+
+func hexList(ids []common.Address) string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id.Hex())
+	}
+	return strings.Join(out, ", ")
+}
+
+func describeMachines(machines []Machine) string {
+	out := make([]string, 0, len(machines))
+	for _, m := range machines {
+		out = append(out, m.TeeID.Hex()+" at "+m.Proxy)
+	}
+	return strings.Join(out, ", ")
 }
 
 // proxies is every machine's URL: a machine's result is retrievable only from

@@ -52,7 +52,9 @@ type Config struct {
 	// threshold of distinct signatures per submission, a liveness one. Every
 	// target must be at the feed's latest published configuration, or the
 	// request reverts. An answer signed by any other machine is dropped before
-	// submission. Empty is a configuration error caught before any request.
+	// submission. On a LoopConfig, empty means the keeper picks the targets each
+	// cycle (LoopConfig.picksTargets); a cycle that still has none fails before
+	// any request.
 	TeeIDs []common.Address
 
 	// Proxy is the first place results are looked for. The readiness preflight
@@ -156,7 +158,8 @@ func Collect(ctx context.Context, s *support.Support, cfg Config) ([]feedupdate.
 	// whatever it is asked, so the fee would buy a predictable failure. Best
 	// effort throughout — an unreadable machine means requesting anyway.
 	if len(cfg.TeeIDs) == 0 {
-		return fail(OutcomeInternal, errors.New("no target machines configured"))
+		return fail(OutcomeInternal, errors.New("no target machines: none were named, and the registry "+
+			"lists no active machine at the feed's latest configuration"))
 	}
 
 	skip, why, health := wouldRefuse(ctx, cfg)
