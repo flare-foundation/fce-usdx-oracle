@@ -169,6 +169,7 @@ on a non-zero exit therefore alerts on a skip; route on the record's `outcome` i
 | `-p` | `$EXT_PROXY_URL`, else `http://localhost:6674` | The proxy polled and asked first. Given explicitly, it overrides *every* machine's registered url (right only with one machine); otherwise each machine is reached at its own registered url and this one is asked in addition, and used alone when the registry lists none. `oracle-cycle.sh` passes it only when `PROXY_OVERRIDE` is set. |
 | `-keeperId` | the hostname | Stable identifier for this instance, so records from two keepers can be told apart. |
 | `-records` | stdout | Append the JSON cycle records to this file. |
+| `-bondsLog` | off | At the start of every cycle, fetch the public Hex bonds endpoint the machines read (`current_reserves_amount`) and append its answer to this file, one JSON line per fetch: the keeper's request time, the HTTP status, the body exactly as received (`raw`, or `rawBase64` when it is not valid UTF-8) with its SHA-256 (`rawSha256`) and, when it is JSON, a parsed copy for `jq` (`response`), or the error. The machines keep nothing of what they read and Hex serves only the current figure, so this is the only history of the bonds input. Never affects the cycle. |
 | `-once` | off | Run one cycle and exit; see above. |
 | `-dry-run` | off | Stop after the rehearsal, before submitting. The request is still sent and paid for. |
 | `-store` | the `TeeOracleFeedStore` entry of the addresses file | The store to submit to. |

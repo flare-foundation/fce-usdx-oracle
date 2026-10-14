@@ -9,6 +9,9 @@ heading before tagging.
 
 ### Added
 
+- `keeper -bondsLog <file>`: every cycle, the keeper fetches the public Hex bonds endpoint the
+  machines read and appends the answer byte for byte, with its SHA-256, one JSON line per fetch,
+  as a history of that input that Hex does not keep publicly.
 - `send-secret signers`: recovers each signature on an envelope offline, names it against the
   admin set that governs the ref, and fails below that set's threshold.
 - `--build-only` on `upload-rpc-keys.sh` and `upload-hex-key.sh`: a coordinator who holds the

@@ -90,6 +90,10 @@ func main() {
 		"how long to wait for the submitFeedUpdates receipt")
 	recordsF := flag.String("records", "",
 		"append JSON cycle records to this file (default: stdout)")
+	bondsLogF := flag.String("bondsLog", "",
+		"at the start of every cycle, fetch the public Hex bonds endpoint the machines read and append "+
+			"its answer to this file, one JSON line per fetch — Hex keeps no public history of the "+
+			"figure (default: off)")
 	onceF := flag.Bool("once", false, "run a single cycle and exit — useful for a cron-driven keeper")
 	requestF := flag.Duration("requestTimeout", keeper.DefaultRequestTimeout,
 		"how long to wait for the requestFeedUpdate receipt before giving up on the cycle")
@@ -187,6 +191,17 @@ func main() {
 	}
 	defer closeRecords()
 
+	var bonds *keeper.BondsLog
+	if *bondsLogF != "" {
+		bondsFile, closeBonds, err := openRecords(*bondsLogF)
+		if err != nil {
+			fccutils.FatalWithCause(err)
+		}
+		defer closeBonds()
+		bonds = keeper.NewBondsLog(bondsFile, keeper.HexBondsURL, *keeperIDF)
+		logger.Infof("recording %s to %s every cycle", keeper.HexBondsURL, *bondsLogF)
+	}
+
 	// -p overrides every machine's registered url only when it was given by
 	// hand: its default is an env-driven fallback, and silently treating that as
 	// an override would send every machine's request to one proxy.
@@ -213,6 +228,7 @@ func main() {
 		Interval:      *intervalF,
 		ProxyOverride: proxyOverride,
 		Emitter:       keeper.NewEmitter(records),
+		Bonds:         bonds,
 	}
 
 	// Cancelling lets an in-flight cycle unwind at its next checkpoint rather

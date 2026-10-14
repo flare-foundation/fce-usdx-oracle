@@ -24,6 +24,10 @@ type LoopConfig struct {
 
 	// Nil discards records, which is only ever right in a test.
 	Emitter *Emitter
+
+	// Bonds, when set, fetches the public bonds endpoint at the start of every
+	// cycle and logs the answer. Nil records nothing.
+	Bonds *BondsLog
 }
 
 // Run drives cycles until ctx is cancelled. Single-flight: cycles run
@@ -69,6 +73,7 @@ func Run(ctx context.Context, s *support.Support, cfg LoopConfig) error {
 		// Re-read each tick so machines added, restarted or paused mid-run are
 		// picked up without a restart.
 		fl.refresh(ctx, s, cfg)
+		cfg.Bonds.Record(ctx)
 
 		rec, err := RunCycle(ctx, s, cfg.cycleConfig(&fl))
 		cfg.Emitter.Emit(rec)
@@ -111,6 +116,7 @@ func Run(ctx context.Context, s *support.Support, cfg LoopConfig) error {
 func RunOnce(ctx context.Context, s *support.Support, cfg LoopConfig) (Record, error) {
 	var fl fleet
 	fl.refresh(ctx, s, cfg)
+	cfg.Bonds.Record(ctx)
 	return RunCycle(ctx, s, cfg.cycleConfig(&fl))
 }
 
